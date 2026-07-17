@@ -1,0 +1,38 @@
+"""Tests for the public release package contract."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from zipfile import ZipFile
+
+import pytest
+
+from scripts.package_release import (
+    ReleaseValidationError,
+    build_archive,
+    inspect_archive,
+    normalize_version,
+)
+
+REPOSITORY_ROOT = Path(__file__).parents[1]
+
+
+def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> None:
+    """The release archive has the path shape HACS expects for content_in_root=false."""
+
+    archive_path = tmp_path / "hydronicus.zip"
+    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.1.0-alpha.1")
+
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.1.0-alpha.1") == files
+    with ZipFile(archive_path) as archive:
+        assert archive.namelist() == files
+        assert all(path.startswith("custom_components/hydronicus/") for path in files)
+        assert "custom_components/hydronicus/manifest.json" in archive.namelist()
+
+
+@pytest.mark.parametrize("version", ["1.02.3", "1.2.3-alpha.01", "1.2", "v1.2.3.4"])
+def test_normalize_version_rejects_invalid_semver(version: str) -> None:
+    """Release tags must use strict semantic-version syntax."""
+
+    with pytest.raises(ReleaseValidationError):
+        normalize_version(version)
