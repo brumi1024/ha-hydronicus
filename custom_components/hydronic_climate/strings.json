@@ -30,7 +30,7 @@
       },
       "review": {
         "title": "Review shadow topology",
-        "description": "Zone {zone} will request circuit {circuit}. Hydronic Climate remains in shadow mode."
+        "description": "Zone {zone} will request circuit {circuit}. Hydronic Climate remains in shadow mode.\n\nCompiled topology:\n{logic}"
       }
     },
     "error": {

@@ -149,14 +149,46 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             details.append(f"orphaned circuits: {', '.join(orphaned_circuits)}")
         raise TopologyValidationError("; ".join(details) + ".")
 
-    summary = tuple(
+    summary = [
         (
             f"Circuit {circuit.name} opens valves "
             f"{', '.join(valves[valve_id].name for valve_id in circuit.valve_ids)} "
             f"before requesting pump {pumps[circuit.pump_id].name}."
         )
         for circuit in configuration.circuits
-    )
+    ]
+    for zone in configuration.zones:
+        route_circuits = [
+            circuits[route.circuit_id].name
+            for route in configuration.routes
+            if route.enabled and route.zone_id == zone.id
+        ]
+        noun = "circuit" if len(route_circuits) == 1 else "circuits"
+        summary.append(
+            f"Zone {zone.name} can request {noun} {', '.join(route_circuits)}."
+        )
+    for valve in configuration.valves:
+        shared_circuits = [
+            circuit.name
+            for circuit in configuration.circuits
+            if valve.id in circuit.valve_ids
+        ]
+        if len(shared_circuits) > 1:
+            summary.append(
+                f"Valve {valve.name} is shared by circuits "
+                f"{', '.join(shared_circuits)}."
+            )
+    for pump in configuration.pumps:
+        shared_circuits = [
+            circuit.name
+            for circuit in configuration.circuits
+            if pump.id == circuit.pump_id
+        ]
+        if len(shared_circuits) > 1:
+            summary.append(
+                f"Pump {pump.name} is shared by circuits "
+                f"{', '.join(shared_circuits)}."
+            )
     return CompiledPlant(
         id=configuration.id,
         zones=zones,
@@ -164,5 +196,5 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         pumps=pumps,
         circuits=circuits,
         routes=tuple(route for route in configuration.routes if route.enabled),
-        logic_summary=summary,
+        logic_summary=tuple(summary),
     )

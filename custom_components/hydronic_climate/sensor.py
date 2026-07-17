@@ -4,11 +4,48 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import DOMAIN
+
+
+class TopologyPreviewSensor(SensorEntity):
+    """Expose the compiled plant graph in a persistent diagnostic entity."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:graph-outline"
+    _attr_should_poll = False
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the preview to one compiled plant runtime."""
+        self._runtime = entry.runtime_data
+        self._attr_unique_id = f"{self._runtime.plant_id}_topology_preview"
+        self._attr_name = "Topology preview"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self._runtime.plant_id)}, name=self._runtime.name
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Summarize the graph size without overflowing Home Assistant state length."""
+        zone_count = len(self._runtime.plant.zones)
+        circuit_count = len(self._runtime.plant.circuits)
+        zone_noun = "zone" if zone_count == 1 else "zones"
+        circuit_noun = "circuit" if circuit_count == 1 else "circuits"
+        return f"{zone_count} {zone_noun}, {circuit_count} {circuit_noun}"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Return every human-readable compiler decision as structured data."""
+        return {
+            "logic_summary": list(self._runtime.plant.logic_summary),
+            "routes": len(self._runtime.plant.routes),
+            "valves": len(self._runtime.plant.valves),
+            "pumps": len(self._runtime.plant.pumps),
+        }
 
 
 class ZoneExplanationSensor(SensorEntity):
@@ -44,7 +81,7 @@ async def async_setup_entry(
 ) -> None:
     """Add read-only explanations for all configured zones."""
     runtime = entry.runtime_data
-    parent_entities: list[SensorEntity] = []
+    parent_entities: list[SensorEntity] = [TopologyPreviewSensor(entry)]
     subentry_entities: dict[str, list[SensorEntity]] = {}
     for zone in runtime.plant.zones.values():
         entity = ZoneExplanationSensor(entry, zone.id, zone.name)

@@ -136,6 +136,75 @@ def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None
     assert all(command.actuator_id != "pump.shared" for command in released.control_plan.commands)
 
 
+def test_shared_valve_and_pump_remain_active_until_last_consumer_releases() -> None:
+    """One zone releasing must not stop equipment still owned by another circuit."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="plant",
+            zones=(
+                Zone("living", "Living", 21.0, ("temperature.living",)),
+                Zone("office", "Office", 21.0, ("temperature.office",)),
+            ),
+            valves=(Valve("shared", "Shared valve", "switch.shared_valve", 1),),
+            pumps=(Pump("pump", "Shared pump", "switch.shared_pump", 10),),
+            circuits=(
+                Circuit("floor", "Floor", ("shared",), "pump"),
+                Circuit("ceiling", "Ceiling", ("shared",), "pump"),
+            ),
+            routes=(
+                DeliveryRoute("living-floor", "living", "floor"),
+                DeliveryRoute("office-ceiling", "office", "ceiling"),
+            ),
+        )
+    )
+    both_request = PlantSnapshot(
+        {
+            "temperature.living": TemperatureObservation(20.0, NOW),
+            "temperature.office": TemperatureObservation(20.0, NOW),
+        }
+    )
+    only_office = PlantSnapshot(
+        {
+            "temperature.living": TemperatureObservation(22.0, NOW),
+            "temperature.office": TemperatureObservation(20.0, NOW),
+        }
+    )
+    neither_requests = PlantSnapshot(
+        {
+            "temperature.living": TemperatureObservation(22.0, NOW),
+            "temperature.office": TemperatureObservation(22.0, NOW),
+        }
+    )
+
+    opening = evaluate(plant, both_request, RuntimeState(), NOW)
+    running = evaluate(
+        plant, both_request, opening.next_runtime, NOW + timedelta(seconds=1)
+    )
+    one_released = evaluate(
+        plant, only_office, running.next_runtime, NOW + timedelta(seconds=2)
+    )
+    overrun = evaluate(
+        plant, neither_requests, one_released.next_runtime, NOW + timedelta(seconds=3)
+    )
+    stopped = evaluate(
+        plant, neither_requests, overrun.next_runtime, NOW + timedelta(seconds=13)
+    )
+
+    assert one_released.control_plan.valve_consumers == {
+        "shared": frozenset({"ceiling"})
+    }
+    assert one_released.control_plan.pump_consumers == {
+        "pump": frozenset({"ceiling"})
+    }
+    assert one_released.next_runtime.valves["shared"].state is ValveState.OPEN
+    assert one_released.next_runtime.pumps["pump"].state is PumpState.RUNNING
+    assert one_released.control_plan.commands == ()
+    assert overrun.next_runtime.valves["shared"].state is ValveState.OPEN
+    assert overrun.next_runtime.pumps["pump"].state is PumpState.OVERRUN
+    assert stopped.next_runtime.valves["shared"].state is ValveState.CLOSED
+    assert stopped.next_runtime.pumps["pump"].state is PumpState.OFF
+
+
 def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
     plant = compile_topology(_plant())
     opening = evaluate(plant, _snapshot(20.0), RuntimeState(), NOW)

@@ -54,6 +54,11 @@ async def test_user_config_flow_creates_entry(hass) -> None:
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "review"
+    assert result["description_placeholders"]["logic"] == (
+        "- Circuit Floor loop opens valves Floor loop valve before requesting pump "
+        "Floor loop pump.\n"
+        "- Zone Living room can request circuit Floor loop."
+    )
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
 

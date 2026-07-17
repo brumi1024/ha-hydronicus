@@ -46,6 +46,40 @@ def test_compile_topology_produces_summary() -> None:
     assert compiled.id == "plant-1"
     assert compiled.logic_summary == (
         "Circuit Floor loop opens valves Floor valve before requesting pump Floor pump.",
+        "Zone Living room can request circuit Floor loop.",
+    )
+
+
+def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
+    """The preview should make shared hydraulic ownership understandable."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(
+            Zone("living", "Living room", 21.0, ("sensor.living_temperature",)),
+            Zone("office", "Office", 20.0, ("sensor.office_temperature",)),
+        ),
+        valves=(Valve("shared", "Shared valve", "switch.shared_valve"),),
+        pumps=(Pump("pump", "Shared pump", "switch.shared_pump"),),
+        circuits=(
+            Circuit("floor", "Floor loop", ("shared",), "pump"),
+            Circuit("ceiling", "Ceiling loop", ("shared",), "pump"),
+        ),
+        routes=(
+            DeliveryRoute("living-floor", "living", "floor"),
+            DeliveryRoute("living-ceiling", "living", "ceiling"),
+            DeliveryRoute("office-floor", "office", "floor"),
+        ),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert compiled.logic_summary == (
+        "Circuit Floor loop opens valves Shared valve before requesting pump Shared pump.",
+        "Circuit Ceiling loop opens valves Shared valve before requesting pump Shared pump.",
+        "Zone Living room can request circuits Floor loop, Ceiling loop.",
+        "Zone Office can request circuit Floor loop.",
+        "Valve Shared valve is shared by circuits Floor loop, Ceiling loop.",
+        "Pump Shared pump is shared by circuits Floor loop, Ceiling loop.",
     )
 
 

@@ -694,12 +694,14 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
         """Validate the initial topology before storing it in a config entry."""
-        if user_input is not None:
-            try:
-                compile_topology(plant_configuration_from_entry_data(self._draft))
-            except (StoredTopologyError, TopologyValidationError):
-                return self.async_show_form(step_id="review", errors={"base": "invalid_topology"})
+        try:
+            plant = compile_topology(plant_configuration_from_entry_data(self._draft))
+        except (StoredTopologyError, TopologyValidationError):
+            return self.async_show_form(
+                step_id="review", errors={"base": "invalid_topology"}
+            )
 
+        if user_input is not None:
             await self.async_set_unique_id(self._draft[CONF_PLANT_ID])
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=self._draft[CONF_NAME], data=self._draft)
@@ -710,5 +712,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "zone": topology[CONF_ZONES][0][CONF_NAME],
                 "circuit": topology[CONF_CIRCUITS][0][CONF_NAME],
+                "logic": "\n".join(f"- {line}" for line in plant.logic_summary),
             },
         )

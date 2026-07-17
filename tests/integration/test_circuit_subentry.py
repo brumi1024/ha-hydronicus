@@ -100,6 +100,53 @@ def _plant_entry() -> MockConfigEntry:
     )
 
 
+async def test_topology_preview_updates_after_adding_shared_circuit(hass) -> None:
+    """The plant should expose its compiled routes and shared equipment after reload."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    entity_id = "sensor.hydronic_plant_topology_preview"
+
+    preview = hass.states.get(entity_id)
+    assert preview is not None
+    assert preview.state == "2 zones, 1 circuit"
+    assert preview.attributes["logic_summary"] == [
+        "Circuit Floor loop opens valves Shared supply valve, Shared return valve "
+        "before requesting pump Shared pump.",
+        "Zone Living room can request circuit Floor loop.",
+        "Zone Office can request circuit Floor loop.",
+    ]
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Ceiling loop",
+            CONF_ZONE_IDS: [LIVING_ZONE_ID, OFFICE_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID, SECOND_VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    preview = hass.states.get(entity_id)
+    assert preview is not None
+    assert preview.state == "2 zones, 2 circuits"
+    assert "Zone Living room can request circuits Floor loop, Ceiling loop." in (
+        preview.attributes["logic_summary"]
+    )
+    assert "Valve Shared supply valve is shared by circuits Floor loop, Ceiling loop." in (
+        preview.attributes["logic_summary"]
+    )
+    assert "Pump Shared pump is shared by circuits Floor loop, Ceiling loop." in (
+        preview.attributes["logic_summary"]
+    )
+
+
 async def test_add_circuit_subentry_composes_multi_zone_routes(hass) -> None:
     """One UI-created circuit should serve many zones through stable routes."""
     entry = _plant_entry()
