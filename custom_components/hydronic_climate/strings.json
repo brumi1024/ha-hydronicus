@@ -110,6 +110,42 @@
       "abort": {
         "incomplete_plant": "The plant needs at least one zone, valve, and pump before adding a circuit."
       }
+    },
+    "zone": {
+      "entry_type": "Zone",
+      "initiate_flow": {
+        "user": "Add zone"
+      },
+      "title": "Zone",
+      "step": {
+        "user": {
+          "title": "Add a comfort zone",
+          "description": "Route a temperature-controlled zone through one or more existing circuits in shadow mode.",
+          "data": {
+            "name": "Zone name",
+            "target_temperature": "Target temperature",
+            "temperature_sensor": "Temperature sensor",
+            "circuit_ids": "Circuits"
+          }
+        },
+        "reconfigure": {
+          "title": "Update comfort zone",
+          "description": "Change the zone target, temperature sensor, or available circuits.",
+          "data": {
+            "name": "Zone name",
+            "target_temperature": "Target temperature",
+            "temperature_sensor": "Temperature sensor",
+            "circuit_ids": "Circuits"
+          }
+        }
+      },
+      "error": {
+        "name_required": "A zone name is required.",
+        "invalid_zone": "The zone cannot be added to this topology."
+      },
+      "abort": {
+        "no_circuits": "Add a hydraulic circuit before adding a zone."
+      }
     }
   }
 }

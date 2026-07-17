@@ -51,6 +51,11 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     if duplicates := _duplicates(route_ids):
         raise TopologyValidationError(f"Duplicate route ids: {', '.join(sorted(duplicates))}.")
 
+    for zone in configuration.zones:
+        if not isfinite(zone.target_temperature):
+            raise TopologyValidationError(
+                f"Zone {zone.id} target temperature must be finite."
+            )
     for valve in configuration.valves:
         if not isfinite(valve.opening_time_seconds) or valve.opening_time_seconds < 0:
             raise TopologyValidationError(

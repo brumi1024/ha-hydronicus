@@ -43,7 +43,15 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Add read-only explanations for all configured zones."""
-    async_add_entities(
-        ZoneExplanationSensor(entry, zone.id, zone.name)
-        for zone in entry.runtime_data.plant.zones.values()
-    )
+    runtime = entry.runtime_data
+    parent_entities: list[SensorEntity] = []
+    subentry_entities: dict[str, list[SensorEntity]] = {}
+    for zone in runtime.plant.zones.values():
+        entity = ZoneExplanationSensor(entry, zone.id, zone.name)
+        if subentry_id := runtime.zone_subentry_ids.get(zone.id):
+            subentry_entities.setdefault(subentry_id, []).append(entity)
+        else:
+            parent_entities.append(entity)
+    async_add_entities(parent_entities)
+    for subentry_id, entities in subentry_entities.items():
+        async_add_entities(entities, config_subentry_id=subentry_id)

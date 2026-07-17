@@ -184,6 +184,34 @@ def test_compile_topology_rejects_circuit_without_valves() -> None:
         compile_topology(plant)
 
 
+@pytest.mark.parametrize("target_temperature", [math.inf, -math.inf, math.nan])
+def test_compile_topology_rejects_non_finite_zone_target(
+    target_temperature: float,
+) -> None:
+    """Zone demand thresholds must remain finite and deterministic."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                target_temperature,
+                "sensor.living_temperature",
+            ),
+        ),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError,
+        match="Zone zone-1 target temperature must be finite",
+    ):
+        compile_topology(plant)
+
+
 @pytest.mark.parametrize("opening_time", [-1.0, math.inf, math.nan])
 def test_compile_topology_rejects_unsafe_valve_timing(opening_time: float) -> None:
     """Valve readiness timing must be finite and non-negative."""

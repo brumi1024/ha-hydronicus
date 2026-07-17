@@ -44,6 +44,7 @@ from .const import (
     DOMAIN,
     SUBENTRY_TYPE_ACTUATOR,
     SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
 from .core.topology import TopologyValidationError, compile_topology
@@ -127,6 +128,7 @@ def _effective_topology_is_valid(
     *,
     proposed_actuators: Sequence[Mapping[str, Any]] = (),
     proposed_circuits: Sequence[Mapping[str, Any]] = (),
+    proposed_zones: Sequence[Mapping[str, Any]] = (),
     excluded_subentry_id: str | None = None,
 ) -> bool:
     """Compile a complete proposed topology without mutating the config entry."""
@@ -135,6 +137,7 @@ def _effective_topology_is_valid(
             entry,
             proposed_actuators=proposed_actuators,
             proposed_circuits=proposed_circuits,
+            proposed_zones=proposed_zones,
             excluded_subentry_id=excluded_subentry_id,
         )
         compile_topology(effective.configuration)
@@ -244,6 +247,155 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 options,
                 defaults=subentry.data,
             ),
+            errors=errors,
+        )
+
+
+def _zone_data(
+    user_input: Mapping[str, Any],
+    zone_id: str,
+    existing_routes: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Normalize one zone and preserve route UUIDs for retained circuits."""
+    route_ids = {
+        str(route["circuit_id"]): str(route["id"])
+        for route in existing_routes or []
+    }
+    circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
+    return {
+        "id": zone_id,
+        CONF_NAME: str(user_input[CONF_NAME]).strip(),
+        CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
+        CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
+        CONF_CIRCUIT_IDS: circuit_ids,
+        CONF_ROUTES: [
+            {
+                "id": route_ids.get(circuit_id, str(uuid4())),
+                "circuit_id": circuit_id,
+            }
+            for circuit_id in circuit_ids
+        ],
+    }
+
+
+def _zone_schema(
+    circuit_options: list[selector.SelectOptionDict],
+    defaults: Mapping[str, Any] | None = None,
+) -> vol.Schema:
+    """Build the shared zone form schema."""
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): str,
+            vol.Required(
+                CONF_TARGET_TEMPERATURE,
+                default=defaults.get(
+                    CONF_TARGET_TEMPERATURE, DEFAULT_TARGET_TEMPERATURE
+                ),
+            ): vol.Coerce(float),
+            vol.Required(
+                CONF_TEMPERATURE_SENSOR,
+                default=defaults.get(CONF_TEMPERATURE_SENSOR, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Required(
+                CONF_CIRCUIT_IDS,
+                default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
+            ): _topology_select(circuit_options, multiple=True),
+        }
+    )
+
+
+def _zone_validation_error(
+    entry: config_entries.ConfigEntry,
+    data: Mapping[str, Any],
+    *,
+    excluded_subentry_id: str | None = None,
+) -> str | None:
+    """Return a flow error after validating a proposed zone atomically."""
+    if not data[CONF_NAME]:
+        return "name_required"
+    if not _effective_topology_is_valid(
+        entry,
+        proposed_zones=(data,),
+        excluded_subentry_id=excluded_subentry_id,
+    ):
+        return "invalid_zone"
+    return None
+
+
+class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
+    """Add a comfort zone routed through existing parent-owned circuits."""
+
+    def _circuit_options(self) -> list[selector.SelectOptionDict]:
+        configuration = plant_configuration_from_entry_data(self._get_entry().data)
+        return [
+            selector.SelectOptionDict(value=circuit.id, label=circuit.name)
+            for circuit in configuration.circuits
+        ]
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Create one comfort zone attached to one or more circuits."""
+        entry = self._get_entry()
+        circuit_options = self._circuit_options()
+        if not circuit_options:
+            return self.async_abort(reason="no_circuits")
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            zone_id = str(uuid4())
+            data = _zone_data(user_input, zone_id)
+            if error := _zone_validation_error(entry, data):
+                errors["base"] = error
+            else:
+                return self.async_create_entry(
+                    title=data[CONF_NAME],
+                    data=data,
+                    unique_id=zone_id,
+                )
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_zone_schema(circuit_options),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Update one zone without changing retained zone or route UUIDs."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry()
+        circuit_options = self._circuit_options()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = _zone_data(
+                user_input,
+                subentry.data["id"],
+                subentry.data[CONF_ROUTES],
+            )
+            if error := _zone_validation_error(
+                entry,
+                data,
+                excluded_subentry_id=subentry.subentry_id,
+            ):
+                errors["base"] = error
+            else:
+                return self.async_update_and_abort(
+                    entry,
+                    subentry,
+                    title=data[CONF_NAME],
+                    data=data,
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_zone_schema(circuit_options, subentry.data),
             errors=errors,
         )
 
@@ -399,6 +551,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return {
             SUBENTRY_TYPE_ACTUATOR: ActuatorSubentryFlowHandler,
             SUBENTRY_TYPE_CIRCUIT: CircuitSubentryFlowHandler,
+            SUBENTRY_TYPE_ZONE: ZoneSubentryFlowHandler,
         }
 
     async def async_step_user(

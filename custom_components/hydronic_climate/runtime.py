@@ -38,6 +38,7 @@ class HydronicRuntime:
     shadow_mode: bool
     plant: CompiledPlant
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
+    zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     evaluation: Evaluation | None = None
     snapshot: PlantSnapshot | None = None
@@ -57,6 +58,7 @@ class HydronicRuntime:
             shadow_mode=bool(entry.data.get(CONF_SHADOW_MODE, True)),
             plant=plant,
             actuator_subentry_ids=effective.actuator_subentry_ids,
+            zone_subentry_ids=effective.zone_subentry_ids,
         )
 
     async def async_start(self, hass: HomeAssistant) -> None:
