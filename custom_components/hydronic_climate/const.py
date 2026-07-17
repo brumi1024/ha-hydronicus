@@ -3,6 +3,7 @@
 from typing import Final
 
 DOMAIN: Final = "hydronic_climate"
+PLATFORMS: Final = ("binary_sensor", "sensor")
 CONF_NAME: Final = "name"
 CONF_PLANT_ID: Final = "plant_id"
 CONF_SHADOW_MODE: Final = "shadow_mode"
