@@ -397,3 +397,53 @@ def test_compile_topology_rejects_duplicate_physical_actuator_bindings() -> None
         match="Duplicate actuator entity bindings: switch.shared_valve",
     ):
         compile_topology(plant)
+
+
+def test_compile_topology_rejects_unknown_temperature_aggregation() -> None:
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                ("sensor.living_temperature",),
+                aggregation="trimmed_mean",
+            ),
+        ),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError,
+        match="Zone zone-1 temperature aggregation must be a supported policy",
+    ):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_invalid_temperature_sensor_weights() -> None:
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                ("sensor.living_temperature",),
+                temperature_sensor_weights={"sensor.living_temperature": 0},
+            ),
+        ),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError,
+        match="Zone zone-1 temperature sensor weights must be positive and finite",
+    ):
+        compile_topology(plant)

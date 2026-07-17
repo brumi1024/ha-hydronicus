@@ -10,11 +10,12 @@
       },
       "zone": {
         "title": "Add the first comfort zone",
-        "description": "Select one or more temperature sensors. Their readings are averaged, and every selected sensor must be available. Battery sensor readings remain usable between reports.",
+        "description": "Select one or more temperature sensors and an aggregation policy. Every selected sensor must be available. Battery sensor readings remain usable between reports.",
         "data": {
           "name": "Zone name",
           "target_temperature": "Target temperature",
-          "temperature_sensors": "Temperature sensors"
+          "temperature_sensors": "Temperature sensors",
+          "temperature_aggregation": "Temperature aggregation"
         }
       },
       "circuit": {
@@ -120,21 +121,23 @@
       "step": {
         "user": {
           "title": "Add a comfort zone",
-          "description": "Select one or more temperature sensors and route the zone through existing circuits in shadow mode. Sensor readings are averaged, and every selected sensor must be available. Battery sensor readings remain usable between reports.",
+          "description": "Select one or more temperature sensors, choose an aggregation policy, and route the zone through existing circuits in shadow mode. Every selected sensor must be available. Battery sensor readings remain usable between reports.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
             "temperature_sensors": "Temperature sensors",
+            "temperature_aggregation": "Temperature aggregation",
             "circuit_ids": "Circuits"
           }
         },
         "reconfigure": {
           "title": "Update comfort zone",
-          "description": "Change the zone target, temperature sensors, or available circuits. Sensor readings are averaged, and every selected sensor must be available. Battery sensor readings remain usable between reports.",
+          "description": "Change the zone target, temperature sensors, aggregation policy, or available circuits. Every selected sensor must be available. Battery sensor readings remain usable between reports.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
             "temperature_sensors": "Temperature sensors",
+            "temperature_aggregation": "Temperature aggregation",
             "circuit_ids": "Circuits"
           }
         }

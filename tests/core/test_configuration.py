@@ -7,6 +7,7 @@ from hydronic_climate_core.configuration import (
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
+from hydronic_climate_core.model import TemperatureAggregation
 
 
 def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
@@ -92,6 +93,133 @@ def test_decodes_temperature_sensor_list_from_config_entry_data() -> None:
         "sensor.living_temperature",
         "sensor.living_temperature_backup",
     )
+
+
+def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone-1",
+                        "name": "Living room",
+                        "target_temperature": 21.5,
+                        "temperature_sensors": [
+                            "sensor.living_temperature",
+                            "sensor.living_temperature_backup",
+                        ],
+                        "temperature_aggregation": "weighted_mean",
+                        "temperature_sensor_weights": {
+                            "sensor.living_temperature": 1,
+                            "sensor.living_temperature_backup": 3,
+                        },
+                    }
+                ],
+                "circuits": [],
+                "routes": [],
+            },
+        }
+    )
+
+    assert plant.zones[0].aggregation is TemperatureAggregation.WEIGHTED_MEAN
+    assert plant.zones[0].temperature_sensor_weights == {
+        "sensor.living_temperature": 1.0,
+        "sensor.living_temperature_backup": 3.0,
+    }
+
+
+def test_legacy_zone_temperature_aggregation_defaults_to_mean() -> None:
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone-1",
+                        "name": "Living room",
+                        "target_temperature": 21.5,
+                        "temperature_sensor": "sensor.living_temperature",
+                    }
+                ],
+                "circuits": [],
+                "routes": [],
+            },
+        }
+    )
+
+    assert plant.zones[0].aggregation is TemperatureAggregation.MEAN
+
+
+def test_rejects_unknown_zone_temperature_aggregation() -> None:
+    with pytest.raises(StoredTopologyError, match="temperature_aggregation"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 21.5,
+                            "temperature_sensor": "sensor.living_temperature",
+                            "temperature_aggregation": "trimmed_mean",
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        )
+
+
+def test_rejects_zone_weight_for_unknown_sensor() -> None:
+    with pytest.raises(StoredTopologyError, match="unknown sensors"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 21.5,
+                            "temperature_sensor": "sensor.living_temperature",
+                            "temperature_sensor_weights": {
+                                "sensor.other": 2,
+                            },
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize("weight", [0, -1, float("inf"), "invalid"])
+def test_rejects_non_positive_or_invalid_zone_weight(weight) -> None:
+    with pytest.raises(StoredTopologyError, match="must be"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 21.5,
+                            "temperature_sensor": "sensor.living_temperature",
+                            "temperature_sensor_weights": {
+                                "sensor.living_temperature": weight,
+                            },
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        )
 
 
 def test_rejects_missing_required_persisted_topology_field() -> None:

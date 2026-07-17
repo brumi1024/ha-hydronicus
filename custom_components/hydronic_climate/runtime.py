@@ -20,7 +20,7 @@ from .const import (
     CONF_PLANT_ID,
     CONF_SHADOW_MODE,
 )
-from .core.controller import evaluate, mean_zone_temperature
+from .core.controller import aggregate_zone_temperature, evaluate
 from .core.model import (
     CompiledPlant,
     Evaluation,
@@ -122,9 +122,7 @@ class HydronicRuntime:
         """Return the current aggregate temperature for one zone."""
         if self.snapshot is None or zone_id not in self.plant.zones:
             return None
-        return mean_zone_temperature(
-            self.plant.zones[zone_id].temperature_sensors, self.snapshot
-        )
+        return aggregate_zone_temperature(self.plant.zones[zone_id], self.snapshot)
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register an entity update callback."""

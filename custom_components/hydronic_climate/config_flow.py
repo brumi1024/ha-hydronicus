@@ -29,6 +29,7 @@ from .const import (
     CONF_ROUTES,
     CONF_SHADOW_MODE,
     CONF_TARGET_TEMPERATURE,
+    CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSOR,
     CONF_TEMPERATURE_SENSORS,
     CONF_TOPOLOGY,
@@ -41,6 +42,7 @@ from .const import (
     DEFAULT_PLANT_NAME,
     DEFAULT_PUMP_OVERRUN,
     DEFAULT_TARGET_TEMPERATURE,
+    DEFAULT_TEMPERATURE_AGGREGATION,
     DEFAULT_VALVE_OPENING_TIME,
     DOMAIN,
     SUBENTRY_TYPE_ACTUATOR,
@@ -48,6 +50,7 @@ from .const import (
     SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
+from .core.model import TemperatureAggregation
 from .core.topology import TopologyValidationError, compile_topology
 from .entry_configuration import effective_plant_configuration
 
@@ -283,6 +286,9 @@ def _zone_data(
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
         CONF_TEMPERATURE_SENSORS: list(user_input[CONF_TEMPERATURE_SENSORS]),
+        CONF_TEMPERATURE_AGGREGATION: user_input.get(
+            CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
+        ),
         CONF_CIRCUIT_IDS: circuit_ids,
         CONF_ROUTES: _routes_with_retained_fields(
             existing_routes,
@@ -299,6 +305,35 @@ def _zone_temperature_sensor_defaults(defaults: Mapping[str, Any]) -> Any:
     if CONF_TEMPERATURE_SENSOR in defaults:
         return [defaults[CONF_TEMPERATURE_SENSOR]]
     return vol.UNDEFINED
+
+
+def _zone_temperature_aggregation_default(defaults: Mapping[str, Any]) -> str:
+    """Return the persisted or legacy-default aggregation policy."""
+    return str(defaults.get(CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION))
+
+
+def _temperature_aggregation_selector() -> selector.SelectSelector:
+    """Build the zone selector until per-sensor weight editing has a UI."""
+    labels = {
+        TemperatureAggregation.MEAN.value: "Mean",
+        TemperatureAggregation.MEDIAN.value: "Median",
+        TemperatureAggregation.MINIMUM.value: "Heating-oriented minimum",
+        TemperatureAggregation.MAXIMUM.value: "Cooling-oriented maximum",
+    }
+    user_selectable = (
+        TemperatureAggregation.MEAN,
+        TemperatureAggregation.MEDIAN,
+        TemperatureAggregation.MINIMUM,
+        TemperatureAggregation.MAXIMUM,
+    )
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                selector.SelectOptionDict(value=policy.value, label=labels[policy.value])
+                for policy in user_selectable
+            ]
+        )
+    )
 
 
 def _zone_schema(
@@ -324,6 +359,10 @@ def _zone_schema(
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", multiple=True)
             ),
+            vol.Required(
+                CONF_TEMPERATURE_AGGREGATION,
+                default=_zone_temperature_aggregation_default(defaults),
+            ): _temperature_aggregation_selector(),
             vol.Required(
                 CONF_CIRCUIT_IDS,
                 default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
@@ -617,6 +656,9 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             CONF_NAME: name,
                             CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
                             CONF_TEMPERATURE_SENSORS: user_input[CONF_TEMPERATURE_SENSORS],
+                            CONF_TEMPERATURE_AGGREGATION: user_input.get(
+                                CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
+                            ),
                         }
                     ]
                 }
@@ -634,6 +676,10 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_TEMPERATURE_SENSORS): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),
+                    vol.Required(
+                        CONF_TEMPERATURE_AGGREGATION,
+                        default=DEFAULT_TEMPERATURE_AGGREGATION,
+                    ): _temperature_aggregation_selector(),
                 }
             ),
             errors=errors,

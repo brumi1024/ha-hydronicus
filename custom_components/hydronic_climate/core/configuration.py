@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import isfinite
 from typing import Any
 from uuid import UUID
 
-from .model import Circuit, DeliveryRoute, PlantConfiguration, Pump, Valve, Zone
+from .model import (
+    Circuit,
+    DeliveryRoute,
+    PlantConfiguration,
+    Pump,
+    TemperatureAggregation,
+    Valve,
+    Zone,
+)
 
 
 class StoredTopologyError(ValueError):
@@ -75,6 +84,49 @@ def _temperature_sensors(mapping: Mapping[str, Any]) -> tuple[str, ...]:
     return (sensor,)
 
 
+def _temperature_aggregation(mapping: Mapping[str, Any]) -> TemperatureAggregation:
+    """Read a zone aggregation policy while defaulting legacy data to mean."""
+    value = mapping.get("temperature_aggregation", TemperatureAggregation.MEAN.value)
+    try:
+        return TemperatureAggregation(str(value))
+    except ValueError as error:
+        raise StoredTopologyError(
+            "Stored topology field 'temperature_aggregation' must be a supported policy."
+        ) from error
+
+
+def _temperature_sensor_weights(
+    mapping: Mapping[str, Any], sensor_ids: tuple[str, ...]
+) -> Mapping[str, float]:
+    """Read optional positive per-sensor weights for weighted means."""
+    raw_weights = mapping.get("temperature_sensor_weights", {})
+    if not isinstance(raw_weights, Mapping):
+        raise StoredTopologyError(
+            "Stored topology field 'temperature_sensor_weights' must be an object."
+        )
+    unknown = sorted(set(raw_weights) - set(sensor_ids))
+    if unknown:
+        raise StoredTopologyError(
+            "Stored topology temperature sensor weights reference unknown sensors: "
+            + ", ".join(str(sensor_id) for sensor_id in unknown)
+            + "."
+        )
+    weights: dict[str, float] = {}
+    for sensor_id, raw_weight in raw_weights.items():
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError) as error:
+            raise StoredTopologyError(
+                f"Stored temperature sensor weight for {sensor_id!r} must be numeric."
+            ) from error
+        if not isfinite(weight) or weight <= 0:
+            raise StoredTopologyError(
+                f"Stored temperature sensor weight for {sensor_id!r} must be positive."
+            )
+        weights[str(sensor_id)] = weight
+    return weights
+
+
 def _route_enabled(mapping: Mapping[str, Any]) -> bool:
     """Read the optional route flag without coercing malformed stored data."""
     enabled = mapping.get("enabled", True)
@@ -94,15 +146,19 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
     raw_pumps = _objects(raw_topology, "pumps")
     require_uuid = bool(raw_valves or raw_pumps)
     plant_id = _id(data, "plant_id", require_uuid=require_uuid)
-    zones = tuple(
-        Zone(
-            id=_id(item, "id", require_uuid=require_uuid),
-            name=str(_required(item, "name")),
-            target_temperature=float(_required(item, "target_temperature")),
-            temperature_sensors=_temperature_sensors(item),
+    zones = []
+    for item in _objects(raw_topology, "zones"):
+        sensor_ids = _temperature_sensors(item)
+        zones.append(
+            Zone(
+                id=_id(item, "id", require_uuid=require_uuid),
+                name=str(_required(item, "name")),
+                target_temperature=float(_required(item, "target_temperature")),
+                temperature_sensors=sensor_ids,
+                aggregation=_temperature_aggregation(item),
+                temperature_sensor_weights=_temperature_sensor_weights(item, sensor_ids),
+            )
         )
-        for item in _objects(raw_topology, "zones")
-    )
     if require_uuid:
         valves = tuple(
             Valve(
@@ -184,7 +240,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
     )
     return PlantConfiguration(
         id=plant_id,
-        zones=zones,
+        zones=tuple(zones),
         valves=valves,
         pumps=pumps,
         circuits=tuple(circuits),

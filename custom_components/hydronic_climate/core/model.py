@@ -25,6 +25,16 @@ class PumpState(StrEnum):
     OVERRUN = "overrun"
 
 
+class TemperatureAggregation(StrEnum):
+    """Policy used to combine a zone's configured temperature readings."""
+
+    MEAN = "mean"
+    MEDIAN = "median"
+    MINIMUM = "minimum"
+    MAXIMUM = "maximum"
+    WEIGHTED_MEAN = "weighted_mean"
+
+
 @dataclass(frozen=True, slots=True)
 class Zone:
     """A comfort target whose required sensors contribute to one demand value."""
@@ -33,6 +43,8 @@ class Zone:
     name: str
     target_temperature: float
     temperature_sensors: tuple[str, ...]
+    aggregation: TemperatureAggregation = TemperatureAggregation.MEAN
+    temperature_sensor_weights: Mapping[str, float] = field(default_factory=dict)
     heating_start_delta: float = 0.3
     heating_stop_delta: float = 0.1
 

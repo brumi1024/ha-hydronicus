@@ -6,7 +6,7 @@ import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronic_climate_core.controller import evaluate
+from hydronic_climate_core.controller import aggregate_zone_temperature, evaluate
 from hydronic_climate_core.model import (
     Circuit,
     DeliveryRoute,
@@ -15,6 +15,7 @@ from hydronic_climate_core.model import (
     Pump,
     PumpState,
     RuntimeState,
+    TemperatureAggregation,
     TemperatureObservation,
     Valve,
     ValveState,
@@ -45,6 +46,92 @@ def _plant() -> PlantConfiguration:
 
 def _snapshot(temperature: float) -> PlantSnapshot:
     return PlantSnapshot({"temperature.living": TemperatureObservation(temperature, NOW)})
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "expected"),
+    [
+        (TemperatureAggregation.MEAN, 20.0),
+        (TemperatureAggregation.MEDIAN, 20.0),
+        (TemperatureAggregation.MINIMUM, 18.0),
+        (TemperatureAggregation.MAXIMUM, 22.0),
+        (TemperatureAggregation.WEIGHTED_MEAN, 20.5),
+    ],
+)
+def test_zone_temperature_aggregation_is_deterministic(aggregation, expected) -> None:
+    """Every supported policy produces the documented aggregate."""
+    zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        ("temperature.living", "temperature.living_backup", "temperature.living_window"),
+        aggregation=aggregation,
+        temperature_sensor_weights={
+            "temperature.living": 1.0,
+            "temperature.living_backup": 2.0,
+            "temperature.living_window": 1.0,
+        },
+    )
+    snapshot = PlantSnapshot(
+        {
+            "temperature.living": TemperatureObservation(18.0, NOW),
+            "temperature.living_backup": TemperatureObservation(22.0, NOW),
+            "temperature.living_window": TemperatureObservation(20.0, NOW),
+        }
+    )
+
+    assert aggregate_zone_temperature(zone, snapshot) == expected
+
+
+def test_zone_temperature_aggregation_defaults_legacy_zones_to_mean() -> None:
+    """Zones created before aggregation support retain mean semantics."""
+    zone = Zone("living", "Living", 21.0, ("temperature.living", "temperature.backup"))
+    snapshot = PlantSnapshot(
+        {
+            "temperature.living": TemperatureObservation(18.0, NOW),
+            "temperature.backup": TemperatureObservation(22.0, NOW),
+        }
+    )
+
+    assert aggregate_zone_temperature(zone, snapshot) == 20.0
+
+
+def test_controller_uses_zone_aggregation_policy_for_demand() -> None:
+    """Demand evaluation must use the same aggregate exposed to climate entities."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="plant",
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    20.0,
+                    ("temperature.living", "temperature.window"),
+                    aggregation=TemperatureAggregation.MAXIMUM,
+                ),
+            ),
+            valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve"),),
+            pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump"),),
+            circuits=(Circuit("floor", "Floor", ("valve.floor",), "pump.floor"),),
+            routes=(DeliveryRoute("living-floor", "living", "floor"),),
+        )
+    )
+    result = evaluate(
+        plant,
+        PlantSnapshot(
+            {
+                "temperature.living": TemperatureObservation(18.0, NOW),
+                "temperature.window": TemperatureObservation(20.0, NOW),
+            }
+        ),
+        RuntimeState(),
+        NOW,
+    )
+
+    assert result.next_runtime.zone_demands["living"] is False
+    assert result.diagnostics.zone_reasons["living"] == (
+        "Heating remains idle inside the hysteresis band."
+    )
 
 
 def test_shadow_sequence_waits_for_valve_before_requesting_pump() -> None:

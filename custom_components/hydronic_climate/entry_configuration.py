@@ -27,7 +27,12 @@ from .const import (
     SUBENTRY_TYPE_CIRCUIT,
     SUBENTRY_TYPE_ZONE,
 )
-from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
+from .core.configuration import (
+    StoredTopologyError,
+    _temperature_aggregation,
+    _temperature_sensor_weights,
+    plant_configuration_from_entry_data,
+)
 from .core.model import Circuit, DeliveryRoute, PlantConfiguration, Valve, Zone
 
 
@@ -290,12 +295,15 @@ def effective_plant_configuration(
             raise StoredTopologyError(
                 "Zone subentry target temperature must be numeric."
             ) from error
+        sensor_ids = _temperature_sensors(data)
         zones.append(
             Zone(
                 id=zone_id,
                 name=str(_required(data, CONF_NAME)),
                 target_temperature=target_temperature,
-                temperature_sensors=_temperature_sensors(data),
+                temperature_sensors=sensor_ids,
+                aggregation=_temperature_aggregation(data),
+                temperature_sensor_weights=_temperature_sensor_weights(data, sensor_ids),
             )
         )
         routes.extend(_zone_routes(data, zone_id, selected_circuit_ids))

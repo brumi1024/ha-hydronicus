@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 from math import isfinite
+from statistics import median
 
 from .model import (
     ActuatorCommand,
@@ -17,8 +18,10 @@ from .model import (
     PumpRuntime,
     PumpState,
     RuntimeState,
+    TemperatureAggregation,
     ValveRuntime,
     ValveState,
+    Zone,
 )
 
 
@@ -47,17 +50,42 @@ def _elapsed(now: datetime, changed_at: datetime | None) -> timedelta:
     return now - changed_at if changed_at is not None else timedelta(0)
 
 
-def mean_zone_temperature(
-    sensor_ids: tuple[str, ...], snapshot: PlantSnapshot
-) -> float | None:
-    """Average all required readings without imposing an age policy."""
+def aggregate_zone_temperature(zone: Zone, snapshot: PlantSnapshot) -> float | None:
+    """Combine all required readings according to the zone's policy."""
     readings: list[float] = []
-    for sensor_id in sensor_ids:
+    for sensor_id in zone.temperature_sensors:
         observation = snapshot.temperatures.get(sensor_id)
         if observation is None or observation.value is None or not isfinite(observation.value):
             return None
         readings.append(observation.value)
-    return sum(readings) / len(readings) if readings else None
+    if not readings:
+        return None
+    if zone.aggregation is TemperatureAggregation.MEAN:
+        return sum(readings) / len(readings)
+    if zone.aggregation is TemperatureAggregation.MEDIAN:
+        return float(median(readings))
+    if zone.aggregation is TemperatureAggregation.MINIMUM:
+        return min(readings)
+    if zone.aggregation is TemperatureAggregation.MAXIMUM:
+        return max(readings)
+    if zone.aggregation is TemperatureAggregation.WEIGHTED_MEAN:
+        weights = [
+            zone.temperature_sensor_weights.get(sensor_id, 1.0)
+            for sensor_id in zone.temperature_sensors
+        ]
+        if any(not isfinite(weight) or weight <= 0 for weight in weights):
+            return None
+        return sum(
+            reading * weight for reading, weight in zip(readings, weights, strict=True)
+        ) / sum(weights)
+    return None
+
+
+def mean_zone_temperature(
+    sensor_ids: tuple[str, ...], snapshot: PlantSnapshot
+) -> float | None:
+    """Average readings for callers using the legacy helper signature."""
+    return aggregate_zone_temperature(Zone("legacy", "Legacy", 0.0, sensor_ids), snapshot)
 
 
 def resolve_delivery_routes(
@@ -81,7 +109,7 @@ def evaluate(
     zone_demands: dict[str, bool] = {}
     zone_reasons: dict[str, str] = {}
     for zone in plant.zones.values():
-        temperature = mean_zone_temperature(zone.temperature_sensors, snapshot)
+        temperature = aggregate_zone_temperature(zone, snapshot)
         demand, reason = _zone_demand(
             previous=runtime.zone_demands.get(zone.id, False),
             temperature=temperature,

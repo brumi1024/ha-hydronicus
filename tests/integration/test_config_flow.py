@@ -8,6 +8,7 @@ from custom_components.hydronic_climate.const import (
     CONF_PUMP_ENTITY,
     CONF_PUMP_OVERRUN,
     CONF_TARGET_TEMPERATURE,
+    CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSORS,
     CONF_VALVE_ENTITY,
     CONF_VALVE_OPENING_TIME,
@@ -35,6 +36,7 @@ async def test_user_config_flow_creates_entry(hass) -> None:
             "name": "Living room",
             CONF_TARGET_TEMPERATURE: 21.5,
             CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
+            CONF_TEMPERATURE_AGGREGATION: "median",
         },
     )
 
@@ -70,6 +72,7 @@ async def test_user_config_flow_creates_entry(hass) -> None:
     assert topology["zones"][0]["temperature_sensors"] == [
         "sensor.living_temperature"
     ]
+    assert topology["zones"][0][CONF_TEMPERATURE_AGGREGATION] == "median"
     assert topology["valves"][0]["entity_id"] == "switch.floor_valve"
     assert topology["pumps"][0]["entity_id"] == "switch.floor_pump"
     assert topology["circuits"][0]["valve_ids"] == [topology["valves"][0]["id"]]

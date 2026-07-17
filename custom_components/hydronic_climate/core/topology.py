@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from math import isfinite
 
-from .model import CompiledPlant, PlantConfiguration
+from .model import CompiledPlant, PlantConfiguration, TemperatureAggregation
 
 
 class TopologyValidationError(ValueError):
@@ -59,6 +59,10 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         )
 
     for zone in configuration.zones:
+        if not isinstance(zone.aggregation, TemperatureAggregation):
+            raise TopologyValidationError(
+                f"Zone {zone.id} temperature aggregation must be a supported policy."
+            )
         if not isfinite(zone.target_temperature):
             raise TopologyValidationError(
                 f"Zone {zone.id} target temperature must be finite."
@@ -79,6 +83,24 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
                 f"Zone {zone.id} temperature sensors must not contain duplicates: "
                 + ", ".join(sorted(duplicates))
                 + "."
+            )
+        unknown_weight_sensors = sorted(
+            set(zone.temperature_sensor_weights) - set(zone.temperature_sensors)
+        )
+        if unknown_weight_sensors:
+            raise TopologyValidationError(
+                f"Zone {zone.id} temperature sensor weights reference unknown sensors: "
+                + ", ".join(unknown_weight_sensors)
+                + "."
+            )
+        if any(
+            not isinstance(weight, (int, float))
+            or not isfinite(float(weight))
+            or float(weight) <= 0
+            for weight in zone.temperature_sensor_weights.values()
+        ):
+            raise TopologyValidationError(
+                f"Zone {zone.id} temperature sensor weights must be positive and finite."
             )
     for valve in configuration.valves:
         if not isfinite(valve.opening_time_seconds) or valve.opening_time_seconds < 0:
