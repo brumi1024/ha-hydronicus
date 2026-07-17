@@ -30,6 +30,7 @@ from .const import (
     CONF_SHADOW_MODE,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_SENSOR,
+    CONF_TEMPERATURE_SENSORS,
     CONF_TOPOLOGY,
     CONF_VALVE_ENTITY,
     CONF_VALVE_IDS,
@@ -266,7 +267,7 @@ def _zone_data(
         "id": zone_id,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
-        CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
+        CONF_TEMPERATURE_SENSORS: list(user_input[CONF_TEMPERATURE_SENSORS]),
         CONF_CIRCUIT_IDS: circuit_ids,
         CONF_ROUTES: [
             {
@@ -276,6 +277,15 @@ def _zone_data(
             for circuit_id in circuit_ids
         ],
     }
+
+
+def _zone_temperature_sensor_defaults(defaults: Mapping[str, Any]) -> Any:
+    """Return new-list defaults for current and milestone 1 subentries."""
+    if CONF_TEMPERATURE_SENSORS in defaults:
+        return defaults[CONF_TEMPERATURE_SENSORS]
+    if CONF_TEMPERATURE_SENSOR in defaults:
+        return [defaults[CONF_TEMPERATURE_SENSOR]]
+    return vol.UNDEFINED
 
 
 def _zone_schema(
@@ -296,10 +306,10 @@ def _zone_schema(
                 ),
             ): vol.Coerce(float),
             vol.Required(
-                CONF_TEMPERATURE_SENSOR,
-                default=defaults.get(CONF_TEMPERATURE_SENSOR, vol.UNDEFINED),
+                CONF_TEMPERATURE_SENSORS,
+                default=_zone_temperature_sensor_defaults(defaults),
             ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
+                selector.EntitySelectorConfig(domain="sensor", multiple=True)
             ),
             vol.Required(
                 CONF_CIRCUIT_IDS,
@@ -593,7 +603,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             "id": str(uuid4()),
                             CONF_NAME: name,
                             CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
-                            CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
+                            CONF_TEMPERATURE_SENSORS: user_input[CONF_TEMPERATURE_SENSORS],
                         }
                     ]
                 }
@@ -608,8 +618,8 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_TARGET_TEMPERATURE, default=DEFAULT_TARGET_TEMPERATURE
                     ): vol.Coerce(float),
-                    vol.Required(CONF_TEMPERATURE_SENSOR): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
+                    vol.Required(CONF_TEMPERATURE_SENSORS): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),
                 }
             ),

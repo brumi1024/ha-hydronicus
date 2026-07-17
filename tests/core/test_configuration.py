@@ -39,10 +39,39 @@ def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
 
     assert plant.id == "plant-1"
     assert plant.zones[0].target_temperature == 21.5
+    assert plant.zones[0].temperature_sensors == ("sensor.living_temperature",)
     assert plant.valves[0].opening_time_seconds == 45
     assert plant.pumps[0].overrun_seconds == 180
     assert plant.circuits[0].valve_ids == ("valve.floor_loop",)
     assert plant.routes[0].zone_id == "zone-1"
+
+
+def test_decodes_temperature_sensor_list_from_config_entry_data() -> None:
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone-1",
+                        "name": "Living room",
+                        "target_temperature": 21.5,
+                        "temperature_sensors": [
+                            "sensor.living_temperature",
+                            "sensor.living_temperature_backup",
+                        ],
+                    }
+                ],
+                "circuits": [],
+                "routes": [],
+            },
+        }
+    )
+
+    assert plant.zones[0].temperature_sensors == (
+        "sensor.living_temperature",
+        "sensor.living_temperature_backup",
+    )
 
 
 def test_rejects_missing_required_persisted_topology_field() -> None:

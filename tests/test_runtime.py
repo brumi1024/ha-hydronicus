@@ -74,9 +74,16 @@ ROUTE_UUID = "00000000-0000-4000-8000-000000000006"
 
 
 class _State:
-    def __init__(self, state: str) -> None:
+    def __init__(
+        self,
+        state: str,
+        *,
+        last_updated: datetime = NOW,
+        last_reported: datetime = NOW,
+    ) -> None:
         self.state = state
-        self.last_updated = NOW
+        self.last_updated = last_updated
+        self.last_reported = last_reported
 
 
 class _StateStore:
@@ -215,6 +222,26 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
             self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "closed")
+
+    async def test_battery_observation_uses_last_reported_timestamp(self) -> None:
+        """An unchanged report should be newer than its last value update."""
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        hass = _RuntimeHomeAssistant("20.0")
+        hass.states.current = _State(
+            "20.0",
+            last_updated=NOW - timedelta(hours=12),
+            last_reported=NOW,
+        )
+
+        with mock.patch.object(
+            runtime_module, "async_call_later", return_value=mock.Mock()
+        ):
+            await runtime.async_refresh(hass)
+
+        self.assertEqual(
+            runtime.snapshot.temperatures["sensor.test_temperature"].observed_at,
+            NOW,
+        )
 
     async def test_stop_cancels_state_and_timer_listeners(self) -> None:
         runtime = HydronicRuntime.from_entry(_configured_entry())

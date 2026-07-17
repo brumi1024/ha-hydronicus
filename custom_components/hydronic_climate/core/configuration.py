@@ -63,6 +63,18 @@ def _string_list(
         ) from error
 
 
+def _temperature_sensors(mapping: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read new sensor lists while preserving milestone 1 entries."""
+    if "temperature_sensors" in mapping:
+        return _string_list(mapping, "temperature_sensors")
+    sensor = str(_required(mapping, "temperature_sensor"))
+    if not sensor:
+        raise StoredTopologyError(
+            "Stored topology field 'temperature_sensor' must be a non-empty entity id."
+        )
+    return (sensor,)
+
+
 def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfiguration:
     """Build a generic plant configuration from one config entry's persisted data."""
     raw_topology = data.get("topology", {})
@@ -79,7 +91,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
             id=_id(item, "id", require_uuid=require_uuid),
             name=str(_required(item, "name")),
             target_temperature=float(_required(item, "target_temperature")),
-            temperature_sensor=str(_required(item, "temperature_sensor")),
+            temperature_sensors=_temperature_sensors(item),
         )
         for item in _objects(raw_topology, "zones")
     )

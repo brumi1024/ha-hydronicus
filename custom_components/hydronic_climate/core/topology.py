@@ -56,6 +56,23 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             raise TopologyValidationError(
                 f"Zone {zone.id} target temperature must be finite."
             )
+        if not zone.temperature_sensors:
+            raise TopologyValidationError(
+                f"Zone {zone.id} requires at least one temperature sensor."
+            )
+        if not all(
+            isinstance(sensor_id, str) and sensor_id.strip()
+            for sensor_id in zone.temperature_sensors
+        ):
+            raise TopologyValidationError(
+                f"Zone {zone.id} temperature sensors must be non-empty entity ids."
+            )
+        if duplicates := _duplicates(zone.temperature_sensors):
+            raise TopologyValidationError(
+                f"Zone {zone.id} temperature sensors must not contain duplicates: "
+                + ", ".join(sorted(duplicates))
+                + "."
+            )
     for valve in configuration.valves:
         if not isfinite(valve.opening_time_seconds) or valve.opening_time_seconds < 0:
             raise TopologyValidationError(

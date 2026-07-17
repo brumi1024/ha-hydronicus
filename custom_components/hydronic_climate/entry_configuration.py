@@ -18,6 +18,7 @@ from .const import (
     CONF_ROUTES,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_SENSOR,
+    CONF_TEMPERATURE_SENSORS,
     CONF_VALVE_IDS,
     CONF_ZONE_IDS,
     SUBENTRY_TYPE_ACTUATOR,
@@ -75,6 +76,27 @@ def _uuid_list(data: Mapping[str, Any], key: str, owner: str) -> tuple[str, ...]
     if len(result) != len(set(result)):
         raise StoredTopologyError(f"{owner} field {key!r} must not contain duplicates.")
     return result
+
+
+def _temperature_sensors(data: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read current zone sensor lists and legacy single-sensor subentries."""
+    if CONF_TEMPERATURE_SENSORS in data:
+        value = data[CONF_TEMPERATURE_SENSORS]
+        if (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(item, str) and item for item in value)
+        ):
+            raise StoredTopologyError(
+                "Zone subentry temperature sensors must be a non-empty list of entity ids."
+            )
+        return tuple(value)
+    sensor = str(_required(data, CONF_TEMPERATURE_SENSOR))
+    if not sensor:
+        raise StoredTopologyError(
+            "Zone subentry temperature sensor must be a non-empty entity id."
+        )
+    return (sensor,)
 
 
 def _circuit_routes(
@@ -225,7 +247,7 @@ def effective_plant_configuration(
                 id=zone_id,
                 name=str(_required(data, CONF_NAME)),
                 target_temperature=target_temperature,
-                temperature_sensor=str(_required(data, CONF_TEMPERATURE_SENSOR)),
+                temperature_sensors=_temperature_sensors(data),
             )
         )
         routes.extend(_zone_routes(data, zone_id, selected_circuit_ids))

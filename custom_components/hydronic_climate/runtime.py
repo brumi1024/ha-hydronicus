@@ -65,9 +65,8 @@ class HydronicRuntime:
         """Observe configured sensors and evaluate the shadow plan without service calls."""
         self._hass = hass
         await self.async_refresh(hass)
-        sensor_ids = [zone.temperature_sensor for zone in self.plant.zones.values()]
         self._remove_state_listener = async_track_state_change_event(
-            hass, sensor_ids, self._async_handle_state_change
+            hass, self._temperature_sensor_ids(), self._async_handle_state_change
         )
 
     async def async_stop(self) -> None:
@@ -106,6 +105,16 @@ class HydronicRuntime:
             self._remove_transition_timer()
             self._remove_transition_timer = None
 
+    def _temperature_sensor_ids(self) -> tuple[str, ...]:
+        """Return every configured sensor once, preserving topology order."""
+        return tuple(
+            dict.fromkeys(
+                sensor_id
+                for zone in self.plant.zones.values()
+                for sensor_id in zone.temperature_sensors
+            )
+        )
+
     def _next_transition_delay(self, now: datetime) -> float | None:
         """Return seconds until the earliest pending virtual actuator transition."""
         delays: list[float] = []
@@ -139,16 +148,16 @@ class HydronicRuntime:
     async def async_refresh(self, hass: HomeAssistant) -> None:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
         observations: dict[str, TemperatureObservation] = {}
-        for zone in self.plant.zones.values():
-            state = hass.states.get(zone.temperature_sensor)
+        for sensor_id in self._temperature_sensor_ids():
+            state = hass.states.get(sensor_id)
             value: float | None
             try:
                 value = float(state.state) if state is not None else None
             except ValueError:
                 value = None
-            observations[zone.temperature_sensor] = TemperatureObservation(
+            observations[sensor_id] = TemperatureObservation(
                 value=value,
-                observed_at=state.last_updated if state is not None else None,
+                observed_at=state.last_reported if state is not None else None,
             )
         self.snapshot = PlantSnapshot(observations)
         now = datetime.now(UTC)

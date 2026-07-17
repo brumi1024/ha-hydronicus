@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from hydronic_climate_core.controller import evaluate
 from hydronic_climate_core.model import (
     Circuit,
@@ -26,7 +28,7 @@ NOW = datetime(2026, 7, 17, tzinfo=UTC)
 def _plant() -> PlantConfiguration:
     return PlantConfiguration(
         id="plant",
-        zones=(Zone("living", "Living", 21.0, "temperature.living"),),
+        zones=(Zone("living", "Living", 21.0, ("temperature.living",)),),
         valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
         pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump", 120),),
         circuits=(
@@ -85,8 +87,8 @@ def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None
         PlantConfiguration(
             id="plant",
             zones=(
-                Zone("living", "Living", 21.0, "temperature.living"),
-                Zone("office", "Office", 21.0, "temperature.office"),
+                Zone("living", "Living", 21.0, ("temperature.living",)),
+                Zone("office", "Office", 21.0, ("temperature.office",)),
             ),
             valves=(
                 Valve("valve.floor", "Floor valve", "switch.floor_valve", 1),
@@ -144,12 +146,86 @@ def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
     assert unchanged.control_plan.commands == ()
 
 
+def test_zone_demand_uses_mean_of_multiple_battery_sensor_readings() -> None:
+    """Old but usable battery readings should contribute without an implicit timeout."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="plant",
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    temperature_sensors=(
+                        "temperature.living_wall",
+                        "temperature.living_window",
+                    ),
+                ),
+            ),
+            valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
+            pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump", 120),),
+            circuits=(Circuit("floor", "Floor", ("valve.floor",), "pump.floor"),),
+            routes=(DeliveryRoute("living-floor", "living", "floor"),),
+        )
+    )
+    snapshot = PlantSnapshot(
+        {
+            "temperature.living_wall": TemperatureObservation(
+                19.0, NOW - timedelta(hours=12)
+            ),
+            "temperature.living_window": TemperatureObservation(21.0, NOW),
+        }
+    )
+
+    result = evaluate(plant, snapshot, RuntimeState(), NOW)
+
+    assert result.next_runtime.zone_demands == {"living": True}
+    assert result.diagnostics.zone_reasons["living"].startswith(
+        "Heating requested: 20.0"
+    )
+
+
+@pytest.mark.parametrize("unusable_value", [None, math.nan, math.inf, -math.inf])
+def test_zone_blocks_when_any_required_temperature_sensor_is_unusable(
+    unusable_value: float | None,
+) -> None:
+    """A missing required reading must not be silently dropped from the mean."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="plant",
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    ("temperature.living_wall", "temperature.living_window"),
+                ),
+            ),
+            valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
+            pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump", 120),),
+            circuits=(Circuit("floor", "Floor", ("valve.floor",), "pump.floor"),),
+            routes=(DeliveryRoute("living-floor", "living", "floor"),),
+        )
+    )
+    snapshot = PlantSnapshot(
+        {
+            "temperature.living_wall": TemperatureObservation(19.0, NOW),
+            "temperature.living_window": TemperatureObservation(unusable_value, NOW),
+        }
+    )
+
+    result = evaluate(plant, snapshot, RuntimeState(), NOW)
+
+    assert result.next_runtime.zone_demands == {"living": False}
+    assert result.diagnostics.zone_reasons["living"].startswith("Blocked:")
+
+
 def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
     """A circuit is ready only after all of its required valves are open."""
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
-            zones=(Zone("living", "Living", 21.0, "temperature.living"),),
+            zones=(Zone("living", "Living", 21.0, ("temperature.living",)),),
             valves=(
                 Valve("supply", "Supply valve", "switch.supply_valve", 10),
                 Valve("return", "Return valve", "switch.return_valve", 30),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from types import MappingProxyType
 from uuid import UUID
 
 from homeassistant import config_entries
@@ -16,6 +17,7 @@ from custom_components.hydronic_climate.const import (
     CONF_NAME,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_SENSOR,
+    CONF_TEMPERATURE_SENSORS,
     DOMAIN,
     SUBENTRY_TYPE_ZONE,
 )
@@ -28,6 +30,8 @@ CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 BASE_ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 SECOND_CIRCUIT_ID = "00000000-0000-4000-8000-000000000007"
 SECOND_ROUTE_ID = "00000000-0000-4000-8000-000000000008"
+LEGACY_ZONE_ID = "00000000-0000-4000-8000-000000000009"
+LEGACY_ROUTE_ID = "00000000-0000-4000-8000-000000000010"
 
 
 def _plant_entry(*, with_second_circuit: bool = False) -> MockConfigEntry:
@@ -113,7 +117,7 @@ async def _add_zone(hass, entry, *, circuit_ids: list[str]):
         user_input={
             CONF_NAME: "Office",
             CONF_TARGET_TEMPERATURE: 20.0,
-            CONF_TEMPERATURE_SENSOR: "sensor.office_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: circuit_ids,
         },
     )
@@ -140,7 +144,7 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
         user_input={
             CONF_NAME: "Office",
             CONF_TARGET_TEMPERATURE: 20.0,
-            CONF_TEMPERATURE_SENSOR: "sensor.office_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: [CIRCUIT_ID],
         },
     )
@@ -158,7 +162,7 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     zone = entry.runtime_data.plant.zones[zone_id]
     assert zone.name == "Office"
     assert zone.target_temperature == 20.0
-    assert zone.temperature_sensor == "sensor.office_temperature"
+    assert zone.temperature_sensors == ("sensor.office_temperature",)
     routes = [
         route for route in entry.runtime_data.plant.routes if route.zone_id == zone_id
     ]
@@ -173,6 +177,136 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     registry = er.async_get(hass)
     assert registry.async_get(demand_entity_id).config_subentry_id == subentry.subentry_id
     assert registry.async_get(explanation_entity_id).config_subentry_id == subentry.subentry_id
+
+
+async def test_add_zone_subentry_aggregates_multiple_battery_sensors(hass) -> None:
+    """A UI-created zone should average all selected battery sensor states."""
+    hass.states.async_set("sensor.living_temperature", "21.5")
+    hass.states.async_set("sensor.office_wall_temperature", "18.0")
+    hass.states.async_set("sensor.office_window_temperature", "20.0")
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ZONE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Office",
+            CONF_TARGET_TEMPERATURE: 20.0,
+            CONF_TEMPERATURE_SENSORS: [
+                "sensor.office_wall_temperature",
+                "sensor.office_window_temperature",
+            ],
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(
+        item
+        for item in entry.subentries.values()
+        if item.subentry_type == SUBENTRY_TYPE_ZONE
+    )
+    zone_id = subentry.data["id"]
+    assert entry.runtime_data.plant.zones[zone_id].temperature_sensors == (
+        "sensor.office_wall_temperature",
+        "sensor.office_window_temperature",
+    )
+    assert hass.states.get("binary_sensor.hydronic_plant_office_demand").state == "on"
+    assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith(
+        "Heating requested: 19.0"
+    )
+
+    hass.states.async_set("sensor.office_window_temperature", "24.0")
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.hydronic_plant_office_demand").state == "off"
+    assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith(
+        "Satisfied: 21.0"
+    )
+
+    hass.states.async_set("sensor.office_wall_temperature", "14.0")
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.hydronic_plant_office_demand").state == "on"
+    assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith(
+        "Heating requested: 19.0"
+    )
+
+    hass.states.async_set("sensor.office_window_temperature", "unavailable")
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.hydronic_plant_office_demand").state == "off"
+    assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith(
+        "Blocked:"
+    )
+
+
+async def test_reconfigure_migrates_legacy_single_sensor_subentry(hass) -> None:
+    """A milestone 2 zone should load and migrate without changing its UUID."""
+    hass.states.async_set("sensor.legacy_office_temperature", "18.0")
+    hass.states.async_set("sensor.office_backup_temperature", "20.0")
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    legacy_subentry = config_entries.ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "id": LEGACY_ZONE_ID,
+                CONF_NAME: "Legacy office",
+                CONF_TARGET_TEMPERATURE: 20.0,
+                CONF_TEMPERATURE_SENSOR: "sensor.legacy_office_temperature",
+                CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+                "routes": [
+                    {
+                        "id": LEGACY_ROUTE_ID,
+                        "circuit_id": CIRCUIT_ID,
+                    }
+                ],
+            }
+        ),
+        subentry_type=SUBENTRY_TYPE_ZONE,
+        title="Legacy office",
+        unique_id=LEGACY_ZONE_ID,
+    )
+    assert hass.config_entries.async_add_subentry(entry, legacy_subentry)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.runtime_data.plant.zones[LEGACY_ZONE_ID].temperature_sensors == (
+        "sensor.legacy_office_temperature",
+    )
+
+    result = await entry.start_subentry_reconfigure_flow(
+        hass, legacy_subentry.subentry_id
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Legacy office",
+            CONF_TARGET_TEMPERATURE: 20.0,
+            CONF_TEMPERATURE_SENSORS: [
+                "sensor.legacy_office_temperature",
+                "sensor.office_backup_temperature",
+            ],
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.ABORT
+    assert legacy_subentry.data["id"] == LEGACY_ZONE_ID
+    assert CONF_TEMPERATURE_SENSOR not in legacy_subentry.data
+    assert legacy_subentry.data[CONF_TEMPERATURE_SENSORS] == [
+        "sensor.legacy_office_temperature",
+        "sensor.office_backup_temperature",
+    ]
+    assert entry.runtime_data.plant.zones[LEGACY_ZONE_ID].temperature_sensors == (
+        "sensor.legacy_office_temperature",
+        "sensor.office_backup_temperature",
+    )
 
 
 async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) -> None:
@@ -208,7 +342,7 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
         user_input={
             CONF_NAME: "Study",
             CONF_TARGET_TEMPERATURE: 21.5,
-            CONF_TEMPERATURE_SENSOR: "sensor.study_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.study_temperature"],
             CONF_CIRCUIT_IDS: [SECOND_CIRCUIT_ID],
         },
     )
@@ -228,7 +362,7 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
     zone = entry.runtime_data.plant.zones[zone_id]
     assert zone.name == "Study"
     assert zone.target_temperature == 21.5
-    assert zone.temperature_sensor == "sensor.study_temperature"
+    assert zone.temperature_sensors == ("sensor.study_temperature",)
     routes = [
         route for route in entry.runtime_data.plant.routes if route.zone_id == zone_id
     ]
@@ -270,7 +404,7 @@ async def test_add_rejects_stale_circuit_without_mutating_entry(hass) -> None:
         user_input={
             CONF_NAME: "Office",
             CONF_TARGET_TEMPERATURE: 20.0,
-            CONF_TEMPERATURE_SENSOR: "sensor.office_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: [SECOND_CIRCUIT_ID],
         },
     )
@@ -299,7 +433,7 @@ async def test_add_and_reconfigure_reject_non_finite_target_atomically(hass) -> 
         user_input={
             CONF_NAME: "Invalid office",
             CONF_TARGET_TEMPERATURE: math.inf,
-            CONF_TEMPERATURE_SENSOR: "sensor.office_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: [CIRCUIT_ID],
         },
     )
@@ -326,7 +460,7 @@ async def test_add_and_reconfigure_reject_non_finite_target_atomically(hass) -> 
         user_input={
             CONF_NAME: "Invalid update",
             CONF_TARGET_TEMPERATURE: math.nan,
-            CONF_TEMPERATURE_SENSOR: "sensor.office_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: [CIRCUIT_ID],
         },
     )
@@ -369,7 +503,7 @@ async def test_reconfigure_rejects_stale_circuit_atomically(hass) -> None:
         user_input={
             CONF_NAME: "Invalid update",
             CONF_TARGET_TEMPERATURE: 22.0,
-            CONF_TEMPERATURE_SENSOR: "sensor.office_temperature",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: [SECOND_CIRCUIT_ID],
         },
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+from math import isfinite
 
 from .model import (
     ActuatorCommand,
@@ -45,6 +46,19 @@ def _elapsed(now: datetime, changed_at: datetime | None) -> timedelta:
     return now - changed_at if changed_at is not None else timedelta(0)
 
 
+def _mean_zone_temperature(
+    sensor_ids: tuple[str, ...], snapshot: PlantSnapshot
+) -> float | None:
+    """Average all required readings without imposing an age policy."""
+    readings: list[float] = []
+    for sensor_id in sensor_ids:
+        observation = snapshot.temperatures.get(sensor_id)
+        if observation is None or observation.value is None or not isfinite(observation.value):
+            return None
+        readings.append(observation.value)
+    return sum(readings) / len(readings) if readings else None
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -55,8 +69,7 @@ def evaluate(
     zone_demands: dict[str, bool] = {}
     zone_reasons: dict[str, str] = {}
     for zone in plant.zones.values():
-        observation = snapshot.temperatures.get(zone.temperature_sensor)
-        temperature = observation.value if observation is not None else None
+        temperature = _mean_zone_temperature(zone.temperature_sensors, snapshot)
         demand, reason = _zone_demand(
             previous=runtime.zone_demands.get(zone.id, False),
             temperature=temperature,

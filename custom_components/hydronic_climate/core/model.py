@@ -27,12 +27,12 @@ class PumpState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Zone:
-    """A comfort target with one designated temperature observation in milestone 1."""
+    """A comfort target whose required sensors contribute to one demand value."""
 
     id: str
     name: str
     target_temperature: float
-    temperature_sensor: str
+    temperature_sensors: tuple[str, ...]
     heating_start_delta: float = 0.3
     heating_stop_delta: float = 0.1
 

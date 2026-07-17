@@ -10,11 +10,11 @@
       },
       "zone": {
         "title": "Add the first comfort zone",
-        "description": "Select the temperature sensor used for initial shadow demand.",
+        "description": "Select one or more temperature sensors. Their readings are averaged, and every selected sensor must be available. Battery sensor readings remain usable between reports.",
         "data": {
           "name": "Zone name",
           "target_temperature": "Target temperature",
-          "temperature_sensor": "Temperature sensor"
+          "temperature_sensors": "Temperature sensors"
         }
       },
       "circuit": {
@@ -120,21 +120,21 @@
       "step": {
         "user": {
           "title": "Add a comfort zone",
-          "description": "Route a temperature-controlled zone through one or more existing circuits in shadow mode.",
+          "description": "Select one or more temperature sensors and route the zone through existing circuits in shadow mode. Sensor readings are averaged, and every selected sensor must be available. Battery sensor readings remain usable between reports.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
-            "temperature_sensor": "Temperature sensor",
+            "temperature_sensors": "Temperature sensors",
             "circuit_ids": "Circuits"
           }
         },
         "reconfigure": {
           "title": "Update comfort zone",
-          "description": "Change the zone target, temperature sensor, or available circuits.",
+          "description": "Change the zone target, temperature sensors, or available circuits. Sensor readings are averaged, and every selected sensor must be available. Battery sensor readings remain usable between reports.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
-            "temperature_sensor": "Temperature sensor",
+            "temperature_sensors": "Temperature sensors",
             "circuit_ids": "Circuits"
           }
         }
