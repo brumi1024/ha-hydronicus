@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from math import isfinite
 
 from .model import CompiledPlant, PlantConfiguration
 
@@ -27,9 +28,16 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         raise TopologyValidationError("Plant id must not be empty.")
 
     zone_ids = [zone.id for zone in configuration.zones]
+    valve_ids = [valve.id for valve in configuration.valves]
+    pump_ids = [pump.id for pump in configuration.pumps]
     circuit_ids = [circuit.id for circuit in configuration.circuits]
     route_ids = [route.id for route in configuration.routes]
-    for object_name, ids in (("zone", zone_ids), ("circuit", circuit_ids)):
+    for object_name, ids in (
+        ("zone", zone_ids),
+        ("valve", valve_ids),
+        ("pump", pump_ids),
+        ("circuit", circuit_ids),
+    ):
         if not ids:
             continue
         if not all(ids):
@@ -43,8 +51,50 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     if duplicates := _duplicates(route_ids):
         raise TopologyValidationError(f"Duplicate route ids: {', '.join(sorted(duplicates))}.")
 
+    for valve in configuration.valves:
+        if not isfinite(valve.opening_time_seconds) or valve.opening_time_seconds < 0:
+            raise TopologyValidationError(
+                f"Valve {valve.id} opening time must be finite and non-negative."
+            )
+    for pump in configuration.pumps:
+        if not isfinite(pump.overrun_seconds) or pump.overrun_seconds < 0:
+            raise TopologyValidationError(
+                f"Pump {pump.id} overrun must be finite and non-negative."
+            )
+
+    actuator_entity_ids = [
+        *(valve.entity_id for valve in configuration.valves),
+        *(pump.entity_id for pump in configuration.pumps),
+    ]
+    if not all(actuator_entity_ids):
+        raise TopologyValidationError("Every actuator requires a non-empty entity binding.")
+    if duplicates := _duplicates(actuator_entity_ids):
+        raise TopologyValidationError(
+            f"Duplicate actuator entity bindings: {', '.join(sorted(duplicates))}."
+        )
+
     zones = {zone.id: zone for zone in configuration.zones}
+    valves = {valve.id: valve for valve in configuration.valves}
+    pumps = {pump.id: pump for pump in configuration.pumps}
     circuits = {circuit.id: circuit for circuit in configuration.circuits}
+    referenced_valves: set[str] = set()
+    referenced_pumps: set[str] = set()
+    for circuit in configuration.circuits:
+        if not circuit.valve_ids:
+            raise TopologyValidationError(
+                f"Circuit {circuit.id} requires at least one valve."
+            )
+        unknown_valves = sorted(set(circuit.valve_ids) - set(valves))
+        if unknown_valves:
+            raise TopologyValidationError(
+                f"Circuit {circuit.id} references unknown valves: {', '.join(unknown_valves)}."
+            )
+        if circuit.pump_id not in pumps:
+            raise TopologyValidationError(
+                f"Circuit {circuit.id} references unknown pump {circuit.pump_id}."
+            )
+        referenced_valves.update(circuit.valve_ids)
+        referenced_pumps.add(circuit.pump_id)
     referenced_zones: set[str] = set()
     referenced_circuits: set[str] = set()
     for route in configuration.routes:
@@ -62,25 +112,34 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         referenced_circuits.add(route.circuit_id)
 
     orphaned_zones = sorted(set(zones) - referenced_zones)
+    orphaned_valves = sorted(set(valves) - referenced_valves)
+    orphaned_pumps = sorted(set(pumps) - referenced_pumps)
     orphaned_circuits = sorted(set(circuits) - referenced_circuits)
-    if orphaned_zones or orphaned_circuits:
+    if orphaned_zones or orphaned_valves or orphaned_pumps or orphaned_circuits:
         details: list[str] = []
         if orphaned_zones:
             details.append(f"orphaned zones: {', '.join(orphaned_zones)}")
+        if orphaned_valves:
+            details.append(f"orphaned valves: {', '.join(orphaned_valves)}")
+        if orphaned_pumps:
+            details.append(f"orphaned pumps: {', '.join(orphaned_pumps)}")
         if orphaned_circuits:
             details.append(f"orphaned circuits: {', '.join(orphaned_circuits)}")
         raise TopologyValidationError("; ".join(details) + ".")
 
     summary = tuple(
         (
-            f"Circuit {circuit.name} opens valve {circuit.valve_id} before requesting pump "
-            f"{circuit.pump_id}."
+            f"Circuit {circuit.name} opens valves "
+            f"{', '.join(valves[valve_id].name for valve_id in circuit.valve_ids)} "
+            f"before requesting pump {pumps[circuit.pump_id].name}."
         )
         for circuit in configuration.circuits
     )
     return CompiledPlant(
         id=configuration.id,
         zones=zones,
+        valves=valves,
+        pumps=pumps,
         circuits=circuits,
         routes=tuple(route for route in configuration.routes if route.enabled),
         logic_summary=summary,

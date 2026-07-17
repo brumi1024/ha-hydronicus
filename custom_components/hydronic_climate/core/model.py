@@ -38,15 +38,33 @@ class Zone:
 
 
 @dataclass(frozen=True, slots=True)
-class Circuit:
-    """A water path whose valve must be ready before its pump may run."""
+class Valve:
+    """A topology-owned valve with one Home Assistant entity binding."""
 
     id: str
     name: str
-    valve_id: str
+    entity_id: str
+    opening_time_seconds: float = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class Pump:
+    """A topology-owned pump with one Home Assistant entity binding."""
+
+    id: str
+    name: str
+    entity_id: str
+    overrun_seconds: float = 120.0
+
+
+@dataclass(frozen=True, slots=True)
+class Circuit:
+    """A water path whose required valves must be ready before its pump may run."""
+
+    id: str
+    name: str
+    valve_ids: tuple[str, ...]
     pump_id: str
-    valve_opening_time_seconds: float = 30.0
-    pump_overrun_seconds: float = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +83,8 @@ class PlantConfiguration:
 
     id: str
     zones: tuple[Zone, ...]
+    valves: tuple[Valve, ...]
+    pumps: tuple[Pump, ...]
     circuits: tuple[Circuit, ...]
     routes: tuple[DeliveryRoute, ...]
 
@@ -75,6 +95,8 @@ class CompiledPlant:
 
     id: str
     zones: Mapping[str, Zone]
+    valves: Mapping[str, Valve]
+    pumps: Mapping[str, Pump]
     circuits: Mapping[str, Circuit]
     routes: tuple[DeliveryRoute, ...]
     logic_summary: tuple[str, ...]

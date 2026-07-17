@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
-from hydronic_climate_core.model import Circuit, DeliveryRoute, PlantConfiguration, Zone
+from hydronic_climate_core.model import (
+    Circuit,
+    DeliveryRoute,
+    PlantConfiguration,
+    Pump,
+    Valve,
+    Zone,
+)
 from hydronic_climate_core.topology import TopologyValidationError, compile_topology
 
 
@@ -19,11 +28,13 @@ def test_compile_topology_produces_summary() -> None:
                 temperature_sensor="sensor.living_room_temperature",
             ),
         ),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(
             Circuit(
                 id="circuit-1",
                 name="Floor loop",
-                valve_id="valve-1",
+                valve_ids=("valve-1",),
                 pump_id="pump-1",
             ),
         ),
@@ -34,7 +45,7 @@ def test_compile_topology_produces_summary() -> None:
 
     assert compiled.id == "plant-1"
     assert compiled.logic_summary == (
-        "Circuit Floor loop opens valve valve-1 before requesting pump pump-1.",
+        "Circuit Floor loop opens valves Floor valve before requesting pump Floor pump.",
     )
 
 
@@ -50,11 +61,13 @@ def test_compile_topology_rejects_orphans() -> None:
                 temperature_sensor="sensor.living_room_temperature",
             ),
         ),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(
             Circuit(
                 id="circuit-1",
                 name="Floor loop",
-                valve_id="valve-1",
+                valve_ids=("valve-1",),
                 pump_id="pump-1",
             ),
         ),
@@ -62,4 +75,181 @@ def test_compile_topology_rejects_orphans() -> None:
     )
 
     with pytest.raises(TopologyValidationError, match="orphaned zones"):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_unknown_actuator_relationships() -> None:
+    """Circuit relationships must resolve to topology-owned actuator ids."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("missing-valve",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(TopologyValidationError, match="unknown valves: missing-valve"):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_unknown_pump_relationship() -> None:
+    """A circuit pump relationship must resolve to a topology-owned pump id."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "missing-pump"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(TopologyValidationError, match="unknown pump missing-pump"):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_orphaned_actuators() -> None:
+    """Unused actuator nodes should fail closed instead of silently drifting."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(
+            Valve("valve-1", "Floor valve", "switch.floor_valve"),
+            Valve("valve-2", "Unused valve", "switch.unused_valve"),
+        ),
+        pumps=(
+            Pump("pump-1", "Floor pump", "switch.floor_pump"),
+            Pump("pump-2", "Unused pump", "switch.unused_pump"),
+        ),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError, match="orphaned valves: valve-2; orphaned pumps: pump-2"
+    ):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_duplicate_actuator_ids() -> None:
+    """Actuator relationship ids must be globally unambiguous within their type."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(
+            Valve("valve-1", "First valve", "switch.first_valve"),
+            Valve("valve-1", "Second valve", "switch.second_valve"),
+        ),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(TopologyValidationError, match="Duplicate valve ids: valve-1"):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_duplicate_pump_ids() -> None:
+    """Pump relationship ids must be globally unambiguous."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(
+            Pump("pump-1", "First pump", "switch.first_pump"),
+            Pump("pump-1", "Second pump", "switch.second_pump"),
+        ),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(TopologyValidationError, match="Duplicate pump ids: pump-1"):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_circuit_without_valves() -> None:
+    """A circuit without a valve cannot be sequenced safely."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", (), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError, match="Circuit circuit-1 requires at least one valve"
+    ):
+        compile_topology(plant)
+
+
+@pytest.mark.parametrize("opening_time", [-1.0, math.inf, math.nan])
+def test_compile_topology_rejects_unsafe_valve_timing(opening_time: float) -> None:
+    """Valve readiness timing must be finite and non-negative."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(
+            Valve(
+                "valve-1",
+                "Floor valve",
+                "switch.floor_valve",
+                opening_time_seconds=opening_time,
+            ),
+        ),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError, match="Valve valve-1 opening time must be finite and non-negative"
+    ):
+        compile_topology(plant)
+
+
+@pytest.mark.parametrize("overrun", [-1.0, math.inf, math.nan])
+def test_compile_topology_rejects_unsafe_pump_timing(overrun: float) -> None:
+    """Pump overrun timing must be finite and non-negative."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(
+            Pump(
+                "pump-1",
+                "Floor pump",
+                "switch.floor_pump",
+                overrun_seconds=overrun,
+            ),
+        ),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError, match="Pump pump-1 overrun must be finite and non-negative"
+    ):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_duplicate_physical_actuator_bindings() -> None:
+    """One physical HA entity must compile to one actuator state machine."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, "sensor.living_temperature"),),
+        valves=(
+            Valve("valve-1", "First valve", "switch.shared_valve"),
+            Valve("valve-2", "Second valve", "switch.shared_valve"),
+        ),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError,
+        match="Duplicate actuator entity bindings: switch.shared_valve",
+    ):
         compile_topology(plant)

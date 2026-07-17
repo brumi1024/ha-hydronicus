@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
-from .model import Circuit, DeliveryRoute, PlantConfiguration, Zone
+from .model import Circuit, DeliveryRoute, PlantConfiguration, Pump, Valve, Zone
 
 
 class StoredTopologyError(ValueError):
@@ -30,40 +31,142 @@ def _objects(topology: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], 
     return tuple(raw_objects)
 
 
+def _id(mapping: Mapping[str, Any], key: str, *, require_uuid: bool = False) -> str:
+    """Read a relationship id and optionally enforce the new UUID format."""
+    value = str(_required(mapping, key))
+    if not require_uuid:
+        return value
+    try:
+        return str(UUID(value))
+    except ValueError as error:
+        raise StoredTopologyError(f"Stored topology field {key!r} must be a UUID.") from error
+
+
+def _string_list(
+    mapping: Mapping[str, Any], key: str, *, require_uuid: bool = False
+) -> tuple[str, ...]:
+    """Read a required list of non-empty relationship ids."""
+    value = _required(mapping, key)
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item for item in value)
+    ):
+        raise StoredTopologyError(f"Stored topology field {key!r} must be a non-empty list of ids.")
+    if not require_uuid:
+        return tuple(value)
+    try:
+        return tuple(str(UUID(item)) for item in value)
+    except ValueError as error:
+        raise StoredTopologyError(
+            f"Stored topology field {key!r} must contain only UUIDs."
+        ) from error
+
+
 def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfiguration:
     """Build a generic plant configuration from one config entry's persisted data."""
-    plant_id = str(_required(data, "plant_id"))
     raw_topology = data.get("topology", {})
     if not isinstance(raw_topology, Mapping):
         raise StoredTopologyError("Stored topology must be an object.")
 
+    raw_circuits = _objects(raw_topology, "circuits")
+    raw_valves = _objects(raw_topology, "valves")
+    raw_pumps = _objects(raw_topology, "pumps")
+    require_uuid = bool(raw_valves or raw_pumps)
+    plant_id = _id(data, "plant_id", require_uuid=require_uuid)
     zones = tuple(
         Zone(
-            id=str(_required(item, "id")),
+            id=_id(item, "id", require_uuid=require_uuid),
             name=str(_required(item, "name")),
             target_temperature=float(_required(item, "target_temperature")),
             temperature_sensor=str(_required(item, "temperature_sensor")),
         )
         for item in _objects(raw_topology, "zones")
     )
-    circuits = tuple(
-        Circuit(
-            id=str(_required(item, "id")),
-            name=str(_required(item, "name")),
-            valve_id=str(_required(item, "valve_id")),
-            pump_id=str(_required(item, "pump_id")),
-            valve_opening_time_seconds=float(item.get("valve_opening_time_seconds", 30.0)),
-            pump_overrun_seconds=float(item.get("pump_overrun_seconds", 120.0)),
+    if require_uuid:
+        valves = tuple(
+            Valve(
+                id=_id(item, "id", require_uuid=True),
+                name=str(_required(item, "name")),
+                entity_id=str(_required(item, "entity_id")),
+                opening_time_seconds=float(item.get("opening_time_seconds", 30.0)),
+            )
+            for item in raw_valves
         )
-        for item in _objects(raw_topology, "circuits")
-    )
+        pumps = tuple(
+            Pump(
+                id=_id(item, "id", require_uuid=True),
+                name=str(_required(item, "name")),
+                entity_id=str(_required(item, "entity_id")),
+                overrun_seconds=float(item.get("overrun_seconds", 120.0)),
+            )
+            for item in raw_pumps
+        )
+        circuits = [
+            Circuit(
+                id=_id(item, "id", require_uuid=True),
+                name=str(_required(item, "name")),
+                valve_ids=_string_list(item, "valve_ids", require_uuid=True),
+                pump_id=_id(item, "pump_id", require_uuid=True),
+            )
+            for item in raw_circuits
+        ]
+    else:
+        valve_data: dict[str, Valve] = {}
+        pump_data: dict[str, Pump] = {}
+        circuits = []
+        for item in raw_circuits:
+            name = str(_required(item, "name"))
+            valve_id = str(_required(item, "valve_id"))
+            pump_id = str(_required(item, "pump_id"))
+            valve_opening_time = float(item.get("valve_opening_time_seconds", 30.0))
+            pump_overrun = float(item.get("pump_overrun_seconds", 120.0))
+            prior_valve = valve_data.get(valve_id)
+            valve_data[valve_id] = Valve(
+                id=valve_id,
+                name=prior_valve.name if prior_valve is not None else f"{name} valve",
+                entity_id=valve_id,
+                opening_time_seconds=(
+                    max(prior_valve.opening_time_seconds, valve_opening_time)
+                    if prior_valve is not None
+                    else valve_opening_time
+                ),
+            )
+            prior_pump = pump_data.get(pump_id)
+            pump_data[pump_id] = Pump(
+                id=pump_id,
+                name=prior_pump.name if prior_pump is not None else f"{name} pump",
+                entity_id=pump_id,
+                overrun_seconds=(
+                    max(prior_pump.overrun_seconds, pump_overrun)
+                    if prior_pump is not None
+                    else pump_overrun
+                ),
+            )
+            circuits.append(
+                Circuit(
+                    id=str(_required(item, "id")),
+                    name=name,
+                    valve_ids=(valve_id,),
+                    pump_id=pump_id,
+                )
+            )
+        valves = tuple(valve_data.values())
+        pumps = tuple(pump_data.values())
     routes = tuple(
         DeliveryRoute(
-            id=str(_required(item, "id")),
-            zone_id=str(_required(item, "zone_id")),
-            circuit_id=str(_required(item, "circuit_id")),
+            id=_id(item, "id", require_uuid=require_uuid),
+            zone_id=_id(item, "zone_id", require_uuid=require_uuid),
+            circuit_id=_id(item, "circuit_id", require_uuid=require_uuid),
             enabled=bool(item.get("enabled", True)),
         )
         for item in _objects(raw_topology, "routes")
     )
-    return PlantConfiguration(id=plant_id, zones=zones, circuits=circuits, routes=routes)
+    return PlantConfiguration(
+        id=plant_id,
+        zones=zones,
+        valves=valves,
+        pumps=pumps,
+        circuits=tuple(circuits),
+        routes=routes,
+    )

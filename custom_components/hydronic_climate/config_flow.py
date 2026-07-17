@@ -11,17 +11,23 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_CIRCUITS,
+    CONF_ENTITY_ID,
     CONF_NAME,
+    CONF_OPENING_TIME,
+    CONF_OVERRUN,
     CONF_PLANT_ID,
     CONF_PUMP_ENTITY,
     CONF_PUMP_OVERRUN,
+    CONF_PUMPS,
     CONF_ROUTES,
     CONF_SHADOW_MODE,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_SENSOR,
     CONF_TOPOLOGY,
     CONF_VALVE_ENTITY,
+    CONF_VALVE_IDS,
     CONF_VALVE_OPENING_TIME,
+    CONF_VALVES,
     CONF_ZONES,
     DEFAULT_PLANT_NAME,
     DEFAULT_PUMP_OVERRUN,
@@ -111,15 +117,31 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             name = str(user_input[CONF_NAME]).strip()
             if name:
                 circuit_id = str(uuid4())
+                valve_id = str(uuid4())
+                pump_id = str(uuid4())
                 zone_id = self._draft[CONF_TOPOLOGY][CONF_ZONES][0]["id"]
+                self._draft[CONF_TOPOLOGY][CONF_VALVES] = [
+                    {
+                        "id": valve_id,
+                        CONF_NAME: f"{name} valve",
+                        CONF_ENTITY_ID: user_input[CONF_VALVE_ENTITY],
+                        CONF_OPENING_TIME: user_input[CONF_VALVE_OPENING_TIME],
+                    }
+                ]
+                self._draft[CONF_TOPOLOGY][CONF_PUMPS] = [
+                    {
+                        "id": pump_id,
+                        CONF_NAME: f"{name} pump",
+                        CONF_ENTITY_ID: user_input[CONF_PUMP_ENTITY],
+                        CONF_OVERRUN: user_input[CONF_PUMP_OVERRUN],
+                    }
+                ]
                 self._draft[CONF_TOPOLOGY][CONF_CIRCUITS] = [
                     {
                         "id": circuit_id,
                         CONF_NAME: name,
-                        "valve_id": user_input[CONF_VALVE_ENTITY],
-                        "pump_id": user_input[CONF_PUMP_ENTITY],
-                        CONF_VALVE_OPENING_TIME: user_input[CONF_VALVE_OPENING_TIME],
-                        CONF_PUMP_OVERRUN: user_input[CONF_PUMP_OVERRUN],
+                        CONF_VALVE_IDS: [valve_id],
+                        "pump_id": pump_id,
                     }
                 ]
                 self._draft[CONF_TOPOLOGY][CONF_ROUTES] = [

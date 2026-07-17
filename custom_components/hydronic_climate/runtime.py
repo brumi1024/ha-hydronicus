@@ -104,21 +104,20 @@ class HydronicRuntime:
     def _next_transition_delay(self, now: datetime) -> float | None:
         """Return seconds until the earliest pending virtual actuator transition."""
         delays: list[float] = []
-        for circuit in self.plant.circuits.values():
-            valve = self.runtime_state.valves.get(circuit.valve_id)
+        for valve_node in self.plant.valves.values():
+            valve = self.runtime_state.valves.get(valve_node.id)
             if (
                 valve is not None
                 and valve.state is ValveState.OPENING
                 and valve.changed_at is not None
             ):
-                deadline = valve.changed_at + timedelta(
-                    seconds=circuit.valve_opening_time_seconds
-                )
+                deadline = valve.changed_at + timedelta(seconds=valve_node.opening_time_seconds)
                 delays.append(max(0.0, (deadline - now).total_seconds()))
 
-            pump = self.runtime_state.pumps.get(circuit.pump_id)
+        for pump_node in self.plant.pumps.values():
+            pump = self.runtime_state.pumps.get(pump_node.id)
             if pump is not None and pump.state is PumpState.OVERRUN and pump.changed_at is not None:
-                deadline = pump.changed_at + timedelta(seconds=circuit.pump_overrun_seconds)
+                deadline = pump.changed_at + timedelta(seconds=pump_node.overrun_seconds)
                 delays.append(max(0.0, (deadline - now).total_seconds()))
 
         return min(delays) if delays else None

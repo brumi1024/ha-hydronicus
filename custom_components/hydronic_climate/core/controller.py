@@ -73,85 +73,88 @@ def evaluate(
     valve_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in requested_circuits:
         circuit = plant.circuits[circuit_id]
-        valve_consumers[circuit.valve_id].add(circuit_id)
+        for valve_id in circuit.valve_ids:
+            valve_consumers[valve_id].add(circuit_id)
 
     valves: dict[str, ValveRuntime] = dict(runtime.valves)
     valve_ready: set[str] = set()
     commands: list[ActuatorCommand] = []
     actuator_reasons: dict[str, str] = {}
-    for circuit in plant.circuits.values():
-        consumers = valve_consumers.get(circuit.valve_id, set())
-        previous = valves.get(circuit.valve_id, ValveRuntime())
+    for valve in plant.valves.values():
+        consumers = valve_consumers.get(valve.id, set())
+        previous = valves.get(valve.id, ValveRuntime())
         if consumers:
             if previous.state is ValveState.CLOSED:
-                valves[circuit.valve_id] = ValveRuntime(ValveState.OPENING, now)
+                valves[valve.id] = ValveRuntime(ValveState.OPENING, now)
                 commands.append(
                     ActuatorCommand(
-                        circuit.valve_id,
+                        valve.id,
                         "open",
                         "A requesting circuit needs this valve.",
                     )
                 )
-                actuator_reasons[circuit.valve_id] = "Opening for active circuit consumers."
+                actuator_reasons[valve.id] = "Opening for active circuit consumers."
             elif previous.state is ValveState.OPENING and _elapsed(
                 now, previous.changed_at
-            ) >= timedelta(seconds=circuit.valve_opening_time_seconds):
-                valves[circuit.valve_id] = ValveRuntime(ValveState.OPEN, previous.changed_at)
-                actuator_reasons[circuit.valve_id] = "Open-delay elapsed; valve is virtually ready."
+            ) >= timedelta(seconds=valve.opening_time_seconds):
+                valves[valve.id] = ValveRuntime(ValveState.OPEN, previous.changed_at)
+                actuator_reasons[valve.id] = "Open-delay elapsed; valve is virtually ready."
             else:
-                valves[circuit.valve_id] = previous
-                actuator_reasons[circuit.valve_id] = "Held open for active circuit consumers."
+                valves[valve.id] = previous
+                actuator_reasons[valve.id] = "Held open for active circuit consumers."
         else:
-            valves[circuit.valve_id] = previous
-        if valves[circuit.valve_id].state is ValveState.OPEN:
-            valve_ready.add(circuit.valve_id)
+            valves[valve.id] = previous
+        if valves[valve.id].state is ValveState.OPEN:
+            valve_ready.add(valve.id)
 
     ready_circuits = {
         circuit_id
         for circuit_id in requested_circuits
-        if plant.circuits[circuit_id].valve_id in valve_ready
+        if all(valve_id in valve_ready for valve_id in plant.circuits[circuit_id].valve_ids)
     }
     pump_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in ready_circuits:
         pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
 
     pumps: dict[str, PumpRuntime] = dict(runtime.pumps)
-    for circuit in plant.circuits.values():
-        pump_id = circuit.pump_id
-        consumers = pump_consumers.get(pump_id, set())
-        previous = pumps.get(pump_id, PumpRuntime())
+    for pump in plant.pumps.values():
+        consumers = pump_consumers.get(pump.id, set())
+        previous = pumps.get(pump.id, PumpRuntime())
         if consumers:
             if previous.state is not PumpState.RUNNING:
-                pumps[pump_id] = PumpRuntime(PumpState.RUNNING, now)
+                pumps[pump.id] = PumpRuntime(PumpState.RUNNING, now)
                 commands.append(
-                    ActuatorCommand(pump_id, "turn_on", "A ready circuit needs this pump.")
+                    ActuatorCommand(pump.id, "turn_on", "A ready circuit needs this pump.")
                 )
             else:
-                pumps[pump_id] = previous
-            actuator_reasons[pump_id] = "Running for ready circuit consumers."
+                pumps[pump.id] = previous
+            actuator_reasons[pump.id] = "Running for ready circuit consumers."
             continue
         if previous.state is PumpState.RUNNING:
-            pumps[pump_id] = PumpRuntime(PumpState.OVERRUN, now)
-            actuator_reasons[pump_id] = "Overrunning after the final ready circuit released demand."
+            pumps[pump.id] = PumpRuntime(PumpState.OVERRUN, now)
+            actuator_reasons[pump.id] = "Overrunning after the final ready circuit released demand."
             continue
         if previous.state is PumpState.OVERRUN and _elapsed(now, previous.changed_at) < timedelta(
-            seconds=circuit.pump_overrun_seconds
+            seconds=pump.overrun_seconds
         ):
-            pumps[pump_id] = previous
-            actuator_reasons[pump_id] = "Overrun is still protecting the hydraulic circuit."
+            pumps[pump.id] = previous
+            actuator_reasons[pump.id] = "Overrun is still protecting the hydraulic circuit."
             continue
         if previous.state is PumpState.OVERRUN:
-            pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
-            commands.append(ActuatorCommand(pump_id, "turn_off", "Pump overrun has completed."))
+            pumps[pump.id] = PumpRuntime(PumpState.OFF, now)
+            commands.append(ActuatorCommand(pump.id, "turn_off", "Pump overrun has completed."))
         else:
-            pumps[pump_id] = previous
-        actuator_reasons[pump_id] = "Idle because no ready circuit requires this pump."
+            pumps[pump.id] = previous
+        actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
 
     overrun_pumps = {pump_id for pump_id, pump in pumps.items() if pump.state is PumpState.OVERRUN}
-    for circuit in plant.circuits.values():
-        valve_id = circuit.valve_id
+    for valve_id in plant.valves:
         valve = valves.get(valve_id, ValveRuntime())
-        if valve_consumers.get(valve_id) or circuit.pump_id in overrun_pumps:
+        protected_by_overrun = any(
+            circuit.pump_id in overrun_pumps and valve_id in circuit.valve_ids
+            for circuit in plant.circuits.values()
+        )
+        if valve_consumers.get(valve_id) or protected_by_overrun:
             continue
         if valve.state is not ValveState.CLOSED:
             valves[valve_id] = ValveRuntime(ValveState.CLOSED, now)

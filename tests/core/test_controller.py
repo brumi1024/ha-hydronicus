@@ -10,9 +10,11 @@ from hydronic_climate_core.model import (
     DeliveryRoute,
     PlantConfiguration,
     PlantSnapshot,
+    Pump,
     PumpState,
     RuntimeState,
     TemperatureObservation,
+    Valve,
     ValveState,
     Zone,
 )
@@ -25,14 +27,14 @@ def _plant() -> PlantConfiguration:
     return PlantConfiguration(
         id="plant",
         zones=(Zone("living", "Living", 21.0, "temperature.living"),),
+        valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
+        pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump", 120),),
         circuits=(
             Circuit(
                 "floor",
                 "Floor",
-                "valve.floor",
+                ("valve.floor",),
                 "pump.floor",
-                valve_opening_time_seconds=30,
-                pump_overrun_seconds=120,
             ),
         ),
         routes=(DeliveryRoute("living-floor", "living", "floor"),),
@@ -86,20 +88,23 @@ def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None
                 Zone("living", "Living", 21.0, "temperature.living"),
                 Zone("office", "Office", 21.0, "temperature.office"),
             ),
+            valves=(
+                Valve("valve.floor", "Floor valve", "switch.floor_valve", 1),
+                Valve("valve.office", "Office valve", "switch.office_valve", 1),
+            ),
+            pumps=(Pump("pump.shared", "Shared pump", "switch.shared_pump"),),
             circuits=(
                 Circuit(
                     "floor",
                     "Floor",
-                    "valve.floor",
+                    ("valve.floor",),
                     "pump.shared",
-                    valve_opening_time_seconds=1,
                 ),
                 Circuit(
                     "office",
                     "Office",
-                    "valve.office",
+                    ("valve.office",),
                     "pump.shared",
-                    valve_opening_time_seconds=1,
                 ),
             ),
             routes=(
@@ -137,3 +142,38 @@ def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
     unchanged = evaluate(plant, _snapshot(20.0), running.next_runtime, NOW + timedelta(seconds=31))
 
     assert unchanged.control_plan.commands == ()
+
+
+def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
+    """A circuit is ready only after all of its required valves are open."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="plant",
+            zones=(Zone("living", "Living", 21.0, "temperature.living"),),
+            valves=(
+                Valve("supply", "Supply valve", "switch.supply_valve", 10),
+                Valve("return", "Return valve", "switch.return_valve", 30),
+            ),
+            pumps=(Pump("pump", "Circulation pump", "switch.circulation_pump", 120),),
+            circuits=(Circuit("floor", "Floor", ("supply", "return"), "pump"),),
+            routes=(DeliveryRoute("living-floor", "living", "floor"),),
+        )
+    )
+
+    opening = evaluate(plant, _snapshot(20.0), RuntimeState(), NOW)
+    one_ready = evaluate(
+        plant, _snapshot(20.0), opening.next_runtime, NOW + timedelta(seconds=10)
+    )
+    all_ready = evaluate(
+        plant, _snapshot(20.0), one_ready.next_runtime, NOW + timedelta(seconds=30)
+    )
+
+    assert one_ready.next_runtime.valves["supply"].state is ValveState.OPEN
+    assert one_ready.next_runtime.valves["return"].state is ValveState.OPENING
+    assert one_ready.next_runtime.pumps["pump"].state is PumpState.OFF
+    assert all_ready.next_runtime.pumps["pump"].state is PumpState.RUNNING
+    commands = [
+        (command.actuator_id, command.action)
+        for command in all_ready.control_plan.commands
+    ]
+    assert commands == [("pump", "turn_on")]

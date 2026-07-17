@@ -48,12 +48,14 @@ class ZoneDemandBinarySensor(HydronicShadowEntity):
 class ActuatorRequestedBinarySensor(HydronicShadowEntity):
     """Whether a valve or pump is virtually requested by the controller."""
 
-    def __init__(self, entry: HydronicConfigEntry, actuator_id: str, kind: str) -> None:
+    def __init__(
+        self, entry: HydronicConfigEntry, actuator_id: str, actuator_name: str, kind: str
+    ) -> None:
         super().__init__(entry)
         self._actuator_id = actuator_id
         self._kind = kind
         self._attr_unique_id = f"{self._runtime.plant_id}_{kind}_{actuator_id}_requested"
-        self._attr_name = f"{kind.title()} requested"
+        self._attr_name = f"{actuator_name} requested"
 
     @property
     def is_on(self) -> bool:
@@ -77,11 +79,11 @@ async def async_setup_entry(
         ZoneDemandBinarySensor(entry, zone.id, zone.name) for zone in runtime.plant.zones.values()
     ]
     entities.extend(
-        ActuatorRequestedBinarySensor(entry, valve_id, "valve")
-        for valve_id in {circuit.valve_id for circuit in runtime.plant.circuits.values()}
+        ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve")
+        for valve in runtime.plant.valves.values()
     )
     entities.extend(
-        ActuatorRequestedBinarySensor(entry, pump_id, "pump")
-        for pump_id in {circuit.pump_id for circuit in runtime.plant.circuits.values()}
+        ActuatorRequestedBinarySensor(entry, pump.id, pump.name, "pump")
+        for pump in runtime.plant.pumps.values()
     )
     async_add_entities(entities)

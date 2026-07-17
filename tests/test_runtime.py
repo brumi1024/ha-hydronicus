@@ -65,6 +65,12 @@ runtime_module = import_module("custom_components.hydronic_climate.runtime")
 HydronicRuntime = runtime_module.HydronicRuntime
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
+PLANT_UUID = "00000000-0000-4000-8000-000000000001"
+ZONE_UUID = "00000000-0000-4000-8000-000000000002"
+VALVE_UUID = "00000000-0000-4000-8000-000000000003"
+PUMP_UUID = "00000000-0000-4000-8000-000000000004"
+CIRCUIT_UUID = "00000000-0000-4000-8000-000000000005"
+ROUTE_UUID = "00000000-0000-4000-8000-000000000006"
 
 
 class _State:
@@ -96,12 +102,12 @@ def _configured_entry() -> SimpleNamespace:
     return SimpleNamespace(
         data={
             "name": "Hydronic plant",
-            "plant_id": "plant",
+            "plant_id": PLANT_UUID,
             "shadow_mode": True,
             "topology": {
                 "zones": [
                     {
-                        "id": "zone",
+                        "id": ZONE_UUID,
                         "name": "Test zone",
                         "target_temperature": 21.0,
                         "temperature_sensor": "sensor.test_temperature",
@@ -109,15 +115,35 @@ def _configured_entry() -> SimpleNamespace:
                 ],
                 "circuits": [
                     {
-                        "id": "circuit",
+                        "id": CIRCUIT_UUID,
                         "name": "Test circuit",
-                        "valve_id": "switch.test_valve",
-                        "pump_id": "switch.test_pump",
-                        "valve_opening_time_seconds": 30.0,
-                        "pump_overrun_seconds": 120.0,
+                        "valve_ids": [VALVE_UUID],
+                        "pump_id": PUMP_UUID,
                     }
                 ],
-                "routes": [{"id": "route", "zone_id": "zone", "circuit_id": "circuit"}],
+                "valves": [
+                    {
+                        "id": VALVE_UUID,
+                        "name": "Test valve",
+                        "entity_id": "switch.test_valve",
+                        "opening_time_seconds": 30.0,
+                    }
+                ],
+                "pumps": [
+                    {
+                        "id": PUMP_UUID,
+                        "name": "Test pump",
+                        "entity_id": "switch.test_pump",
+                        "overrun_seconds": 120.0,
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": ROUTE_UUID,
+                        "zone_id": ZONE_UUID,
+                        "circuit_id": CIRCUIT_UUID,
+                    }
+                ],
             },
         }
     )
@@ -162,32 +188,28 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_start(hass)
 
             self.assertEqual(scheduled[0][0], 30.0)
-            self.assertEqual(
-                runtime.runtime_state.valves["switch.test_valve"].state.value, "opening"
-            )
+            self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "opening")
 
             clock.now.return_value = NOW + timedelta(seconds=30)
             scheduled[0][1](clock.now.return_value)
             await hass.tasks[-1]
 
-            self.assertEqual(runtime.runtime_state.valves["switch.test_valve"].state.value, "open")
-            self.assertEqual(runtime.runtime_state.pumps["switch.test_pump"].state.value, "running")
+            self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "open")
+            self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "running")
 
             hass.states.current = _State("22.0")
             clock.now.return_value = NOW + timedelta(seconds=31)
             await runtime.async_refresh(hass)
 
             self.assertEqual(scheduled[1][0], 120.0)
-            self.assertEqual(runtime.runtime_state.pumps["switch.test_pump"].state.value, "overrun")
+            self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "overrun")
 
             clock.now.return_value = NOW + timedelta(seconds=151)
             scheduled[1][1](clock.now.return_value)
             await hass.tasks[-1]
 
-            self.assertEqual(runtime.runtime_state.pumps["switch.test_pump"].state.value, "off")
-            self.assertEqual(
-                runtime.runtime_state.valves["switch.test_valve"].state.value, "closed"
-            )
+            self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
+            self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "closed")
 
     async def test_stop_cancels_state_and_timer_listeners(self) -> None:
         runtime = HydronicRuntime.from_entry(_configured_entry())
