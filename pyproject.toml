@@ -7,29 +7,36 @@ name = "ha-hydronic-climate"
 version = "0.1.0a1"
 description = "A safe, topology-aware Home Assistant integration for hydronic heating and cooling plants."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 authors = [{ name = "Hydronic Climate contributors" }]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest-homeassistant-custom-component==0.13.346",
+  "ruff",
 ]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-testpaths = ["tests/core", "tests/test_config_flow_import.py", "tests/test_runtime.py"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_untyped_defs = true

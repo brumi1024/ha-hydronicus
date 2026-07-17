@@ -30,6 +30,6 @@ async def test_setup_unload_and_reload_entry(hass) -> None:
     assert entry.runtime_data.shadow_mode is True
 
     assert await hass.config_entries.async_unload(entry.entry_id)
-    assert entry.runtime_data is None
+    assert not hasattr(entry, "runtime_data")
 
     assert await hass.config_entries.async_reload(entry.entry_id)

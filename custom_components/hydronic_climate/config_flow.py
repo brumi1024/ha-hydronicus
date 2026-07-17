@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    ACTUATOR_KIND_VALVE,
+    CONF_ACTUATOR_KIND,
+    CONF_CIRCUIT_IDS,
     CONF_CIRCUITS,
     CONF_ENTITY_ID,
     CONF_NAME,
@@ -34,9 +39,149 @@ from .const import (
     DEFAULT_TARGET_TEMPERATURE,
     DEFAULT_VALVE_OPENING_TIME,
     DOMAIN,
+    SUBENTRY_TYPE_ACTUATOR,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
 from .core.topology import TopologyValidationError, compile_topology
+from .entry_configuration import effective_plant_configuration
+
+
+def _valve_actuator_data(
+    user_input: Mapping[str, Any], actuator_id: str
+) -> dict[str, Any]:
+    """Normalize one valve actuator payload for persistent subentry storage."""
+    return {
+        "id": actuator_id,
+        CONF_ACTUATOR_KIND: ACTUATOR_KIND_VALVE,
+        CONF_NAME: str(user_input[CONF_NAME]).strip(),
+        CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
+        CONF_OPENING_TIME: user_input[CONF_OPENING_TIME],
+        CONF_CIRCUIT_IDS: user_input[CONF_CIRCUIT_IDS],
+    }
+
+
+def _valve_actuator_schema(
+    circuit_options: list[selector.SelectOptionDict],
+    defaults: Mapping[str, Any] | None = None,
+) -> vol.Schema:
+    """Build the shared valve form schema with optional reconfigure defaults."""
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): str,
+            vol.Required(
+                CONF_ENTITY_ID, default=defaults.get(CONF_ENTITY_ID, vol.UNDEFINED)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["switch", "valve"])
+            ),
+            vol.Required(
+                CONF_OPENING_TIME,
+                default=defaults.get(CONF_OPENING_TIME, DEFAULT_VALVE_OPENING_TIME),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            vol.Required(
+                CONF_CIRCUIT_IDS,
+                default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=circuit_options,
+                    multiple=True,
+                )
+            ),
+        }
+    )
+
+
+def _actuator_validation_error(
+    entry: config_entries.ConfigEntry,
+    data: Mapping[str, Any],
+    *,
+    excluded_subentry_id: str | None = None,
+) -> str | None:
+    """Return a flow error after validating the complete proposed topology."""
+    if not data[CONF_NAME]:
+        return "name_required"
+    try:
+        effective = effective_plant_configuration(
+            entry,
+            proposed_actuators=(data,),
+            excluded_subentry_id=excluded_subentry_id,
+        )
+        compile_topology(effective.configuration)
+    except (StoredTopologyError, TopologyValidationError):
+        return "invalid_actuator"
+    return None
+
+
+class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
+    """Add an actuator that extends one or more existing hydraulic circuits."""
+
+    def _circuit_options(self) -> list[selector.SelectOptionDict]:
+        entry = self._get_entry()
+        configuration = plant_configuration_from_entry_data(entry.data)
+        return [
+            selector.SelectOptionDict(value=circuit.id, label=circuit.name)
+            for circuit in configuration.circuits
+        ]
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Create one valve actuator attached to selected circuits."""
+        entry = self._get_entry()
+        circuit_options = self._circuit_options()
+        if not circuit_options:
+            return self.async_abort(reason="no_circuits")
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            actuator_id = str(uuid4())
+            data = _valve_actuator_data(user_input, actuator_id)
+            if error := _actuator_validation_error(entry, data):
+                errors["base"] = error
+            else:
+                return self.async_create_entry(
+                    title=data[CONF_NAME],
+                    data=data,
+                    unique_id=actuator_id,
+                )
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_valve_actuator_schema(circuit_options),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Update one valve actuator without changing its stable UUID."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry()
+        circuit_options = self._circuit_options()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = _valve_actuator_data(user_input, subentry.data["id"])
+            if error := _actuator_validation_error(
+                entry,
+                data,
+                excluded_subentry_id=subentry.subentry_id,
+            ):
+                errors["base"] = error
+            else:
+                return self.async_update_and_abort(
+                    entry,
+                    subentry,
+                    title=data[CONF_NAME],
+                    data=data,
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_valve_actuator_schema(circuit_options, subentry.data),
+            errors=errors,
+        )
 
 
 class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -45,6 +190,14 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     _draft: dict[str, Any]
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: config_entries.ConfigEntry
+    ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
+        """Return dynamic object types supported by this plant."""
+        return {SUBENTRY_TYPE_ACTUATOR: ActuatorSubentryFlowHandler}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

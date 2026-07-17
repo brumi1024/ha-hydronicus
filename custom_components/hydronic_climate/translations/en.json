@@ -37,5 +37,39 @@
       "name_required": "A plant name is required.",
       "invalid_topology": "The initial topology is not valid."
     }
+  },
+  "config_subentries": {
+    "actuator": {
+      "title": "Actuator",
+      "step": {
+        "user": {
+          "title": "Add a valve actuator",
+          "description": "Attach a shadow-mode valve to one or more existing circuits.",
+          "data": {
+            "name": "Actuator name",
+            "entity_id": "Valve entity",
+            "opening_time_seconds": "Opening time (seconds)",
+            "circuit_ids": "Circuits"
+          }
+        },
+        "reconfigure": {
+          "title": "Update valve actuator",
+          "description": "Change the valve binding, opening time, or attached circuits.",
+          "data": {
+            "name": "Actuator name",
+            "entity_id": "Valve entity",
+            "opening_time_seconds": "Opening time (seconds)",
+            "circuit_ids": "Circuits"
+          }
+        }
+      },
+      "error": {
+        "name_required": "An actuator name is required.",
+        "invalid_actuator": "The actuator cannot be attached to this topology."
+      },
+      "abort": {
+        "no_circuits": "Add a hydraulic circuit before adding an actuator."
+      }
+    }
   }
 }

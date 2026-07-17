@@ -75,15 +75,20 @@ async def async_setup_entry(
 ) -> None:
     """Add read-only shadow demand and actuator-request entities."""
     runtime = entry.runtime_data
-    entities: list[BinarySensorEntity] = [
+    parent_entities: list[BinarySensorEntity] = [
         ZoneDemandBinarySensor(entry, zone.id, zone.name) for zone in runtime.plant.zones.values()
     ]
-    entities.extend(
-        ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve")
-        for valve in runtime.plant.valves.values()
-    )
-    entities.extend(
+    subentry_entities: dict[str, list[BinarySensorEntity]] = {}
+    for valve in runtime.plant.valves.values():
+        entity = ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve")
+        if subentry_id := runtime.actuator_subentry_ids.get(valve.id):
+            subentry_entities.setdefault(subentry_id, []).append(entity)
+        else:
+            parent_entities.append(entity)
+    parent_entities.extend(
         ActuatorRequestedBinarySensor(entry, pump.id, pump.name, "pump")
         for pump in runtime.plant.pumps.values()
     )
-    async_add_entities(entities)
+    async_add_entities(parent_entities)
+    for subentry_id, entities in subentry_entities.items():
+        async_add_entities(entities, config_subentry_id=subentry_id)

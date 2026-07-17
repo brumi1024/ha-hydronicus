@@ -11,10 +11,16 @@ from .runtime import HydronicRuntime
 type HydronicConfigEntry = ConfigEntry[HydronicRuntime]
 
 
+async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> None:
+    """Reload the complete plant after config-entry or subentry changes."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> bool:
     """Set up a hydronic plant from a config entry."""
     runtime = HydronicRuntime.from_entry(entry)
     entry.runtime_data = runtime
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await runtime.async_start(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

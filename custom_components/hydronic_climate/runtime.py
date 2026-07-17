@@ -6,7 +6,7 @@ The initial vertical slice is intentionally shadow-only.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -15,7 +15,6 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
 from .const import CONF_NAME, CONF_PLANT_ID, CONF_SHADOW_MODE
-from .core.configuration import plant_configuration_from_entry_data
 from .core.controller import evaluate
 from .core.model import (
     CompiledPlant,
@@ -27,6 +26,7 @@ from .core.model import (
     ValveState,
 )
 from .core.topology import compile_topology
+from .entry_configuration import effective_plant_configuration
 
 
 @dataclass(slots=True)
@@ -37,6 +37,7 @@ class HydronicRuntime:
     name: str
     shadow_mode: bool
     plant: CompiledPlant
+    actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     evaluation: Evaluation | None = None
     snapshot: PlantSnapshot | None = None
@@ -48,12 +49,14 @@ class HydronicRuntime:
     @classmethod
     def from_entry(cls, entry: Any) -> HydronicRuntime:
         """Construct safe runtime data from a config entry."""
-        plant = compile_topology(plant_configuration_from_entry_data(entry.data))
+        effective = effective_plant_configuration(entry)
+        plant = compile_topology(effective.configuration)
         return cls(
             plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
             name=str(entry.data.get(CONF_NAME, getattr(entry, "title", "Hydronic plant"))),
             shadow_mode=bool(entry.data.get(CONF_SHADOW_MODE, True)),
             plant=plant,
+            actuator_subentry_ids=effective.actuator_subentry_ids,
         )
 
     async def async_start(self, hass: HomeAssistant) -> None:

@@ -181,6 +181,11 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             return cancel
 
         with (
+            mock.patch.object(
+                runtime_module,
+                "async_track_state_change_event",
+                return_value=mock.Mock(),
+            ),
             mock.patch.object(runtime_module, "async_call_later", side_effect=schedule),
             mock.patch.object(runtime_module, "datetime") as clock,
         ):
