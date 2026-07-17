@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "name": "Plant name"
+        }
+      }
+    },
+    "error": {
+      "name_required": "A plant name is required."
+    }
+  }
+}
