@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from hydronicus_core.controller import evaluate
+from hydronicus_core.executor import ActuatorExecutor, ActuatorOperation
 from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
+    PlantSnapshot,
     Pump,
     PumpState,
+    RuntimeState,
     TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
@@ -77,6 +82,32 @@ def test_two_zones_release_shared_pump_independently() -> None:
             ),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_active_executor_tracer_is_idempotent_at_unchanged_fake_clock() -> None:
+    """One demand transition dispatches once and an unchanged reevaluation is quiet."""
+    plant = _single_zone_scenario_plant(
+        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        valve_opening=30,
+    )
+    snapshot = PlantSnapshot({"sensor.zone": TemperatureObservation(20.0, NOW)})
+    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    first = evaluate(plant, snapshot, RuntimeState(), NOW)
+    first_report = await executor.async_execute(first.control_plan, dispatch)
+    unchanged = evaluate(plant, snapshot, first.next_runtime, NOW)
+    second_report = await executor.async_execute(unchanged.control_plan, dispatch)
+
+    assert first_report.executed[0].service == "turn_on"
+    assert first_report.executed[0].entity_id == "switch.scenario_valve"
+    assert len(dispatched) == 1
+    assert second_report.executed == ()
+    assert second_report.suppressed == ()
 
 
 def test_coupled_zones_share_one_valve() -> None:
@@ -150,6 +181,7 @@ def _single_zone_scenario_plant(
     sensor_metadata: tuple[TemperatureSensorMetadata, ...],
     minimum_active: float = 0,
     minimum_idle: float = 0,
+    valve_opening: float = 0,
 ) -> object:
     """Build a small synthetic plant for named fake-clock scenarios."""
     return compile_topology(
@@ -165,7 +197,7 @@ def _single_zone_scenario_plant(
                     minimum_idle_duration_seconds=minimum_idle,
                 ),
             ),
-            valves=(Valve("valve", "Scenario valve", "switch.scenario_valve", 0),),
+            valves=(Valve("valve", "Scenario valve", "switch.scenario_valve", valve_opening),),
             pumps=(Pump("pump", "Scenario pump", "switch.scenario_pump", 0),),
             circuits=(Circuit("circuit", "Scenario circuit", ("valve",), "pump"),),
             routes=(DeliveryRoute("route", "zone", "circuit"),),

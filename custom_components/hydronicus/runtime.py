@@ -1,8 +1,4 @@
-"""Home Assistant runtime boundary for a hydronic plant.
-
-Hardware observation and service execution will be added here in later milestones.
-The initial vertical slice is intentionally shadow-only.
-"""
+"""Home Assistant runtime boundary for a hydronic plant."""
 
 from __future__ import annotations
 
@@ -16,11 +12,13 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
 from .const import (
+    CONF_ACTUATOR_SHADOW_MODES,
     CONF_NAME,
     CONF_PLANT_ID,
     CONF_SHADOW_MODE,
 )
 from .core.controller import evaluate
+from .core.executor import ActuatorExecutor, ActuatorOperation, ExecutionReport
 from .core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
@@ -52,16 +50,27 @@ class HydronicRuntime:
     plant: CompiledPlant
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
+    actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
     evaluation: Evaluation | None = None
     snapshot: PlantSnapshot | None = None
+    last_execution: ExecutionReport | None = None
     _hass: HomeAssistant | None = None
     _entry: Any | None = None
     _remove_state_listener: Callable[[], None] | None = None
     _remove_transition_timer: Callable[[], None] | None = None
     _listeners: set[Callable[[], None]] = field(default_factory=set)
+    executor: ActuatorExecutor = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Create an executor whose state starts unknown until observed."""
+        self.executor = ActuatorExecutor.from_plant(
+            self.plant,
+            shadow_mode=self.shadow_mode,
+            actuator_shadow_modes=self.actuator_shadow_modes,
+        )
 
     @classmethod
     def from_entry(cls, entry: Any) -> HydronicRuntime:
@@ -75,6 +84,7 @@ class HydronicRuntime:
             plant=plant,
             actuator_subentry_ids=effective.actuator_subentry_ids,
             zone_subentry_ids=effective.zone_subentry_ids,
+            actuator_shadow_modes=_stored_actuator_shadow_modes(entry),
             zone_target_temperatures={
                 zone.id: zone.target_temperature for zone in plant.zones.values()
             },
@@ -86,14 +96,15 @@ class HydronicRuntime:
         )
 
     async def async_start(self, hass: HomeAssistant) -> None:
-        """Observe configured sensors and evaluate the shadow plan without service calls."""
+        """Reconcile observations, evaluate the plan, and execute safe commands."""
         if self._remove_state_listener is not None:
             self._remove_state_listener()
             self._remove_state_listener = None
         self._hass = hass
+        self.executor.observe_entities(self._actuator_states(hass))
         await self.async_refresh(hass)
         self._remove_state_listener = async_track_state_change_event(
-            hass, self._temperature_sensor_ids(), self._async_handle_state_change
+            hass, self._observed_entity_ids(), self._async_handle_state_change
         )
 
     async def async_stop(self) -> None:
@@ -217,7 +228,14 @@ class HydronicRuntime:
 
     @callback
     def _async_handle_state_change(self, event: Event[EventStateChangedData]) -> None:
-        """Re-evaluate after a configured temperature sensor changes."""
+        """Observe actuator feedback and re-evaluate after a configured state changes."""
+        entity_id = event.data.get("entity_id")
+        new_state = event.data.get("new_state")
+        if entity_id is not None:
+            self.executor.observe_entity_state(
+                entity_id,
+                getattr(new_state, "state", None),
+            )
         if self._hass is not None:
             self._hass.async_create_task(self.async_refresh(self._hass))
 
@@ -242,6 +260,33 @@ class HydronicRuntime:
                 for zone in self.plant.zones.values()
                 for sensor_id in zone.temperature_sensors
             )
+        )
+
+    def _actuator_states(self, hass: HomeAssistant) -> dict[str, str | None]:
+        """Read configured actuator states without deriving desired state."""
+        return {
+            binding.entity_id: getattr(hass.states.get(binding.entity_id), "state", None)
+            for binding in self.executor.bindings.values()
+        }
+
+    def _observed_entity_ids(self) -> tuple[str, ...]:
+        """Return sensor and actuator entities for one shared state listener."""
+        return tuple(
+            dict.fromkeys(
+                self._temperature_sensor_ids()
+                + tuple(binding.entity_id for binding in self.executor.bindings.values())
+            )
+        )
+
+    async def _async_dispatch_actuator(
+        self, hass: HomeAssistant, operation: ActuatorOperation
+    ) -> None:
+        """Translate a generic operation into one explicit Home Assistant service call."""
+        await hass.services.async_call(
+            operation.domain,
+            operation.service,
+            {"entity_id": operation.entity_id},
+            blocking=True,
         )
 
     def _next_transition_delay(self, now: datetime) -> float | None:
@@ -340,6 +385,10 @@ class HydronicRuntime:
         result = evaluate(evaluation_plant, self.snapshot, self.runtime_state, now)
         self.runtime_state = result.next_runtime
         self.evaluation = result
+        self.last_execution = await self.executor.async_execute(
+            result.control_plan,
+            lambda operation: self._async_dispatch_actuator(hass, operation),
+        )
         if self._entry is not None or self._hass is not None:
             self._schedule_next_transition(hass, now)
         for listener in self._listeners:
@@ -387,6 +436,18 @@ def _stored_zone_preset_mode(
         return "none"
     value = str(data.get("preset_mode", "none")).lower()
     return value if value in _PRESET_MODES and value in zone.preset_targets else "none"
+
+
+def _stored_actuator_shadow_modes(entry: Any) -> Mapping[str, bool]:
+    """Read optional per-actuator shadow flags without coercing malformed values."""
+    raw = entry.data.get(CONF_ACTUATOR_SHADOW_MODES, {})
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(actuator_id): value
+        for actuator_id, value in raw.items()
+        if isinstance(value, bool)
+    }
 
 
 def _zone_preset_mode_update(
