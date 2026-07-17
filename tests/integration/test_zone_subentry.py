@@ -178,6 +178,27 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     assert registry.async_get(demand_entity_id).config_subentry_id == subentry.subentry_id
     assert registry.async_get(explanation_entity_id).config_subentry_id == subentry.subentry_id
 
+    climate_state = hass.states.get("climate.hydronic_plant_office")
+    assert climate_state is not None
+    assert climate_state.state == "heat"
+    assert climate_state.attributes["hvac_action"] == "heating"
+    assert climate_state.attributes["current_temperature"] == 18.0
+    assert climate_state.attributes["temperature"] == 20.0
+
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.hydronic_plant_office", "temperature": 17.0},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    climate_state = hass.states.get("climate.hydronic_plant_office")
+    assert climate_state is not None
+    assert climate_state.attributes["hvac_action"] == "idle"
+    assert climate_state.attributes["temperature"] == 17.0
+    assert subentry.data[CONF_TARGET_TEMPERATURE] == 17.0
+
 
 async def test_add_zone_subentry_aggregates_multiple_battery_sensors(hass) -> None:
     """A UI-created zone should average all selected battery sensor states."""

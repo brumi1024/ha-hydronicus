@@ -47,7 +47,7 @@ def _elapsed(now: datetime, changed_at: datetime | None) -> timedelta:
     return now - changed_at if changed_at is not None else timedelta(0)
 
 
-def _mean_zone_temperature(
+def mean_zone_temperature(
     sensor_ids: tuple[str, ...], snapshot: PlantSnapshot
 ) -> float | None:
     """Average all required readings without imposing an age policy."""
@@ -81,7 +81,7 @@ def evaluate(
     zone_demands: dict[str, bool] = {}
     zone_reasons: dict[str, str] = {}
     for zone in plant.zones.values():
-        temperature = _mean_zone_temperature(zone.temperature_sensors, snapshot)
+        temperature = mean_zone_temperature(zone.temperature_sensors, snapshot)
         demand, reason = _zone_demand(
             previous=runtime.zone_demands.get(zone.id, False),
             temperature=temperature,

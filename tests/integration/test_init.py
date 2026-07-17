@@ -33,3 +33,64 @@ async def test_setup_unload_and_reload_entry(hass) -> None:
     assert not hasattr(entry, "runtime_data")
 
     assert await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
+    """Configured climate entities must disappear with their parent entry."""
+    hass.states.async_set("sensor.test_zone_temperature", "18.0")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        data={
+            CONF_NAME: "Hydronic plant",
+            CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
+            CONF_SHADOW_MODE: True,
+            "topology": {
+                "zones": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000002",
+                        "name": "Test zone",
+                        "target_temperature": 21.0,
+                        "temperature_sensor": "sensor.test_zone_temperature",
+                    }
+                ],
+                "valves": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000003",
+                        "name": "Test valve",
+                        "entity_id": "switch.test_valve",
+                    }
+                ],
+                "pumps": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000004",
+                        "name": "Test pump",
+                        "entity_id": "switch.test_pump",
+                    }
+                ],
+                "circuits": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000005",
+                        "name": "Test circuit",
+                        "valve_ids": ["00000000-0000-4000-8000-000000000003"],
+                        "pump_id": "00000000-0000-4000-8000-000000000004",
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000006",
+                        "zone_id": "00000000-0000-4000-8000-000000000002",
+                        "circuit_id": "00000000-0000-4000-8000-000000000005",
+                    }
+                ],
+            },
+        },
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    climate_entity_id = "climate.hydronic_plant_test_zone"
+    assert hass.states.get(climate_entity_id) is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert hass.states.get(climate_entity_id).state == "unavailable"

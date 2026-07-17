@@ -7,15 +7,20 @@ The initial vertical slice is intentionally shadow-only.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from typing import Any
 
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
-from .const import CONF_NAME, CONF_PLANT_ID, CONF_SHADOW_MODE
-from .core.controller import evaluate
+from .const import (
+    CONF_NAME,
+    CONF_PLANT_ID,
+    CONF_SHADOW_MODE,
+)
+from .core.controller import evaluate, mean_zone_temperature
 from .core.model import (
     CompiledPlant,
     Evaluation,
@@ -26,7 +31,10 @@ from .core.model import (
     ValveState,
 )
 from .core.topology import compile_topology
-from .entry_configuration import effective_plant_configuration
+from .entry_configuration import (
+    effective_plant_configuration,
+    zone_target_temperature_update,
+)
 
 
 @dataclass(slots=True)
@@ -40,9 +48,11 @@ class HydronicRuntime:
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
+    zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     evaluation: Evaluation | None = None
     snapshot: PlantSnapshot | None = None
     _hass: HomeAssistant | None = None
+    _entry: Any | None = None
     _remove_state_listener: Callable[[], None] | None = None
     _remove_transition_timer: Callable[[], None] | None = None
     _listeners: set[Callable[[], None]] = field(default_factory=set)
@@ -59,6 +69,10 @@ class HydronicRuntime:
             plant=plant,
             actuator_subentry_ids=effective.actuator_subentry_ids,
             zone_subentry_ids=effective.zone_subentry_ids,
+            zone_target_temperatures={
+                zone.id: zone.target_temperature for zone in plant.zones.values()
+            },
+            _entry=entry,
         )
 
     async def async_start(self, hass: HomeAssistant) -> None:
@@ -76,6 +90,41 @@ class HydronicRuntime:
             self._remove_state_listener = None
         self._cancel_transition_timer()
         self._hass = None
+        self._entry = None
+
+    async def async_set_zone_target_temperature(
+        self, zone_id: str, temperature: float, *, hass: HomeAssistant | None = None
+    ) -> None:
+        """Persist and immediately apply a zone setpoint in shadow mode."""
+        if not isfinite(temperature):
+            raise ValueError("Zone target temperature must be finite.")
+        if zone_id not in self.plant.zones:
+            raise ValueError(f"Unknown zone {zone_id}.")
+        active_hass = hass or self._hass
+        if active_hass is None or self._entry is None:
+            raise RuntimeError("Hydronic runtime is not started.")
+
+        subentry_id, data = zone_target_temperature_update(
+            self._entry, zone_id, temperature
+        )
+        if subentry_id is not None:
+            subentry = self._entry.subentries[subentry_id]
+            active_hass.config_entries.async_update_subentry(
+                self._entry, subentry, data=data
+            )
+        else:
+            active_hass.config_entries.async_update_entry(self._entry, data=data)
+
+        self.zone_target_temperatures[zone_id] = temperature
+        await self.async_refresh(active_hass)
+
+    def zone_current_temperature(self, zone_id: str) -> float | None:
+        """Return the current aggregate temperature for one zone."""
+        if self.snapshot is None or zone_id not in self.plant.zones:
+            return None
+        return mean_zone_temperature(
+            self.plant.zones[zone_id].temperature_sensors, self.snapshot
+        )
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register an entity update callback."""
@@ -161,7 +210,19 @@ class HydronicRuntime:
             )
         self.snapshot = PlantSnapshot(observations)
         now = datetime.now(UTC)
-        result = evaluate(self.plant, self.snapshot, self.runtime_state, now)
+        evaluation_plant = replace(
+            self.plant,
+            zones={
+                zone_id: replace(
+                    zone,
+                    target_temperature=self.zone_target_temperatures.get(
+                        zone_id, zone.target_temperature
+                    ),
+                )
+                for zone_id, zone in self.plant.zones.items()
+            },
+        )
+        result = evaluate(evaluation_plant, self.snapshot, self.runtime_state, now)
         self.runtime_state = result.next_runtime
         self.evaluation = result
         self._schedule_next_transition(hass, now)

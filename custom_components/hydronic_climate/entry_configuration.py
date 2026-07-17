@@ -19,8 +19,10 @@ from .const import (
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_SENSOR,
     CONF_TEMPERATURE_SENSORS,
+    CONF_TOPOLOGY,
     CONF_VALVE_IDS,
     CONF_ZONE_IDS,
+    CONF_ZONES,
     SUBENTRY_TYPE_ACTUATOR,
     SUBENTRY_TYPE_CIRCUIT,
     SUBENTRY_TYPE_ZONE,
@@ -36,6 +38,42 @@ class EffectivePlantConfiguration:
     configuration: PlantConfiguration
     actuator_subentry_ids: Mapping[str, str]
     zone_subentry_ids: Mapping[str, str]
+
+
+def zone_target_temperature_update(
+    entry: Any, zone_id: str, temperature: float
+) -> tuple[str | None, Mapping[str, Any]]:
+    """Build a persisted target-temperature update for a configured zone."""
+    effective = effective_plant_configuration(entry)
+    if subentry_id := effective.zone_subentry_ids.get(zone_id):
+        subentry = entry.subentries[subentry_id]
+        return subentry_id, {
+            **subentry.data,
+            CONF_TARGET_TEMPERATURE: temperature,
+        }
+
+    topology = entry.data.get(CONF_TOPOLOGY, {})
+    if not isinstance(topology, Mapping):
+        raise StoredTopologyError("Stored topology must be an object.")
+    raw_zones = topology.get(CONF_ZONES, [])
+    if not isinstance(raw_zones, list):
+        raise StoredTopologyError("Stored topology zones must be a list.")
+    zones: list[Mapping[str, Any]] = []
+    found = False
+    for raw_zone in raw_zones:
+        if not isinstance(raw_zone, Mapping):
+            raise StoredTopologyError("Stored topology zones must be objects.")
+        if str(raw_zone.get("id")) == zone_id:
+            zones.append({**raw_zone, CONF_TARGET_TEMPERATURE: temperature})
+            found = True
+        else:
+            zones.append(raw_zone)
+    if not found:
+        raise StoredTopologyError(f"Unknown zone {zone_id}.")
+    return None, {
+        **entry.data,
+        CONF_TOPOLOGY: {**topology, CONF_ZONES: zones},
+    }
 
 
 def _required(data: Mapping[str, Any], key: str) -> Any:
