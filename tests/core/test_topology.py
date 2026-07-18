@@ -677,3 +677,109 @@ def test_compile_topology_accepts_a_disabled_route_when_other_routes_cover_the_g
         DeliveryRoute("living-route", "living", "circuit"),
         DeliveryRoute("office-route", "office", "circuit-two"),
     )
+
+
+def test_compile_topology_accepts_cooling_references_and_metadata() -> None:
+    """Cooling compatibility is explicit and non-cooling circuits remain unchanged."""
+    zone = Zone(
+        "zone",
+        "Zone",
+        24.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.temperature"),),
+        humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+    )
+    plant = PlantConfiguration(
+        id="cooling",
+        zones=(zone,),
+        valves=(Valve("valve", "Valve", "switch.valve"),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(
+            Circuit(
+                "circuit",
+                "Circuit",
+                ("valve",),
+                "pump",
+                cooling_enabled=True,
+                surface_temperature_sensor="sensor.surface",
+            ),
+        ),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert compiled.circuits["circuit"].cooling_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("circuit_kwargs", "message"),
+    [
+        ({"cooling_enabled": True}, "supply or surface"),
+        (
+            {
+                "cooling_enabled": True,
+                "supply_temperature_sensor": "sensor.supply",
+                "condensation_margin": -1,
+            },
+            "condensation margin",
+        ),
+        (
+            {
+                "cooling_enabled": True,
+                "supply_temperature_sensor": "sensor.supply",
+                "supply_temperature_max_age_seconds": 0,
+            },
+            "supply reference maximum age",
+        ),
+    ],
+)
+def test_compile_topology_rejects_unsafe_cooling_circuits(
+    circuit_kwargs: dict[str, object], message: str
+) -> None:
+    """Cooling circuits cannot bypass reference or freshness configuration."""
+    zone = Zone(
+        "zone",
+        "Zone",
+        24.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.temperature"),),
+        humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+    )
+    circuit = Circuit("circuit", "Circuit", ("valve",), "pump", **circuit_kwargs)
+    plant = PlantConfiguration(
+        id="cooling",
+        zones=(zone,),
+        valves=(Valve("valve", "Valve", "switch.valve"),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(circuit,),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+
+    with pytest.raises(TopologyValidationError, match=message):
+        compile_topology(plant)
+
+
+def test_compile_topology_rejects_cooling_without_humidity_observation() -> None:
+    """A cooling-enabled route cannot run without zone humidity topology."""
+    plant = _metadata_plant(
+        Zone("zone", "Zone", 24.0, ("sensor.temperature",)),
+    )
+    plant = PlantConfiguration(
+        id=plant.id,
+        zones=plant.zones,
+        valves=plant.valves,
+        pumps=plant.pumps,
+        circuits=(
+            Circuit(
+                "circuit",
+                "Circuit",
+                ("valve",),
+                "pump",
+                cooling_enabled=True,
+                supply_temperature_sensor="sensor.supply",
+            ),
+        ),
+        routes=plant.routes,
+    )
+
+    with pytest.raises(TopologyValidationError, match="humidity observations"):
+        compile_topology(plant)

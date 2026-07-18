@@ -61,6 +61,12 @@ def _validate_zone(zone: Zone) -> None:
         raise TopologyValidationError(
             f"Zone {zone_id} heating hysteresis deltas must be finite and non-negative."
         )
+    if not _finite_non_negative(zone.cooling_start_delta) or not _finite_non_negative(
+        zone.cooling_stop_delta
+    ):
+        raise TopologyValidationError(
+            f"Zone {zone_id} cooling hysteresis deltas must be finite and non-negative."
+        )
     if not _finite_non_negative(zone.minimum_active_duration_seconds):
         raise TopologyValidationError(
             f"Zone {zone_id} minimum active duration must be finite and non-negative."
@@ -106,6 +112,37 @@ def _validate_zone(zone: Zone) -> None:
         if not isinstance(sensor.designated_reference, bool):
             raise TopologyValidationError(
                 f"Zone {zone_id} sensor {sensor.entity_id} reference status must be boolean."
+            )
+
+    humidity_metadata = tuple(zone.humidity_sensor_metadata)
+    humidity_ids = tuple(sensor.entity_id for sensor in humidity_metadata)
+    if duplicates := _duplicates(humidity_ids):
+        raise TopologyValidationError(
+            f"Zone {zone_id} humidity sensors must not contain duplicates: "
+            + ", ".join(sorted(duplicates))
+            + "."
+        )
+    for sensor in humidity_metadata:
+        if not isinstance(sensor.entity_id, str) or not sensor.entity_id.strip():
+            raise TopologyValidationError(
+                f"Zone {zone_id} humidity sensors must be non-empty entity ids."
+            )
+        if not isinstance(sensor.required, bool):
+            raise TopologyValidationError(
+                f"Zone {zone_id} humidity sensor {sensor.entity_id} required status "
+                "must be boolean."
+            )
+        if not _finite_positive(sensor.weight):
+            raise TopologyValidationError(
+                f"Zone {zone_id} humidity sensor weights must be positive and finite."
+            )
+        if not isfinite(float(sensor.calibration_offset)):
+            raise TopologyValidationError(
+                f"Zone {zone_id} humidity sensor {sensor.entity_id} calibration must be finite."
+            )
+        if not _finite_positive(sensor.max_age_seconds):
+            raise TopologyValidationError(
+                f"Zone {zone_id} humidity sensor {sensor.entity_id} maximum age must be positive."
             )
 
     reference_ids = tuple(
@@ -258,6 +295,37 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     for circuit in configuration.circuits:
         if not circuit.valve_ids:
             raise TopologyValidationError(f"Circuit {circuit.id} requires at least one valve.")
+        if not isinstance(circuit.cooling_enabled, bool):
+            raise TopologyValidationError(f"Circuit {circuit.id} cooling enabled must be boolean.")
+        if circuit.cooling_enabled and not (
+            circuit.supply_temperature_sensor or circuit.surface_temperature_sensor
+        ):
+            raise TopologyValidationError(
+                f"Cooling circuit {circuit.id} requires a supply or surface temperature reference."
+            )
+        for reference_name, reference in (
+            ("supply", circuit.supply_temperature_sensor),
+            ("surface", circuit.surface_temperature_sensor),
+        ):
+            if reference is not None and (
+                not isinstance(reference, str) or not reference.strip()
+            ):
+                raise TopologyValidationError(
+                    f"Circuit {circuit.id} {reference_name} temperature reference must be "
+                    "a non-empty entity id."
+                )
+        if not _finite_non_negative(circuit.condensation_margin):
+            raise TopologyValidationError(
+                f"Circuit {circuit.id} condensation margin must be finite and non-negative."
+            )
+        if not _finite_positive(circuit.supply_temperature_max_age_seconds):
+            raise TopologyValidationError(
+                f"Circuit {circuit.id} supply reference maximum age must be positive and finite."
+            )
+        if not _finite_positive(circuit.surface_temperature_max_age_seconds):
+            raise TopologyValidationError(
+                f"Circuit {circuit.id} surface reference maximum age must be positive and finite."
+            )
         unknown_valves = sorted(set(circuit.valve_ids) - set(valves))
         if unknown_valves:
             raise TopologyValidationError(
@@ -285,6 +353,21 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             continue
         referenced_zones.add(route.zone_id)
         referenced_circuits.add(route.circuit_id)
+
+    for circuit in configuration.circuits:
+        if not circuit.cooling_enabled:
+            continue
+        served_zone_ids = {
+            route.zone_id
+            for route in configuration.routes
+            if route.enabled and route.circuit_id == circuit.id
+        }
+        for zone_id in sorted(served_zone_ids):
+            if not zones[zone_id].humidity_sensor_metadata:
+                raise TopologyValidationError(
+                    f"Cooling circuit {circuit.id} requires humidity observations for "
+                    f"zone {zone_id}."
+                )
 
     orphaned_zones = sorted(set(zones) - referenced_zones)
     orphaned_valves = sorted(set(valves) - referenced_valves)

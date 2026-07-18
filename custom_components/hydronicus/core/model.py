@@ -118,6 +118,8 @@ class TemperatureSensorMetadata:
 # that describe the value as a sensor configuration or sensor record.
 TemperatureSensorConfig = TemperatureSensorMetadata
 TemperatureSensor = TemperatureSensorMetadata
+HumiditySensorMetadata = TemperatureSensorMetadata
+ObservationMetadata = TemperatureSensorMetadata
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -134,6 +136,9 @@ class Zone:
     minimum_active_duration_seconds: float = 0.0
     minimum_idle_duration_seconds: float = 0.0
     preset_targets: Mapping[str, float] = field(default_factory=dict)
+    humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...] = ()
+    cooling_start_delta: float = 0.3
+    cooling_stop_delta: float = 0.1
 
     def __init__(
         self,
@@ -148,9 +153,14 @@ class Zone:
         minimum_active_duration_seconds: float = 0.0,
         minimum_idle_duration_seconds: float = 0.0,
         preset_targets: Mapping[str, float] | None = None,
+        humidity_sensors: Iterable[str | TemperatureSensorMetadata] = (),
+        humidity_sensor_weights: Mapping[str, float] | None = None,
+        cooling_start_delta: float = 0.3,
+        cooling_stop_delta: float = 0.1,
         *,
         sensor_metadata: Iterable[str | TemperatureSensorMetadata] | None = None,
         temperature_sensor_metadata: Iterable[str | TemperatureSensorMetadata] | None = None,
+        humidity_sensor_metadata: Iterable[str | TemperatureSensorMetadata] | None = None,
     ) -> None:
         """Accept the legacy ID tuple while storing one canonical metadata tuple."""
         if (
@@ -166,25 +176,11 @@ class Zone:
         )
         raw_items = tuple(temperature_sensors if raw_metadata is None else raw_metadata)
         legacy_weights = temperature_sensor_weights or {}
-        metadata: list[TemperatureSensorMetadata] = []
-        for item in raw_items:
-            if isinstance(item, TemperatureSensorMetadata):
-                sensor = item
-            else:
-                sensor = TemperatureSensorMetadata(
-                    entity_id=str(item),
-                    weight=float(legacy_weights.get(str(item), 1.0)),
-                )
-            if sensor.entity_id in legacy_weights and sensor.weight == 1.0:
-                sensor = TemperatureSensorMetadata(
-                    entity_id=sensor.entity_id,
-                    required=sensor.required,
-                    weight=float(legacy_weights[sensor.entity_id]),
-                    calibration_offset=sensor.calibration_offset,
-                    max_age_seconds=sensor.max_age_seconds,
-                    designated_reference=sensor.designated_reference,
-                )
-            metadata.append(sensor)
+        metadata = _sensor_metadata_records(raw_items, legacy_weights)
+        raw_humidity = tuple(
+            humidity_sensors if humidity_sensor_metadata is None else humidity_sensor_metadata
+        )
+        humidity_metadata = _sensor_metadata_records(raw_humidity, humidity_sensor_weights or {})
 
         object.__setattr__(self, "id", id)
         object.__setattr__(self, "name", name)
@@ -200,6 +196,9 @@ class Zone:
             "preset_targets",
             MappingProxyType(dict(preset_targets or {})),
         )
+        object.__setattr__(self, "humidity_sensor_metadata", humidity_metadata)
+        object.__setattr__(self, "cooling_start_delta", cooling_start_delta)
+        object.__setattr__(self, "cooling_stop_delta", cooling_stop_delta)
 
     @property
     def temperature_sensors(self) -> tuple[str, ...]:
@@ -215,6 +214,43 @@ class Zone:
     def temperature_sensor_weights(self) -> Mapping[str, float]:
         """Return a read-only compatibility view of configured weights."""
         return {sensor.entity_id: sensor.weight for sensor in self.temperature_sensor_metadata}
+
+    @property
+    def humidity_sensors(self) -> tuple[str, ...]:
+        """Return configured humidity entity IDs."""
+        return tuple(sensor.entity_id for sensor in self.humidity_sensor_metadata)
+
+    @property
+    def humidity_sensor_weights(self) -> Mapping[str, float]:
+        """Return a read-only view of configured humidity weights."""
+        return {sensor.entity_id: sensor.weight for sensor in self.humidity_sensor_metadata}
+
+
+def _sensor_metadata_records(
+    raw_items: Iterable[str | TemperatureSensorMetadata],
+    weights: Mapping[str, float],
+) -> tuple[TemperatureSensorMetadata, ...]:
+    """Normalize legacy entity IDs and immutable observation metadata."""
+    metadata: list[TemperatureSensorMetadata] = []
+    for item in raw_items:
+        if isinstance(item, TemperatureSensorMetadata):
+            sensor = item
+        else:
+            sensor = TemperatureSensorMetadata(
+                entity_id=str(item),
+                weight=float(weights.get(str(item), 1.0)),
+            )
+        if sensor.entity_id in weights and sensor.weight == 1.0:
+            sensor = TemperatureSensorMetadata(
+                entity_id=sensor.entity_id,
+                required=sensor.required,
+                weight=float(weights[sensor.entity_id]),
+                calibration_offset=sensor.calibration_offset,
+                max_age_seconds=sensor.max_age_seconds,
+                designated_reference=sensor.designated_reference,
+            )
+        metadata.append(sensor)
+    return tuple(metadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +299,10 @@ class ZoneDecision:
     aggregation: AggregationResult | None = None
     explanation: str = ""
     deadline: datetime | None = None
+    humidity_aggregation: AggregationResult | None = None
+    dew_point: float | None = None
+    condensation_margin: float | None = None
+    interlocks: tuple[SafetyInterlockResult, ...] = ()
 
     @property
     def decision(self) -> ZoneDecisionStatus:
@@ -413,6 +453,27 @@ class Circuit:
     name: str
     valve_ids: tuple[str, ...]
     pump_id: str
+    cooling_enabled: bool = False
+    supply_temperature_sensor: str | None = None
+    surface_temperature_sensor: str | None = None
+    condensation_margin: float = 2.0
+    supply_temperature_max_age_seconds: float = 1800.0
+    surface_temperature_max_age_seconds: float = 1800.0
+
+    @property
+    def supply_temperature_entity_id(self) -> str | None:
+        """Return the configured supply reference using an entity-oriented name."""
+        return self.supply_temperature_sensor
+
+    @property
+    def surface_temperature_entity_id(self) -> str | None:
+        """Return the configured surface reference using an entity-oriented name."""
+        return self.surface_temperature_sensor
+
+    @property
+    def cooling_condensation_margin(self) -> float:
+        """Return the configured cooling safety margin in degrees Celsius."""
+        return self.condensation_margin
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,6 +597,8 @@ class ControlPlan:
     cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
     source_recommendation: SourceRecommendation | None = None
     interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
+    cooling_valve_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    cooling_pump_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,6 +612,8 @@ class ControllerDiagnostics:
     cooling_zone_decisions: Mapping[str, ZoneDecision] = field(default_factory=dict)
     interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
     source_recommendation: SourceRecommendation | None = None
+    cooling_circuit_reasons: Mapping[str, str] = field(default_factory=dict)
+    cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def zone_diagnostics(self) -> Mapping[str, ZoneDecision]:

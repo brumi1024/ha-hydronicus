@@ -28,6 +28,9 @@ class ScenarioStep:
 
     after: timedelta
     temperatures: Mapping[str, float]
+    humidities: Mapping[str, float] = field(default_factory=dict)
+    supply_temperatures: Mapping[str, float] = field(default_factory=dict)
+    surface_temperatures: Mapping[str, float] = field(default_factory=dict)
     valves: Mapping[str, ValveState] = field(default_factory=dict)
     pumps: Mapping[str, PumpState] = field(default_factory=dict)
     commands: frozenset[tuple[str, str]] = frozenset()
@@ -39,6 +42,8 @@ class ScenarioStep:
     check_source: bool = False
     source_id: str | None = None
     source_explanation: str | None = None
+    cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
+    cooling_zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
 
 
 def run_scenario(
@@ -61,6 +66,18 @@ def run_scenario(
                     for entity_id, value in step.temperatures.items()
                 }
             ),
+            humidities={
+                entity_id: TemperatureObservation(value, now)
+                for entity_id, value in step.humidities.items()
+            },
+            supply_temperatures={
+                entity_id: TemperatureObservation(value, now)
+                for entity_id, value in step.supply_temperatures.items()
+            },
+            surface_temperatures={
+                entity_id: TemperatureObservation(value, now)
+                for entity_id, value in step.surface_temperatures.items()
+            },
             source_temperatures=step.source_temperatures,
             source_availability=step.source_availability,
         )
@@ -92,5 +109,15 @@ def run_scenario(
             assert recommendation is not None
             assert recommendation.source_id == step.source_id
             if step.source_explanation is not None:
-                assert step.source_explanation in recommendation.explanation
+            assert step.source_explanation in recommendation.explanation
+        if step.cooling_zone_demands:
+            assert {
+                zone_id: result.next_runtime.cooling_zone_demands[zone_id]
+                for zone_id in step.cooling_zone_demands
+            } == step.cooling_zone_demands
+        if step.cooling_zone_statuses:
+            assert {
+                zone_id: result.diagnostics.cooling_zone_decisions[zone_id].status
+                for zone_id in step.cooling_zone_statuses
+            } == step.cooling_zone_statuses
         runtime = result.next_runtime

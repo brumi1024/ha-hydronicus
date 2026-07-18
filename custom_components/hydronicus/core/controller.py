@@ -1,11 +1,11 @@
-"""Deterministic, heating-only shadow controller for Hydronicus."""
+"""Deterministic heating and cooling shadow controller for Hydronicus."""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime, timedelta
-from math import fsum, isfinite
+from math import fsum, isfinite, log
 from statistics import median
 
 from .model import (
@@ -17,6 +17,7 @@ from .model import (
     ControlPlan,
     DeliveryRoute,
     Evaluation,
+    InterlockStatus,
     PlantMode,
     PlantSnapshot,
     PumpRuntime,
@@ -25,6 +26,7 @@ from .model import (
     Source,
     SourceKind,
     SourceRecommendation,
+    SafetyInterlockResult,
     TemperatureAggregation,
     TemperatureObservation,
     ValveRuntime,
@@ -34,6 +36,9 @@ from .model import (
     ZoneDecisionStatus,
     ZoneRuntime,
 )
+
+_DEW_POINT_A = 17.62
+_DEW_POINT_B = 243.12
 
 
 def _elapsed(now: datetime, changed_at: datetime | None) -> timedelta:
@@ -207,6 +212,125 @@ def aggregate_zone_temperature(
     return aggregate_zone_temperature_result(zone, snapshot, now=now).value
 
 
+def aggregate_zone_humidity_result(
+    zone: Zone,
+    snapshot: PlantSnapshot,
+    *,
+    now: datetime | None = None,
+) -> AggregationResult:
+    """Aggregate required and optional relative-humidity observations."""
+    metadata = tuple(sorted(zone.humidity_sensor_metadata, key=lambda sensor: sensor.entity_id))
+    usable: list[tuple[str, float, float]] = []
+    excluded_optional: list[str] = []
+    blocking_required: list[str] = []
+    failure_reasons: dict[str, str] = {}
+    for sensor in metadata:
+        observation = snapshot.humidities.get(sensor.entity_id)
+        valid, reason = _observation_is_usable(
+            observation,
+            max_age_seconds=sensor.max_age_seconds,
+            now=now,
+        )
+        if not valid:
+            failure_reasons[sensor.entity_id] = reason
+            if sensor.required:
+                blocking_required.append(sensor.entity_id)
+            else:
+                excluded_optional.append(sensor.entity_id)
+            continue
+        assert observation is not None
+        assert observation.value is not None
+        calibrated = observation.value + sensor.calibration_offset
+        if not isfinite(calibrated):
+            failure_reasons[sensor.entity_id] = "non-finite after calibration"
+            if sensor.required:
+                blocking_required.append(sensor.entity_id)
+            else:
+                excluded_optional.append(sensor.entity_id)
+            continue
+        usable.append((sensor.entity_id, calibrated, sensor.weight))
+
+    usable_ids = tuple(sensor_id for sensor_id, _value, _weight in usable)
+    excluded_ids = tuple(sorted(excluded_optional))
+    blocking_ids = tuple(sorted(blocking_required))
+    value: float | None = None
+    if not blocking_ids and usable:
+        weights = [weight for _sensor_id, _value, weight in usable]
+        if all(isfinite(weight) and weight > 0 for weight in weights):
+            value = fsum(value * weight for _sensor_id, value, weight in usable) / fsum(weights)
+
+    failure_text = "; ".join(
+        f"{sensor_id} ({failure_reasons[sensor_id]})" for sensor_id in sorted(failure_reasons)
+    )
+    if blocking_ids:
+        explanation = "Blocked: required humidity sensors are unusable: " + ", ".join(
+            item for item in failure_text.split("; ") if item.split(" ", 1)[0] in blocking_ids
+        )
+    elif not usable:
+        explanation = "Blocked: no usable humidity sensors remain."
+    elif value is None:
+        explanation = "Blocked: humidity aggregation could not produce a finite value."
+    else:
+        explanation = f"Aggregated {value:.2f} % from {', '.join(usable_ids)}."
+    if excluded_ids:
+        explanation += (
+            " Excluded optional sensors: "
+            + ", ".join(f"{sensor_id} ({failure_reasons[sensor_id]})" for sensor_id in excluded_ids)
+            + "."
+        )
+    return AggregationResult(
+        value=value,
+        usable_sensor_ids=usable_ids,
+        excluded_optional_sensor_ids=excluded_ids,
+        blocking_required_sensor_ids=blocking_ids,
+        explanation=explanation,
+    )
+
+
+def aggregate_zone_humidity(
+    zone: Zone,
+    snapshot: PlantSnapshot,
+    *,
+    now: datetime | None = None,
+) -> float | None:
+    """Return the deterministic relative-humidity aggregate."""
+    return aggregate_zone_humidity_result(zone, snapshot, now=now).value
+
+
+def dew_point_celsius(temperature_celsius: float, relative_humidity: float) -> float | None:
+    """Calculate dew point with the deterministic Magnus approximation."""
+    if not isfinite(temperature_celsius) or not isfinite(relative_humidity):
+        return None
+    if relative_humidity <= 0 or relative_humidity > 100:
+        return None
+    gamma = log(relative_humidity / 100.0) + (
+        _DEW_POINT_A * temperature_celsius / (_DEW_POINT_B + temperature_celsius)
+    )
+    denominator = _DEW_POINT_A - gamma
+    if denominator == 0 or not isfinite(denominator):
+        return None
+    result = _DEW_POINT_B * gamma / denominator
+    return result if isfinite(result) else None
+
+
+def calculate_dew_point(temperature_celsius: float, relative_humidity: float) -> float | None:
+    """Compatibility name for the public dew-point calculation seam."""
+    return dew_point_celsius(temperature_celsius, relative_humidity)
+
+
+def condensation_margin(reference_temperature: float, dew_point: float) -> float | None:
+    """Return the temperature distance between a reference and dew point."""
+    if not isfinite(reference_temperature) or not isfinite(dew_point):
+        return None
+    result = reference_temperature - dew_point
+    return result if isfinite(result) else None
+
+
+def calculate_condensation_margin(reference_temperature: float, dew_point: float) -> float | None:
+    """Compatibility name for the public condensation-margin seam."""
+    return condensation_margin(reference_temperature, dew_point)
+
+
 def mean_zone_temperature(sensor_ids: tuple[str, ...], snapshot: PlantSnapshot) -> float | None:
     """Average readings for callers using the legacy helper signature."""
     zone = Zone("legacy", "Legacy", 0.0, sensor_ids)
@@ -239,6 +363,174 @@ def _zone_demand(
     if previous:
         return True, "Heating remains requested inside the hysteresis band."
     return False, "Heating remains idle inside the hysteresis band."
+
+
+def _cooling_zone_demand(
+    *,
+    previous: bool,
+    temperature: float | None,
+    target: float,
+    start_delta: float,
+    stop_delta: float,
+) -> tuple[bool, str]:
+    """Apply explicit cooling hysteresis to one zone."""
+    if temperature is None:
+        return False, "Blocked: the zone has no usable aggregate temperature for cooling."
+    if temperature >= target + start_delta:
+        return True, f"Cooling requested: {temperature:.1f} is above {target + start_delta:.1f}."
+    if temperature <= target - stop_delta:
+        return False, f"Satisfied: {temperature:.1f} is at or below {target - stop_delta:.1f}."
+    if previous:
+        return True, "Cooling remains requested inside the hysteresis band."
+    return False, "Cooling remains idle inside the hysteresis band."
+
+
+def resolve_cooling_delivery_routes(
+    plant: CompiledPlant, cooling_zone_demands: Mapping[str, bool]
+) -> tuple[DeliveryRoute, ...]:
+    """Return enabled routes whose circuits explicitly support cooling."""
+    return tuple(
+        sorted(
+            (
+                route
+                for route in plant.routes
+                if route.enabled
+                and cooling_zone_demands.get(route.zone_id, False)
+                and plant.circuits[route.circuit_id].cooling_enabled
+            ),
+            key=lambda route: (route.zone_id, route.circuit_id, route.id),
+        )
+    )
+
+
+def _cooling_interlocks(
+    plant: CompiledPlant,
+    zone: Zone,
+    temperature: float | None,
+    humidity: float | None,
+    snapshot: PlantSnapshot,
+    now: datetime,
+) -> tuple[bool, str, tuple[SafetyInterlockResult, ...], float | None, float | None]:
+    """Evaluate every cooling circuit reference for one zone fail-closed."""
+    routes = tuple(
+        route
+        for route in plant.routes
+        if route.enabled
+        and route.zone_id == zone.id
+        and plant.circuits[route.circuit_id].cooling_enabled
+    )
+    if not routes:
+        return (
+            False,
+            "Cooling idle: no cooling-enabled circuit serves this zone.",
+            (),
+            None,
+            None,
+        )
+    if temperature is None or humidity is None:
+        result = SafetyInterlockResult(
+            f"cooling:{zone.id}:observations",
+            InterlockStatus.BLOCKED,
+            "Cooling is blocked until required temperature and humidity observations are usable.",
+        )
+        return False, result.reason, (result,), None, None
+
+    dew_point = dew_point_celsius(temperature, humidity)
+    if dew_point is None:
+        result = SafetyInterlockResult(
+            f"cooling:{zone.id}:dew-point",
+            InterlockStatus.BLOCKED,
+            "Cooling is blocked because relative humidity is outside the usable 0-100% range.",
+        )
+        return False, result.reason, (result,), None, None
+
+    interlocks: list[SafetyInterlockResult] = []
+    margins: list[float] = []
+    for route in routes:
+        circuit = plant.circuits[route.circuit_id]
+        references = (
+            (
+                "supply",
+                circuit.supply_temperature_sensor,
+                circuit.supply_temperature_max_age_seconds,
+            ),
+            (
+                "surface",
+                circuit.surface_temperature_sensor,
+                circuit.surface_temperature_max_age_seconds,
+            ),
+        )
+        circuit_blocked = False
+        circuit_margins: list[float] = []
+        for reference_name, entity_id, max_age in references:
+            if entity_id is None:
+                continue
+            observation = (
+                snapshot.supply_temperatures.get(entity_id)
+                if reference_name == "supply"
+                else snapshot.surface_temperatures.get(entity_id)
+            )
+            usable, reason = _observation_is_usable(
+                observation,
+                max_age_seconds=max_age,
+                now=now,
+            )
+            if not usable:
+                circuit_blocked = True
+                interlocks.append(
+                    SafetyInterlockResult(
+                        f"cooling:{route.circuit_id}:{reference_name}",
+                        InterlockStatus.BLOCKED,
+                        f"Cooling is blocked because the required {reference_name} reference "
+                        f"{entity_id} is {reason}.",
+                    )
+                )
+                continue
+            assert observation is not None and observation.value is not None
+            margin = condensation_margin(observation.value, dew_point)
+            assert margin is not None
+            circuit_margins.append(margin)
+            margins.append(margin)
+            if margin <= circuit.condensation_margin:
+                circuit_blocked = True
+                interlocks.append(
+                    SafetyInterlockResult(
+                        f"cooling:{route.circuit_id}:{reference_name}",
+                        InterlockStatus.BLOCKED,
+                        f"Cooling is blocked before the condensation margin is crossed: "
+                        f"{margin:.2f} °C is at or below {circuit.condensation_margin:.2f} °C.",
+                    )
+                )
+            else:
+                interlocks.append(
+                    SafetyInterlockResult(
+                        f"cooling:{route.circuit_id}:{reference_name}",
+                        InterlockStatus.PERMITTED,
+                        f"{reference_name.title()} reference leaves {margin:.2f} °C of "
+                        f"condensation margin.",
+                    )
+                )
+        if circuit_blocked:
+            return (
+                False,
+                next(
+                    item.reason
+                    for item in reversed(interlocks)
+                    if item.status is InterlockStatus.BLOCKED
+                ),
+                tuple(interlocks),
+                dew_point,
+                min(circuit_margins) if circuit_margins else None,
+            )
+
+    return (
+        True,
+        f"Cooling safety permitted: dew point is {dew_point:.2f} °C and the lowest "
+        f"reference margin is {min(margins):.2f} °C.",
+        tuple(interlocks),
+        dew_point,
+        min(margins),
+    )
 
 
 def _apply_zone_timing(
@@ -441,10 +733,120 @@ def evaluate(
             deadline=deadline,
         )
 
+    cooling_zone_demands: dict[str, bool] = {}
+    cooling_zone_reasons: dict[str, str] = {}
+    cooling_zone_decisions: dict[str, ZoneDecision] = {}
+    cooling_interlocks: dict[str, SafetyInterlockResult] = {}
+    cooling_circuit_reasons: dict[str, str] = {}
+    for zone_id in sorted(plant.zones):
+        zone = plant.zones[zone_id]
+        previous_cooling = runtime.cooling_zone_demands.get(zone.id, False)
+        temperature_aggregation = zone_decisions[zone.id].aggregation
+        temperature = temperature_aggregation.value if temperature_aggregation else None
+        humidity_aggregation = aggregate_zone_humidity_result(zone, snapshot, now=now)
+        humidity = humidity_aggregation.value
+        requested, reason = _cooling_zone_demand(
+            previous=previous_cooling,
+            temperature=temperature,
+            target=zone.target_temperature,
+            start_delta=zone.cooling_start_delta,
+            stop_delta=zone.cooling_stop_delta,
+        )
+        safety_permitted, safety_reason, interlocks, dew_point, margin = _cooling_interlocks(
+            plant,
+            zone,
+            temperature,
+            humidity,
+            snapshot,
+            now,
+        )
+        for interlock in interlocks:
+            cooling_interlocks[interlock.interlock_id] = interlock
+        cooling_enabled_route_exists = any(
+            route.enabled
+            and route.zone_id == zone.id
+            and plant.circuits[route.circuit_id].cooling_enabled
+            for route in plant.routes
+        )
+        observation_blocked = (
+            temperature_aggregation is None
+            or temperature_aggregation.blocking_required_sensor_ids
+            or temperature is None
+            or humidity_aggregation.blocking_required_sensor_ids
+            or humidity is None
+        )
+        if cooling_enabled_route_exists and observation_blocked:
+            demand = False
+            status = ZoneDecisionStatus.SENSOR_BLOCKED
+            reason = (
+                temperature_aggregation.explanation
+                if temperature_aggregation is not None
+                and temperature_aggregation.blocking_required_sensor_ids
+                else humidity_aggregation.explanation
+            )
+        elif cooling_enabled_route_exists and not safety_permitted:
+            demand = False
+            status = ZoneDecisionStatus.SENSOR_BLOCKED
+            reason = safety_reason
+        elif not cooling_enabled_route_exists:
+            demand = False
+            status = ZoneDecisionStatus.SATISFIED
+            reason = safety_reason
+        else:
+            demand = requested
+            status = ZoneDecisionStatus.REQUESTED if demand else ZoneDecisionStatus.SATISFIED
+            if not safety_permitted:
+                status = ZoneDecisionStatus.SENSOR_BLOCKED
+                reason = safety_reason
+            elif humidity_aggregation.excluded_optional_sensor_ids:
+                reason = f"{reason} {humidity_aggregation.explanation}"
+
+        cooling_zone_demands[zone.id] = demand
+        cooling_zone_reasons[zone.id] = reason
+        cooling_zone_decisions[zone.id] = ZoneDecision(
+            status=status,
+            demand=demand,
+            aggregation=temperature_aggregation,
+            explanation=reason,
+            humidity_aggregation=humidity_aggregation,
+            dew_point=dew_point,
+            condensation_margin=margin,
+            interlocks=interlocks,
+        )
+
+    # Shared plant equipment cannot receive simultaneous heating and cooling
+    # requests.  Cooling remains fail-closed while heating is active.
+    if any(zone_demands.values()) and any(cooling_zone_demands.values()):
+        conflict = SafetyInterlockResult(
+            "cooling:mode-conflict",
+            InterlockStatus.BLOCKED,
+            "Cooling is blocked while heating demand is active on the shared plant.",
+        )
+        cooling_interlocks[conflict.interlock_id] = conflict
+        for zone_id, demand in list(cooling_zone_demands.items()):
+            if not demand:
+                continue
+            cooling_zone_demands[zone_id] = False
+            prior = cooling_zone_decisions[zone_id]
+            cooling_zone_reasons[zone_id] = conflict.reason
+            cooling_zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.SENSOR_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=conflict.reason,
+                humidity_aggregation=prior.humidity_aggregation,
+                dew_point=prior.dew_point,
+                condensation_margin=prior.condensation_margin,
+                interlocks=(*prior.interlocks, conflict),
+            )
+
     eligible_routes = resolve_delivery_routes(plant, zone_demands)
-    requested_circuits = {route.circuit_id for route in eligible_routes}
+    cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    requested_circuits = {route.circuit_id for route in (*eligible_routes, *cooling_routes)}
     route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
     for route in eligible_routes:
+        route_ids_by_circuit[route.circuit_id].append(route.id)
+    for route in cooling_routes:
         route_ids_by_circuit[route.circuit_id].append(route.id)
 
     valve_consumers: dict[str, set[str]] = defaultdict(set)
@@ -452,6 +854,15 @@ def evaluate(
         circuit = plant.circuits[circuit_id]
         for valve_id in circuit.valve_ids:
             valve_consumers[valve_id].add(circuit_id)
+
+    cooling_valve_consumers: dict[str, set[str]] = defaultdict(set)
+    for route in cooling_routes:
+        circuit = plant.circuits[route.circuit_id]
+        cooling_circuit_reasons[circuit.id] = (
+            f"Cooling route {route.id} requested circuit {circuit.name}."
+        )
+        for valve_id in circuit.valve_ids:
+            cooling_valve_consumers[valve_id].add(circuit.id)
 
     valves: dict[str, ValveRuntime] = {}
     valve_ready: set[str] = set()
@@ -495,6 +906,15 @@ def evaluate(
     pump_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in sorted(ready_circuits):
         pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
+
+    cooling_pump_consumers: dict[str, set[str]] = defaultdict(set)
+    ready_cooling_circuits = {
+        route.circuit_id
+        for route in cooling_routes
+        if route.circuit_id in ready_circuits
+    }
+    for circuit_id in sorted(ready_cooling_circuits):
+        cooling_pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
 
     pumps: dict[str, PumpRuntime] = {}
     for pump_id in sorted(plant.pumps):
@@ -584,10 +1004,17 @@ def evaluate(
     return Evaluation(
         next_runtime=RuntimeState(
             zone_demands=zone_demands,
+            cooling_zone_demands=cooling_zone_demands,
             zone_runtime=zone_runtime,
             valves=valves,
             pumps=pumps,
-            plant_mode=PlantMode.HEATING if any(zone_demands.values()) else PlantMode.IDLE,
+            plant_mode=(
+                PlantMode.HEATING
+                if any(zone_demands.values())
+                else PlantMode.COOLING
+                if any(cooling_zone_demands.values())
+                else PlantMode.IDLE
+            ),
             selected_source_id=selected_source_id,
         ),
         control_plan=ControlPlan(
@@ -596,8 +1023,24 @@ def evaluate(
                 key: frozenset(value) for key, value in sorted(valve_consumers.items())
             },
             pump_consumers={key: frozenset(value) for key, value in sorted(pump_consumers.items())},
-            plant_mode=PlantMode.HEATING if any(zone_demands.values()) else PlantMode.IDLE,
+            plant_mode=(
+                PlantMode.HEATING
+                if any(zone_demands.values())
+                else PlantMode.COOLING
+                if any(cooling_zone_demands.values())
+                else PlantMode.IDLE
+            ),
             source_recommendation=source_recommendation,
+            cooling_zone_demands=cooling_zone_demands,
+            cooling_valve_consumers={
+                key: frozenset(value)
+                for key, value in sorted(cooling_valve_consumers.items())
+            },
+            cooling_pump_consumers={
+                key: frozenset(value)
+                for key, value in sorted(cooling_pump_consumers.items())
+            },
+            interlocks=cooling_interlocks,
         ),
         diagnostics=ControllerDiagnostics(
             zone_reasons=zone_reasons,
@@ -605,5 +1048,9 @@ def evaluate(
             actuator_reasons=actuator_reasons,
             zone_decisions=zone_decisions,
             source_recommendation=source_recommendation,
+            cooling_zone_decisions=cooling_zone_decisions,
+            interlocks=cooling_interlocks,
+            cooling_circuit_reasons=cooling_circuit_reasons,
+            cooling_zone_reasons=cooling_zone_reasons,
         ),
     )

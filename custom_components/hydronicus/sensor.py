@@ -283,6 +283,124 @@ class SourceRecommendationExplanationSensor(SensorEntity):
         }
 
 
+class ZoneCoolingBlockedReasonSensor(SensorEntity):
+    """Expose the cooling interlock explanation for one comfort zone."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:water-alert-outline"
+
+    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
+        """Bind the cooling explanation to one comfort zone."""
+        self._entry = entry
+        self._zone_id = zone_id
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_cooling_blocked_reason"
+        self._attr_name = f"{name} cooling blocked reason"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe after Home Assistant has registered the entity."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return a stable sentinel when cooling is not blocked."""
+        return (self._runtime.cooling_zone_blocked_reason(self._zone_id) or "none")[:_MAX_STATE_LENGTH]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose structured cooling safety details."""
+        return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
+
+
+class ZoneDewPointSensor(SensorEntity):
+    """Expose the calculated zone dew point used by cooling safety."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
+        """Bind the dew-point diagnostic to one zone."""
+        self._entry = entry
+        self._zone_id = zone_id
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_dew_point"
+        self._attr_name = f"{name} cooling dew point"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe after Home Assistant has registered the entity."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the latest calculated dew point."""
+        return self._runtime.zone_dew_point(self._zone_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose cooling interlock diagnostics alongside the dew point."""
+        return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
+
+
+class ZoneCondensationMarginSensor(SensorEntity):
+    """Expose the lowest configured reference margin for a zone."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
+        """Bind the condensation margin diagnostic to one zone."""
+        self._entry = entry
+        self._zone_id = zone_id
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_condensation_margin"
+        self._attr_name = f"{name} cooling condensation margin"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe after Home Assistant has registered the entity."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the lowest usable reference margin."""
+        return self._runtime.zone_condensation_margin(self._zone_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the configured and calculated safety state."""
+        return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
+
+
 def _zone_diagnostic_attributes(runtime: Any, zone_id: str) -> dict[str, object]:
     """Build common structured attributes for all zone explanation entities."""
     aggregation = runtime.zone_aggregation(zone_id)
@@ -328,6 +446,9 @@ async def async_setup_entry(
             ZoneExplanationSensor(entry, zone.id, zone.name),
             ZoneAggregateTemperatureSensor(entry, zone.id, zone.name),
             ZoneBlockedReasonSensor(entry, zone.id, zone.name),
+            ZoneCoolingBlockedReasonSensor(entry, zone.id, zone.name),
+            ZoneDewPointSensor(entry, zone.id, zone.name),
+            ZoneCondensationMarginSensor(entry, zone.id, zone.name),
         ]
         if subentry_id := runtime.zone_subentry_ids.get(zone.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
@@ -336,3 +457,35 @@ async def async_setup_entry(
     async_add_entities(parent_entities)
     for subentry_id, entities in subentry_entities.items():
         async_add_entities(entities, config_subentry_id=subentry_id)
+
+
+def _cooling_diagnostic_attributes(runtime: HydronicRuntime, zone_id: str) -> dict[str, object]:
+    """Build structured cooling diagnostics without parsing explanation text."""
+    decision = runtime.cooling_zone_decision(zone_id)
+    if decision is None:
+        return {"cooling_blocked": False}
+    return {
+        "cooling_blocked": runtime.cooling_zone_is_blocked(zone_id),
+        "cooling_demand": decision.demand,
+        "cooling_decision_status": getattr(decision.status, "value", decision.status),
+        "dew_point": decision.dew_point,
+        "condensation_margin": decision.condensation_margin,
+        "humidity_usable_sensor_ids": (
+            list(decision.humidity_aggregation.usable_sensor_ids)
+            if decision.humidity_aggregation is not None
+            else []
+        ),
+        "humidity_blocking_required_sensor_ids": (
+            list(decision.humidity_aggregation.blocking_required_sensor_ids)
+            if decision.humidity_aggregation is not None
+            else []
+        ),
+        "interlocks": [
+            {
+                "id": interlock.interlock_id,
+                "status": interlock.status.value,
+                "reason": interlock.reason,
+            }
+            for interlock in decision.interlocks
+        ],
+    }

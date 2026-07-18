@@ -15,10 +15,14 @@
           "name": "Zone name",
           "target_temperature": "Target temperature",
           "temperature_sensors": "Temperature sensors",
+          "humidity_sensors": "Humidity sensors",
+          "humidity_sensor_metadata": "Humidity sensor metadata",
           "temperature_aggregation": "Temperature aggregation",
           "configure_sensor_metadata": "Edit sensor metadata",
           "heating_start_delta": "Heating start hysteresis",
           "heating_stop_delta": "Heating stop hysteresis",
+          "cooling_start_delta": "Cooling start hysteresis",
+          "cooling_stop_delta": "Cooling stop hysteresis",
           "minimum_active_duration_seconds": "Minimum active duration (seconds)",
           "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
           "comfort": "Comfort preset target",
@@ -53,7 +57,13 @@
           "valve_entity": "Valve entity",
           "pump_entity": "Pump entity",
           "valve_opening_time_seconds": "Valve opening time (seconds)",
-          "pump_overrun_seconds": "Pump overrun (seconds)"
+          "pump_overrun_seconds": "Pump overrun (seconds)",
+          "cooling_enabled": "Cooling enabled",
+          "supply_temperature_sensor": "Supply temperature reference",
+          "surface_temperature_sensor": "Surface temperature reference",
+          "condensation_margin": "Condensation margin (degrees Celsius)",
+          "supply_temperature_max_age_seconds": "Supply reference maximum age (seconds)",
+          "surface_temperature_max_age_seconds": "Surface reference maximum age (seconds)"
         }
       },
       "review": {
@@ -126,7 +136,13 @@
             "name": "Circuit name",
             "zone_ids": "Zones",
             "valve_ids": "Required valves",
-            "pump_id": "Pump"
+            "pump_id": "Pump",
+            "cooling_enabled": "Cooling enabled",
+            "supply_temperature_sensor": "Supply temperature reference",
+            "surface_temperature_sensor": "Surface temperature reference",
+            "condensation_margin": "Condensation margin (degrees Celsius)",
+            "supply_temperature_max_age_seconds": "Supply reference maximum age (seconds)",
+            "surface_temperature_max_age_seconds": "Surface reference maximum age (seconds)"
           }
         },
         "reconfigure": {
@@ -136,7 +152,13 @@
             "name": "Circuit name",
             "zone_ids": "Zones",
             "valve_ids": "Required valves",
-            "pump_id": "Pump"
+            "pump_id": "Pump",
+            "cooling_enabled": "Cooling enabled",
+            "supply_temperature_sensor": "Supply temperature reference",
+            "surface_temperature_sensor": "Surface temperature reference",
+            "condensation_margin": "Condensation margin (degrees Celsius)",
+            "supply_temperature_max_age_seconds": "Supply reference maximum age (seconds)",
+            "surface_temperature_max_age_seconds": "Surface reference maximum age (seconds)"
           }
         },
         "review": {
@@ -170,11 +192,15 @@
             "name": "Zone name",
             "target_temperature": "Target temperature",
             "temperature_sensors": "Temperature sensors",
+            "humidity_sensors": "Humidity sensors",
+            "humidity_sensor_metadata": "Humidity sensor metadata",
             "temperature_aggregation": "Temperature aggregation",
             "circuit_ids": "Circuits",
             "configure_sensor_metadata": "Edit sensor metadata",
             "heating_start_delta": "Heating start hysteresis",
             "heating_stop_delta": "Heating stop hysteresis",
+            "cooling_start_delta": "Cooling start hysteresis",
+            "cooling_stop_delta": "Cooling stop hysteresis",
             "minimum_active_duration_seconds": "Minimum active duration (seconds)",
             "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
             "comfort": "Comfort preset target",
@@ -189,11 +215,15 @@
             "name": "Zone name",
             "target_temperature": "Target temperature",
             "temperature_sensors": "Temperature sensors",
+            "humidity_sensors": "Humidity sensors",
+            "humidity_sensor_metadata": "Humidity sensor metadata",
             "temperature_aggregation": "Temperature aggregation",
             "circuit_ids": "Circuits",
             "configure_sensor_metadata": "Edit sensor metadata",
             "heating_start_delta": "Heating start hysteresis",
             "heating_stop_delta": "Heating stop hysteresis",
+            "cooling_start_delta": "Cooling start hysteresis",
+            "cooling_stop_delta": "Cooling stop hysteresis",
             "minimum_active_duration_seconds": "Minimum active duration (seconds)",
             "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
             "comfort": "Comfort preset target",

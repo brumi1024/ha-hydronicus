@@ -79,6 +79,60 @@ class ZoneBlockedBinarySensor(HydronicShadowEntity):
         }
 
 
+class ZoneCoolingDemandBinarySensor(HydronicShadowEntity):
+    """Whether a zone currently requests cooling in shadow mode."""
+
+    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_demand"
+        self._attr_name = f"{name} cooling demand"
+
+    @property
+    def is_on(self) -> bool:
+        """Return the latest pure-controller cooling demand."""
+        return bool(self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose cooling decision status and explanation."""
+        decision = self._runtime.cooling_zone_decision(self._zone_id)
+        return {
+            "blocked": self._runtime.cooling_zone_is_blocked(self._zone_id),
+            "reason": self._runtime.cooling_zone_blocked_reason(self._zone_id),
+            "decision_status": (
+                getattr(decision.status, "value", decision.status) if decision is not None else None
+            ),
+        }
+
+
+class ZoneCoolingBlockedBinarySensor(HydronicShadowEntity):
+    """Whether cooling safety currently blocks a zone."""
+
+    _attr_icon = "mdi:water-alert-outline"
+
+    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_blocked"
+        self._attr_name = f"{name} cooling blocked"
+
+    @property
+    def is_on(self) -> bool:
+        """Return structured cooling safety state."""
+        return self._runtime.cooling_zone_is_blocked(self._zone_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the interlock explanation without prose parsing."""
+        decision = self._runtime.cooling_zone_decision(self._zone_id)
+        return {
+            "reason": self._runtime.cooling_zone_blocked_reason(self._zone_id),
+            "dew_point": decision.dew_point if decision is not None else None,
+            "condensation_margin": decision.condensation_margin if decision is not None else None,
+        }
+
+
 class ActuatorRequestedBinarySensor(HydronicShadowEntity):
     """Whether a valve or pump is virtually requested by the controller."""
 
@@ -115,6 +169,8 @@ async def async_setup_entry(
         entities = [
             ZoneDemandBinarySensor(entry, zone.id, zone.name),
             ZoneBlockedBinarySensor(entry, zone.id, zone.name),
+            ZoneCoolingDemandBinarySensor(entry, zone.id, zone.name),
+            ZoneCoolingBlockedBinarySensor(entry, zone.id, zone.name),
         ]
         if subentry_id := runtime.zone_subentry_ids.get(zone.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)

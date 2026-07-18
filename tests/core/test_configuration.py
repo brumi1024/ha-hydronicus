@@ -557,3 +557,110 @@ def test_legacy_route_enablement_is_preserved() -> None:
     )
 
     assert plant.routes[0].enabled is False
+
+
+def test_decodes_cooling_zone_and_circuit_safety_fields() -> None:
+    """Persisted humidity, hysteresis, references, and margin reload as one model."""
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "00000000-0000-4000-8000-000000000001",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000002",
+                        "name": "Living room",
+                        "target_temperature": 24.0,
+                        "temperature_sensor": "sensor.living_temperature",
+                        "humidity_sensor_metadata": [
+                            {
+                                "entity_id": "sensor.living_humidity",
+                                "required": True,
+                                "max_age_seconds": 300,
+                            }
+                        ],
+                        "cooling_start_delta": 0.6,
+                        "cooling_stop_delta": 0.2,
+                    }
+                ],
+                "valves": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000003",
+                        "name": "Cooling valve",
+                        "entity_id": "switch.cooling_valve",
+                    }
+                ],
+                "pumps": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000004",
+                        "name": "Cooling pump",
+                        "entity_id": "switch.cooling_pump",
+                    }
+                ],
+                "circuits": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000005",
+                        "name": "Cooling circuit",
+                        "valve_ids": ["00000000-0000-4000-8000-000000000003"],
+                        "pump_id": "00000000-0000-4000-8000-000000000004",
+                        "cooling_enabled": True,
+                        "surface_temperature_sensor": "sensor.cooling_surface",
+                        "condensation_margin": 2.5,
+                        "surface_temperature_max_age_seconds": 240,
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000006",
+                        "zone_id": "00000000-0000-4000-8000-000000000002",
+                        "circuit_id": "00000000-0000-4000-8000-000000000005",
+                    }
+                ],
+            },
+        }
+    )
+
+    zone = plant.zones[0]
+    circuit = plant.circuits[0]
+    assert zone.humidity_sensors == ("sensor.living_humidity",)
+    assert zone.humidity_sensor_metadata[0].max_age_seconds == 300
+    assert zone.cooling_start_delta == 0.6
+    assert zone.cooling_stop_delta == 0.2
+    assert circuit.cooling_enabled is True
+    assert circuit.surface_temperature_sensor == "sensor.cooling_surface"
+    assert circuit.condensation_margin == 2.5
+    assert circuit.surface_temperature_max_age_seconds == 240
+
+
+@pytest.mark.parametrize(
+    "humidity_fields",
+    [
+        {"humidity_sensor": "sensor.humidity"},
+        {
+            "humidity_sensors": ["sensor.humidity", "sensor.humidity.backup"],
+            "humidity_sensor_weights": {"sensor.humidity": 2.0},
+        },
+        {
+            "humidity_sensor_metadata": {
+                "sensor.humidity": {"required": False, "max_age_seconds": 60}
+            }
+        },
+    ],
+)
+def test_decodes_legacy_and_canonical_humidity_sensor_shapes(humidity_fields) -> None:
+    """All supported persistence shapes use the same immutable humidity metadata."""
+    zone_data = {
+        "id": "zone-1",
+        "name": "Living room",
+        "target_temperature": 24.0,
+        "temperature_sensor": "sensor.temperature",
+        **humidity_fields,
+    }
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {"zones": [zone_data], "circuits": [], "routes": []},
+        }
+    )
+
+    assert plant.zones[0].humidity_sensors
+    assert all(sensor.max_age_seconds > 0 for sensor in plant.zones[0].humidity_sensor_metadata)

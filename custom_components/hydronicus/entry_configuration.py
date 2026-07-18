@@ -249,6 +249,16 @@ def effective_plant_configuration(
                 name=str(_required(data, CONF_NAME)),
                 valve_ids=valve_ids,
                 pump_id=pump_id,
+                cooling_enabled=bool(data.get("cooling_enabled", False)),
+                supply_temperature_sensor=data.get("supply_temperature_sensor"),
+                surface_temperature_sensor=data.get("surface_temperature_sensor"),
+                condensation_margin=float(data.get("condensation_margin", 2.0)),
+                supply_temperature_max_age_seconds=float(
+                    data.get("supply_temperature_max_age_seconds", 1800.0)
+                ),
+                surface_temperature_max_age_seconds=float(
+                    data.get("surface_temperature_max_age_seconds", 1800.0)
+                ),
             )
         )
         routes.extend(_circuit_routes(data, circuit_id, zone_ids))

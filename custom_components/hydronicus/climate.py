@@ -48,6 +48,11 @@ class ZoneClimate(ClimateEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
         )
+        if any(
+            route.zone_id == zone_id and runtime.plant.circuits[route.circuit_id].cooling_enabled
+            for route in runtime.plant.routes
+        ):
+            self._attr_hvac_modes = [HVACMode.HEAT, HVACMode.COOL]
         if self._configured_preset_modes:
             self._attr_supported_features = (
                 ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.PRESET_MODE
@@ -94,7 +99,9 @@ class ZoneClimate(ClimateEntity):
 
     @property
     def hvac_mode(self) -> HVACMode:
-        """Expose the heating-only mode while demand is represented by action."""
+        """Expose the active shadow operating mode for this zone."""
+        if self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False):
+            return HVACMode.COOL
         return HVACMode.HEAT
 
     @property
@@ -102,11 +109,11 @@ class ZoneClimate(ClimateEntity):
         """Expose active or idle shadow heating demand."""
         if self._runtime.evaluation is None:
             return None
-        return (
-            HVACAction.HEATING
-            if self._runtime.runtime_state.zone_demands.get(self._zone_id, False)
-            else HVACAction.IDLE
-        )
+        if self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False):
+            return HVACAction.COOLING
+        if self._runtime.runtime_state.zone_demands.get(self._zone_id, False):
+            return HVACAction.HEATING
+        return HVACAction.IDLE
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Persist a new target and immediately recalculate shadow demand."""
