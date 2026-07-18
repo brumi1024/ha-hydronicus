@@ -8,14 +8,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from hydronicus_core.controller import (
     aggregate_temperature,
+    aggregate_zone_humidity_result,
     aggregate_zone_temperature,
     aggregate_zone_temperature_result,
+    condensation_margin,
+    dew_point_celsius,
     evaluate,
     mean_zone_temperature,
 )
 from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
+    InterlockStatus,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
@@ -511,6 +515,226 @@ def test_shadow_sequence_waits_for_valve_before_requesting_pump() -> None:
     assert ready.next_runtime.pumps["pump.floor"].state is PumpState.RUNNING
     assert [(command.actuator_id, command.action) for command in ready.control_plan.commands] == [
         ("pump.floor", "turn_on")
+    ]
+
+
+def _cooling_plant(
+    *,
+    supply: str | None = "temperature.supply",
+    surface: str | None = None,
+    margin: float = 2.0,
+) -> object:
+    """Build one fully synthetic cooling-enabled circuit."""
+    return compile_topology(
+        PlantConfiguration(
+            id="cooling-plant",
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    24.0,
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.living"),),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("humidity.living"),),
+                    cooling_start_delta=0.5,
+                    cooling_stop_delta=0.2,
+                ),
+            ),
+            valves=(Valve("valve", "Cooling valve", "switch.cooling_valve", 0),),
+            pumps=(Pump("pump", "Cooling pump", "switch.cooling_pump", 0),),
+            circuits=(
+                Circuit(
+                    "cooling",
+                    "Cooling",
+                    ("valve",),
+                    "pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor=supply,
+                    surface_temperature_sensor=surface,
+                    condensation_margin=margin,
+                ),
+            ),
+            routes=(DeliveryRoute("route", "living", "cooling"),),
+        )
+    )
+
+
+def _cooling_snapshot(
+    *,
+    temperature: float = 25.0,
+    humidity: float = 50.0,
+    supply: float = 18.0,
+    observed_at: datetime = NOW,
+) -> PlantSnapshot:
+    """Build a fresh synthetic cooling snapshot."""
+    return PlantSnapshot(
+        temperatures={"temperature.living": TemperatureObservation(temperature, observed_at)},
+        humidities={"humidity.living": TemperatureObservation(humidity, observed_at)},
+        supply_temperatures={"temperature.supply": TemperatureObservation(supply, observed_at)},
+    )
+
+
+def test_dew_point_and_condensation_margin_are_deterministic() -> None:
+    """The Magnus calculation and reference margin remain stable and unit-testable."""
+    dew_point = dew_point_celsius(25.0, 50.0)
+
+    assert dew_point == pytest.approx(13.8516, abs=0.001)
+    assert condensation_margin(18.0, dew_point) == pytest.approx(4.1484, abs=0.001)
+    assert dew_point_celsius(25.0, 0.0) is None
+    assert condensation_margin(18.0, float("nan")) is None
+
+
+def test_cooling_start_and_stop_thresholds_are_explicit() -> None:
+    """Cooling uses independent start and stop thresholds around the target."""
+    plant = _cooling_plant()
+    requested = evaluate(plant, _cooling_snapshot(temperature=24.6), RuntimeState(), NOW)
+    held = evaluate(
+        plant,
+        _cooling_snapshot(temperature=24.2, observed_at=NOW + timedelta(seconds=1)),
+        requested.next_runtime,
+        NOW + timedelta(seconds=1),
+    )
+    stopped = evaluate(
+        plant,
+        _cooling_snapshot(temperature=23.7, supply=18.0, observed_at=NOW + timedelta(seconds=2)),
+        held.next_runtime,
+        NOW + timedelta(seconds=2),
+    )
+
+    assert requested.next_runtime.cooling_zone_demands["living"] is True
+    assert (
+        requested.diagnostics.cooling_zone_decisions["living"].status
+        is ZoneDecisionStatus.REQUESTED
+    )
+    assert held.next_runtime.cooling_zone_demands["living"] is True
+    assert stopped.next_runtime.cooling_zone_demands["living"] is False
+    assert (
+        stopped.diagnostics.cooling_zone_decisions["living"].status
+        is ZoneDecisionStatus.SATISFIED
+    )
+
+
+def test_required_cooling_observations_block_when_missing_or_stale() -> None:
+    """Temperature, humidity, and supply freshness all fail closed."""
+    plant = _cooling_plant()
+    missing_humidity = _cooling_snapshot()
+    missing_humidity = PlantSnapshot(
+        temperatures=missing_humidity.temperatures,
+        supply_temperatures=missing_humidity.supply_temperatures,
+    )
+    humidity_blocked = evaluate(plant, missing_humidity, RuntimeState(), NOW)
+    stale_supply = evaluate(
+        plant,
+        _cooling_snapshot(observed_at=NOW - timedelta(seconds=1801)),
+        RuntimeState(),
+        NOW,
+    )
+
+    assert humidity_blocked.next_runtime.cooling_zone_demands["living"] is False
+    assert humidity_blocked.diagnostics.cooling_zone_decisions["living"].status is (
+        ZoneDecisionStatus.SENSOR_BLOCKED
+    )
+    assert "humidity" in humidity_blocked.diagnostics.cooling_zone_reasons["living"].lower()
+    assert stale_supply.next_runtime.cooling_zone_demands["living"] is False
+    assert stale_supply.diagnostics.cooling_zone_decisions["living"].status is (
+        ZoneDecisionStatus.SENSOR_BLOCKED
+    )
+    assert "stale" in stale_supply.diagnostics.cooling_zone_reasons["living"]
+
+
+def test_cooling_blocks_before_condensation_margin_is_crossed() -> None:
+    """A reference at the configured margin blocks before a risky request."""
+    plant = _cooling_plant(margin=2.0)
+    result = evaluate(
+        plant,
+        _cooling_snapshot(supply=15.0),
+        RuntimeState(),
+        NOW,
+    )
+    decision = result.diagnostics.cooling_zone_decisions["living"]
+
+    assert result.next_runtime.cooling_zone_demands["living"] is False
+    assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert decision.dew_point == pytest.approx(13.8516, abs=0.001)
+    assert decision.condensation_margin == pytest.approx(1.1484, abs=0.001)
+    assert any(
+        interlock.status is InterlockStatus.BLOCKED
+        for interlock in decision.interlocks
+    )
+
+
+def test_humidity_aggregation_excludes_optional_and_applies_calibration() -> None:
+    """Humidity health follows required/optional and calibrated metadata semantics."""
+    zone = Zone(
+        "living",
+        "Living",
+        24.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.living"),),
+        humidity_sensor_metadata=(
+            TemperatureSensorMetadata("humidity.primary", calibration_offset=1.0),
+            TemperatureSensorMetadata("humidity.backup", required=False),
+        ),
+    )
+    result = aggregate_zone_humidity_result(
+        zone,
+        PlantSnapshot(
+            temperatures={"temperature.living": TemperatureObservation(25.0, NOW)},
+            humidities={
+                "humidity.primary": TemperatureObservation(49.0, NOW),
+                "humidity.backup": TemperatureObservation(float("inf"), NOW),
+            },
+        ),
+        now=NOW,
+    )
+
+    assert result.value == 50.0
+    assert result.excluded_optional_sensor_ids == ("humidity.backup",)
+    assert result.blocking_required_sensor_ids == ()
+
+
+def test_invalid_humidity_and_surface_reference_are_fail_closed() -> None:
+    """Invalid humidity and stale surface references never permit cooling."""
+    plant = _cooling_plant(supply=None, surface="temperature.surface")
+    invalid_humidity = _cooling_snapshot(humidity=101.0)
+    invalid_humidity = PlantSnapshot(
+        temperatures=invalid_humidity.temperatures,
+        humidities=invalid_humidity.humidities,
+        surface_temperatures={"temperature.surface": TemperatureObservation(18.0, NOW)},
+    )
+    invalid = evaluate(plant, invalid_humidity, RuntimeState(), NOW)
+    stale_surface = evaluate(
+        plant,
+        PlantSnapshot(
+            temperatures={"temperature.living": TemperatureObservation(25.0, NOW)},
+            humidities={"humidity.living": TemperatureObservation(50.0, NOW)},
+            surface_temperatures={
+                "temperature.surface": TemperatureObservation(18.0, NOW - timedelta(seconds=1801))
+            },
+        ),
+        RuntimeState(),
+        NOW,
+    )
+
+    assert "outside" in invalid.diagnostics.cooling_zone_reasons["living"]
+    assert "surface" in stale_surface.diagnostics.cooling_zone_reasons["living"]
+    assert stale_surface.next_runtime.cooling_zone_demands["living"] is False
+
+
+def test_cooling_virtual_pump_sequence_is_reported_without_execution() -> None:
+    """A ready cooling circuit requests the virtual pump through the pure plan only."""
+    plant = _cooling_plant()
+    opening = evaluate(plant, _cooling_snapshot(), RuntimeState(), NOW)
+    ready = evaluate(
+        plant,
+        _cooling_snapshot(observed_at=NOW + timedelta(seconds=1)),
+        opening.next_runtime,
+        NOW + timedelta(seconds=1),
+    )
+
+    assert ready.next_runtime.plant_mode.value == "cooling"
+    assert ready.next_runtime.pumps["pump"].state is PumpState.RUNNING
+    assert ready.control_plan.cooling_pump_consumers == {"pump": frozenset({"cooling"})}
+    assert [(command.actuator_id, command.action) for command in ready.control_plan.commands] == [
+        ("pump", "turn_on")
     ]
 
 

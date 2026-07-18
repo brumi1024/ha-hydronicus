@@ -416,3 +416,86 @@ def test_minimum_idle_lockout_then_demand() -> None:
             ),
         ),
     )
+
+
+def test_cooling_stops_before_condensation_margin_is_crossed() -> None:
+    """Cooling releases its virtual path as soon as the safety margin is unsafe."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="cooling-safety-plant",
+            zones=(
+                Zone(
+                    "zone",
+                    "Cooling zone",
+                    24.0,
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+                    cooling_start_delta=0.5,
+                    cooling_stop_delta=0.2,
+                ),
+            ),
+            valves=(Valve("valve", "Cooling valve", "switch.cooling_valve", 0),),
+            pumps=(Pump("pump", "Cooling pump", "switch.cooling_pump", 10),),
+            circuits=(
+                Circuit(
+                    "cooling-circuit",
+                    "Cooling circuit",
+                    ("valve",),
+                    "pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="sensor.supply",
+                    condensation_margin=2.0,
+                ),
+            ),
+            routes=(DeliveryRoute("route", "zone", "cooling-circuit"),),
+        )
+    )
+
+    run_scenario(
+        plant,
+        started_at=NOW,
+        steps=(
+            ScenarioStep(
+                timedelta(),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                valves={"valve": ValveState.OPENING},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("valve", "open")}),
+                cooling_zone_demands={"zone": True},
+                cooling_zone_statuses={"zone": ZoneDecisionStatus.REQUESTED},
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.RUNNING},
+                commands=frozenset({("pump", "turn_on")}),
+                cooling_zone_demands={"zone": True},
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 15.8},
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.OVERRUN},
+                commands=frozenset(),
+                cooling_zone_demands={"zone": False},
+                cooling_zone_statuses={"zone": ZoneDecisionStatus.SENSOR_BLOCKED},
+            ),
+            ScenarioStep(
+                timedelta(seconds=10),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 15.8},
+                valves={"valve": ValveState.CLOSED},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("pump", "turn_off"), ("valve", "close")}),
+                cooling_zone_demands={"zone": False},
+            ),
+        ),
+    )

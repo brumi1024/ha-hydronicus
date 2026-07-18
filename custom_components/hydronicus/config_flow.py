@@ -20,12 +20,18 @@ from .const import (
     CONF_CIRCUIT_IDS,
     CONF_CIRCUITS,
     CONF_COMFORT_TARGET,
+    CONF_CONDENSATION_MARGIN,
     CONF_CONFIGURE_SENSOR_METADATA,
+    CONF_COOLING_ENABLED,
+    CONF_COOLING_START_DELTA,
+    CONF_COOLING_STOP_DELTA,
     CONF_DESIGNATED_REFERENCE,
     CONF_ECO_TARGET,
     CONF_ENTITY_ID,
     CONF_HEATING_START_DELTA,
     CONF_HEATING_STOP_DELTA,
+    CONF_HUMIDITY_SENSOR_METADATA,
+    CONF_HUMIDITY_SENSORS,
     CONF_MAX_AGE,
     CONF_MINIMUM_ACTIVE_DURATION,
     CONF_MINIMUM_IDLE_DURATION,
@@ -49,6 +55,10 @@ from .const import (
     CONF_SOURCE_PRIORITY,
     CONF_SOURCE_TEMPERATURE_ENTITY,
     CONF_SOURCE_TYPE,
+    CONF_SUPPLY_TEMPERATURE_MAX_AGE,
+    CONF_SUPPLY_TEMPERATURE_SENSOR,
+    CONF_SURFACE_TEMPERATURE_MAX_AGE,
+    CONF_SURFACE_TEMPERATURE_SENSOR,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSOR,
@@ -64,12 +74,16 @@ from .const import (
     CONF_ZONES,
     CONFIG_ENTRY_MINOR_VERSION,
     CONFIG_ENTRY_VERSION,
+    DEFAULT_CONDENSATION_MARGIN,
+    DEFAULT_COOLING_START_DELTA,
+    DEFAULT_COOLING_STOP_DELTA,
     DEFAULT_HEATING_START_DELTA,
     DEFAULT_HEATING_STOP_DELTA,
     DEFAULT_MINIMUM_ACTIVE_DURATION,
     DEFAULT_MINIMUM_IDLE_DURATION,
     DEFAULT_PLANT_NAME,
     DEFAULT_PUMP_OVERRUN,
+    DEFAULT_REFERENCE_MAX_AGE,
     DEFAULT_SENSOR_MAX_AGE,
     DEFAULT_SENSOR_WEIGHT,
     DEFAULT_SOURCE_HYSTERESIS,
@@ -147,6 +161,18 @@ def _circuit_data(
         CONF_ZONE_IDS: zone_ids,
         CONF_VALVE_IDS: list(user_input[CONF_VALVE_IDS]),
         CONF_PUMP_ID: user_input[CONF_PUMP_ID],
+        CONF_COOLING_ENABLED: bool(user_input.get(CONF_COOLING_ENABLED, False)),
+        CONF_SUPPLY_TEMPERATURE_SENSOR: user_input.get(CONF_SUPPLY_TEMPERATURE_SENSOR),
+        CONF_SURFACE_TEMPERATURE_SENSOR: user_input.get(CONF_SURFACE_TEMPERATURE_SENSOR),
+        CONF_CONDENSATION_MARGIN: user_input.get(
+            CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN
+        ),
+        CONF_SUPPLY_TEMPERATURE_MAX_AGE: user_input.get(
+            CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
+        ),
+        CONF_SURFACE_TEMPERATURE_MAX_AGE: user_input.get(
+            CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
+        ),
         CONF_ROUTES: _routes_with_retained_fields(
             existing_routes,
             relationship_key="zone_id",
@@ -185,6 +211,37 @@ def _circuit_schema(
             vol.Required(
                 CONF_PUMP_ID, default=defaults.get(CONF_PUMP_ID, vol.UNDEFINED)
             ): _topology_select(options.pumps, multiple=False),
+            vol.Optional(
+                CONF_COOLING_ENABLED, default=defaults.get(CONF_COOLING_ENABLED, False)
+            ): selector.BooleanSelector(),
+            (
+                vol.Optional(
+                    CONF_SUPPLY_TEMPERATURE_SENSOR,
+                    default=defaults[CONF_SUPPLY_TEMPERATURE_SENSOR],
+                )
+                if isinstance(defaults.get(CONF_SUPPLY_TEMPERATURE_SENSOR), str)
+                else vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR)
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            (
+                vol.Optional(
+                    CONF_SURFACE_TEMPERATURE_SENSOR,
+                    default=defaults[CONF_SURFACE_TEMPERATURE_SENSOR],
+                )
+                if isinstance(defaults.get(CONF_SURFACE_TEMPERATURE_SENSOR), str)
+                else vol.Optional(CONF_SURFACE_TEMPERATURE_SENSOR)
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            vol.Optional(
+                CONF_CONDENSATION_MARGIN,
+                default=defaults.get(CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            vol.Optional(
+                CONF_SUPPLY_TEMPERATURE_MAX_AGE,
+                default=defaults.get(CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            vol.Optional(
+                CONF_SURFACE_TEMPERATURE_MAX_AGE,
+                default=defaults.get(CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
         }
     )
 
@@ -427,6 +484,7 @@ def _zone_data(
     zone_id: str,
     existing_routes: list[Mapping[str, Any]] | None = None,
     existing_metadata: list[Mapping[str, Any]] | None = None,
+    existing_humidity_metadata: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one zone and preserve route UUIDs for retained circuits."""
     circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
@@ -462,6 +520,44 @@ def _zone_data(
         metadata = [dict(sensor_data) for sensor_data in raw_metadata]
     else:
         metadata = raw_metadata
+    humidity_sensor_ids = [
+        str(sensor_id) for sensor_id in user_input.get(CONF_HUMIDITY_SENSORS, [])
+    ]
+    raw_humidity_metadata = user_input.get(CONF_HUMIDITY_SENSOR_METADATA)
+    if raw_humidity_metadata is None or (not raw_humidity_metadata and humidity_sensor_ids):
+        existing_humidity_metadata = [
+            dict(sensor_data)
+            for sensor_data in existing_humidity_metadata or ()
+            if sensor_data.get("entity_id") in humidity_sensor_ids
+        ]
+        humidity_metadata = [
+            next(
+                (
+                    record
+                    for record in existing_humidity_metadata
+                    if record.get("entity_id") == sensor_id
+                ),
+                {
+                    "entity_id": sensor_id,
+                    CONF_REQUIRED: True,
+                    CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
+                    CONF_CALIBRATION_OFFSET: 0.0,
+                    CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
+                    CONF_DESIGNATED_REFERENCE: False,
+                },
+            )
+            for sensor_id in humidity_sensor_ids
+        ]
+    elif isinstance(raw_humidity_metadata, Mapping):
+        humidity_metadata = [
+            {"entity_id": str(sensor_id), **dict(sensor_data)}
+            for sensor_id, sensor_data in raw_humidity_metadata.items()
+            if isinstance(sensor_data, Mapping)
+        ]
+    elif isinstance(raw_humidity_metadata, list):
+        humidity_metadata = [dict(sensor_data) for sensor_data in raw_humidity_metadata]
+    else:
+        humidity_metadata = raw_humidity_metadata
     raw_preset_targets = user_input.get(CONF_PRESET_TARGETS, {})
     preset_targets = dict(raw_preset_targets) if isinstance(raw_preset_targets, Mapping) else {}
     for preset_name in (CONF_COMFORT_TARGET, CONF_ECO_TARGET, CONF_AWAY_TARGET):
@@ -473,6 +569,8 @@ def _zone_data(
         CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
         CONF_TEMPERATURE_SENSORS: sensor_ids,
         CONF_TEMPERATURE_SENSOR_METADATA: metadata,
+        CONF_HUMIDITY_SENSORS: humidity_sensor_ids,
+        CONF_HUMIDITY_SENSOR_METADATA: humidity_metadata,
         CONF_TEMPERATURE_AGGREGATION: user_input.get(
             CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
         ),
@@ -481,6 +579,12 @@ def _zone_data(
         ),
         CONF_HEATING_STOP_DELTA: user_input.get(
             CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA
+        ),
+        CONF_COOLING_START_DELTA: user_input.get(
+            CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA
+        ),
+        CONF_COOLING_STOP_DELTA: user_input.get(
+            CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA
         ),
         CONF_MINIMUM_ACTIVE_DURATION: user_input.get(
             CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION
@@ -581,6 +685,14 @@ def _zone_advanced_fields(defaults: Mapping[str, Any] | None = None) -> dict[Any
             default=defaults.get(CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA),
         ): vol.All(vol.Coerce(float), vol.Range(min=0)),
         vol.Required(
+            CONF_COOLING_START_DELTA,
+            default=defaults.get(CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA),
+        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Required(
+            CONF_COOLING_STOP_DELTA,
+            default=defaults.get(CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA),
+        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Required(
             CONF_MINIMUM_ACTIVE_DURATION,
             default=defaults.get(CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION),
         ): vol.All(vol.Coerce(float), vol.Range(min=0)),
@@ -660,6 +772,14 @@ def _zone_schema(
             CONF_TEMPERATURE_SENSORS,
             default=_zone_temperature_sensor_defaults(defaults),
         ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+        vol.Optional(
+            CONF_HUMIDITY_SENSORS,
+            default=defaults.get(CONF_HUMIDITY_SENSORS, []),
+        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+        vol.Optional(
+            CONF_HUMIDITY_SENSOR_METADATA,
+            default=defaults.get(CONF_HUMIDITY_SENSOR_METADATA, []),
+        ): list,
         vol.Required(
             CONF_TEMPERATURE_AGGREGATION,
             default=_zone_temperature_aggregation_default(defaults),
@@ -857,6 +977,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 subentry.data["id"],
                 subentry.data[CONF_ROUTES],
                 subentry.data.get(CONF_TEMPERATURE_SENSOR_METADATA),
+                subentry.data.get(CONF_HUMIDITY_SENSOR_METADATA),
             )
             if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
                 self._zone_draft = data
@@ -1303,6 +1424,10 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             name = str(user_input[CONF_NAME]).strip()
             if name:
                 sensor_ids = [str(sensor_id) for sensor_id in user_input[CONF_TEMPERATURE_SENSORS]]
+                humidity_ids = [
+                    str(sensor_id)
+                    for sensor_id in user_input.get(CONF_HUMIDITY_SENSORS, [])
+                ]
                 self._zone_draft = {
                     "id": str(uuid4()),
                     CONF_NAME: name,
@@ -1319,6 +1444,18 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         }
                         for sensor_id in sensor_ids
                     ],
+                    CONF_HUMIDITY_SENSORS: humidity_ids,
+                    CONF_HUMIDITY_SENSOR_METADATA: [
+                        {
+                            "entity_id": sensor_id,
+                            CONF_REQUIRED: True,
+                            CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
+                            CONF_CALIBRATION_OFFSET: 0.0,
+                            CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
+                            CONF_DESIGNATED_REFERENCE: False,
+                        }
+                        for sensor_id in humidity_ids
+                    ],
                     CONF_TEMPERATURE_AGGREGATION: user_input.get(
                         CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
                     ),
@@ -1327,6 +1464,12 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                     CONF_HEATING_STOP_DELTA: user_input.get(
                         CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA
+                    ),
+                    CONF_COOLING_START_DELTA: user_input.get(
+                        CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA
+                    ),
+                    CONF_COOLING_STOP_DELTA: user_input.get(
+                        CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA
                     ),
                     CONF_MINIMUM_ACTIVE_DURATION: user_input.get(
                         CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION
@@ -1347,6 +1490,15 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if user_input.get(CONF_TEMPERATURE_SENSOR_METADATA) is not None:
                     self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA] = user_input[
                         CONF_TEMPERATURE_SENSOR_METADATA
+                    ]
+                if user_input.get(CONF_HUMIDITY_SENSOR_METADATA):
+                    self._zone_draft[CONF_HUMIDITY_SENSOR_METADATA] = user_input[
+                        CONF_HUMIDITY_SENSOR_METADATA
+                    ]
+                    self._zone_draft[CONF_HUMIDITY_SENSORS] = [
+                        str(record["entity_id"])
+                        for record in user_input[CONF_HUMIDITY_SENSOR_METADATA]
+                        if isinstance(record, Mapping) and record.get("entity_id")
                     ]
                 if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
                     self._metadata_records = []
@@ -1373,6 +1525,10 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_TEMPERATURE_SENSORS): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),
+                    vol.Optional(CONF_HUMIDITY_SENSORS, default=[]): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor", multiple=True)
+                    ),
+                    vol.Optional(CONF_HUMIDITY_SENSOR_METADATA, default=[]): list,
                     vol.Required(
                         CONF_TEMPERATURE_AGGREGATION,
                         default=DEFAULT_TEMPERATURE_AGGREGATION,
@@ -1473,6 +1629,24 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME: name,
                         CONF_VALVE_IDS: [valve_id],
                         "pump_id": pump_id,
+                        CONF_COOLING_ENABLED: bool(
+                            user_input.get(CONF_COOLING_ENABLED, False)
+                        ),
+                        CONF_SUPPLY_TEMPERATURE_SENSOR: user_input.get(
+                            CONF_SUPPLY_TEMPERATURE_SENSOR
+                        ),
+                        CONF_SURFACE_TEMPERATURE_SENSOR: user_input.get(
+                            CONF_SURFACE_TEMPERATURE_SENSOR
+                        ),
+                        CONF_CONDENSATION_MARGIN: user_input.get(
+                            CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN
+                        ),
+                        CONF_SUPPLY_TEMPERATURE_MAX_AGE: user_input.get(
+                            CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
+                        ),
+                        CONF_SURFACE_TEMPERATURE_MAX_AGE: user_input.get(
+                            CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
+                        ),
                     }
                 ]
                 self._draft[CONF_TOPOLOGY][CONF_ROUTES] = [
@@ -1498,6 +1672,22 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PUMP_OVERRUN, default=DEFAULT_PUMP_OVERRUN): vol.All(
                         vol.Coerce(float), vol.Range(min=0)
                     ),
+                    vol.Optional(CONF_COOLING_ENABLED, default=False): selector.BooleanSelector(),
+                    vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(CONF_SURFACE_TEMPERATURE_SENSOR): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_CONDENSATION_MARGIN, default=DEFAULT_CONDENSATION_MARGIN
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_SUPPLY_TEMPERATURE_MAX_AGE, default=DEFAULT_REFERENCE_MAX_AGE
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(
+                        CONF_SURFACE_TEMPERATURE_MAX_AGE, default=DEFAULT_REFERENCE_MAX_AGE
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
                 }
             ),
             errors=errors,

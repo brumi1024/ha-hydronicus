@@ -198,6 +198,34 @@ class HydronicRuntime:
             return None
         return self.evaluation.diagnostics.zone_decisions.get(zone_id)
 
+    def cooling_zone_decision(self, zone_id: str) -> ZoneDecision | None:
+        """Return the structured cooling decision for one zone."""
+        if self.evaluation is None:
+            return None
+        return self.evaluation.diagnostics.cooling_zone_decisions.get(zone_id)
+
+    def cooling_zone_is_blocked(self, zone_id: str) -> bool:
+        """Return whether cooling safety currently blocks one zone."""
+        decision = self.cooling_zone_decision(zone_id)
+        return decision is not None and decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+
+    def cooling_zone_blocked_reason(self, zone_id: str) -> str | None:
+        """Return the structured cooling interlock explanation for one zone."""
+        decision = self.cooling_zone_decision(zone_id)
+        if decision is None or decision.status is not ZoneDecisionStatus.SENSOR_BLOCKED:
+            return None
+        return decision.explanation
+
+    def zone_dew_point(self, zone_id: str) -> float | None:
+        """Return the last calculated dew point for one zone."""
+        decision = self.cooling_zone_decision(zone_id)
+        return decision.dew_point if decision is not None else None
+
+    def zone_condensation_margin(self, zone_id: str) -> float | None:
+        """Return the lowest configured reference margin for one zone."""
+        decision = self.cooling_zone_decision(zone_id)
+        return decision.condensation_margin if decision is not None else None
+
     def zone_is_blocked(self, zone_id: str) -> bool:
         """Return structured blocked state without parsing a reason string."""
         decision = self.zone_decision(zone_id)
@@ -262,7 +290,7 @@ class HydronicRuntime:
             self._remove_transition_timer = None
 
     def _temperature_sensor_ids(self) -> tuple[str, ...]:
-        """Return every configured sensor once, preserving topology order."""
+        """Return every configured temperature sensor once."""
         return tuple(
             dict.fromkeys(
                 sensor_id
@@ -278,12 +306,48 @@ class HydronicRuntime:
             for binding in self.executor.bindings.values()
         }
 
-    def _observed_entity_ids(self) -> tuple[str, ...]:
-        """Return sensor, source, and actuator entities for one shared listener."""
+    def _humidity_sensor_ids(self) -> tuple[str, ...]:
+        """Return every configured humidity sensor once."""
+        return tuple(
+            dict.fromkeys(
+                sensor_id
+                for zone in self.plant.zones.values()
+                for sensor_id in zone.humidity_sensors
+            )
+        )
+
+    def _reference_sensor_ids(self) -> tuple[str, ...]:
+        """Return every configured supply and surface reference once."""
+        return tuple(
+            dict.fromkeys(
+                sensor_id
+                for circuit in self.plant.circuits.values()
+                for sensor_id in (
+                    circuit.supply_temperature_sensor,
+                    circuit.surface_temperature_sensor,
+                )
+                if sensor_id is not None
+            )
+        )
+
+    def _observation_sensor_ids(self) -> tuple[str, ...]:
+        """Return all configured observation entities for listeners and refresh."""
         return tuple(
             dict.fromkeys(
                 (
                     *self._temperature_sensor_ids(),
+                    *self._humidity_sensor_ids(),
+                    *self._reference_sensor_ids(),
+                )
+            )
+        )
+
+    def _observed_entity_ids(self) -> tuple[str, ...]:
+        """Return observations, source inputs, and actuators for one listener."""
+        return tuple(
+            dict.fromkeys(
+                (
+                    *self._observation_sensor_ids(),
                     *(
                         entity_id
                         for source in self.plant.sources.values()
@@ -365,6 +429,39 @@ class HydronicRuntime:
                 deadline = observation.observed_at + timedelta(seconds=source.maximum_age_seconds)
                 if deadline > now:
                     delays.append((deadline - now).total_seconds())
+            for sensor_id in self._humidity_sensor_ids():
+                observation = self.snapshot.humidities.get(sensor_id)
+                if observation is None or observation.observed_at is None:
+                    continue
+                max_age = min(
+                    sensor.max_age_seconds
+                    for zone in self.plant.zones.values()
+                    for sensor in zone.humidity_sensor_metadata
+                    if sensor.entity_id == sensor_id
+                )
+                deadline = observation.observed_at + timedelta(seconds=max_age)
+                if deadline > now:
+                    delays.append((deadline - now).total_seconds())
+            for circuit in self.plant.circuits.values():
+                for observation, max_age in (
+                    (circuit.supply_temperature_sensor, circuit.supply_temperature_max_age_seconds),
+                    (
+                        circuit.surface_temperature_sensor,
+                        circuit.surface_temperature_max_age_seconds,
+                    ),
+                ):
+                    if observation is None:
+                        continue
+                    reading = (
+                        self.snapshot.supply_temperatures.get(observation)
+                        if observation == circuit.supply_temperature_sensor
+                        else self.snapshot.surface_temperatures.get(observation)
+                    )
+                    if reading is None or reading.observed_at is None:
+                        continue
+                    deadline = reading.observed_at + timedelta(seconds=max_age)
+                    if deadline > now:
+                        delays.append((deadline - now).total_seconds())
 
         return min(delays) if delays else None
 
@@ -380,7 +477,7 @@ class HydronicRuntime:
     async def async_refresh(self, hass: HomeAssistant) -> None:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
         observations: dict[str, TemperatureObservation] = {}
-        for sensor_id in self._temperature_sensor_ids():
+        for sensor_id in self._observation_sensor_ids():
             state = hass.states.get(sensor_id)
             value: float | None
             try:
@@ -415,8 +512,23 @@ class HydronicRuntime:
             if source.availability_entity_id is not None:
                 state = hass.states.get(source.availability_entity_id)
                 source_availability[source.id] = _state_is_available(state)
+        temperature_ids = set(self._temperature_sensor_ids())
+        humidity_ids = set(self._humidity_sensor_ids())
+        supply_ids = {
+            circuit.supply_temperature_sensor
+            for circuit in self.plant.circuits.values()
+            if circuit.supply_temperature_sensor is not None
+        }
+        surface_ids = {
+            circuit.surface_temperature_sensor
+            for circuit in self.plant.circuits.values()
+            if circuit.surface_temperature_sensor is not None
+        }
         self.snapshot = PlantSnapshot(
-            temperatures=observations,
+            temperatures={sensor_id: observations[sensor_id] for sensor_id in temperature_ids},
+            humidities={sensor_id: observations[sensor_id] for sensor_id in humidity_ids},
+            supply_temperatures={sensor_id: observations[sensor_id] for sensor_id in supply_ids},
+            surface_temperatures={sensor_id: observations[sensor_id] for sensor_id in surface_ids},
             source_temperatures=source_temperatures,
             source_availability=source_availability,
         )

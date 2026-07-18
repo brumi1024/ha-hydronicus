@@ -347,6 +347,40 @@ def temperature_sensor_metadata_from_mapping(
     return tuple(records)
 
 
+def humidity_sensor_metadata_from_mapping(
+    mapping: Mapping[str, Any],
+) -> tuple[TemperatureSensorMetadata, ...]:
+    """Decode humidity metadata using the same required and stale semantics as temperature."""
+    humidity_keys = {
+        "humidity_sensor_metadata",
+        "humidity_sensors",
+        "humidity_sensor",
+        "humidity_sensor_weights",
+    }
+    if not any(key in mapping for key in humidity_keys):
+        return ()
+    normalized = {
+        key: value
+        for key, value in mapping.items()
+        if key
+        not in {
+            _SENSOR_METADATA_KEY,
+            "temperature_sensors",
+            "temperature_sensor",
+            "temperature_sensor_weights",
+        }
+    }
+    if "humidity_sensor_metadata" in mapping:
+        normalized[_SENSOR_METADATA_KEY] = mapping["humidity_sensor_metadata"]
+    if "humidity_sensors" in mapping:
+        normalized["temperature_sensors"] = mapping["humidity_sensors"]
+    if "humidity_sensor" in mapping:
+        normalized["temperature_sensor"] = mapping["humidity_sensor"]
+    if "humidity_sensor_weights" in mapping:
+        normalized["temperature_sensor_weights"] = mapping["humidity_sensor_weights"]
+    return temperature_sensor_metadata_from_mapping(normalized)
+
+
 def _temperature_sensors(mapping: Mapping[str, Any]) -> tuple[str, ...]:
     """Read sensor IDs while preserving milestone 1 entries."""
     return tuple(sensor.entity_id for sensor in temperature_sensor_metadata_from_mapping(mapping))
@@ -379,11 +413,13 @@ def _preset_targets(mapping: Mapping[str, Any]) -> Mapping[str, float]:
     return targets
 
 
-def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float]:
-    """Read heating hysteresis and minimum duration fields."""
+def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float, float, float]:
+    """Read heating, cooling hysteresis, and minimum duration fields."""
     return (
         _number(mapping, "heating_start_delta", 0.3, non_negative=True),
         _number(mapping, "heating_stop_delta", 0.1, non_negative=True),
+        _number(mapping, "cooling_start_delta", 0.3, non_negative=True),
+        _number(mapping, "cooling_stop_delta", 0.1, non_negative=True),
         _number(mapping, "minimum_active_duration_seconds", 0.0, non_negative=True),
         _number(mapping, "minimum_idle_duration_seconds", 0.0, non_negative=True),
     )
@@ -449,9 +485,17 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
     zones = []
     for item in _objects(raw_topology, "zones"):
         metadata = temperature_sensor_metadata_from_mapping(item)
+        humidity_metadata = humidity_sensor_metadata_from_mapping(item)
         aggregation = _temperature_aggregation(item)
         metadata = _validate_reference_policy(item, aggregation, metadata)
-        start_delta, stop_delta, active_duration, idle_duration = _zone_timing(item)
+        (
+            start_delta,
+            stop_delta,
+            cooling_start_delta,
+            cooling_stop_delta,
+            active_duration,
+            idle_duration,
+        ) = _zone_timing(item)
         zones.append(
             Zone(
                 id=_id(item, "id", require_uuid=require_uuid),
@@ -461,9 +505,12 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 aggregation=aggregation,
                 heating_start_delta=start_delta,
                 heating_stop_delta=stop_delta,
+                cooling_start_delta=cooling_start_delta,
+                cooling_stop_delta=cooling_stop_delta,
                 minimum_active_duration_seconds=active_duration,
                 minimum_idle_duration_seconds=idle_duration,
                 preset_targets=_preset_targets(item),
+                humidity_sensor_metadata=humidity_metadata,
             )
         )
     if require_uuid:
@@ -491,6 +538,22 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 name=str(_required(item, "name")),
                 valve_ids=_string_list(item, "valve_ids", require_uuid=True),
                 pump_id=_id(item, "pump_id", require_uuid=True),
+                cooling_enabled=bool(item.get("cooling_enabled", False)),
+                supply_temperature_sensor=item.get("supply_temperature_sensor"),
+                surface_temperature_sensor=item.get("surface_temperature_sensor"),
+                condensation_margin=_number(item, "condensation_margin", 2.0, non_negative=True),
+                supply_temperature_max_age_seconds=_number(
+                    item,
+                    "supply_temperature_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
+                ),
+                surface_temperature_max_age_seconds=_number(
+                    item,
+                    "surface_temperature_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
+                ),
             )
             for item in raw_circuits
         ]
@@ -534,6 +597,24 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                     name=name,
                     valve_ids=(valve_id,),
                     pump_id=pump_id,
+                    cooling_enabled=bool(item.get("cooling_enabled", False)),
+                    supply_temperature_sensor=item.get("supply_temperature_sensor"),
+                    surface_temperature_sensor=item.get("surface_temperature_sensor"),
+                    condensation_margin=_number(
+                        item, "condensation_margin", 2.0, non_negative=True
+                    ),
+                    supply_temperature_max_age_seconds=_number(
+                        item,
+                        "supply_temperature_max_age_seconds",
+                        _LEGACY_MAX_AGE_SECONDS,
+                        positive=True,
+                    ),
+                    surface_temperature_max_age_seconds=_number(
+                        item,
+                        "surface_temperature_max_age_seconds",
+                        _LEGACY_MAX_AGE_SECONDS,
+                        positive=True,
+                    ),
                 )
             )
         valves = tuple(valve_data.values())
