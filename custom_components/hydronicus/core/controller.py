@@ -1108,6 +1108,190 @@ def _reconcile_source_observations(
     return _SourceObservationReconciliation(selection, active_source_id, observed_source)
 
 
+def _advance_breaking_source_selection(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    selection: SourceSelectionRuntime,
+    now: datetime,
+    recommended_source_id: str | None,
+    observed_source: str | None,
+    *,
+    hydraulic_safe: bool,
+    hydraulic_reason: str,
+    demand_permitted: bool,
+    demand_reason: str,
+) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic]:
+    """Advance old-source release and the configured break interval."""
+    selector = plant.source_selector
+    target_source_id = recommended_source_id
+    if target_source_id is not None and target_source_id not in plant.sources:
+        target_source_id = None
+    started_at = selection.transition_started_at or now
+    elapsed = _elapsed(now, started_at)
+    released_source_id = selection.released_source_id
+    if (
+        selector is None
+        and released_source_id is not None
+        and released_source_id in snapshot.source_demand_states
+        and snapshot.source_demand_states[released_source_id]
+    ):
+        diagnostic = SourceSelectionDiagnostic(
+            SourceSelectionPhase.BREAKING,
+            released_source_id,
+            target_source_id,
+            recommended_source_id,
+            False,
+            "Waiting for observed old-source release before selecting another source.",
+        )
+        return selection, (), diagnostic
+    if selector is not None and selector.entity_id is not None and observed_source is not None:
+        if observed_source == target_source_id:
+            if elapsed < timedelta(seconds=selector.break_interval_seconds):
+                diagnostic = SourceSelectionDiagnostic(
+                    SourceSelectionPhase.BREAKING,
+                    None,
+                    target_source_id,
+                    recommended_source_id,
+                    False,
+                    "Waiting for the configured break interval before accepting "
+                    "selector feedback.",
+                )
+                return selection, (), diagnostic
+            selected_at = selection.last_selected_at or now
+            phase = (
+                SourceSelectionPhase.MINIMUM_DWELL
+                if selector.minimum_dwell_seconds > 0
+                else SourceSelectionPhase.ACTIVE
+            )
+            next_selection = SourceSelectionRuntime(
+                phase,
+                target_source_id,
+                target_source_id,
+                selected_at,
+                selected_at,
+            )
+            return (
+                next_selection,
+                (),
+                SourceSelectionDiagnostic(
+                    phase,
+                    target_source_id,
+                    target_source_id,
+                    recommended_source_id,
+                    True,
+                    "Selector feedback confirms the target after the break interval.",
+                ),
+            )
+        diagnostic = SourceSelectionDiagnostic(
+            SourceSelectionPhase.BREAKING,
+            None,
+            target_source_id,
+            recommended_source_id,
+            False,
+            "Waiting for selector feedback to confirm that the old source is released.",
+        )
+        return selection, (), diagnostic
+    if not hydraulic_safe:
+        diagnostic = SourceSelectionDiagnostic(
+            SourceSelectionPhase.BREAKING,
+            None,
+            target_source_id,
+            recommended_source_id,
+            False,
+            f"Source release is complete; {hydraulic_reason}",
+        )
+        return (
+            SourceSelectionRuntime(
+                SourceSelectionPhase.BREAKING,
+                None,
+                target_source_id,
+                started_at,
+                selection.last_selected_at,
+                selection.released_source_id,
+            ),
+            (),
+            diagnostic,
+        )
+    if target_source_id is not None and not demand_permitted:
+        diagnostic = SourceSelectionDiagnostic(
+            SourceSelectionPhase.BREAKING,
+            None,
+            target_source_id,
+            recommended_source_id,
+            False,
+            demand_reason,
+        )
+        return selection, (), diagnostic
+    if elapsed < timedelta(seconds=(selector.break_interval_seconds if selector else 0.0)):
+        diagnostic = SourceSelectionDiagnostic(
+            SourceSelectionPhase.BREAKING,
+            None,
+            target_source_id,
+            recommended_source_id,
+            True,
+            "Old source released; observing the configured break interval before selection.",
+        )
+        return (
+            SourceSelectionRuntime(
+                SourceSelectionPhase.BREAKING,
+                None,
+                target_source_id,
+                started_at,
+                selection.last_selected_at,
+                selection.released_source_id,
+            ),
+            (),
+            diagnostic,
+        )
+    if target_source_id is None:
+        next_selection = SourceSelectionRuntime(
+            SourceSelectionPhase.IDLE,
+            None,
+            None,
+            now,
+            None,
+        )
+        return (
+            next_selection,
+            (),
+            SourceSelectionDiagnostic(
+                SourceSelectionPhase.IDLE,
+                None,
+                None,
+                recommended_source_id,
+                True,
+                "No eligible source remains after the break interval.",
+            ),
+        )
+    target_source = plant.sources[target_source_id]
+    command = _source_selection_command(
+        selector,
+        target_source,
+        action=ActuatorAction.TURN_ON,
+        reason="Select the fallback source after the break interval.",
+    )
+    next_selection = SourceSelectionRuntime(
+        SourceSelectionPhase.SELECTING,
+        None,
+        target_source_id,
+        now,
+        selection.last_selected_at,
+        None,
+    )
+    return (
+        next_selection,
+        (command,) if command is not None else (),
+        SourceSelectionDiagnostic(
+            SourceSelectionPhase.SELECTING,
+            None,
+            target_source_id,
+            recommended_source_id,
+            True,
+            "Break interval elapsed; selecting the new source.",
+        ),
+    )
+
+
 def _advance_source_selection(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -1152,183 +1336,17 @@ def _advance_source_selection(
     observed_source = reconciliation.observed_source_id
 
     if selection.phase is SourceSelectionPhase.BREAKING:
-        target_source_id = recommended_source_id
-        if (
-            target_source_id is not None
-            and target_source_id not in plant.sources
-        ):
-            target_source_id = None
-        started_at = selection.transition_started_at or now
-        elapsed = _elapsed(now, started_at)
-        released_source_id = selection.released_source_id
-        if (
-            selector is None
-            and released_source_id is not None
-            and released_source_id in snapshot.source_demand_states
-            and snapshot.source_demand_states[released_source_id]
-        ):
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.BREAKING,
-                released_source_id,
-                target_source_id,
-                recommended_source_id,
-                False,
-                "Waiting for observed old-source release before selecting another source.",
-            )
-            return (
-                selection,
-                (),
-                diagnostic,
-            )
-        if (
-            selector is not None
-            and selector.entity_id is not None
-            and observed_source is not None
-        ):
-            if observed_source == target_source_id:
-                if elapsed < timedelta(seconds=selector.break_interval_seconds):
-                    diagnostic = SourceSelectionDiagnostic(
-                        SourceSelectionPhase.BREAKING,
-                        None,
-                        target_source_id,
-                        recommended_source_id,
-                        False,
-                        "Waiting for the configured break interval before accepting "
-                        "selector feedback.",
-                    )
-                    return selection, (), diagnostic
-                selected_at = selection.last_selected_at or now
-                phase = (
-                    SourceSelectionPhase.MINIMUM_DWELL
-                    if selector.minimum_dwell_seconds > 0
-                    else SourceSelectionPhase.ACTIVE
-                )
-                next_selection = SourceSelectionRuntime(
-                    phase,
-                    target_source_id,
-                    target_source_id,
-                    selected_at,
-                    selected_at,
-                )
-                return (
-                    next_selection,
-                    (),
-                    SourceSelectionDiagnostic(
-                        phase,
-                        target_source_id,
-                        target_source_id,
-                        recommended_source_id,
-                        True,
-                        "Selector feedback confirms the target after the break interval.",
-                    ),
-                )
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.BREAKING,
-                None,
-                target_source_id,
-                recommended_source_id,
-                False,
-                "Waiting for selector feedback to confirm that the old source is released.",
-            )
-            return selection, (), diagnostic
-        if not hydraulic_safe:
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.BREAKING,
-                None,
-                target_source_id,
-                recommended_source_id,
-                False,
-                f"Source release is complete; {hydraulic_reason}",
-            )
-            return (
-                SourceSelectionRuntime(
-                    SourceSelectionPhase.BREAKING,
-                    None,
-                    target_source_id,
-                    started_at,
-                    selection.last_selected_at,
-                    selection.released_source_id,
-                ),
-                (),
-                diagnostic,
-            )
-        if target_source_id is not None and not demand_permitted:
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.BREAKING,
-                None,
-                target_source_id,
-                recommended_source_id,
-                False,
-                demand_reason,
-            )
-            return selection, (), diagnostic
-        if elapsed < timedelta(seconds=(selector.break_interval_seconds if selector else 0.0)):
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.BREAKING,
-                None,
-                target_source_id,
-                recommended_source_id,
-                True,
-                "Old source released; observing the configured break interval before selection.",
-            )
-            return (
-                SourceSelectionRuntime(
-                    SourceSelectionPhase.BREAKING,
-                    None,
-                    target_source_id,
-                    started_at,
-                    selection.last_selected_at,
-                    selection.released_source_id,
-                ),
-                (),
-                diagnostic,
-            )
-        if target_source_id is None:
-            next_selection = SourceSelectionRuntime(
-                SourceSelectionPhase.IDLE,
-                None,
-                None,
-                now,
-                None,
-            )
-            return (
-                next_selection,
-                (),
-                SourceSelectionDiagnostic(
-                    SourceSelectionPhase.IDLE,
-                    None,
-                    None,
-                    recommended_source_id,
-                    True,
-                    "No eligible source remains after the break interval.",
-                ),
-            )
-        target_source = plant.sources[target_source_id]
-        command = _source_selection_command(
-            selector,
-            target_source,
-            action=ActuatorAction.TURN_ON,
-            reason="Select the fallback source after the break interval.",
-        )
-        next_selection = SourceSelectionRuntime(
-            SourceSelectionPhase.SELECTING,
-            None,
-            target_source_id,
+        return _advance_breaking_source_selection(
+            plant,
+            snapshot,
+            selection,
             now,
-            selection.last_selected_at,
-            None,
-        )
-        return (
-            next_selection,
-            (command,) if command is not None else (),
-            SourceSelectionDiagnostic(
-                SourceSelectionPhase.SELECTING,
-                None,
-                target_source_id,
-                recommended_source_id,
-                True,
-                "Break interval elapsed; selecting the new source.",
-            ),
+            recommended_source_id,
+            observed_source,
+            hydraulic_safe=hydraulic_safe,
+            hydraulic_reason=hydraulic_reason,
+            demand_permitted=demand_permitted,
+            demand_reason=demand_reason,
         )
 
     if selection.phase is SourceSelectionPhase.SELECTING:
