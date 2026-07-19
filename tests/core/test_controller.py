@@ -899,7 +899,7 @@ def test_restored_actuator_without_timestamp_is_conservative() -> None:
     plant = compile_topology(_plant())
     snapshot = _snapshot(20.0)
     runtime = RuntimeState(
-        valves={"valve.floor": ValveRuntime(ValveState.OPENING, None)},
+        valves={"valve.floor": ValveRuntime(ValveState.OPENING, None, False)},
         pumps={"pump.floor": PumpRuntime(PumpState.OVERRUN, None)},
     )
 
@@ -1328,7 +1328,13 @@ def test_restart_during_changeover_reconstructs_conservative_lockout(
         changeover_phase=phase,
         changeover_target_mode=PlantMode.COOLING,
         changeover_started_at=NOW - timedelta(seconds=5),
-        valves={"valve": ValveRuntime(valve_state, NOW - timedelta(seconds=5))},
+        valves={
+            "valve": ValveRuntime(
+                valve_state,
+                NOW - timedelta(seconds=5),
+                valve_state is ValveState.OPEN,
+            )
+        },
         pumps={"pump": PumpRuntime(pump_state, NOW - timedelta(seconds=5))},
     )
 
@@ -1347,7 +1353,7 @@ def test_explicit_cooling_request_blocks_heat_while_cooling_is_interlocked() -> 
     restored = RuntimeState(
         requested_mode=PlantMode.COOLING,
         plant_mode=PlantMode.HEATING,
-        valves={"valve": ValveRuntime(ValveState.OPEN, NOW - timedelta(seconds=5))},
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW - timedelta(seconds=5), True)},
         pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW - timedelta(seconds=5))},
     )
     snapshot = replace(_changeover_snapshot(NOW, 19.0), humidities={})

@@ -41,28 +41,28 @@ def _plan(*commands: ActuatorCommand) -> ControlPlan:
     [
         (
             "switch.floor_valve",
-            "open",
+            ActuatorAction.OPEN,
             "switch",
             "turn_on",
             ActuatorObservedState.ON,
         ),
         (
             "switch.floor_valve",
-            "close",
+            ActuatorAction.CLOSE,
             "switch",
             "turn_off",
             ActuatorObservedState.OFF,
         ),
         (
             "valve.floor_valve",
-            "open",
+            ActuatorAction.OPEN,
             "valve",
             "open_valve",
             ActuatorObservedState.OPEN,
         ),
         (
             "valve.floor_valve",
-            "close",
+            ActuatorAction.CLOSE,
             "valve",
             "close_valve",
             ActuatorObservedState.CLOSED,
@@ -71,7 +71,7 @@ def _plan(*commands: ActuatorCommand) -> ControlPlan:
 )
 def test_generic_adapter_translates_only_explicit_services(
     entity_id: str,
-    action: str,
+    action: ActuatorAction,
     domain: str,
     service: str,
     target: ActuatorObservedState,
@@ -96,7 +96,9 @@ def test_generic_adapter_translates_only_explicit_services(
 @pytest.mark.asyncio
 async def test_source_selector_translates_select_option_and_is_idempotent() -> None:
     """A selector receives one explicit option command and no toggle operation."""
-    command = ActuatorCommand("selector", "select", "synthetic source selection", "buffer")
+    command = ActuatorCommand(
+        "selector", ActuatorAction.SELECT, "synthetic source selection", "buffer"
+    )
     binding = ActuatorBinding("selector", "select.synthetic_source")
     assert operation_for(command, binding) == ActuatorOperation(
         "selector",
@@ -126,7 +128,7 @@ def test_native_valve_rejects_switch_only_actions() -> None:
     """A native valve must not be driven through an invented turn-on operation."""
     with pytest.raises(ValueError, match="requires open or close"):
         operation_for(
-            ActuatorCommand("valve", "turn_on", "synthetic demand"),
+            ActuatorCommand("valve", ActuatorAction.TURN_ON, "synthetic demand"),
             ActuatorBinding("valve", "valve.floor_valve"),
         )
 
@@ -135,7 +137,7 @@ def test_invalid_entity_and_observation_states_fail_closed() -> None:
     """Unknown entity domains and transitional feedback never become a desired state."""
     with pytest.raises(ValueError, match="switch or valve domain"):
         operation_for(
-            ActuatorCommand("valve", "open", "synthetic demand"),
+            ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand"),
             ActuatorBinding("valve", "light.floor_valve"),
         )
 
@@ -256,11 +258,11 @@ async def test_executor_suppresses_an_already_satisfied_command() -> None:
         dispatched.append(operation)
 
     first = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         dispatch,
     )
     second = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         dispatch,
     )
 
@@ -283,11 +285,11 @@ async def test_reconciliation_records_desired_observed_and_retained_state() -> N
         dispatched.append(operation)
 
     first = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         dispatch,
     )
     second = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         dispatch,
     )
 
@@ -301,7 +303,7 @@ async def test_reconciliation_records_desired_observed_and_retained_state() -> N
 
     executor.observe_entity_state("switch.floor_valve", "on")
     await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         dispatch,
     )
     assert executor.reconciliations["valve"].status.value == "observed"
@@ -319,7 +321,7 @@ async def test_rejected_service_call_is_a_deterministic_failure_without_retainin
         raise RuntimeError("synthetic service rejected")
 
     report = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         reject,
     )
 
@@ -343,7 +345,7 @@ async def test_timeout_is_distinguished_from_a_rejected_service_call() -> None:
         raise TimeoutError("synthetic command timeout")
 
     report = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         timeout,
     )
 
@@ -366,7 +368,7 @@ async def test_dry_run_preserves_commands_without_dispatching() -> None:
         dispatched.append(operation)
 
     report = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
         dispatch,
     )
 
@@ -388,7 +390,7 @@ async def test_forced_shadow_preserves_commands_without_dispatching() -> None:
         dispatched.append(operation)
 
     report = await executor.async_execute(
-        _plan(ActuatorCommand("valve", "open", "cooling demand")),
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "cooling demand")),
         dispatch,
         force_dry_run=True,
     )

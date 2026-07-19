@@ -74,14 +74,6 @@ class ActuatorExecutionFailure:
     kind: ActuatorFailureKind
     explanation: str
 
-    @property
-    def actuator_id(self) -> str:
-        """Return the failed actuator identifier."""
-        return self.operation.actuator_id
-
-
-ExecutionFailure = ActuatorExecutionFailure
-
 
 @dataclass(frozen=True, slots=True)
 class ReconciliationResult:
@@ -103,11 +95,6 @@ class ExecutionReport:
     suppressed: tuple[ActuatorOperation, ...] = ()
     proposed: tuple[ActuatorOperation, ...] = ()
     failures: tuple[ActuatorExecutionFailure, ...] = ()
-
-    @property
-    def failed(self) -> tuple[ActuatorExecutionFailure, ...]:
-        """Return failed operations using the concise public spelling."""
-        return self.failures
 
 
 @dataclass(frozen=True, slots=True)

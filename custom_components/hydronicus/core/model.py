@@ -359,7 +359,7 @@ class SourceSelectionDiagnostic:
     dwell_remaining_seconds: float = 0.0
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True)
 class Valve:
     """A topology-owned valve with one Home Assistant entity binding."""
 
@@ -371,45 +371,8 @@ class Valve:
     position_entity_id: str | None = None
     position_max_age_seconds: float = 1800.0
 
-    def __init__(
-        self,
-        id: str,
-        name: str,
-        entity_id: str,
-        opening_time_seconds: float = 30.0,
-        readiness_entity_id: str | None = None,
-        *,
-        feedback_entity_id: str | None = None,
-        position_entity_id: str | None = None,
-        position_feedback_entity_id: str | None = None,
-        position_max_age_seconds: float = 1800.0,
-        feedback_max_age_seconds: float | None = None,
-    ) -> None:
-        """Accept readiness and position feedback terminology at the model boundary."""
-        if (
-            readiness_entity_id is not None
-            and feedback_entity_id is not None
-            and readiness_entity_id != feedback_entity_id
-        ):
-            raise ValueError("Valve readiness feedback was provided more than once.")
-        if position_feedback_entity_id is not None:
-            position_entity_id = position_feedback_entity_id
-        if feedback_max_age_seconds is not None:
-            position_max_age_seconds = feedback_max_age_seconds
-        object.__setattr__(self, "id", id)
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "entity_id", entity_id)
-        object.__setattr__(self, "opening_time_seconds", opening_time_seconds)
-        object.__setattr__(
-            self,
-            "readiness_entity_id",
-            readiness_entity_id if readiness_entity_id is not None else feedback_entity_id,
-        )
-        object.__setattr__(self, "position_entity_id", position_entity_id)
-        object.__setattr__(self, "position_max_age_seconds", float(position_max_age_seconds))
 
-
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True)
 class Pump:
     """A topology-owned pump with one Home Assistant entity binding."""
 
@@ -423,46 +386,6 @@ class Pump:
     power_max_age_seconds: float = 1800.0
     flow_max_age_seconds: float = 1800.0
     fault_max_age_seconds: float = 1800.0
-
-    def __init__(
-        self,
-        id: str,
-        name: str,
-        entity_id: str,
-        overrun_seconds: float = 120.0,
-        *,
-        power_entity_id: str | None = None,
-        power_feedback_entity_id: str | None = None,
-        flow_entity_id: str | None = None,
-        flow_feedback_entity_id: str | None = None,
-        fault_entity_id: str | None = None,
-        fault_feedback_entity_id: str | None = None,
-        power_max_age_seconds: float = 1800.0,
-        flow_max_age_seconds: float = 1800.0,
-        fault_max_age_seconds: float = 1800.0,
-        feedback_max_age_seconds: float | None = None,
-    ) -> None:
-        """Store independently optional pump feedback without changing legacy arguments."""
-        if power_feedback_entity_id is not None:
-            power_entity_id = power_feedback_entity_id
-        if flow_feedback_entity_id is not None:
-            flow_entity_id = flow_feedback_entity_id
-        if fault_feedback_entity_id is not None:
-            fault_entity_id = fault_feedback_entity_id
-        if feedback_max_age_seconds is not None:
-            power_max_age_seconds = feedback_max_age_seconds
-            flow_max_age_seconds = feedback_max_age_seconds
-            fault_max_age_seconds = feedback_max_age_seconds
-        object.__setattr__(self, "id", id)
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "entity_id", entity_id)
-        object.__setattr__(self, "overrun_seconds", overrun_seconds)
-        object.__setattr__(self, "power_entity_id", power_entity_id)
-        object.__setattr__(self, "flow_entity_id", flow_entity_id)
-        object.__setattr__(self, "fault_entity_id", fault_entity_id)
-        object.__setattr__(self, "power_max_age_seconds", float(power_max_age_seconds))
-        object.__setattr__(self, "flow_max_age_seconds", float(flow_max_age_seconds))
-        object.__setattr__(self, "fault_max_age_seconds", float(fault_max_age_seconds))
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,12 +522,7 @@ class ValveRuntime:
 
     state: ValveState = ValveState.CLOSED
     changed_at: datetime | None = None
-    ready: bool | None = None
-
-    def __post_init__(self) -> None:
-        """Preserve the legacy open-state constructor as a ready state."""
-        if self.ready is None:
-            object.__setattr__(self, "ready", self.state is ValveState.OPEN)
+    ready: bool = False
 
     @property
     def is_ready(self) -> bool:
@@ -650,10 +568,6 @@ class ActuatorCommand:
     action: ActuatorAction
     reason: str
     target: str | None = None
-
-    def __post_init__(self) -> None:
-        """Normalize legacy string construction while rejecting unknown actions."""
-        object.__setattr__(self, "action", ActuatorAction(self.action))
 
 
 @dataclass(frozen=True, slots=True)
