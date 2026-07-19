@@ -826,7 +826,7 @@ class HydronicRuntime:
                     PumpState.RUNNING
                     if self.dry_run
                     else PumpState.STARTING
-                    if any(self.runtime_state.zone_demands.values())
+                    if any(state.demand for state in self.runtime_state.zone_runtime.values())
                     else PumpState.OVERRUN,
                     current.changed_at or now,
                 )

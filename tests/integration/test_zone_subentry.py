@@ -676,7 +676,10 @@ async def test_dynamic_zone_can_share_parent_circuit_demand(hass) -> None:
     )
     zone_id = subentry.data["id"]
 
-    assert entry.runtime_data.runtime_state.zone_demands == {
+    assert {
+        current_zone_id: state.demand
+        for current_zone_id, state in entry.runtime_data.runtime_state.zone_runtime.items()
+    } == {
         BASE_ZONE_ID: False,
         zone_id: True,
     }

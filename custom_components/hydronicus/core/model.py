@@ -542,7 +542,6 @@ class PumpRuntime:
 class RuntimeState:
     """Persistable controller state, separate from observed Home Assistant state."""
 
-    zone_demands: Mapping[str, bool] = field(default_factory=dict)
     cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
     zone_runtime: Mapping[str, ZoneRuntime] = field(default_factory=dict)
     valves: Mapping[str, ValveRuntime] = field(default_factory=dict)

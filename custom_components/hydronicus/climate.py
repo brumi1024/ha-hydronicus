@@ -22,7 +22,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import DOMAIN
-from .core.model import MAX_ZONE_TARGET_TEMPERATURE, MIN_ZONE_TARGET_TEMPERATURE, PlantMode
+from .core.model import (
+    MAX_ZONE_TARGET_TEMPERATURE,
+    MIN_ZONE_TARGET_TEMPERATURE,
+    PlantMode,
+    ZoneRuntime,
+)
 from .runtime import HydronicRuntime
 
 
@@ -111,7 +116,7 @@ class ZoneClimate(ClimateEntity):
             return None
         if self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False):
             return HVACAction.COOLING
-        if self._runtime.runtime_state.zone_demands.get(self._zone_id, False):
+        if self._runtime.runtime_state.zone_runtime.get(self._zone_id, ZoneRuntime()).demand:
             return HVACAction.HEATING
         return HVACAction.IDLE
 

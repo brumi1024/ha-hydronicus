@@ -12,6 +12,7 @@ from .const import (
     RECONCILIATION_INTERVAL_SECONDS,
 )
 from .core.executor import ActuatorOperation
+from .core.model import ZoneRuntime
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -338,7 +339,7 @@ def _runtime_state(runtime: HydronicRuntime, references: _References) -> dict[st
     zones = [
         {
             "reference": references.ref("zone", zone_id),
-            "demand": bool(runtime.runtime_state.zone_demands.get(zone_id, False)),
+            "demand": runtime.runtime_state.zone_runtime.get(zone_id, ZoneRuntime()).demand,
             "cooling_demand": bool(runtime.runtime_state.cooling_zone_demands.get(zone_id, False)),
             "transition_timestamp_present": (
                 runtime.runtime_state.zone_runtime.get(zone_id) is not None

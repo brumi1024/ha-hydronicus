@@ -370,13 +370,12 @@ def test_blocked_required_sensor_never_produces_zone_demand(
         }
     )
     runtime = RuntimeState(
-        zone_demands={"zone": True},
         zone_runtime={"zone": ZoneRuntime(True, NOW - timedelta(seconds=1))},
     )
 
     result = evaluate(plant, snapshot, runtime, NOW)
 
-    assert result.next_runtime.zone_demands["zone"] is False
+    assert result.next_runtime.zone_runtime["zone"].demand is False
     assert result.diagnostics.zone_decisions["zone"].status is ZoneDecisionStatus.SENSOR_BLOCKED
 
 

@@ -396,8 +396,8 @@ def test_required_sensor_block_overrides_minimum_active_duration() -> None:
     )
 
     decision = blocked.diagnostics.zone_decisions["living"]
-    assert active.next_runtime.zone_demands["living"] is True
-    assert blocked.next_runtime.zone_demands["living"] is False
+    assert active.next_runtime.zone_runtime["living"].demand is True
+    assert blocked.next_runtime.zone_runtime["living"].demand is False
     assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
     assert blocked.control_plan.valve_consumers == {}
 
@@ -406,7 +406,6 @@ def test_minimum_active_and_idle_deadlines_are_structured_and_deterministic() ->
     """Demand transitions honor both deadlines after hysteresis is applied."""
     plant = compile_topology(_timed_plant(active=60, idle=30))
     runtime = RuntimeState(
-        zone_demands={"living": False},
         zone_runtime={
             "living": ZoneRuntime(False, NOW - timedelta(seconds=30)),
         },
@@ -438,15 +437,15 @@ def test_minimum_active_and_idle_deadlines_are_structured_and_deterministic() ->
     )
 
     assert active.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.REQUESTED
-    assert held.next_runtime.zone_demands["living"] is True
+    assert held.next_runtime.zone_runtime["living"].demand is True
     assert held.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.DURATION_HELD
     assert held.diagnostics.zone_decisions["living"].deadline == NOW + timedelta(seconds=60)
-    assert released.next_runtime.zone_demands["living"] is False
+    assert released.next_runtime.zone_runtime["living"].demand is False
     assert released.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.SATISFIED
-    assert locked.next_runtime.zone_demands["living"] is False
+    assert locked.next_runtime.zone_runtime["living"].demand is False
     assert locked.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.DURATION_LOCKED
     assert locked.diagnostics.zone_decisions["living"].deadline == NOW + timedelta(seconds=90)
-    assert requested.next_runtime.zone_demands["living"] is True
+    assert requested.next_runtime.zone_runtime["living"].demand is True
     assert requested.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.REQUESTED
 
 
@@ -454,7 +453,6 @@ def test_restored_runtime_without_timestamp_uses_conservative_timing() -> None:
     """Unknown restored age cannot bypass a configured minimum active duration."""
     plant = compile_topology(_timed_plant(active=60))
     runtime = RuntimeState(
-        zone_demands={"living": True},
         zone_runtime={"living": ZoneRuntime(True, None)},
     )
 
@@ -466,9 +464,9 @@ def test_restored_runtime_without_timestamp_uses_conservative_timing() -> None:
         NOW + timedelta(seconds=60),
     )
 
-    assert held.next_runtime.zone_demands["living"] is True
+    assert held.next_runtime.zone_runtime["living"].demand is True
     assert held.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.DURATION_HELD
-    assert released.next_runtime.zone_demands["living"] is False
+    assert released.next_runtime.zone_runtime["living"].demand is False
 
 
 def test_controller_uses_zone_aggregation_policy_for_demand() -> None:
@@ -503,7 +501,7 @@ def test_controller_uses_zone_aggregation_policy_for_demand() -> None:
         NOW,
     )
 
-    assert result.next_runtime.zone_demands["living"] is False
+    assert result.next_runtime.zone_runtime["living"].demand is False
     assert result.diagnostics.zone_reasons["living"] == (
         "Heating remains idle inside the hysteresis band."
     )
@@ -1130,7 +1128,9 @@ def test_zone_demand_blocks_when_a_sensor_exceeds_default_maximum_age() -> None:
 
     result = evaluate(plant, snapshot, RuntimeState(), NOW)
 
-    assert result.next_runtime.zone_demands == {"living": False}
+    assert {
+        zone_id: state.demand for zone_id, state in result.next_runtime.zone_runtime.items()
+    } == {"living": False}
     assert result.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.SENSOR_BLOCKED
     assert "stale" in result.diagnostics.zone_reasons["living"]
 
@@ -1166,7 +1166,9 @@ def test_zone_blocks_when_any_required_temperature_sensor_is_unusable(
 
     result = evaluate(plant, snapshot, RuntimeState(), NOW)
 
-    assert result.next_runtime.zone_demands == {"living": False}
+    assert {
+        zone_id: state.demand for zone_id, state in result.next_runtime.zone_runtime.items()
+    } == {"living": False}
     assert result.diagnostics.zone_reasons["living"].startswith("Blocked:")
 
 
@@ -1361,6 +1363,6 @@ def test_explicit_cooling_request_blocks_heat_while_cooling_is_interlocked() -> 
     result = evaluate(plant, snapshot, restored, NOW)
 
     assert result.next_runtime.changeover_phase is ModeChangeoverPhase.PUMP_OVERRUN
-    assert result.next_runtime.zone_demands["zone"] is False
+    assert result.next_runtime.zone_runtime["zone"].demand is False
     assert result.diagnostics.zone_decisions["zone"].status is ZoneDecisionStatus.MODE_BLOCKED
     assert result.next_runtime.cooling_zone_demands["zone"] is False

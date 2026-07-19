@@ -105,7 +105,8 @@ def run_scenario(
         )
         if step.zone_demands:
             assert {
-                zone_id: result.next_runtime.zone_demands[zone_id] for zone_id in step.zone_demands
+                zone_id: result.next_runtime.zone_runtime[zone_id].demand
+                for zone_id in step.zone_demands
             } == step.zone_demands
         if step.zone_statuses:
             assert {
