@@ -948,13 +948,16 @@ class HydronicRuntime:
             if service_task.done():
                 self._tasks.discard(service_task)
 
-    def _next_transition_delay(self, now: datetime) -> float | None:
-        """Return seconds until the earliest actuator, duration, or stale deadline."""
+    def _actuator_transition_delays(self, now: datetime) -> list[float]:
+        """Return pending changeover, valve, and pump delays."""
         delays: list[float] = []
-        if self.runtime_state.safe_shutdown_phase is SafeShutdownPhase.PUMPS_STOPPED:
-            return 0.0
         if self.runtime_state.changeover_deadline is not None:
-            delays.append(max(0.0, (self.runtime_state.changeover_deadline - now).total_seconds()))
+            delays.append(
+                max(
+                    0.0,
+                    (self.runtime_state.changeover_deadline - now).total_seconds(),
+                )
+            )
         for valve_node in self.plant.valves.values():
             valve = self.runtime_state.valves.get(valve_node.id)
             if (
@@ -962,15 +965,20 @@ class HydronicRuntime:
                 and valve.state is ValveState.OPENING
                 and valve.changed_at is not None
             ):
-                deadline = valve.changed_at + timedelta(seconds=valve_node.opening_time_seconds)
+                deadline = valve.changed_at + timedelta(
+                    seconds=valve_node.opening_time_seconds
+                )
                 delays.append(max(0.0, (deadline - now).total_seconds()))
-
         for pump_node in self.plant.pumps.values():
             pump = self.runtime_state.pumps.get(pump_node.id)
             if pump is not None and pump.state is PumpState.OVERRUN and pump.changed_at is not None:
                 deadline = pump.changed_at + timedelta(seconds=pump_node.overrun_seconds)
                 delays.append(max(0.0, (deadline - now).total_seconds()))
+        return delays
 
+    def _controller_transition_delays(self, now: datetime) -> list[float]:
+        """Return zone timing and source-selection delays."""
+        delays: list[float] = []
         if self.evaluation is not None:
             for decision in self.evaluation.diagnostics.zone_decisions.values():
                 if decision.deadline is not None:
@@ -1004,85 +1012,99 @@ class HydronicRuntime:
                 deadline = zone_runtime.last_demand_transition_at + timedelta(seconds=duration)
                 if deadline > now:
                     delays.append((deadline - now).total_seconds())
+        return delays
 
-        if self.snapshot is not None:
-            for zone in self.plant.zones.values():
-                for sensor in zone.sensor_metadata:
-                    observation = self.snapshot.temperatures.get(sensor.entity_id)
-                    if observation is None or observation.observed_at is None:
-                        continue
-                    deadline = observation.observed_at + timedelta(seconds=sensor.max_age_seconds)
-                    if deadline > now:
-                        delays.append((deadline - now).total_seconds())
-            for source in self.plant.sources.values():
-                if source.temperature_entity_id is None:
-                    continue
-                observation = self.snapshot.source_temperatures.get(source.id)
+    def _observation_expiry_delays(self, now: datetime) -> list[float]:
+        """Return future sensor and feedback freshness expirations."""
+        if self.snapshot is None:
+            return []
+        delays: list[float] = []
+        for zone in self.plant.zones.values():
+            for sensor in zone.sensor_metadata:
+                observation = self.snapshot.temperatures.get(sensor.entity_id)
                 if observation is None or observation.observed_at is None:
                     continue
-                deadline = observation.observed_at + timedelta(seconds=source.maximum_age_seconds)
+                deadline = observation.observed_at + timedelta(seconds=sensor.max_age_seconds)
                 if deadline > now:
                     delays.append((deadline - now).total_seconds())
-            for sensor_id in self._humidity_sensor_ids():
-                observation = self.snapshot.humidities.get(sensor_id)
-                if observation is None or observation.observed_at is None:
+        for source in self.plant.sources.values():
+            if source.temperature_entity_id is None:
+                continue
+            observation = self.snapshot.source_temperatures.get(source.id)
+            if observation is None or observation.observed_at is None:
+                continue
+            deadline = observation.observed_at + timedelta(seconds=source.maximum_age_seconds)
+            if deadline > now:
+                delays.append((deadline - now).total_seconds())
+        for sensor_id in self._humidity_sensor_ids():
+            observation = self.snapshot.humidities.get(sensor_id)
+            if observation is None or observation.observed_at is None:
+                continue
+            max_age = min(
+                sensor.max_age_seconds
+                for zone in self.plant.zones.values()
+                for sensor in zone.humidity_sensor_metadata
+                if sensor.entity_id == sensor_id
+            )
+            deadline = observation.observed_at + timedelta(seconds=max_age)
+            if deadline > now:
+                delays.append((deadline - now).total_seconds())
+        for circuit in self.plant.circuits.values():
+            for observation, max_age in (
+                (circuit.supply_temperature_sensor, circuit.supply_temperature_max_age_seconds),
+                (
+                    circuit.surface_temperature_sensor,
+                    circuit.surface_temperature_max_age_seconds,
+                ),
+            ):
+                if observation is None:
                     continue
-                max_age = min(
-                    sensor.max_age_seconds
-                    for zone in self.plant.zones.values()
-                    for sensor in zone.humidity_sensor_metadata
-                    if sensor.entity_id == sensor_id
+                reading = (
+                    self.snapshot.supply_temperatures.get(observation)
+                    if observation == circuit.supply_temperature_sensor
+                    else self.snapshot.surface_temperatures.get(observation)
                 )
-                deadline = observation.observed_at + timedelta(seconds=max_age)
+                if reading is None or reading.observed_at is None:
+                    continue
+                deadline = reading.observed_at + timedelta(seconds=max_age)
                 if deadline > now:
                     delays.append((deadline - now).total_seconds())
-            for circuit in self.plant.circuits.values():
-                for observation, max_age in (
-                    (circuit.supply_temperature_sensor, circuit.supply_temperature_max_age_seconds),
-                    (
-                        circuit.surface_temperature_sensor,
-                        circuit.surface_temperature_max_age_seconds,
-                    ),
-                ):
-                    if observation is None:
-                        continue
-                    reading = (
-                        self.snapshot.supply_temperatures.get(observation)
-                        if observation == circuit.supply_temperature_sensor
-                        else self.snapshot.surface_temperatures.get(observation)
-                    )
-                    if reading is None or reading.observed_at is None:
-                        continue
+        for valve in self.plant.valves.values():
+            if valve.position_entity_id is None:
+                continue
+            observation = self.snapshot.actuator_feedback.get(valve.id)
+            reading = observation.position if observation is not None else None
+            if reading is not None and reading.observed_at is not None:
+                deadline = reading.observed_at + timedelta(
+                    seconds=valve.position_max_age_seconds
+                )
+                if deadline > now:
+                    delays.append((deadline - now).total_seconds())
+        for pump in self.plant.pumps.values():
+            feedback = self.snapshot.actuator_feedback.get(pump.id)
+            for kind, entity_id, max_age in (
+                ("power", pump.power_entity_id, pump.power_max_age_seconds),
+                ("flow", pump.flow_entity_id, pump.flow_max_age_seconds),
+                ("fault", pump.fault_entity_id, pump.fault_max_age_seconds),
+            ):
+                if entity_id is None:
+                    continue
+                reading = getattr(feedback, kind, None) if feedback is not None else None
+                if reading is not None and reading.observed_at is not None:
                     deadline = reading.observed_at + timedelta(seconds=max_age)
                     if deadline > now:
                         delays.append((deadline - now).total_seconds())
+        return delays
 
-            for valve in self.plant.valves.values():
-                if valve.position_entity_id is None:
-                    continue
-                observation = self.snapshot.actuator_feedback.get(valve.id)
-                reading = observation.position if observation is not None else None
-                if reading is not None and reading.observed_at is not None:
-                    deadline = reading.observed_at + timedelta(
-                        seconds=valve.position_max_age_seconds
-                    )
-                    if deadline > now:
-                        delays.append((deadline - now).total_seconds())
-            for pump in self.plant.pumps.values():
-                feedback = self.snapshot.actuator_feedback.get(pump.id)
-                for kind, entity_id, max_age in (
-                    ("power", pump.power_entity_id, pump.power_max_age_seconds),
-                    ("flow", pump.flow_entity_id, pump.flow_max_age_seconds),
-                    ("fault", pump.fault_entity_id, pump.fault_max_age_seconds),
-                ):
-                    if entity_id is None:
-                        continue
-                    reading = getattr(feedback, kind, None) if feedback is not None else None
-                    if reading is not None and reading.observed_at is not None:
-                        deadline = reading.observed_at + timedelta(seconds=max_age)
-                        if deadline > now:
-                            delays.append((deadline - now).total_seconds())
-
+    def _next_transition_delay(self, now: datetime) -> float | None:
+        """Return seconds until the earliest actuator, duration, or stale deadline."""
+        if self.runtime_state.safe_shutdown_phase is SafeShutdownPhase.PUMPS_STOPPED:
+            return 0.0
+        delays = [
+            *self._actuator_transition_delays(now),
+            *self._controller_transition_delays(now),
+            *self._observation_expiry_delays(now),
+        ]
         return min(delays) if delays else None
 
     def _schedule_next_transition(self, hass: HomeAssistant, now: datetime) -> None:
@@ -1372,6 +1394,66 @@ class HydronicRuntime:
         """Read the UTC clock in one place so timer tests can control it."""
         return datetime.now(UTC)
 
+    def _reconcile_executed_operation(
+        self,
+        operation: ActuatorOperation,
+        pumps: dict[str, PumpRuntime],
+        now: datetime,
+    ) -> bool:
+        """Apply the retained-runtime contract for one executed operation."""
+        if operation.actuator_id not in self.plant.pumps:
+            return False
+        if operation.target_state is not ActuatorObservedState.ON:
+            return False
+        pumps[operation.actuator_id] = PumpRuntime(PumpState.STARTING, now)
+        return True
+
+    def _reconcile_failed_operation(
+        self,
+        operation: ActuatorOperation,
+        valves: dict[str, ValveRuntime],
+        pumps: dict[str, PumpRuntime],
+        now: datetime,
+    ) -> bool:
+        """Fail one actuator operation into its conservative retained state."""
+        if operation.actuator_id in self.plant.valves and operation.target_state in {
+            ActuatorObservedState.ON,
+            ActuatorObservedState.OPEN,
+        }:
+            valves[operation.actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
+            return True
+        if operation.actuator_id in self.plant.valves and operation.target_state in {
+            ActuatorObservedState.OFF,
+            ActuatorObservedState.CLOSED,
+        }:
+            valves[operation.actuator_id] = ValveRuntime(
+                ValveState.CLOSED
+                if self.executor.actuator_state(operation.actuator_id) is operation.target_state
+                else ValveState.OPENING,
+                now,
+                False,
+            )
+            return True
+        if (
+            operation.actuator_id in self.plant.pumps
+            and operation.target_state is ActuatorObservedState.ON
+        ):
+            pumps[operation.actuator_id] = PumpRuntime(PumpState.OFF, now)
+            return True
+        if (
+            operation.actuator_id in self.plant.pumps
+            and operation.target_state is ActuatorObservedState.OFF
+        ):
+            pumps[operation.actuator_id] = PumpRuntime(
+                PumpState.OFF
+                if self.executor.actuator_state(operation.actuator_id)
+                is ActuatorObservedState.OFF
+                else PumpState.RUNNING,
+                now,
+            )
+            return True
+        return False
+
     def _apply_execution_contract(self, report: ExecutionReport, now: datetime) -> None:
         """Keep physical pumps in starting state until an observation confirms them."""
         if self.dry_run and not report.failures:
@@ -1380,50 +1462,14 @@ class HydronicRuntime:
         valves = dict(self.runtime_state.valves)
         changed = False
         for operation in report.executed:
-            if operation.actuator_id not in self.plant.pumps:
-                continue
-            if operation.target_state is ActuatorObservedState.ON:
-                pumps[operation.actuator_id] = PumpRuntime(PumpState.STARTING, now)
-                changed = True
+            changed |= self._reconcile_executed_operation(operation, pumps, now)
         for failure in report.failures:
-            operation = failure.operation
-            if operation.actuator_id in self.plant.valves and operation.target_state in {
-                ActuatorObservedState.ON,
-                ActuatorObservedState.OPEN,
-            }:
-                valves[operation.actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
-                changed = True
-            elif operation.actuator_id in self.plant.valves and operation.target_state in {
-                ActuatorObservedState.OFF,
-                ActuatorObservedState.CLOSED,
-            }:
-                valves[operation.actuator_id] = ValveRuntime(
-                    ValveState.CLOSED
-                    if self.executor.actuator_state(operation.actuator_id)
-                    is operation.target_state
-                    else ValveState.OPENING,
-                    now,
-                    False,
-                )
-                changed = True
-            elif (
-                operation.actuator_id in self.plant.pumps
-                and operation.target_state is ActuatorObservedState.ON
-            ):
-                pumps[operation.actuator_id] = PumpRuntime(PumpState.OFF, now)
-                changed = True
-            elif (
-                operation.actuator_id in self.plant.pumps
-                and operation.target_state is ActuatorObservedState.OFF
-            ):
-                pumps[operation.actuator_id] = PumpRuntime(
-                    PumpState.OFF
-                    if self.executor.actuator_state(operation.actuator_id)
-                    is ActuatorObservedState.OFF
-                    else PumpState.RUNNING,
-                    now,
-                )
-                changed = True
+            changed |= self._reconcile_failed_operation(
+                failure.operation,
+                valves,
+                pumps,
+                now,
+            )
         if changed:
             self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
 
