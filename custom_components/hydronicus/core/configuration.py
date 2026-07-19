@@ -154,19 +154,9 @@ def _reject_unsupported_fields(mapping: Mapping[str, Any], fields: set[str], own
         )
 
 
-def _first_optional_entity_id(mapping: Mapping[str, Any], *keys: str) -> str | None:
-    """Read the first configured optional entity field."""
-    for key in keys:
-        if key in mapping:
-            return _optional_entity_id(mapping, key)
-    return None
-
-
 def _source_kind(mapping: Mapping[str, Any]) -> SourceKind:
-    """Decode source kinds while accepting the short buffer spelling."""
+    """Decode the canonical persisted source kind."""
     value = str(mapping.get("source_type", SourceKind.EXTERNAL.value))
-    if value in {"buffer", "temperature_buffer"}:
-        value = SourceKind.TEMPERATURE_QUALIFIED_BUFFER.value
     try:
         return SourceKind(value)
     except ValueError as error:
@@ -183,13 +173,23 @@ def _source_priority(mapping: Mapping[str, Any]) -> int:
 
 def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> Source:
     """Decode one generic or temperature-qualified source."""
+    _reject_unsupported_fields(
+        mapping,
+        {
+            "availability_entity_id",
+            "availability_sensor",
+            "temperature_entity_id",
+            "temperature_sensor",
+            "demand_entity",
+            "demand_entity_id",
+            "ready_entity",
+            "readiness_entity",
+        },
+        "source",
+    )
     kind = _source_kind(mapping)
     temperature_entity = _optional_entity_id(mapping, "temperature_entity")
-    if temperature_entity is None:
-        temperature_entity = _optional_entity_id(mapping, "temperature_sensor")
     availability_entity = _optional_entity_id(mapping, "availability_entity")
-    if availability_entity is None:
-        availability_entity = _optional_entity_id(mapping, "availability_sensor")
     maximum_age = _number(
         mapping,
         "maximum_age_seconds",
@@ -197,12 +197,7 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
         positive=True,
     )
     hysteresis = _number(mapping, "hysteresis", 0.5, non_negative=True)
-    demand_entity = _first_optional_entity_id(
-        mapping,
-        "source_demand_entity",
-        "demand_entity",
-        "demand_entity_id",
-    )
+    demand_entity = _optional_entity_id(mapping, "source_demand_entity")
     minimum_temperature: float | None = None
     if kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
         if temperature_entity is None:
@@ -228,27 +223,29 @@ def _source_selector_from_mapping(
     topology: Mapping[str, Any], *, require_uuid: bool
 ) -> SourceSelectionActuator | None:
     """Decode the optional generic selector, defaulting it to synthetic-only."""
-    raw = topology.get("source_selector", topology.get("source_selection_actuator"))
+    if "source_selection_actuator" in topology:
+        raise StoredTopologyError(
+            "Stored topology uses unsupported source selector field source_selection_actuator."
+        )
+    raw = topology.get("source_selector")
     if raw is None:
         return None
     if not isinstance(raw, Mapping):
         raise StoredTopologyError("Stored source selector must be an object.")
+    _reject_unsupported_fields(
+        raw,
+        {
+            "selector_entity_id",
+            "selection_entity",
+            "break_seconds",
+            "break_before_make_seconds",
+            "minimum_source_dwell_seconds",
+        },
+        "source selector",
+    )
     entity_id = _optional_entity_id(raw, "entity_id")
-    selector_entity_id = _optional_entity_id(raw, "selector_entity_id")
-    if entity_id is not None and selector_entity_id is not None and entity_id != selector_entity_id:
-        raise StoredTopologyError("Stored source selector entity was provided more than once.")
-    break_seconds = _number(
-        raw,
-        "break_interval_seconds",
-        _number(raw, "break_seconds", 30.0, non_negative=True),
-        non_negative=True,
-    )
-    dwell_seconds = _number(
-        raw,
-        "minimum_dwell_seconds",
-        _number(raw, "minimum_source_dwell_seconds", 300.0, non_negative=True),
-        non_negative=True,
-    )
+    break_seconds = _number(raw, "break_interval_seconds", 30.0, non_negative=True)
+    dwell_seconds = _number(raw, "minimum_dwell_seconds", 300.0, non_negative=True)
     release_option = raw.get("release_option", "none")
     if not isinstance(release_option, str) or not release_option:
         raise StoredTopologyError("Stored source selector release option must be non-empty.")
@@ -258,7 +255,7 @@ def _source_selector_from_mapping(
     return SourceSelectionActuator(
         id=_id(raw, "id", require_uuid=require_uuid),
         name=str(_required(raw, "name")),
-        entity_id=entity_id or selector_entity_id,
+        entity_id=entity_id,
         break_interval_seconds=break_seconds,
         minimum_dwell_seconds=dwell_seconds,
         release_option=release_option,

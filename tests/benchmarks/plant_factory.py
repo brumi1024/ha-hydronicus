@@ -153,7 +153,7 @@ def build_large_synthetic_entry() -> dict[str, Any]:
             "source_type": "temperature_qualified_buffer" if source_index == 1 else "external",
             "priority": source_index,
             "availability_entity": _entity("binary_sensor", "source_available", source_index),
-            "demand_entity": _entity("switch", "source_demand", source_index),
+            "source_demand_entity": _entity("switch", "source_demand", source_index),
         }
         if source_index == 1:
             source.update(
