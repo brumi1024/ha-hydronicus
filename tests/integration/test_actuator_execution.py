@@ -54,7 +54,7 @@ def _entry(
                     "id": ZONE_ID,
                     "name": "Synthetic zone",
                     "target_temperature": 21.0,
-                    "temperature_sensor": "sensor.synthetic_temperature",
+                    "temperature_sensor_metadata": [{"entity_id": "sensor.synthetic_temperature"}],
                 }
             ],
             "valves": [

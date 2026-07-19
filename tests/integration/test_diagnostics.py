@@ -39,7 +39,9 @@ def _entry(*, detailed_actuators: bool = False) -> MockConfigEntry:
                     "id": ZONE_ID,
                     "name": "Bedroom near the nursery",
                     "target_temperature": 21.0,
-                    "temperature_sensor": "sensor.private_bedroom_temperature",
+                    "temperature_sensor_metadata": [
+                        {"entity_id": "sensor.private_bedroom_temperature"}
+                    ],
                 }
             ],
             "valves": [
