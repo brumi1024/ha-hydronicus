@@ -246,7 +246,7 @@ def test_source_selection_honors_dwell_but_allows_unavailable_fallback() -> None
     )
     assert _commands(unavailable) == (("source:buffer", ActuatorAction.TURN_OFF, None),)
     assert unavailable.next_runtime.source_selection.phase is SourceSelectionPhase.BREAKING
-    assert unavailable.next_runtime.zone_demands["zone"] is True
+    assert unavailable.next_runtime.zone_runtime["zone"].demand is True
     assert unavailable.diagnostics.source_diagnostics["buffer"].blocked is True
     assert unavailable.diagnostics.source_diagnostics["boiler"].recommended is True
     assert unavailable.diagnostics.source_diagnostics["boiler"].demand_requested is False

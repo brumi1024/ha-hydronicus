@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import DOMAIN
-from .core.model import PumpState, ValveState
+from .core.model import PumpState, ValveState, ZoneRuntime
 from .runtime import HydronicRuntime
 
 
@@ -107,7 +107,7 @@ class ZoneDemandBinarySensor(HydronicShadowEntity):
     @property
     def is_on(self) -> bool:
         """Return the cached calculated demand."""
-        return bool(self._runtime.runtime_state.zone_demands.get(self._zone_id, False))
+        return self._runtime.runtime_state.zone_runtime.get(self._zone_id, ZoneRuntime()).demand
 
 
 class ZoneBlockedBinarySensor(HydronicShadowEntity):

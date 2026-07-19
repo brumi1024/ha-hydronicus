@@ -130,7 +130,9 @@ def test_unresolved_actuator_blocks_only_its_circuit() -> None:
         now=NOW,
     )
 
-    assert evaluation.next_runtime.zone_demands == {ZONE_A: False, ZONE_B: True}
+    assert {
+        zone_id: state.demand for zone_id, state in evaluation.next_runtime.zone_runtime.items()
+    } == {ZONE_A: False, ZONE_B: True}
     assert evaluation.control_plan.valve_consumers == {VALVE_B: frozenset({CIRCUIT_B})}
     assert all(
         command.actuator_id not in {VALVE_A, PUMP_A} for command in evaluation.control_plan.commands
@@ -154,7 +156,7 @@ def test_any_unresolved_primary_path_fails_closed(missing_entity: str) -> None:
         NOW,
     )
 
-    assert evaluation.next_runtime.zone_demands[ZONE_A] is False
+    assert evaluation.next_runtime.zone_runtime[ZONE_A].demand is False
     assert all(
         command.actuator_id not in {VALVE_A, PUMP_A} for command in evaluation.control_plan.commands
     )

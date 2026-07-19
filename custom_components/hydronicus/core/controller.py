@@ -347,10 +347,8 @@ def calculate_condensation_margin(reference_temperature: float, dew_point: float
 
 
 def _zone_runtime(runtime: RuntimeState, zone_id: str) -> ZoneRuntime:
-    """Read new timing state while accepting the old demand-only state."""
-    if zone_id in runtime.zone_runtime:
-        return runtime.zone_runtime[zone_id]
-    return ZoneRuntime(demand=runtime.zone_demands.get(zone_id, False))
+    """Read the controller-owned timing and demand state for one zone."""
+    return runtime.zone_runtime.get(zone_id, ZoneRuntime())
 
 
 def _zone_demand(
@@ -1925,7 +1923,6 @@ def safe_shutdown(
             "Source demand released; observing pump overrun before stopping pumps.",
         )
         return plan, RuntimeState(
-            zone_demands={},
             cooling_zone_demands={},
             zone_runtime=runtime.zone_runtime,
             valves=valves,
@@ -1945,7 +1942,6 @@ def safe_shutdown(
             "Source released and pumps stopped; valve closure is the next safe step.",
         )
         return plan, RuntimeState(
-            zone_demands={},
             cooling_zone_demands={},
             zone_runtime=runtime.zone_runtime,
             valves=valves,
@@ -1976,7 +1972,6 @@ def safe_shutdown(
         "All source demand, pumps, and valves are safely released.",
     )
     return plan, RuntimeState(
-        zone_demands={},
         cooling_zone_demands={},
         zone_runtime=runtime.zone_runtime,
         valves=valves,
@@ -2317,6 +2312,13 @@ def evaluate(
             if not prior.demand:
                 continue
             zone_demands[zone_id] = False
+            previous = zone_runtime[zone_id]
+            zone_runtime[zone_id] = ZoneRuntime(
+                False,
+                now
+                if previous.demand or previous.last_demand_transition_at is None
+                else previous.last_demand_transition_at,
+            )
             zone_reasons[zone_id] = f"Heating blocked: {transition_reason}"
             zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.MODE_BLOCKED,
@@ -2363,6 +2365,13 @@ def evaluate(
             if not prior.demand:
                 continue
             zone_demands[zone_id] = False
+            previous = zone_runtime[zone_id]
+            zone_runtime[zone_id] = ZoneRuntime(
+                False,
+                now
+                if previous.demand or previous.last_demand_transition_at is None
+                else previous.last_demand_transition_at,
+            )
             zone_reasons[zone_id] = (
                 f"Heating blocked: the plant is operating in {PlantMode.COOLING.value} mode."
             )
@@ -2855,7 +2864,6 @@ def evaluate(
     )
     return Evaluation(
         next_runtime=RuntimeState(
-            zone_demands=zone_demands,
             cooling_zone_demands=cooling_zone_demands,
             zone_runtime=zone_runtime,
             valves=valves,

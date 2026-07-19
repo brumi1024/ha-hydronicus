@@ -146,7 +146,9 @@ async def test_setup_reload_and_restoration_create_and_remove_repairs(hass) -> N
         assert "entity_id" not in issue.data
 
     runtime = entry.runtime_data
-    assert runtime.runtime_state.zone_demands == {ZONE_A: False, ZONE_B: True}
+    assert {
+        zone_id: state.demand for zone_id, state in runtime.runtime_state.zone_runtime.items()
+    } == {ZONE_A: False, ZONE_B: True}
     assert all(
         command.actuator_id not in {VALVE_A, PUMP_A}
         for command in runtime.evaluation.control_plan.commands

@@ -450,7 +450,10 @@ async def test_returning_to_dry_run_completes_ordered_shutdown_before_persisting
         ("switch", "turn_off", "switch.synthetic_valve"),
     ]
     assert entry.runtime_data.runtime_state.safe_shutdown_phase.value == "idle"
-    assert entry.runtime_data.runtime_state.zone_demands == {ZONE_ID: True}
+    assert {
+        zone_id: state.demand
+        for zone_id, state in entry.runtime_data.runtime_state.zone_runtime.items()
+    } == {ZONE_ID: True}
     assert entry.runtime_data.runtime_state.cooling_zone_demands == {ZONE_ID: False}
     assert entry.data[CONF_DRY_RUN] is True
     assert entry.runtime_data.dry_run is True
