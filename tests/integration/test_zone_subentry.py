@@ -81,7 +81,7 @@ def _plant_entry(
         "id": BASE_ZONE_ID,
         "name": "Living room",
         "target_temperature": 21.0,
-        "temperature_sensor": "sensor.living_temperature",
+        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
     }
     if preset_targets is not None:
         zone_data["preset_targets"] = preset_targets

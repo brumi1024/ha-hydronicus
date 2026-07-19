@@ -279,152 +279,76 @@ def _source_selector_from_mapping(
     )
 
 
-def _temperature_sensor_weights(
-    mapping: Mapping[str, Any], sensor_ids: tuple[str, ...]
-) -> Mapping[str, float]:
-    """Read optional positive per-sensor weights from the legacy map."""
-    raw_weights = mapping.get("temperature_sensor_weights", {})
-    if not isinstance(raw_weights, Mapping):
-        raise StoredTopologyError(
-            "Stored topology field 'temperature_sensor_weights' must be an object."
-        )
-    unknown = sorted(str(sensor_id) for sensor_id in raw_weights if sensor_id not in sensor_ids)
-    if unknown:
-        raise StoredTopologyError(
-            "Stored topology temperature sensor weights reference unknown sensors: "
-            + ", ".join(unknown)
-            + "."
-        )
-    return {
-        str(sensor_id): _number(
-            {"weight": raw_weight},
-            "weight",
-            1.0,
-            positive=True,
-        )
-        for sensor_id, raw_weight in raw_weights.items()
-    }
-
-
-def _raw_sensor_records(mapping: Mapping[str, Any]) -> tuple[Mapping[str, Any] | str, ...]:
-    """Read canonical metadata or one of the legacy sensor representations."""
-    if _SENSOR_METADATA_KEY in mapping:
-        raw_metadata = mapping[_SENSOR_METADATA_KEY]
-        if isinstance(raw_metadata, Mapping):
-            records: list[Mapping[str, Any]] = []
-            for entity_id, metadata in raw_metadata.items():
-                if not isinstance(metadata, Mapping):
-                    raise StoredTopologyError(
-                        "Stored temperature sensor metadata values must be objects."
-                    )
-                records.append({"entity_id": entity_id, **metadata})
-            return tuple(records)
-        if not isinstance(raw_metadata, list) or not all(
-            isinstance(item, Mapping) for item in raw_metadata
-        ):
-            raise StoredTopologyError(
-                "Stored topology field 'temperature_sensor_metadata' must be a list of objects."
-            )
-        return tuple(raw_metadata)
-
-    raw_sensors = mapping.get("temperature_sensors")
-    if raw_sensors is not None:
-        if not isinstance(raw_sensors, list) or not raw_sensors:
-            raise StoredTopologyError(
-                "Stored topology field 'temperature_sensors' must be a non-empty list."
-            )
-        if all(isinstance(item, Mapping) for item in raw_sensors):
-            return tuple(raw_sensors)
-        if not all(isinstance(item, str) and item for item in raw_sensors):
-            raise StoredTopologyError(
-                "Stored topology field 'temperature_sensors' must contain entity ids."
-            )
-        return tuple(raw_sensors)
-
-    sensor = mapping.get("temperature_sensor")
-    if not isinstance(sensor, str) or not sensor:
-        raise StoredTopologyError(
-            "Stored topology field 'temperature_sensor' must be a non-empty entity id."
-        )
-    return (sensor,)
-
-
-def temperature_sensor_metadata_from_mapping(
+def _sensor_metadata_from_mapping(
     mapping: Mapping[str, Any],
+    key: str,
+    *,
+    required_collection: bool,
 ) -> tuple[TemperatureSensorMetadata, ...]:
-    """Decode canonical and legacy sensor configuration into immutable records."""
-    raw_records = _raw_sensor_records(mapping)
-    if _SENSOR_METADATA_KEY in mapping and "temperature_sensors" in mapping:
-        raw_sensor_ids = mapping["temperature_sensors"]
-        if not isinstance(raw_sensor_ids, list) or not all(
-            isinstance(sensor_id, str) and sensor_id for sensor_id in raw_sensor_ids
-        ):
-            raise StoredTopologyError(
-                "Stored topology field 'temperature_sensors' must contain entity ids."
-            )
-        metadata_ids = tuple(
-            record.get("entity_id") for record in raw_records if isinstance(record, Mapping)
+    """Decode one canonical sensor metadata collection into immutable records."""
+    unsupported_keys = (
+        {
+            "temperature_sensor",
+            "temperature_sensors",
+            "temperature_sensor_weights",
+            "designated_reference_sensor",
+        }
+        if key == _SENSOR_METADATA_KEY
+        else {"humidity_sensor", "humidity_sensors", "humidity_sensor_weights"}
+    )
+    unsupported = sorted(unsupported_keys.intersection(mapping))
+    if unsupported:
+        raise StoredTopologyError(
+            f"Stored topology uses unsupported sensor fields: {', '.join(unsupported)}."
         )
-        if tuple(raw_sensor_ids) != metadata_ids:
-            raise StoredTopologyError(
-                "Stored temperature sensor metadata must match temperature_sensors."
-            )
-    legacy_sensor_ids = tuple(item for item in raw_records if isinstance(item, str))
-    if len(legacy_sensor_ids) != len(raw_records):
-        legacy_sensor_ids = tuple(
-            str(item["entity_id"])
-            for item in raw_records
-            if isinstance(item, Mapping) and isinstance(item.get("entity_id"), str)
+    if key not in mapping:
+        if required_collection:
+            raise StoredTopologyError(f"Stored topology is missing required field {key!r}.")
+        return ()
+    raw_records = mapping[key]
+    if (
+        not isinstance(raw_records, list)
+        or (required_collection and not raw_records)
+        or not all(isinstance(item, Mapping) for item in raw_records)
+    ):
+        qualifier = "non-empty " if required_collection else ""
+        raise StoredTopologyError(
+            f"Stored topology field {key!r} must be a {qualifier}list of objects."
         )
-    weights = _temperature_sensor_weights(mapping, legacy_sensor_ids)
     records: list[TemperatureSensorMetadata] = []
     seen: set[str] = set()
     for index, raw_record in enumerate(raw_records):
-        if isinstance(raw_record, str):
-            entity_id = raw_record
-            record: Mapping[str, Any] = {}
-        else:
-            unknown = set(raw_record) - _SENSOR_KEYS
-            if unknown:
-                raise StoredTopologyError(
-                    "Stored temperature sensor metadata has unknown fields: "
-                    + ", ".join(sorted(str(key) for key in unknown))
-                    + "."
-                )
-            entity_id = raw_record.get("entity_id")
-            if not isinstance(entity_id, str) or not entity_id:
-                raise StoredTopologyError(
-                    f"Stored temperature sensor metadata entry {index} requires entity_id."
-                )
-            record = raw_record
+        unknown = set(raw_record) - _SENSOR_KEYS
+        if unknown:
+            raise StoredTopologyError(
+                f"Stored {key} has unknown fields: "
+                + ", ".join(sorted(str(field) for field in unknown))
+                + "."
+            )
+        entity_id = raw_record.get("entity_id")
+        if not isinstance(entity_id, str) or not entity_id:
+            raise StoredTopologyError(f"Stored {key} entry {index} requires entity_id.")
         if entity_id in seen:
             raise StoredTopologyError(
-                f"Stored temperature sensors must not contain duplicate entity id {entity_id!r}."
+                f"Stored {key} must not contain duplicate entity id {entity_id!r}."
             )
         seen.add(entity_id)
-        required = record.get("required", True)
+        required = raw_record.get("required", True)
         if not isinstance(required, bool):
-            raise StoredTopologyError(
-                f"Stored temperature sensor {entity_id!r} required must be a boolean."
-            )
-        designated_reference = record.get("designated_reference", False)
+            raise StoredTopologyError(f"Stored sensor {entity_id!r} required must be a boolean.")
+        designated_reference = raw_record.get("designated_reference", False)
         if not isinstance(designated_reference, bool):
             raise StoredTopologyError(
-                f"Stored temperature sensor {entity_id!r} designated_reference must be a boolean."
+                f"Stored sensor {entity_id!r} designated_reference must be a boolean."
             )
-        weight = (
-            _number(record, "weight", weights.get(entity_id, 1.0), positive=True)
-            if "weight" in record or entity_id not in weights
-            else weights[entity_id]
-        )
         records.append(
             TemperatureSensorMetadata(
                 entity_id=entity_id,
                 required=required,
-                weight=weight,
-                calibration_offset=_number(record, "calibration_offset", 0.0),
+                weight=_number(raw_record, "weight", 1.0, positive=True),
+                calibration_offset=_number(raw_record, "calibration_offset", 0.0),
                 max_age_seconds=_number(
-                    record,
+                    raw_record,
                     "max_age_seconds",
                     _LEGACY_MAX_AGE_SECONDS,
                     positive=True,
@@ -435,38 +359,26 @@ def temperature_sensor_metadata_from_mapping(
     return tuple(records)
 
 
+def temperature_sensor_metadata_from_mapping(
+    mapping: Mapping[str, Any],
+) -> tuple[TemperatureSensorMetadata, ...]:
+    """Decode the required canonical temperature sensor metadata collection."""
+    return _sensor_metadata_from_mapping(
+        mapping,
+        _SENSOR_METADATA_KEY,
+        required_collection=True,
+    )
+
+
 def humidity_sensor_metadata_from_mapping(
     mapping: Mapping[str, Any],
 ) -> tuple[TemperatureSensorMetadata, ...]:
-    """Decode humidity metadata using the same required and stale semantics as temperature."""
-    humidity_keys = {
+    """Decode the optional canonical humidity sensor metadata collection."""
+    return _sensor_metadata_from_mapping(
+        mapping,
         "humidity_sensor_metadata",
-        "humidity_sensors",
-        "humidity_sensor",
-        "humidity_sensor_weights",
-    }
-    if not any(key in mapping for key in humidity_keys):
-        return ()
-    normalized = {
-        key: value
-        for key, value in mapping.items()
-        if key
-        not in {
-            _SENSOR_METADATA_KEY,
-            "temperature_sensors",
-            "temperature_sensor",
-            "temperature_sensor_weights",
-        }
-    }
-    if "humidity_sensor_metadata" in mapping:
-        normalized[_SENSOR_METADATA_KEY] = mapping["humidity_sensor_metadata"]
-    if "humidity_sensors" in mapping:
-        normalized["temperature_sensors"] = mapping["humidity_sensors"]
-    if "humidity_sensor" in mapping:
-        normalized["temperature_sensor"] = mapping["humidity_sensor"]
-    if "humidity_sensor_weights" in mapping:
-        normalized["temperature_sensor_weights"] = mapping["humidity_sensor_weights"]
-    return temperature_sensor_metadata_from_mapping(normalized)
+        required_collection=False,
+    )
 
 
 def _temperature_sensors(mapping: Mapping[str, Any]) -> tuple[str, ...]:
@@ -514,32 +426,10 @@ def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float
 
 
 def _validate_reference_policy(
-    mapping: Mapping[str, Any],
     aggregation: TemperatureAggregation,
     metadata: tuple[TemperatureSensorMetadata, ...],
 ) -> tuple[TemperatureSensorMetadata, ...]:
-    """Validate designated-reference metadata and a legacy zone-level reference."""
-    reference = mapping.get("designated_reference_sensor")
-    if reference is None and isinstance(mapping.get("designated_reference"), str):
-        reference = mapping["designated_reference"]
-    if reference is not None:
-        if not isinstance(reference, str) or reference not in {
-            sensor.entity_id for sensor in metadata
-        }:
-            raise StoredTopologyError(
-                "Stored designated reference must identify one configured temperature sensor."
-            )
-        metadata = tuple(
-            TemperatureSensorMetadata(
-                entity_id=sensor.entity_id,
-                required=sensor.required,
-                weight=sensor.weight,
-                calibration_offset=sensor.calibration_offset,
-                max_age_seconds=sensor.max_age_seconds,
-                designated_reference=sensor.entity_id == reference,
-            )
-            for sensor in metadata
-        )
+    """Validate designated-reference metadata against the selected policy."""
     designated = [sensor for sensor in metadata if sensor.designated_reference]
     if len(designated) > 1:
         raise StoredTopologyError("Stored temperature sensors have multiple designated references.")
@@ -575,7 +465,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
         metadata = temperature_sensor_metadata_from_mapping(item)
         humidity_metadata = humidity_sensor_metadata_from_mapping(item)
         aggregation = _temperature_aggregation(item)
-        metadata = _validate_reference_policy(item, aggregation, metadata)
+        metadata = _validate_reference_policy(aggregation, metadata)
         (
             start_delta,
             stop_delta,

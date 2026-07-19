@@ -116,7 +116,7 @@ def _configured_entry(
         "id": ZONE_UUID,
         "name": "Test zone",
         "target_temperature": 21.0,
-        "temperature_sensor": "sensor.test_temperature",
+        "temperature_sensor_metadata": [{"entity_id": "sensor.test_temperature"}],
     }
     if zone_overrides:
         zone.update(zone_overrides)

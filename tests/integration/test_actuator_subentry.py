@@ -75,7 +75,7 @@ def _plant_entry(*, with_second_circuit: bool = False) -> MockConfigEntry:
                         "id": ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
                 "valves": [

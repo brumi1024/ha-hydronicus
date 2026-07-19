@@ -21,7 +21,7 @@ def test_existing_circuits_default_to_heating_only() -> None:
                         "id": "zone-1",
                         "name": "Living room",
                         "target_temperature": 21.5,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
                 "circuits": [
@@ -52,7 +52,9 @@ def test_cooling_compatibility_requires_a_persisted_boolean() -> None:
                             "id": "zone-1",
                             "name": "Living room",
                             "target_temperature": 21.5,
-                            "temperature_sensor": "sensor.living_temperature",
+                            "temperature_sensor_metadata": [
+                                {"entity_id": "sensor.living_temperature"}
+                            ],
                         }
                     ],
                     "circuits": [
@@ -80,7 +82,7 @@ def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
                         "id": "zone-1",
                         "name": "Living room",
                         "target_temperature": 21.5,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
                 "circuits": [
@@ -134,7 +136,7 @@ def test_decodes_configured_valve_readiness_feedback() -> None:
                         "id": "00000000-0000-4000-8000-000000000002",
                         "name": "Zone",
                         "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.zone",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.zone"}],
                     }
                 ],
                 "valves": [
@@ -194,34 +196,6 @@ def test_rejects_nonboolean_route_enablement() -> None:
         )
 
 
-def test_decodes_temperature_sensor_list_from_config_entry_data() -> None:
-    plant = plant_configuration_from_entry_data(
-        {
-            "plant_id": "plant-1",
-            "topology": {
-                "zones": [
-                    {
-                        "id": "zone-1",
-                        "name": "Living room",
-                        "target_temperature": 21.5,
-                        "temperature_sensors": [
-                            "sensor.living_temperature",
-                            "sensor.living_temperature_backup",
-                        ],
-                    }
-                ],
-                "circuits": [],
-                "routes": [],
-            },
-        }
-    )
-
-    assert plant.zones[0].temperature_sensors == (
-        "sensor.living_temperature",
-        "sensor.living_temperature_backup",
-    )
-
-
 def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
     plant = plant_configuration_from_entry_data(
         {
@@ -232,15 +206,14 @@ def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
                         "id": "zone-1",
                         "name": "Living room",
                         "target_temperature": 21.5,
-                        "temperature_sensors": [
-                            "sensor.living_temperature",
-                            "sensor.living_temperature_backup",
+                        "temperature_sensor_metadata": [
+                            {"entity_id": "sensor.living_temperature", "weight": 1},
+                            {
+                                "entity_id": "sensor.living_temperature_backup",
+                                "weight": 3,
+                            },
                         ],
                         "temperature_aggregation": "weighted_mean",
-                        "temperature_sensor_weights": {
-                            "sensor.living_temperature": 1,
-                            "sensor.living_temperature_backup": 3,
-                        },
                     }
                 ],
                 "circuits": [],
@@ -256,7 +229,7 @@ def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
     }
 
 
-def test_legacy_zone_temperature_aggregation_defaults_to_mean() -> None:
+def test_zone_temperature_aggregation_defaults_to_mean() -> None:
     plant = plant_configuration_from_entry_data(
         {
             "plant_id": "plant-1",
@@ -266,7 +239,7 @@ def test_legacy_zone_temperature_aggregation_defaults_to_mean() -> None:
                         "id": "zone-1",
                         "name": "Living room",
                         "target_temperature": 21.5,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
                 "circuits": [],
@@ -289,32 +262,10 @@ def test_rejects_unknown_zone_temperature_aggregation() -> None:
                             "id": "zone-1",
                             "name": "Living room",
                             "target_temperature": 21.5,
-                            "temperature_sensor": "sensor.living_temperature",
+                            "temperature_sensor_metadata": [
+                                {"entity_id": "sensor.living_temperature"}
+                            ],
                             "temperature_aggregation": "trimmed_mean",
-                        }
-                    ],
-                    "circuits": [],
-                    "routes": [],
-                },
-            }
-        )
-
-
-def test_rejects_zone_weight_for_unknown_sensor() -> None:
-    with pytest.raises(StoredTopologyError, match="unknown sensors"):
-        plant_configuration_from_entry_data(
-            {
-                "plant_id": "plant-1",
-                "topology": {
-                    "zones": [
-                        {
-                            "id": "zone-1",
-                            "name": "Living room",
-                            "target_temperature": 21.5,
-                            "temperature_sensor": "sensor.living_temperature",
-                            "temperature_sensor_weights": {
-                                "sensor.other": 2,
-                            },
                         }
                     ],
                     "circuits": [],
@@ -336,10 +287,12 @@ def test_rejects_non_positive_or_invalid_zone_weight(weight) -> None:
                             "id": "zone-1",
                             "name": "Living room",
                             "target_temperature": 21.5,
-                            "temperature_sensor": "sensor.living_temperature",
-                            "temperature_sensor_weights": {
-                                "sensor.living_temperature": weight,
-                            },
+                            "temperature_sensor_metadata": [
+                                {
+                                    "entity_id": "sensor.living_temperature",
+                                    "weight": weight,
+                                }
+                            ],
                         }
                     ],
                     "circuits": [],
@@ -350,7 +303,7 @@ def test_rejects_non_positive_or_invalid_zone_weight(weight) -> None:
 
 
 def test_rejects_missing_required_persisted_topology_field() -> None:
-    with pytest.raises(StoredTopologyError, match="temperature_sensor"):
+    with pytest.raises(StoredTopologyError, match="temperature_sensor_metadata"):
         plant_configuration_from_entry_data(
             {
                 "plant_id": "plant-1",
@@ -374,7 +327,7 @@ def test_decodes_first_class_actuator_nodes_from_entry_data() -> None:
                         "id": "00000000-0000-4000-8000-000000000002",
                         "name": "Living room",
                         "target_temperature": 21.5,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
                 "valves": [
@@ -499,7 +452,9 @@ def test_rejects_non_uuid_ids_in_first_class_persisted_topology() -> None:
                             "id": "00000000-0000-4000-8000-000000000002",
                             "name": "Living room",
                             "target_temperature": 21.5,
-                            "temperature_sensor": "sensor.living_temperature",
+                            "temperature_sensor_metadata": [
+                                {"entity_id": "sensor.living_temperature"}
+                            ],
                         }
                     ],
                     "valves": [
@@ -536,7 +491,7 @@ def test_rejects_non_uuid_ids_in_first_class_persisted_topology() -> None:
         )
 
 
-def test_legacy_sensor_data_gets_safe_metadata_defaults() -> None:
+def test_canonical_sensor_metadata_gets_safe_defaults() -> None:
     plant = plant_configuration_from_entry_data(
         {
             "plant_id": "plant-1",
@@ -546,7 +501,7 @@ def test_legacy_sensor_data_gets_safe_metadata_defaults() -> None:
                         "id": "zone-1",
                         "name": "Living room",
                         "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
                 "circuits": [],
@@ -669,7 +624,7 @@ def test_designated_reference_requires_one_metadata_record() -> None:
                             "id": "zone-1",
                             "name": "Living room",
                             "target_temperature": 21.0,
-                            "temperature_sensor": "sensor.one",
+                            "temperature_sensor_metadata": [{"entity_id": "sensor.one"}],
                             "temperature_aggregation": "designated_reference",
                         }
                     ],
@@ -713,7 +668,7 @@ def test_decodes_cooling_zone_and_circuit_safety_fields() -> None:
                         "id": "00000000-0000-4000-8000-000000000002",
                         "name": "Living room",
                         "target_temperature": 24.0,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                         "humidity_sensor_metadata": [
                             {
                                 "entity_id": "sensor.living_humidity",
@@ -774,29 +729,21 @@ def test_decodes_cooling_zone_and_circuit_safety_fields() -> None:
     assert circuit.surface_temperature_max_age_seconds == 240
 
 
-@pytest.mark.parametrize(
-    "humidity_fields",
-    [
-        {"humidity_sensor": "sensor.humidity"},
-        {
-            "humidity_sensors": ["sensor.humidity", "sensor.humidity.backup"],
-            "humidity_sensor_weights": {"sensor.humidity": 2.0},
-        },
-        {
-            "humidity_sensor_metadata": {
-                "sensor.humidity": {"required": False, "max_age_seconds": 60}
-            }
-        },
-    ],
-)
-def test_decodes_legacy_and_canonical_humidity_sensor_shapes(humidity_fields) -> None:
-    """All supported persistence shapes use the same immutable humidity metadata."""
+def test_decodes_canonical_humidity_sensor_metadata() -> None:
+    """Humidity uses the same canonical immutable metadata collection."""
     zone_data = {
         "id": "zone-1",
         "name": "Living room",
         "target_temperature": 24.0,
-        "temperature_sensor": "sensor.temperature",
-        **humidity_fields,
+        "temperature_sensor_metadata": [{"entity_id": "sensor.temperature"}],
+        "humidity_sensor_metadata": [
+            {
+                "entity_id": "sensor.humidity",
+                "required": False,
+                "weight": 2.0,
+                "max_age_seconds": 60,
+            }
+        ],
     }
     plant = plant_configuration_from_entry_data(
         {
@@ -805,5 +752,41 @@ def test_decodes_legacy_and_canonical_humidity_sensor_shapes(humidity_fields) ->
         }
     )
 
-    assert plant.zones[0].humidity_sensors
-    assert all(sensor.max_age_seconds > 0 for sensor in plant.zones[0].humidity_sensor_metadata)
+    assert plant.zones[0].humidity_sensors == ("sensor.humidity",)
+    assert plant.zones[0].humidity_sensor_metadata[0].weight == 2.0
+    assert plant.zones[0].humidity_sensor_metadata[0].max_age_seconds == 60
+
+
+@pytest.mark.parametrize(
+    "unsupported_fields",
+    [
+        {"temperature_sensor": "sensor.temperature"},
+        {"temperature_sensors": ["sensor.temperature"]},
+        {"temperature_sensor_weights": {"sensor.temperature": 2.0}},
+        {"designated_reference_sensor": "sensor.temperature"},
+        {"humidity_sensor": "sensor.humidity"},
+        {"humidity_sensors": ["sensor.humidity"]},
+        {"humidity_sensor_weights": {"sensor.humidity": 2.0}},
+    ],
+)
+def test_rejects_unsupported_sensor_representations(unsupported_fields) -> None:
+    """Only canonical metadata collections are accepted before the first release."""
+    with pytest.raises(StoredTopologyError, match="unsupported sensor fields"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 24.0,
+                            "temperature_sensor_metadata": [{"entity_id": "sensor.temperature"}],
+                            **unsupported_fields,
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        )

@@ -40,13 +40,13 @@ def _entry() -> MockConfigEntry:
                         "id": ZONE_A,
                         "name": "Zone A",
                         "target_temperature": 21.0,
-                        "temperature_sensor": MISSING_SENSOR,
+                        "temperature_sensor_metadata": [{"entity_id": MISSING_SENSOR}],
                     },
                     {
                         "id": ZONE_B,
                         "name": "Zone B",
                         "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.zone_b_temperature",
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.zone_b_temperature"}],
                     },
                 ],
                 "valves": [

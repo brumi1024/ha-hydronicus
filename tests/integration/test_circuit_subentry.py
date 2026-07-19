@@ -37,7 +37,6 @@ def _cooling_plant_entry() -> MockConfigEntry:
     data = deepcopy(dict(entry.data))
     for zone in data["topology"]["zones"]:
         sensor_id = f"sensor.{zone['id']}.humidity"
-        zone["humidity_sensors"] = [sensor_id]
         zone["humidity_sensor_metadata"] = [{"entity_id": sensor_id}]
     return MockConfigEntry(
         domain=DOMAIN,
@@ -71,13 +70,17 @@ def _plant_entry() -> MockConfigEntry:
                         "id": LIVING_ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.living_temperature",
+                        "temperature_sensor_metadata": [
+                            {"entity_id": "sensor.living_temperature"}
+                        ],
                     },
                     {
                         "id": OFFICE_ZONE_ID,
                         "name": "Office",
                         "target_temperature": 20.0,
-                        "temperature_sensor": "sensor.office_temperature",
+                        "temperature_sensor_metadata": [
+                            {"entity_id": "sensor.office_temperature"}
+                        ],
                     },
                 ],
                 "valves": [
