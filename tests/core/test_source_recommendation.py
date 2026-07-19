@@ -54,8 +54,8 @@ def _snapshot(
     )
 
 
-def test_decodes_source_configuration_and_buffer_aliases() -> None:
-    """Persisted generic and buffer source fields become typed source records."""
+def test_decodes_canonical_source_configuration() -> None:
+    """Persisted generic and temperature-qualified fields become typed sources."""
     plant = plant_configuration_from_entry_data(
         {
             "plant_id": "plant-1",
@@ -72,7 +72,7 @@ def test_decodes_source_configuration_and_buffer_aliases() -> None:
                         "id": "buffer",
                         "name": "Buffer",
                         "priority": 10,
-                        "source_type": "buffer",
+                        "source_type": "temperature_qualified_buffer",
                         "temperature_entity": "sensor.buffer_temperature",
                         "minimum_temperature": 40,
                         "maximum_age_seconds": 300,
@@ -133,6 +133,47 @@ def test_rejects_invalid_stored_source_configuration() -> None:
             {
                 "plant_id": "plant",
                 "topology": {"sources": [{"id": "source", "name": "Source", "priority": 1.5}]},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "source_fields",
+    [
+        {"source_type": "buffer"},
+        {"source_type": "temperature_buffer"},
+    ],
+)
+def test_rejects_short_source_kind_names(source_fields) -> None:
+    """Source kinds use the exact names emitted by the current UI writer."""
+    with pytest.raises(StoredTopologyError, match="source type"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant",
+                "topology": {"sources": [{"id": "source", "name": "Source", **source_fields}]},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "source_fields",
+    [
+        {"availability_sensor": "binary_sensor.available"},
+        {"availability_entity_id": "binary_sensor.available"},
+        {"temperature_sensor": "sensor.temperature"},
+        {"temperature_entity_id": "sensor.temperature"},
+        {"demand_entity": "switch.demand"},
+        {"demand_entity_id": "switch.demand"},
+        {"readiness_entity": "binary_sensor.ready"},
+    ],
+)
+def test_rejects_alternate_source_fields(source_fields) -> None:
+    """Persisted sources accept only current availability, temperature, and demand names."""
+    with pytest.raises(StoredTopologyError, match="Stored source uses unsupported fields"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant",
+                "topology": {"sources": [{"id": "source", "name": "Source", **source_fields}]},
             }
         )
 

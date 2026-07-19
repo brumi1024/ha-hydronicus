@@ -515,6 +515,10 @@ def test_healthy_source_change_honors_minimum_dwell_before_release() -> None:
     [
         ({"source_selector": []}, "source selector must be an object"),
         (
+            {"source_selection_actuator": {}},
+            "unsupported source selector field source_selection_actuator",
+        ),
+        (
             {
                 "source_selector": {
                     "id": "selector",
@@ -523,7 +527,17 @@ def test_healthy_source_change_honors_minimum_dwell_before_release() -> None:
                     "selector_entity_id": "select.two",
                 }
             },
-            "provided more than once",
+            "unsupported fields: selector_entity_id",
+        ),
+        (
+            {
+                "source_selector": {
+                    "id": "selector",
+                    "name": "Selector",
+                    "break_seconds": 10,
+                }
+            },
+            "unsupported fields: break_seconds",
         ),
         (
             {"source_selector": {"id": "selector", "name": "Selector", "release_option": ""}},
@@ -615,8 +629,8 @@ def test_source_selector_configuration_defaults_to_synthetic_execution() -> None
                 "source_selector": {
                     "id": "synthetic-selector",
                     "name": "Synthetic selector",
-                    "break_seconds": 12,
-                    "minimum_source_dwell_seconds": 45,
+                    "break_interval_seconds": 12,
+                    "minimum_dwell_seconds": 45,
                 }
             },
         }
