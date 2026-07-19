@@ -2110,13 +2110,23 @@ def safe_shutdown(
     )
 
 
-def evaluate(
+@dataclass(frozen=True, slots=True)
+class _HeatingEvaluation:
+    """Pure heating-demand phase output."""
+
+    zone_demands: dict[str, bool]
+    zone_runtime: dict[str, ZoneRuntime]
+    zone_reasons: dict[str, str]
+    zone_decisions: dict[str, ZoneDecision]
+
+
+def _evaluate_heating_zones(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
     runtime: RuntimeState,
     now: datetime,
-) -> Evaluation:
-    """Return the next deterministic shadow runtime and virtual control plan."""
+) -> _HeatingEvaluation:
+    """Evaluate heating demand independently for every configured zone."""
     zone_demands: dict[str, bool] = {}
     zone_runtime: dict[str, ZoneRuntime] = {}
     zone_reasons: dict[str, str] = {}
@@ -2167,6 +2177,27 @@ def evaluate(
             explanation=reason,
             deadline=deadline,
         )
+
+    return _HeatingEvaluation(
+        zone_demands=zone_demands,
+        zone_runtime=zone_runtime,
+        zone_reasons=zone_reasons,
+        zone_decisions=zone_decisions,
+    )
+
+
+def evaluate(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+) -> Evaluation:
+    """Return the next deterministic shadow runtime and virtual control plan."""
+    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
+    zone_demands = heating.zone_demands
+    zone_runtime = heating.zone_runtime
+    zone_reasons = heating.zone_reasons
+    zone_decisions = heating.zone_decisions
 
     cooling_zone_demands: dict[str, bool] = {}
     cooling_zone_reasons: dict[str, str] = {}
