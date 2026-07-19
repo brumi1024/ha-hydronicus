@@ -166,7 +166,7 @@ def test_generated_safe_shutdown_never_closes_before_pump_overrun_finishes(
     """Every generated overrun keeps valve closure behind source and pump release."""
     plant = compile_topology(_shared_pump_plant(1, pump_overrun_seconds=overrun_seconds))
     running = RuntimeState(
-        valves={"valve-0": ValveRuntime(ValveState.OPEN, NOW)},
+        valves={"valve-0": ValveRuntime(ValveState.OPEN, NOW, True)},
         pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
     )
 

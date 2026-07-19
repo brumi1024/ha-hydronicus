@@ -409,7 +409,7 @@ def test_safe_shutdown_stops_zero_overrun_pump_before_closing_valve() -> None:
     """A zero-overrun pump stops in one phase before the valve closes."""
     plant = _plant(pump_overrun=0)
     runtime = RuntimeState(
-        valves={"valve": ValveRuntime(ValveState.OPEN, NOW)},
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW, True)},
         pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
     )
     stop, runtime = safe_shutdown(plant, runtime, NOW)
@@ -460,7 +460,7 @@ def test_safe_shutdown_releases_source_then_overruns_then_closes() -> None:
     )
     runtime = RuntimeState(
         plant_mode=PlantMode.HEATING,
-        valves={"valve": ValveRuntime(ValveState.OPEN, NOW)},
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW, True)},
         pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
     )
     source_release, runtime = safe_shutdown(plant, runtime, NOW)
