@@ -3187,98 +3187,31 @@ def _plan_pumps(
     )
 
 
-def evaluate(
+def _assemble_evaluation(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
     runtime: RuntimeState,
     now: datetime,
+    *,
+    heating: _HeatingEvaluation,
+    cooling: _CoolingEvaluation,
+    route_eligibility: _RouteEligibility,
+    mode_conflicts: tuple[ModeConflict, ...],
+    mode_routing: _ModeRouting,
+    requested_circuits: set[str],
+    route_ids_by_circuit: Mapping[str, list[str]],
+    valve_plan: _ValvePlan,
+    pump_plan: _PumpPlan,
 ) -> Evaluation:
-    """Return the next deterministic shadow runtime and virtual control plan."""
-    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
-    zone_demands = heating.zone_demands
-    zone_runtime = heating.zone_runtime
-    zone_reasons = heating.zone_reasons
-    zone_decisions = heating.zone_decisions
-
-    cooling = _evaluate_cooling_zones(plant, snapshot, runtime, now, zone_decisions)
-    cooling_zone_demands = cooling.zone_demands
-    cooling_zone_reasons = cooling.zone_reasons
-    cooling_zone_decisions = cooling.zone_decisions
-    cooling_interlocks = cooling.interlocks
-    cooling_circuit_reasons = cooling.circuit_reasons
-
-    route_eligibility = _filter_degraded_routes(plant, snapshot, now, heating, cooling)
-    degraded_circuits = route_eligibility.degraded_circuit_ids
-    eligible_routes = route_eligibility.heating_routes
-    requested_cooling_routes = route_eligibility.cooling_routes
-    requested_mode = runtime.requested_mode
-    conflict_arbitration = _arbitrate_mode_conflicts(
-        plant,
-        requested_mode,
-        eligible_routes,
-        requested_cooling_routes,
-        cooling,
-    )
-    mode_conflicts = conflict_arbitration.mode_conflicts
-    mode_routing = _coordinate_mode_routing(
-        plant,
-        runtime,
-        now,
-        heating,
-        cooling,
-        mode_conflicts,
-    )
-    target_mode = mode_routing.target_mode
-    changeover_phase = mode_routing.changeover_phase
-    changeover_started_at = mode_routing.changeover_started_at
-    eligible_routes = mode_routing.heating_routes
-    cooling_routes = mode_routing.cooling_routes
-
-    # A conflict can remove the last cooling route for a zone.  The public
-    # zone demand map is updated above while the filtered route set remains the
-    # single source of truth for actuator consumers.
-    requested_circuits, route_ids_by_circuit = _index_requested_routes(
-        eligible_routes,
-        cooling_routes,
-    )
-
-    valve_plan = _plan_valves(
-        plant,
-        snapshot,
-        runtime,
-        now,
-        requested_circuits,
-        cooling_routes,
-        cooling,
-    )
-    valve_consumers = valve_plan.consumers
-    cooling_valve_consumers = valve_plan.cooling_consumers
-    blocked_valves = valve_plan.blocked_valves
+    """Assemble runtime, control plan, and diagnostics from phase outputs."""
     valves = valve_plan.valves
-    ready_circuits = valve_plan.ready_circuits
-    commands = list(valve_plan.commands)
-    actuator_reasons = valve_plan.actuator_reasons
-    pump_plan = _plan_pumps(
-        plant,
-        snapshot,
-        runtime,
-        now,
-        target_mode=target_mode,
-        requested_circuits=requested_circuits,
-        cooling_routes=cooling_routes,
-        valve_plan=valve_plan,
-    )
-    pump_consumers = pump_plan.consumers
-    cooling_pump_consumers = pump_plan.cooling_consumers
-    feedback_diagnostics = pump_plan.feedback_diagnostics
-    blocked_pump_circuits = pump_plan.blocked_circuit_ids
-    ready_circuits = pump_plan.ready_circuit_ids
-    cooling_actuator_ids = pump_plan.cooling_actuator_ids
     pumps = pump_plan.pumps
-    commands.extend(pump_plan.commands)
+    commands = [*valve_plan.commands, *pump_plan.commands]
     actuator_reasons = pump_plan.actuator_reasons
 
-    overrun_pumps = {pump_id for pump_id, pump in pumps.items() if pump.state is PumpState.OVERRUN}
+    overrun_pumps = {
+        pump_id for pump_id, pump in pumps.items() if pump.state is PumpState.OVERRUN
+    }
     for valve_id in sorted(plant.valves):
         valve = valves[valve_id]
         protected_by_overrun = any(
@@ -3290,10 +3223,10 @@ def evaluate(
             for pump_id in plant.pumps
         )
         if (
-            valve_consumers.get(valve_id)
+            valve_plan.consumers.get(valve_id)
             or protected_by_overrun
             or (
-                changeover_phase is not ModeChangeoverPhase.IDLE
+                mode_routing.changeover_phase is not ModeChangeoverPhase.IDLE
                 and pumps_were_active
             )
         ):
@@ -3309,12 +3242,12 @@ def evaluate(
             )
             actuator_reasons[valve_id] = "Closing because its consumer set is empty."
 
-    if changeover_phase is ModeChangeoverPhase.SOURCE_RELEASE:
+    if mode_routing.changeover_phase is ModeChangeoverPhase.SOURCE_RELEASE:
         # Releasing source demand is idempotent and remains visible after a
         # restart that restored this phase.
         commands[:0] = _source_release_commands(plant)
     next_changeover_phase = _advance_changeover_phase(
-        changeover_phase,
+        mode_routing.changeover_phase,
         pumps=pumps,
         valves=valves,
     )
@@ -3331,18 +3264,27 @@ def evaluate(
         changeover_deadline = now
     mode_explanation = (
         (
-            f"Mode change to {target_mode.value} is locked until the shared plant is safely "
-            f"idle ({next_changeover_phase.value})."
+            f"Mode change to {mode_routing.target_mode.value} is locked until the shared plant "
+            f"is safely idle ({next_changeover_phase.value})."
         )
         if next_changeover_phase is not ModeChangeoverPhase.IDLE
-        else f"Plant mode is {target_mode.value}; the shared hydraulic path is safe to use."
+        else (
+            f"Plant mode is {mode_routing.target_mode.value}; the shared hydraulic path is "
+            "safe to use."
+        )
     )
     active_mode = (
-        target_mode
+        mode_routing.target_mode
         if next_changeover_phase is ModeChangeoverPhase.IDLE
         and (
-            (target_mode is PlantMode.HEATING and bool(eligible_routes))
-            or (target_mode is PlantMode.COOLING and bool(cooling_routes))
+            (
+                mode_routing.target_mode is PlantMode.HEATING
+                and bool(mode_routing.heating_routes)
+            )
+            or (
+                mode_routing.target_mode is PlantMode.COOLING
+                and bool(mode_routing.cooling_routes)
+            )
         )
         else PlantMode.IDLE
     )
@@ -3353,17 +3295,20 @@ def evaluate(
     circuit_reasons = {
         circuit_id: (
             "Blocked: configured actuator or feedback binding is unresolved."
-            if circuit_id in degraded_circuits
+            if circuit_id in route_eligibility.degraded_circuit_ids
             else "Blocked: "
-            + feedback_diagnostics[plant.circuits[circuit_id].pump_id].reason
-            if circuit_id in blocked_pump_circuits
+            + pump_plan.feedback_diagnostics[plant.circuits[circuit_id].pump_id].reason
+            if circuit_id in pump_plan.blocked_circuit_ids
             else "Blocked: required valve feedback is unavailable or unsafe."
             if circuit_id in requested_circuits
-            and any(valve_id in blocked_valves for valve_id in plant.circuits[circuit_id].valve_ids)
+            and any(
+                valve_id in valve_plan.blocked_valves
+                for valve_id in plant.circuits[circuit_id].valve_ids
+            )
             else "Ready: eligible delivery route "
             + ", ".join(route_ids_by_circuit[circuit_id])
             + " has valve-ready demand."
-            if circuit_id in ready_circuits
+            if circuit_id in pump_plan.ready_circuit_ids
             else "Waiting for valve readiness after eligible delivery route "
             + ", ".join(route_ids_by_circuit[circuit_id])
             + " requested this circuit."
@@ -3372,45 +3317,43 @@ def evaluate(
         )
         for circuit_id in sorted(plant.circuits)
     }
-    source_coordination = _coordinate_source(
+    source = _coordinate_source(
         plant,
         snapshot,
         runtime,
         now,
         active_mode=active_mode,
-        heating_demand=any(zone_demands.values()),
-        cooling_demand=any(cooling_zone_demands.values()),
-        heating_routes=eligible_routes,
-        ready_circuits=ready_circuits,
-        pump_consumers=pump_consumers,
+        heating_demand=any(heating.zone_demands.values()),
+        cooling_demand=any(cooling.zone_demands.values()),
+        heating_routes=mode_routing.heating_routes,
+        ready_circuits=pump_plan.ready_circuit_ids,
+        pump_consumers=pump_plan.consumers,
         valves=valves,
         pumps=pumps,
         prior_commands=tuple(commands),
     )
-    source_recommendation = source_coordination.recommendation
-    source_selection_runtime = source_coordination.selection_runtime
-    source_selection_commands = source_coordination.commands
-    source_selection = source_coordination.selection
-    selected_source_id = source_coordination.selected_source_id
-    source_diagnostics = source_coordination.diagnostics
-    source_selection_actuator_ids = source_coordination.actuator_ids
-    commands.extend(source_selection_commands)
+    commands.extend(source.commands)
+    changeover_target_mode = (
+        mode_routing.target_mode
+        if next_changeover_phase is not ModeChangeoverPhase.IDLE
+        else None
+    )
     return Evaluation(
         next_runtime=RuntimeState(
-            cooling_zone_demands=cooling_zone_demands,
-            zone_runtime=zone_runtime,
+            cooling_zone_demands=cooling.zone_demands,
+            zone_runtime=heating.zone_runtime,
             valves=valves,
             pumps=pumps,
             plant_mode=active_mode,
-            requested_mode=requested_mode,
-            selected_source_id=selected_source_id if active_mode is PlantMode.HEATING else None,
-            source_selection=source_selection_runtime,
-            changeover_phase=next_changeover_phase,
-            changeover_target_mode=(
-                target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
+            requested_mode=runtime.requested_mode,
+            selected_source_id=(
+                source.selected_source_id if active_mode is PlantMode.HEATING else None
             ),
+            source_selection=source.selection_runtime,
+            changeover_phase=next_changeover_phase,
+            changeover_target_mode=changeover_target_mode,
             changeover_started_at=(
-                changeover_started_at
+                mode_routing.changeover_started_at
                 if next_changeover_phase is not ModeChangeoverPhase.IDLE
                 else None
             ),
@@ -3420,54 +3363,131 @@ def evaluate(
         control_plan=ControlPlan(
             commands=tuple(commands),
             valve_consumers={
-                key: frozenset(value) for key, value in sorted(valve_consumers.items())
+                key: frozenset(value)
+                for key, value in sorted(valve_plan.consumers.items())
             },
-            pump_consumers={key: frozenset(value) for key, value in sorted(pump_consumers.items())},
+            pump_consumers={
+                key: frozenset(value) for key, value in sorted(pump_plan.consumers.items())
+            },
             plant_mode=active_mode,
-            requested_mode=requested_mode,
+            requested_mode=runtime.requested_mode,
             changeover_phase=next_changeover_phase,
-            changeover_target_mode=(
-                target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
-            ),
+            changeover_target_mode=changeover_target_mode,
             changeover_deadline=changeover_deadline,
             mode_explanation=mode_explanation,
-            source_recommendation=source_recommendation,
-            cooling_zone_demands=cooling_zone_demands,
+            source_recommendation=source.recommendation,
+            cooling_zone_demands=cooling.zone_demands,
             cooling_valve_consumers={
                 key: frozenset(value)
-                for key, value in sorted(cooling_valve_consumers.items())
+                for key, value in sorted(valve_plan.cooling_consumers.items())
             },
             cooling_pump_consumers={
                 key: frozenset(value)
-                for key, value in sorted(cooling_pump_consumers.items())
+                for key, value in sorted(pump_plan.cooling_consumers.items())
             },
-            cooling_actuator_ids=frozenset(sorted(cooling_actuator_ids)),
+            cooling_actuator_ids=frozenset(sorted(pump_plan.cooling_actuator_ids)),
             mode_conflicts=mode_conflicts,
-            interlocks=cooling_interlocks,
-            source_selection=source_selection,
-            source_selection_actuator_ids=source_selection_actuator_ids,
+            interlocks=cooling.interlocks,
+            source_selection=source.selection,
+            source_selection_actuator_ids=source.actuator_ids,
         ),
         diagnostics=ControllerDiagnostics(
-            zone_reasons=zone_reasons,
+            zone_reasons=heating.zone_reasons,
             circuit_reasons=circuit_reasons,
             actuator_reasons=actuator_reasons,
-            zone_decisions=zone_decisions,
-            source_recommendation=source_recommendation,
-            source_diagnostics=source_diagnostics,
-            cooling_zone_decisions=cooling_zone_decisions,
-            interlocks=cooling_interlocks,
-            cooling_circuit_reasons=cooling_circuit_reasons,
-            cooling_zone_reasons=cooling_zone_reasons,
+            zone_decisions=heating.zone_decisions,
+            source_recommendation=source.recommendation,
+            source_diagnostics=source.diagnostics,
+            cooling_zone_decisions=cooling.zone_decisions,
+            interlocks=cooling.interlocks,
+            cooling_circuit_reasons=cooling.circuit_reasons,
+            cooling_zone_reasons=cooling.zone_reasons,
             mode_conflicts=mode_conflicts,
-            actuator_diagnostics=feedback_diagnostics,
-            source_selection=source_selection,
-            requested_mode=requested_mode,
+            actuator_diagnostics=pump_plan.feedback_diagnostics,
+            source_selection=source.selection,
+            requested_mode=runtime.requested_mode,
             active_mode=active_mode,
             changeover_phase=next_changeover_phase,
-            changeover_target_mode=(
-                target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
-            ),
+            changeover_target_mode=changeover_target_mode,
             changeover_deadline=changeover_deadline,
             mode_explanation=mode_explanation,
         ),
+    )
+
+
+def evaluate(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+) -> Evaluation:
+    """Return the next deterministic shadow runtime and virtual control plan."""
+    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
+    cooling = _evaluate_cooling_zones(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        heating.zone_decisions,
+    )
+    route_eligibility = _filter_degraded_routes(
+        plant,
+        snapshot,
+        now,
+        heating,
+        cooling,
+    )
+    requested_mode = runtime.requested_mode
+    conflict_arbitration = _arbitrate_mode_conflicts(
+        plant,
+        requested_mode,
+        route_eligibility.heating_routes,
+        route_eligibility.cooling_routes,
+        cooling,
+    )
+    mode_routing = _coordinate_mode_routing(
+        plant,
+        runtime,
+        now,
+        heating,
+        cooling,
+        conflict_arbitration.mode_conflicts,
+    )
+    requested_circuits, route_ids_by_circuit = _index_requested_routes(
+        mode_routing.heating_routes,
+        mode_routing.cooling_routes,
+    )
+    valve_plan = _plan_valves(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        requested_circuits,
+        mode_routing.cooling_routes,
+        cooling,
+    )
+    pump_plan = _plan_pumps(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        target_mode=mode_routing.target_mode,
+        requested_circuits=requested_circuits,
+        cooling_routes=mode_routing.cooling_routes,
+        valve_plan=valve_plan,
+    )
+    return _assemble_evaluation(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        heating=heating,
+        cooling=cooling,
+        route_eligibility=route_eligibility,
+        mode_conflicts=conflict_arbitration.mode_conflicts,
+        mode_routing=mode_routing,
+        requested_circuits=requested_circuits,
+        route_ids_by_circuit=route_ids_by_circuit,
+        valve_plan=valve_plan,
+        pump_plan=pump_plan,
     )
