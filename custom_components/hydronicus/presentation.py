@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.helpers import entity_registry as entity_registry_helper
 
@@ -14,6 +14,9 @@ from .core.executor import (
     ActuatorOperation,
 )
 from .core.model import (
+    ExternalClimateThermostatState,
+    ExternalHvacAction,
+    HydronicusThermostatConfig,
     ModeChangeoverPhase,
     PumpState,
     SafeShutdownPhase,
@@ -21,7 +24,7 @@ from .core.model import (
     ZoneDecisionStatus,
 )
 
-PRESENTATION_SCHEMA_VERSION = 1
+PRESENTATION_SCHEMA_VERSION = 2
 
 _SEVERITY_ORDER = {"critical": 0, "error": 1, "warning": 2, "info": 3}
 
@@ -44,6 +47,7 @@ def presentation_entity_ids(
     find("select", f"{plant_id}_requested_mode", "requested_mode")
     find("button", f"{plant_id}_safe_shutdown", "safe_shutdown")
     for zone_id in zone_ids:
+        find("binary_sensor", f"{plant_id}_{zone_id}_demand", f"zone:{zone_id}")
         find("climate", f"{plant_id}_{zone_id}_climate", f"climate:{zone_id}")
     # The config entry argument makes the ownership boundary explicit even
     # though the unique IDs above are already Plant-scoped.
@@ -183,17 +187,60 @@ def _zone_snapshots(
         aggregation = heating.aggregation if heating else None
         demand = runtime.runtime_state.zone_runtime.get(zone_id)
         cooling_demand = runtime.runtime_state.cooling_zone_demands.get(zone_id, False)
+        thermostat_state = (
+            runtime.snapshot.thermostats.get(zone_id) if runtime.snapshot is not None else None
+        )
+        internal = isinstance(zone.thermostat, HydronicusThermostatConfig)
+        external_state = (
+            thermostat_state
+            if isinstance(thermostat_state, ExternalClimateThermostatState)
+            else ExternalClimateThermostatState()
+        )
+        if internal:
+            target = runtime.zone_target_temperatures.get(
+                zone_id, zone.thermostat.initial_target_temperature
+            )
+            preset = runtime.zone_preset_modes.get(zone_id, "none")
+            preset_modes = sorted(zone.thermostat.preset_targets)
+            thermostat_available = thermostat_state is not None
+            ownership = "Hydronicus owns this Zone's digital thermostat."
+        else:
+            target = external_state.target_temperature
+            preset = None
+            preset_modes = []
+            external_decision = (
+                cooling if external_state.hvac_action is ExternalHvacAction.COOLING else heating
+            )
+            thermostat_available = external_state.available and external_state.hvac_mode_valid
+            ownership = "External thermostat owns this Zone. " + (
+                external_decision.explanation if external_decision else external_state.explanation
+            )
+        blocked = (
+            not thermostat_available
+            or (not internal and external_state.hvac_action is None)
+            or runtime.zone_is_blocked(zone_id)
+            or runtime.cooling_zone_is_blocked(zone_id)
+        )
         result.append(
             {
                 "id": zone_id,
                 "name": zone.name,
-                "climate_entity_id": zone_entity_ids.get(zone_id),
-                "current_temperature": aggregation.value if aggregation else None,
-                "target_temperature": runtime.zone_target_temperatures.get(
-                    zone_id, zone.target_temperature
-                ),
-                "preset": runtime.zone_preset_modes.get(zone_id, "none"),
-                "preset_modes": sorted(zone.preset_targets),
+                "thermostat": {
+                    "kind": zone.thermostat.kind.value,
+                    "state": "available" if not blocked else "blocked",
+                    "target_temperature": target,
+                    "current_temperature": (
+                        aggregation.value
+                        if internal and aggregation
+                        else external_state.current_temperature
+                        if not internal
+                        else None
+                    ),
+                    "preset": preset,
+                    "preset_modes": preset_modes,
+                    "control_entity_id": zone_entity_ids.get(zone_id) if internal else None,
+                    "explanation": ownership,
+                },
                 "demand": bool(demand.demand) if demand else False,
                 "phase": _zone_phase(
                     heating, cooling, bool(demand and demand.demand), cooling_demand
@@ -397,10 +444,11 @@ def _actuator_reason(
     runtime: Any, evaluation: Any, actuator_id: str, diagnostic: Any
 ) -> str | None:
     if diagnostic and diagnostic.reason:
-        return diagnostic.reason
-    return (
+        return str(diagnostic.reason)
+    reason = (
         evaluation.diagnostics.actuator_reasons.get(actuator_id) if evaluation is not None else None
     )
+    return str(reason) if reason is not None else None
 
 
 def _source_snapshots(runtime: Any, diagnostics: Any) -> list[dict[str, object]]:
@@ -607,7 +655,12 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
 
 def _sorted_alerts(alerts: Any) -> list[dict[str, object]]:
     return sorted(
-        alerts, key=lambda item: (int(item["priority"]), str(item["code"]), str(item["scope"]))
+        alerts,
+        key=lambda item: (
+            int(cast(Any, item["priority"])),
+            str(item["code"]),
+            str(item["scope"]),
+        ),
     )
 
 
@@ -720,14 +773,14 @@ def _safe_shutdown_snapshot(runtime: Any) -> dict[str, object]:
 
 def _actuator_name(runtime: Any, actuator_id: str) -> str | None:
     if actuator_id in runtime.plant.valves:
-        return runtime.plant.valves[actuator_id].name
+        return str(runtime.plant.valves[actuator_id].name)
     if actuator_id in runtime.plant.pumps:
-        return runtime.plant.pumps[actuator_id].name
+        return str(runtime.plant.pumps[actuator_id].name)
     if actuator_id.startswith("source:"):
         source = runtime.plant.sources.get(actuator_id.removeprefix("source:"))
-        return source.name if source else None
+        return str(source.name) if source else None
     if runtime.plant.source_selector and runtime.plant.source_selector.id == actuator_id:
-        return runtime.plant.source_selector.name
+        return str(runtime.plant.source_selector.name)
     return None
 
 
@@ -777,7 +830,11 @@ def _coupling_groups(runtime: Any) -> list[dict[str, object]]:
 
 
 def _zone_coupling_groups(runtime: Any, zone_id: str) -> list[str]:
-    return [group["id"] for group in _coupling_groups(runtime) if zone_id in group["zone_ids"]]
+    return [
+        str(group["id"])
+        for group in _coupling_groups(runtime)
+        if zone_id in cast(list[str], group["zone_ids"])
+    ]
 
 
 def _value(value: Any) -> Any:

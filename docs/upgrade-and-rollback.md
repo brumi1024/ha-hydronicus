@@ -1,9 +1,8 @@
 # Install, update, and rollback
 
-Hydronicus `0.1.0` is the planned first public release.
-There is no earlier public installation or persisted schema to migrate.
-Config-entry version 1 and minor version 1 are the initial fresh-install contract, not a migration target.
-Compatibility support begins only after a schema has shipped in an actual published release.
+The thermostat-ownership redesign uses config-entry version 1.1 as its canonical fresh-install contract.
+Development and staging Plants created before this boundary are disposable and must be recreated through the UI.
+Hydronicus carries no migration hooks, predecessor fixtures, or legacy schema decoder for those entries.
 
 ## Fresh HACS installation
 
@@ -38,8 +37,8 @@ After the restart:
 4. Confirm the Dry run setting.
 5. Exercise the smallest safe scenario before relying on active heating.
 
-Release-specific compatibility or migration instructions belong in the release that introduces them.
-Version `0.1.0` does not carry speculative predecessor support.
+Release-specific compatibility instructions belong in the release that introduces them.
+The current pre-release schema does not carry speculative predecessor support.
 
 ## Rolling back a development checkout
 

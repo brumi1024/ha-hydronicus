@@ -36,6 +36,7 @@ from .core.entity_bindings import (
     unresolved_entity_bindings,
 )
 from .core.executor import (
+    ActuatorExecutionFailure,
     ActuatorExecutor,
     ActuatorObservedState,
     ActuatorOperation,
@@ -45,11 +46,17 @@ from .core.executor import (
 from .core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
+    ActuatorDiagnostic,
     ActuatorFeedback,
     AggregationResult,
     CompiledPlant,
     Evaluation,
+    ExternalClimateThermostatConfig,
+    ExternalClimateThermostatState,
+    ExternalHvacAction,
     FeedbackObservation,
+    HydronicusThermostatConfig,
+    HydronicusThermostatState,
     ModeChangeoverPhase,
     PlantMode,
     PlantSnapshot,
@@ -59,16 +66,14 @@ from .core.model import (
     SafeShutdownPhase,
     SourceRecommendation,
     TemperatureObservation,
+    ThermostatHvacMode,
     ValveRuntime,
     ValveState,
     ZoneDecision,
     ZoneDecisionStatus,
 )
 from .core.topology import compile_topology
-from .entry_configuration import (
-    effective_plant_configuration,
-    zone_target_temperature_update,
-)
+from .entry_configuration import effective_plant_configuration
 from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
 from .repairs import async_sync_repairs
 
@@ -88,6 +93,7 @@ class HydronicRuntime:
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
+    zone_hvac_modes: dict[str, ThermostatHvacMode] = field(default_factory=dict)
     evaluation: Evaluation | None = None
     snapshot: PlantSnapshot | None = None
     last_execution: ExecutionReport | None = None
@@ -103,6 +109,7 @@ class HydronicRuntime:
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     _refresh_task: asyncio.Task[Any] | None = None
     _stopping: bool = False
+    _initializing: bool = False
     refresh_count: int = 0
     evaluation_count: int = 0
     coalesced_refresh_count: int = 0
@@ -141,11 +148,22 @@ class HydronicRuntime:
                 requested_mode=_stored_requested_mode(entry),
             ),
             zone_target_temperatures={
-                zone.id: zone.target_temperature for zone in plant.zones.values()
+                zone.id: zone.thermostat.initial_target_temperature
+                for zone in plant.zones.values()
+                if isinstance(zone.thermostat, HydronicusThermostatConfig)
             },
             zone_preset_modes={
-                zone.id: _stored_zone_preset_mode(entry, zone.id, zone, effective.zone_subentry_ids)
+                zone.id: (
+                    zone.thermostat.initial_preset
+                    if isinstance(zone.thermostat, HydronicusThermostatConfig)
+                    else "none"
+                )
                 for zone in plant.zones.values()
+            },
+            zone_hvac_modes={
+                zone.id: ThermostatHvacMode.OFF
+                for zone in plant.zones.values()
+                if isinstance(zone.thermostat, HydronicusThermostatConfig)
             },
             _entry=entry,
         )
@@ -226,9 +244,12 @@ class HydronicRuntime:
             return "The controller has not evaluated the plant yet."
         return self.evaluation.diagnostics.mode_explanation
 
-    async def async_start(self, hass: HomeAssistant) -> None:
-        """Reconcile observations, evaluate the plan, and execute safe commands."""
+    async def async_start(
+        self, hass: HomeAssistant, *, defer_initial_refresh: bool = False
+    ) -> None:
+        """Attach observations and optionally defer evaluation until entities restore."""
         self._stopping = False
+        self._initializing = defer_initial_refresh
         self._last_publication_signature = None
         if self._remove_state_listener is not None:
             self._remove_state_listener()
@@ -248,12 +269,20 @@ class HydronicRuntime:
             self._remove_stop_listener = bus.async_listen_once(
                 EVENT_HOMEASSISTANT_STOP, self._async_handle_homeassistant_stop
             )
+        if not defer_initial_refresh:
+            await self.async_refresh(hass)
+            self._schedule_periodic_reconciliation(hass)
+
+    async def async_finish_start(self, hass: HomeAssistant) -> None:
+        """Evaluate once after all entity restoration callbacks have completed."""
+        self._initializing = False
         await self.async_refresh(hass)
         self._schedule_periodic_reconciliation(hass)
 
     async def async_stop(self) -> None:
         """Remove runtime listeners without changing any physical equipment."""
         self._stopping = True
+        self._initializing = False
         if self._hass is not None:
             async_sync_repairs(self._hass, self.plant_id, ())
         if self._remove_state_listener is not None:
@@ -293,19 +322,13 @@ class HydronicRuntime:
     ) -> None:
         """Persist and immediately apply a zone setpoint in the runtime."""
         temperature = _validate_target_temperature(temperature)
-        if zone_id not in self.plant.zones:
+        if zone_id not in self.plant.zones or not isinstance(
+            self.plant.zones[zone_id].thermostat, HydronicusThermostatConfig
+        ):
             raise ValueError(f"Unknown zone {zone_id}.")
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
             raise RuntimeError("Hydronic runtime is not started.")
-
-        subentry_id, data = zone_target_temperature_update(self._entry, zone_id, temperature)
-        data = _zone_preset_mode_update(data, zone_id, "none", subentry_id is not None)
-        if subentry_id is not None:
-            subentry = self._entry.subentries[subentry_id]
-            active_hass.config_entries.async_update_subentry(self._entry, subentry, data=data)
-        else:
-            active_hass.config_entries.async_update_entry(self._entry, data=data)
 
         self.zone_target_temperatures[zone_id] = temperature
         self.zone_preset_modes[zone_id] = "none"
@@ -315,7 +338,9 @@ class HydronicRuntime:
         self, zone_id: str, preset_mode: str, *, hass: HomeAssistant | None = None
     ) -> None:
         """Persist a configured preset and immediately apply its target in the runtime."""
-        if zone_id not in self.plant.zones:
+        if zone_id not in self.plant.zones or not isinstance(
+            self.plant.zones[zone_id].thermostat, HydronicusThermostatConfig
+        ):
             raise ValueError(f"Unknown zone {zone_id}.")
         normalized = str(preset_mode).lower()
         zone = self.plant.zones[zone_id]
@@ -334,17 +359,46 @@ class HydronicRuntime:
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
             raise RuntimeError("Hydronic runtime is not started.")
-        subentry_id, data = zone_target_temperature_update(self._entry, zone_id, target)
-        data = _zone_preset_mode_update(data, zone_id, normalized, subentry_id is not None)
-        if subentry_id is not None:
-            subentry = self._entry.subentries[subentry_id]
-            active_hass.config_entries.async_update_subentry(self._entry, subentry, data=data)
-        else:
-            active_hass.config_entries.async_update_entry(self._entry, data=data)
-
         self.zone_target_temperatures[zone_id] = target
         self.zone_preset_modes[zone_id] = normalized
         await self.async_refresh(active_hass)
+
+    async def async_set_zone_hvac_mode(
+        self,
+        zone_id: str,
+        hvac_mode: ThermostatHvacMode | str,
+        *,
+        hass: HomeAssistant | None = None,
+    ) -> None:
+        """Update one internal thermostat mode without changing the Plant constraint."""
+        zone = self.plant.zones.get(zone_id)
+        if zone is None or not isinstance(zone.thermostat, HydronicusThermostatConfig):
+            raise ValueError(f"Unknown Hydronicus thermostat Zone {zone_id}.")
+        try:
+            mode = ThermostatHvacMode(hvac_mode)
+        except ValueError as error:
+            raise ValueError(f"Unsupported thermostat HVAC mode {hvac_mode!r}.") from error
+        active_hass = hass or self._hass
+        if active_hass is None:
+            raise RuntimeError("Hydronic runtime is not started.")
+        self.zone_hvac_modes[zone_id] = mode
+        await self.async_refresh(active_hass)
+
+    async def async_restore_zone_thermostat(
+        self,
+        zone_id: str,
+        *,
+        target_temperature: float,
+        preset: str,
+        hvac_mode: ThermostatHvacMode,
+        hass: HomeAssistant,
+    ) -> None:
+        """Apply one validated RestoreEntity state atomically and reevaluate."""
+        self.zone_target_temperatures[zone_id] = _validate_target_temperature(target_temperature)
+        self.zone_preset_modes[zone_id] = preset
+        self.zone_hvac_modes[zone_id] = hvac_mode
+        if not self._initializing:
+            await self.async_refresh(hass)
 
     def zone_current_temperature(self, zone_id: str) -> float | None:
         """Return the current aggregate temperature for one zone."""
@@ -390,13 +444,13 @@ class HydronicRuntime:
             return None
         return decision.explanation
 
-    def actuator_diagnostic(self, actuator_id: str) -> object | None:
+    def actuator_diagnostic(self, actuator_id: str) -> ActuatorDiagnostic | None:
         """Return structured feedback and manual-mismatch diagnostics."""
         if self.evaluation is None:
             return None
         return self.evaluation.diagnostics.actuator_diagnostics.get(actuator_id)
 
-    def actuator_execution_failure(self, actuator_id: str) -> object | None:
+    def actuator_execution_failure(self, actuator_id: str) -> ActuatorExecutionFailure | None:
         """Return the latest rejected or timed-out command explanation."""
         return self.executor.failure_for(actuator_id)
 
@@ -531,7 +585,7 @@ class HydronicRuntime:
             )
         aggregation = self.zone_aggregation(zone_id)
         if aggregation is not None and aggregation.is_blocked:
-            return cast(str, aggregation.explanation)
+            return aggregation.explanation
         return None
 
     def source_recommendation(self) -> SourceRecommendation | None:
@@ -674,7 +728,7 @@ class HydronicRuntime:
             task = hass.async_create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return task
+        return cast(asyncio.Task[Any], task)
 
     def _schedule_refresh(self, hass: HomeAssistant) -> None:
         """Coalesce state-event refreshes into one tracked task."""
@@ -940,6 +994,11 @@ class HydronicRuntime:
                     *self._observation_sensor_ids(),
                     *self._feedback_sensor_ids(),
                     *(
+                        zone.thermostat.entity_id
+                        for zone in self.plant.zones.values()
+                        if isinstance(zone.thermostat, ExternalClimateThermostatConfig)
+                    ),
+                    *(
                         entity_id
                         for source in self.plant.sources.values()
                         for entity_id in (
@@ -1179,8 +1238,9 @@ class HydronicRuntime:
             return FeedbackObservation(None, None)
         raw_state = getattr(state, "state", None)
         value: float | bool | str | None = raw_state
-        with suppress(TypeError, ValueError):
-            value = float(raw_state)
+        if raw_state is not None:
+            with suppress(TypeError, ValueError):
+                value = float(raw_state)
         observed_at = getattr(state, "last_reported", None)
         if observed_at is None:
             observed_at = getattr(state, "last_updated", None)
@@ -1248,8 +1308,25 @@ class HydronicRuntime:
             for circuit in self.plant.circuits.values()
             if circuit.surface_temperature_sensor is not None
         }
+        thermostat_states: dict[
+            str, HydronicusThermostatState | ExternalClimateThermostatState
+        ] = {}
+        for zone_id, zone in self.plant.zones.items():
+            if isinstance(zone.thermostat, HydronicusThermostatConfig):
+                thermostat_states[zone_id] = HydronicusThermostatState(
+                    target_temperature=self.zone_target_temperatures.get(
+                        zone_id, zone.thermostat.initial_target_temperature
+                    ),
+                    preset=self.zone_preset_modes.get(zone_id, "none"),
+                    hvac_mode=self.zone_hvac_modes.get(zone_id, ThermostatHvacMode.OFF),
+                )
+            else:
+                thermostat_states[zone_id] = _external_climate_state(
+                    hass.states.get(zone.thermostat.entity_id)
+                )
         return PlantSnapshot(
             temperatures={sensor_id: observations[sensor_id] for sensor_id in temperature_ids},
+            thermostats=thermostat_states,
             humidities={sensor_id: observations[sensor_id] for sensor_id in humidity_ids},
             supply_temperatures={sensor_id: observations[sensor_id] for sensor_id in supply_ids},
             surface_temperatures={sensor_id: observations[sensor_id] for sensor_id in surface_ids},
@@ -1259,22 +1336,6 @@ class HydronicRuntime:
             source_demand_states=source_demand_states,
             actuator_feedback=actuator_feedback,
             unavailable_entity_ids=self.unavailable_entity_ids,
-        )
-
-    def _evaluation_plant(self) -> CompiledPlant:
-        """Apply runtime-owned setpoints to the immutable compiled topology."""
-        return replace(
-            self.plant,
-            zones={
-                zone_id: replace(
-                    zone,
-                    target_temperature=self.zone_target_temperatures.get(
-                        zone_id,
-                        zone.target_temperature,
-                    ),
-                )
-                for zone_id, zone in self.plant.zones.items()
-            },
         )
 
     async def _async_execute_evaluation(
@@ -1315,7 +1376,7 @@ class HydronicRuntime:
         self.snapshot = self._build_snapshot(hass)
         now = self._now()
         result = evaluate(
-            self._evaluation_plant(),
+            self.plant,
             self.snapshot,
             self.runtime_state,
             now,
@@ -1332,6 +1393,7 @@ class HydronicRuntime:
                 self.runtime_state,
                 tuple(sorted(self.zone_target_temperatures.items())),
                 tuple(sorted(self.zone_preset_modes.items())),
+                tuple(sorted(self.zone_hvac_modes.items())),
                 self.operational_status(),
                 self.last_reconciliation_status,
                 self.last_reconciliation_changed_actuator_count,
@@ -1562,6 +1624,59 @@ def _state_is_on(state: Any) -> bool:
     if state is None:
         return False
     return str(state.state).strip().lower() in {"on", "true", "1", "yes"}
+
+
+def _finite_state_attribute(state: Any, key: str) -> float | None:
+    """Read one finite diagnostic climate attribute without guessing."""
+    attributes = getattr(state, "attributes", {})
+    try:
+        raw_value = attributes.get(key)
+        if raw_value is None:
+            return None
+        value = float(raw_value)
+    except AttributeError, TypeError, ValueError:
+        return None
+    return value if isfinite(value) else None
+
+
+def _external_climate_state(state: Any) -> ExternalClimateThermostatState:
+    """Normalize an external climate entity before it reaches the pure evaluator."""
+    if state is None:
+        return ExternalClimateThermostatState(
+            explanation="External thermostat blocked: the climate entity is missing."
+        )
+    raw_mode = str(getattr(state, "state", "")).strip().lower()
+    if raw_mode in {"", "unknown", "unavailable"}:
+        return ExternalClimateThermostatState(
+            explanation=f"External thermostat blocked: entity state is {raw_mode or 'missing'}."
+        )
+    try:
+        hvac_mode = ThermostatHvacMode(raw_mode)
+        hvac_mode_valid = True
+    except ValueError:
+        hvac_mode = None
+        hvac_mode_valid = not raw_mode
+    attributes = getattr(state, "attributes", {})
+    raw_action = str(attributes.get("hvac_action", "")).strip().lower()
+    try:
+        hvac_action = ExternalHvacAction(raw_action)
+    except ValueError:
+        hvac_action = None
+    if not hvac_mode_valid:
+        explanation = f"External thermostat blocked: HVAC mode {raw_mode!r} is unsupported."
+    elif hvac_action is not None:
+        explanation = f"External thermostat reports {hvac_action.value}."
+    else:
+        explanation = "External thermostat blocked: HVAC action is missing or unsupported."
+    return ExternalClimateThermostatState(
+        available=True,
+        hvac_action=hvac_action,
+        hvac_mode=hvac_mode,
+        hvac_mode_valid=hvac_mode_valid,
+        target_temperature=_finite_state_attribute(state, "temperature"),
+        current_temperature=_finite_state_attribute(state, "current_temperature"),
+        explanation=explanation,
+    )
 
 
 def _validate_target_temperature(temperature: float) -> float:

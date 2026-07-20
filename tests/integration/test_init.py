@@ -50,11 +50,14 @@ async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
                     {
                         "id": "00000000-0000-4000-8000-000000000002",
                         "name": "Test zone",
-                        "target_temperature": 21.0,
+                        "thermostat": {
+                            "kind": "hydronicus",
+                            "initial_target_temperature": 21.0,
+                            "preset_targets": {"comfort": 22.0, "eco": 19.0},
+                        },
                         "temperature_sensor_metadata": [
                             {"entity_id": "sensor.test_zone_temperature"}
                         ],
-                        "preset_targets": {"comfort": 22.0, "eco": 19.0},
                     }
                 ],
                 "valves": [

@@ -20,6 +20,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
     SUBENTRY_TYPE_SOURCE,
 )
+from custom_components.hydronicus.core.model import ThermostatHvacMode
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -44,7 +45,7 @@ def _entry() -> MockConfigEntry:
                     {
                         "id": ZONE_ID,
                         "name": "Living room",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     }
                 ],
@@ -110,6 +111,7 @@ async def test_source_setup_reconfigure_reload_delete_and_entities(hass) -> None
     entry = _entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
 
     result = await _add_buffer_source(hass, entry)
     await hass.async_block_till_done()
@@ -177,6 +179,7 @@ async def test_source_availability_and_buffer_freshness_update_entities(hass) ->
     entry = _entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
     result = await _add_buffer_source(hass, entry)
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
@@ -217,6 +220,7 @@ async def test_synthetic_selector_stays_shadow_only_while_recommendation_runs(ha
     }
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
 
     result = await _add_buffer_source(hass, entry)
     await hass.async_block_till_done()

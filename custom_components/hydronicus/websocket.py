@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_READ
@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
 
 from .const import DOMAIN
-from .presentation import PRESENTATION_SCHEMA_VERSION
+from .presentation import PRESENTATION_SCHEMA_VERSION, presentation_entity_ids
 
 WS_LIST_PLANTS = "hydronicus/list_plants"
 WS_SUBSCRIBE_PLANT = "hydronicus/subscribe_plant"
@@ -171,11 +171,14 @@ def unregister_runtime(hass: HomeAssistant, plant_id: str) -> None:
 
 
 def _runtimes(hass: HomeAssistant) -> dict[str, Any]:
-    return hass.data.setdefault(DOMAIN, {}).setdefault(DATA_RUNTIMES, {})
+    return cast(dict[str, Any], hass.data.setdefault(DOMAIN, {}).setdefault(DATA_RUNTIMES, {}))
 
 
 def _subscriptions(hass: HomeAssistant) -> list[PlantSubscription]:
-    return hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, [])
+    return cast(
+        list[PlantSubscription],
+        hass.data.setdefault(DOMAIN, {}).setdefault(DATA_SUBSCRIPTIONS, []),
+    )
 
 
 def _can_read_plant(hass: HomeAssistant, user: Any, runtime: Any) -> bool:
@@ -191,8 +194,8 @@ def _can_read_plant(hass: HomeAssistant, user: Any, runtime: Any) -> bool:
 
 
 def _filter_snapshot_for_user(
-    snapshot: dict[str, object], runtime: Any, hass: HomeAssistant, user: Any
-) -> dict[str, object]:
+    snapshot: dict[str, Any], runtime: Any, hass: HomeAssistant, user: Any
+) -> dict[str, Any]:
     """Remove Hydronicus-owned zones and controls hidden by entity ACLs."""
     entity_ids = set(runtime.presentation_entity_ids(hass))
     permissions = getattr(user, "permissions", None)
@@ -204,11 +207,25 @@ def _filter_snapshot_for_user(
     for key, entity_id in tuple(controls.items()):
         if entity_id is not None and entity_id not in allowed:
             controls[key] = None
-    zones = [
-        zone
-        for zone in snapshot["zones"]
-        if zone["climate_entity_id"] is None or zone["climate_entity_id"] in allowed
-    ]
+    indexed = presentation_entity_ids(
+        hass,
+        runtime._entry.entry_id if runtime._entry is not None else "",
+        runtime.plant_id,
+        tuple(runtime.plant.zones),
+    )
+    zones = []
+    for zone in snapshot["zones"]:
+        zone_id = zone["id"]
+        presentation_entity = indexed.get(f"zone:{zone_id}")
+        if presentation_entity is None or presentation_entity not in allowed:
+            continue
+        visible_zone = dict(zone)
+        thermostat = dict(visible_zone["thermostat"])
+        control_entity = thermostat.get("control_entity_id")
+        if control_entity is not None and control_entity not in allowed:
+            thermostat["control_entity_id"] = None
+        visible_zone["thermostat"] = thermostat
+        zones.append(visible_zone)
     visible_zone_ids = {zone["id"] for zone in zones}
     filtered = dict(snapshot)
     filtered["controls"] = controls

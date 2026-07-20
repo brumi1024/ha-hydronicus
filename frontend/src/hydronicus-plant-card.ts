@@ -189,14 +189,19 @@ class HydronicusPlantCard extends LitElement {
   }
 
   private _renderZone(_snapshot: PlantSnapshot, zone: ZoneSnapshot) {
-    const current = zone.current_temperature === null ? "n/a" : `${zone.current_temperature.toFixed(1)} °C`;
+    const thermostat = zone.thermostat;
+    const current = thermostat.current_temperature === null ? "n/a" : `${thermostat.current_temperature.toFixed(1)} °C`;
+    const target = thermostat.target_temperature === null ? "n/a" : `${thermostat.target_temperature.toFixed(1)} °C`;
+    const internal = thermostat.kind === "hydronicus";
     return html`<article class="zone" aria-label=${`${zone.name} Zone`}>
       <div class="row"><h3 class="zone-title">${zone.name}</h3><span class="phase ${zone.blocked ? "state blocked" : ""}">${phaseLabel(zone.phase)}</span></div>
-      <div class="row"><span class="temperature">${current}</span><span class="target">Target ${zone.target_temperature.toFixed(1)} °C</span></div>
-      <p class="meta">Preset: ${phaseLabel(zone.preset)} · ${zone.demand ? "demand active" : "satisfied"}</p>
+      <div class="row"><span class="temperature">${current}</span><span class="target">Target ${target}</span></div>
+      <p class="meta">${internal ? "Hydronicus thermostat" : "External thermostat · read-only"} · ${zone.demand ? "demand active" : "no heating demand"}</p>
+      <p class="meta">${thermostat.explanation}</p>
+      ${thermostat.preset ? html`<p class="meta">Preset: ${phaseLabel(thermostat.preset)}</p>` : nothing}
       ${zone.blocked_reason ? html`<p class="meta" role="status">${zone.blocked_reason}</p>` : nothing}
       ${zone.coupling_group_ids.length ? html`<p class="meta">Coupled delivery - this Zone shares hydraulic equipment.</p>` : nothing}
-      <div class="zone-actions"><button ?disabled=${!zone.climate_entity_id} aria-label=${`Decrease ${zone.name} target by half a degree`} @click=${() => this._adjustZone(zone, -0.5)}>−0.5</button><button ?disabled=${!zone.climate_entity_id} aria-label=${`Increase ${zone.name} target by half a degree`} @click=${() => this._adjustZone(zone, 0.5)}>+0.5</button><select class="preset" aria-label=${`${zone.name} preset`} .value=${zone.preset} ?disabled=${!zone.climate_entity_id} @change=${(event: Event) => this._presetChanged(zone, event)}>${["none", ...zone.preset_modes].map((preset) => html`<option value=${preset}>${phaseLabel(preset)}</option>`)}</select></div>
+      ${internal ? html`<div class="zone-actions"><button ?disabled=${!thermostat.control_entity_id || thermostat.target_temperature === null} aria-label=${`Decrease ${zone.name} target by half a degree`} @click=${() => this._adjustZone(zone, -0.5)}>−0.5</button><button ?disabled=${!thermostat.control_entity_id || thermostat.target_temperature === null} aria-label=${`Increase ${zone.name} target by half a degree`} @click=${() => this._adjustZone(zone, 0.5)}>+0.5</button><select class="preset" aria-label=${`${zone.name} preset`} .value=${thermostat.preset ?? "none"} ?disabled=${!thermostat.control_entity_id} @change=${(event: Event) => this._presetChanged(zone, event)}>${["none", ...thermostat.preset_modes].map((preset) => html`<option value=${preset}>${phaseLabel(preset)}</option>`)}</select></div>` : html`<p class="meta" role="note">Adjust this thermostat in its owning Home Assistant integration.</p>`}
     </article>`;
   }
 
@@ -265,7 +270,8 @@ class HydronicusPlantCard extends LitElement {
   };
 
   private _adjustZone(zone: ZoneSnapshot, delta: number): void {
-    this._call(actionForTarget(zone, adjustTarget(zone, delta)));
+    const target = adjustTarget(zone, delta);
+    if (target !== null) this._call(actionForTarget(zone, target));
   }
 
   private _presetChanged(zone: ZoneSnapshot, event: Event): void {

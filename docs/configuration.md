@@ -36,7 +36,17 @@ The flow stores the Plant with Dry run enabled by default.
 ### Add a Comfort Zone
 
 Give the Zone a descriptive generic name such as `Simulated zone`.
-Select one or more numeric temperature sensors.
+Choose the thermostat owner before entering Zone details.
+
+Choose **Hydronicus digital thermostat** when Hydronicus should own the target, presets, HVAC mode, hysteresis, and thermostat timing.
+
+Choose **Existing Home Assistant climate entity** when another integration owns those thermostat decisions.
+
+An external thermostat must not independently command an actuator also configured as Hydronicus-owned.
+
+Hydronicus does not infer the external integration's actuator or support externally actuated or valve-less delivery routes.
+
+For a Hydronicus thermostat, select one or more numeric temperature sensors.
 Selected sensors are required by default.
 Enable detailed sensor editing to configure each observation as required or optional and set its calibration offset, maximum age, aggregation weight, or designated-reference status.
 An unusable required sensor blocks the Zone immediately.
@@ -52,12 +62,20 @@ Select one of the available policies:
 
 Designated-reference and weighted-mean policies become available after completing the detailed sensor editor because they depend on per-sensor metadata.
 
-Set a target temperature.
-Configure the heating start and stop deltas to define the hysteresis band around that target.
+Hydronicus starts a fresh thermostat at 21.0 °C and HVAC mode off.
+Use the Hydronicus climate entity to change its target and mode after setup.
+Configure the heating start and stop deltas to define the hysteresis band around the runtime target.
 Minimum active duration holds an already-requested Zone until its deadline unless a required sensor blocks it.
 Minimum idle duration prevents a satisfied Zone from requesting heat again until its deadline.
-Optional comfort, eco, and away target fields expose the corresponding Home Assistant climate presets.
+Optional comfort, eco, and away target fields configure the corresponding Hydronicus climate presets.
 Changing the target or preset reevaluates demand immediately without bypassing a remaining duration deadline.
+
+For an external thermostat, select exactly one existing climate entity.
+Do not configure target, preset-target, hysteresis, or thermostat-duration fields for that Zone.
+Hydronicus consumes `hvac_action` as the authoritative demand signal.
+The external target and current temperature attributes are diagnostic only.
+External idle or off releases demand immediately.
+External cooling still requires explicit Zone humidity and Circuit safety observations.
 
 ### Add a Hydraulic Circuit
 

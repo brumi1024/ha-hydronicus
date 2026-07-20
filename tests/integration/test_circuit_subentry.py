@@ -69,13 +69,13 @@ def _plant_entry() -> MockConfigEntry:
                     {
                         "id": LIVING_ZONE_ID,
                         "name": "Living room",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     },
                     {
                         "id": OFFICE_ZONE_ID,
                         "name": "Office",
-                        "target_temperature": 20.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 20.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.office_temperature"}],
                     },
                 ],

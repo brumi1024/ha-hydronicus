@@ -16,7 +16,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
 )
 from custom_components.hydronicus.core.executor import ActuatorFailureKind, ActuatorObservedState
-from custom_components.hydronicus.core.model import ActuatorAction
+from custom_components.hydronicus.core.model import ActuatorAction, ThermostatHvacMode
 from custom_components.hydronicus.runtime import HydronicRuntime
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
@@ -53,7 +53,7 @@ def _entry(
                 {
                     "id": ZONE_ID,
                     "name": "Synthetic zone",
-                    "target_temperature": 21.0,
+                    "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                     "temperature_sensor_metadata": [{"entity_id": "sensor.synthetic_temperature"}],
                 }
             ],
@@ -118,6 +118,12 @@ def _register_recorder(hass, calls: list[tuple[str, str, str]]) -> None:
         hass.services.async_register(domain, service, record)
 
 
+async def _enable_heating(hass, runtime: HydronicRuntime) -> None:
+    """Opt the fresh default-off synthetic thermostat into heating."""
+    await runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+    await hass.async_block_till_done()
+
+
 @pytest.mark.parametrize(
     ("entity_id", "initial_state", "expected_domain", "expected_service"),
     [
@@ -144,6 +150,7 @@ async def test_demand_reaches_the_expected_generic_service_call(
     await hass.async_block_till_done()
 
     runtime = entry.runtime_data
+    await _enable_heating(hass, runtime)
     assert runtime.evaluation is not None
     assert runtime.evaluation.control_plan.commands[0].action is ActuatorAction.OPEN
     assert calls == [(expected_domain, expected_service, entity_id)]
@@ -173,6 +180,7 @@ async def test_dry_run_off_executes_heating_and_source_demand_after_pump_feedbac
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     assert calls == [
         ("switch", "turn_on", "switch.synthetic_valve"),
         ("switch", "turn_on", "switch.synthetic_pump"),
@@ -201,6 +209,7 @@ async def test_rejected_service_call_is_explained_without_failing_setup(hass) ->
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
 
     report = entry.runtime_data.last_execution
     assert report is not None
@@ -225,6 +234,7 @@ async def test_rejected_valve_close_keeps_runtime_conservative(hass) -> None:
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     hass.states.async_set("switch.synthetic_valve", "on")
     hass.states.async_set("sensor.synthetic_temperature", "22.0")
     await hass.async_block_till_done()
@@ -251,6 +261,7 @@ async def test_rejected_pump_start_is_retained_as_failure(hass) -> None:
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     hass.states.async_set("switch.synthetic_valve", "on")
     await hass.async_block_till_done()
 
@@ -278,11 +289,15 @@ async def test_delayed_service_success_is_reconciled_without_a_duplicate_command
     entry = _entry(dry_run=False)
     entry.add_to_hass(hass)
 
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS", 0.01)
-        setup_task = asyncio.create_task(hass.config_entries.async_setup(entry.entry_id))
+        mode_task = asyncio.create_task(
+            entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+        )
         await started.wait()
-        assert await setup_task
+        await mode_task
 
     report = entry.runtime_data.last_execution
     assert report is not None
@@ -309,6 +324,7 @@ async def test_periodic_reconciliation_repairs_a_missed_feedback_event_without_c
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     assert calls == [
         ("switch", "turn_on", "switch.synthetic_valve"),
         ("switch", "turn_on", "switch.synthetic_pump"),
@@ -360,6 +376,7 @@ async def test_readiness_feedback_allows_pump_only_after_the_valve_is_ready(hass
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
 
     assert calls == [("valve", "open_valve", "valve.synthetic_valve")]
     assert all(entity != "switch.synthetic_pump" for _domain, _service, entity in calls)
@@ -383,6 +400,7 @@ async def test_dry_run_keeps_the_desired_plan_without_service_calls(hass) -> Non
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
 
     runtime = entry.runtime_data
     assert runtime.evaluation is not None
@@ -438,6 +456,7 @@ async def test_returning_to_dry_run_completes_ordered_shutdown_before_persisting
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     hass.states.async_set("switch.synthetic_valve", "on")
     await hass.async_block_till_done()
     hass.states.async_set("switch.synthetic_pump", "on")
@@ -470,6 +489,7 @@ async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworth
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.OFF
     assert entry.runtime_data.executor.requested_state(VALVE_ID) is ActuatorObservedState.ON
 
@@ -494,6 +514,7 @@ async def test_reload_during_valve_opening_does_not_start_pump_early(hass) -> No
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     assert calls == [("switch", "turn_on", "switch.synthetic_valve")]
 
     hass.states.async_set("switch.synthetic_valve", "on")
@@ -522,6 +543,8 @@ async def test_reload_during_pump_starting_does_not_assume_running_feedback(hass
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
+    assert hass.states.get("climate.synthetic_plant_synthetic_zone").state == "heat"
     hass.states.async_set("switch.synthetic_valve", "on")
     await hass.async_block_till_done()
     calls.clear()
@@ -546,6 +569,7 @@ async def test_reload_during_pump_running_keeps_observed_running_state_without_c
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     calls.clear()
 
     await hass.config_entries.async_reload(entry.entry_id)
@@ -646,6 +670,7 @@ async def test_safe_shutdown_is_ordered_and_idempotent_with_intercepted_services
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
     runtime = entry.runtime_data
     hass.states.async_set("switch.synthetic_pump", "on")
     await runtime.async_refresh(hass)

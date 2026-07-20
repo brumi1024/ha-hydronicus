@@ -26,11 +26,16 @@ export interface Alert {
 export interface ZoneSnapshot {
   id: string;
   name: string;
-  climate_entity_id?: string;
-  current_temperature: number | null;
-  target_temperature: number;
-  preset: string;
-  preset_modes: string[];
+  thermostat: {
+    kind: "hydronicus" | "external_climate";
+    state: "available" | "blocked";
+    target_temperature: number | null;
+    current_temperature: number | null;
+    preset: string | null;
+    preset_modes: string[];
+    control_entity_id: string | null;
+    explanation: string;
+  };
   demand: boolean;
   phase: string;
   blocked: boolean;

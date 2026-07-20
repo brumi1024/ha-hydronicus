@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from .const import (
     MAX_RECONCILIATION_INTERVAL_SECONDS,
@@ -12,7 +12,7 @@ from .const import (
     RECONCILIATION_INTERVAL_SECONDS,
 )
 from .core.executor import ActuatorOperation
-from .core.model import ZoneRuntime
+from .core.model import ExternalClimateThermostatConfig, ZoneRuntime
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -95,6 +95,8 @@ def _configured_entity_ids(runtime: HydronicRuntime) -> set[str]:
     """Collect all configured bindings so none can appear in diagnostics."""
     entity_ids: set[str] = set()
     for zone in runtime.plant.zones.values():
+        if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
+            entity_ids.add(zone.thermostat.entity_id)
         entity_ids.update(sensor.entity_id for sensor in zone.sensor_metadata)
         entity_ids.update(sensor.entity_id for sensor in zone.humidity_sensor_metadata)
     for circuit in runtime.plant.circuits.values():
@@ -228,6 +230,10 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
             {
                 "reference": references.ref("zone", zone_id),
                 "name": _REDACTED_NAME,
+                "thermostat_kind": zone.thermostat.kind.value,
+                "external_thermostat_configured": isinstance(
+                    zone.thermostat, ExternalClimateThermostatConfig
+                ),
                 "aggregation": zone.aggregation.value,
                 "temperature_sensor_count": len(zone.sensor_metadata),
                 "required_temperature_sensor_count": sum(
@@ -600,7 +606,7 @@ def _reconciliation(runtime: HydronicRuntime) -> dict[str, object]:
 
 def _warnings(runtime: HydronicRuntime, references: _References) -> dict[str, object]:
     """Return topology and runtime warnings without copying failure text blindly."""
-    topology = _topology(runtime, references)["warnings"]
+    topology = cast(list[dict[str, object]], _topology(runtime, references)["warnings"])
     runtime_warnings = [
         {
             "code": "actuator_command_failure",

@@ -12,7 +12,8 @@ Re-enabling Dry run performs an ordered safe shutdown before further commands ar
 
 A Plant contains the complete coordinated installation.
 
-- A **Zone** represents a comfort target and its temperature and humidity observations.
+- A **Zone** represents an identity, its observations, and its topology relationships.
+- A **Zone thermostat** owns target state and demand semantics for exactly one Zone.
 - A **Circuit** represents one hydraulic delivery path.
 - A **Delivery Route** connects a Zone to a Circuit.
 - A **Valve** controls part of a Circuit path.
@@ -45,8 +46,30 @@ This separation keeps safety decisions reproducible while containing external si
 
 ## Heating behavior
 
-Heating demand uses the Zone target, configured hysteresis, minimum active duration, and minimum idle duration.
+Hydronicus thermostat heating demand uses its runtime target, configured hysteresis, minimum active duration, and minimum idle duration.
 A required observation that is unknown, unavailable, invalid, or stale blocks the Zone and releases demand immediately.
+
+### Thermostat ownership
+
+The Hydronicus thermostat is the only thermostat kind that Hydronicus publishes.
+
+It starts at 21.0 °C and off when no valid restored state exists.
+
+Its target, preset, and HVAC mode are runtime state restored through the Home Assistant entity lifecycle.
+
+An external thermostat is represented by one existing climate entity and is never controlled by Hydronicus.
+
+The runtime adapter normalizes its state before the pure evaluator sees it.
+
+`hvac_action` is authoritative for external demand.
+
+Heating and preheating request heating, cooling requests cooling, and idle or off request neither.
+
+External target and current temperature values are diagnostic only.
+
+Hydronicus does not apply its internal hysteresis or duration holds to external demand.
+
+Invalid or unavailable external input fails closed and releases demand immediately.
 
 The virtual hydraulic sequence is:
 
@@ -124,7 +147,7 @@ The model does not infer water temperature, capacity, balancing, or manufacturer
 
 ## What Home Assistant exposes
 
-The integration publishes climate targets, aggregate temperatures, heating and cooling demand, blocked states and reasons, virtual valve and pump requests, source recommendations, topology summaries, and decision explanations.
+The integration publishes Hydronicus climate targets, aggregate temperatures, heating and cooling demand, blocked states and reasons, virtual valve and pump requests, source recommendations, topology summaries, and decision explanations.
 
 Repairs identify configured entity bindings that are missing or unresolved.
 Downloadable diagnostics provide bounded and redacted runtime information for troubleshooting.

@@ -13,6 +13,8 @@ from .model import (
     CompiledPlant,
     DeliveryRoute,
     EquipmentKind,
+    ExternalClimateThermostatConfig,
+    HydronicusThermostatConfig,
     PlantConfiguration,
     Pump,
     Source,
@@ -82,21 +84,34 @@ def _validate_zone(zone: Zone) -> None:
         raise TopologyValidationError(
             f"Zone {zone_id} temperature aggregation must be a supported policy."
         )
-    if not isinstance(zone.target_temperature, (int, float)) or not isfinite(
-        float(zone.target_temperature)
-    ):
-        raise TopologyValidationError(f"Zone {zone_id} target temperature must be finite.")
-    if (
-        not MIN_ZONE_TARGET_TEMPERATURE
-        <= float(zone.target_temperature)
-        <= (MAX_ZONE_TARGET_TEMPERATURE)
-    ):
-        raise TopologyValidationError(
-            f"Zone {zone_id} target temperature must be between "
-            f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
-        )
-    if not zone.temperature_sensors:
-        raise TopologyValidationError(f"Zone {zone_id} requires at least one temperature sensor.")
+    if isinstance(zone.thermostat, HydronicusThermostatConfig):
+        if not isinstance(zone.target_temperature, (int, float)) or not isfinite(
+            float(zone.target_temperature)
+        ):
+            raise TopologyValidationError(f"Zone {zone_id} target temperature must be finite.")
+        if (
+            not MIN_ZONE_TARGET_TEMPERATURE
+            <= float(zone.target_temperature)
+            <= (MAX_ZONE_TARGET_TEMPERATURE)
+        ):
+            raise TopologyValidationError(
+                f"Zone {zone_id} target temperature must be between "
+                f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
+            )
+        if not zone.temperature_sensors:
+            raise TopologyValidationError(
+                f"Zone {zone_id} requires at least one temperature sensor."
+            )
+    elif isinstance(zone.thermostat, ExternalClimateThermostatConfig):
+        if not (
+            zone.thermostat.entity_id.startswith("climate.")
+            and zone.thermostat.entity_id.removeprefix("climate.").strip()
+        ):
+            raise TopologyValidationError(
+                f"Zone {zone_id} external thermostat must belong to the climate domain."
+            )
+    else:
+        raise TopologyValidationError(f"Zone {zone_id} thermostat kind must be supported.")
     if not _finite_non_negative(zone.heating_start_delta) or not _finite_non_negative(
         zone.heating_stop_delta
     ):
@@ -451,6 +466,11 @@ def _validate_relationships(
             if route.enabled and route.circuit_id == circuit.id
         }
         for zone_id in sorted(served_zone_ids):
+            if not zones[zone_id].temperature_sensor_metadata:
+                raise TopologyValidationError(
+                    f"Cooling circuit {circuit.id} requires temperature observations for "
+                    f"zone {zone_id}."
+                )
             if not zones[zone_id].humidity_sensor_metadata:
                 raise TopologyValidationError(
                     f"Cooling circuit {circuit.id} requires humidity observations for "

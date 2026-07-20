@@ -55,6 +55,7 @@ def async_sync_repairs(
         BindingCategory.SENSOR: "missing_sensor_binding",
         BindingCategory.FEEDBACK: "missing_feedback_binding",
         BindingCategory.ACTUATOR: "missing_actuator_binding",
+        BindingCategory.THERMOSTAT: "missing_thermostat_binding",
     }
     for binding in current:
         async_create_issue(

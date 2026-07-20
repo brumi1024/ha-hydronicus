@@ -19,6 +19,7 @@ from custom_components.hydronicus.const import (
     CONF_TEMPERATURE_SENSORS,
     DOMAIN,
 )
+from custom_components.hydronicus.core.model import ThermostatHvacMode
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -32,6 +33,12 @@ HEATING_CIRCUIT_ID = "00000000-0000-4000-8000-000000000012"
 COOLING_CIRCUIT_ID = "00000000-0000-4000-8000-000000000013"
 HEATING_ROUTE_ID = "00000000-0000-4000-8000-000000000014"
 COOLING_ROUTE_ID = "00000000-0000-4000-8000-000000000015"
+
+
+async def _set_zone_mode(hass, entry, zone_id: str, mode: ThermostatHvacMode) -> None:
+    """Set one fresh default-off synthetic thermostat mode."""
+    await entry.runtime_data.async_set_zone_hvac_mode(zone_id, mode, hass=hass)
+    await hass.async_block_till_done()
 
 
 def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
@@ -48,11 +55,14 @@ def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
                     {
                         "id": ZONE_ID,
                         "name": "Living",
-                        "target_temperature": 24.0,
+                        "thermostat": {
+                            "kind": "hydronicus",
+                            "initial_target_temperature": 24.0,
+                            "cooling_start_delta": 0.5,
+                            "cooling_stop_delta": 0.2,
+                        },
                         "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                         "humidity_sensor_metadata": [{"entity_id": "sensor.living_humidity"}],
-                        CONF_COOLING_START_DELTA: 0.5,
-                        CONF_COOLING_STOP_DELTA: 0.2,
                     }
                 ],
                 "valves": [
@@ -102,7 +112,7 @@ def _shared_mode_entry() -> MockConfigEntry:
                     {
                         "id": HEATING_ZONE_ID,
                         "name": "Heating zone",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [
                             {"entity_id": "sensor.heating_temperature"}
                         ],
@@ -110,7 +120,7 @@ def _shared_mode_entry() -> MockConfigEntry:
                     {
                         "id": COOLING_ZONE_ID,
                         "name": "Cooling zone",
-                        "target_temperature": 24.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 24.0},
                         "temperature_sensor_metadata": [
                             {"entity_id": "sensor.cooling_temperature"}
                         ],
@@ -185,6 +195,7 @@ async def test_cooling_remains_proposed_when_heating_execution_is_enabled(hass) 
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
 
     assert calls == []
     assert entry.runtime_data.last_execution is not None
@@ -204,6 +215,7 @@ async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
 
     assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_demand").state == "on"
     assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "off"
@@ -253,6 +265,8 @@ async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, HEATING_ZONE_ID, ThermostatHvacMode.HEAT)
+    await _set_zone_mode(hass, entry, COOLING_ZONE_ID, ThermostatHvacMode.COOL)
 
     assert calls == []
     assert entry.runtime_data.evaluation.diagnostics.mode_conflicts
@@ -292,6 +306,8 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, HEATING_ZONE_ID, ThermostatHvacMode.HEAT)
+    await _set_zone_mode(hass, entry, COOLING_ZONE_ID, ThermostatHvacMode.COOL)
     hass.states.async_set("switch.shared_mode_valve", "on")
     await hass.async_block_till_done()
     hass.states.async_set("switch.shared_mode_pump", "on")
@@ -335,7 +351,6 @@ async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
         result["flow_id"],
         user_input={
             CONF_NAME: "Living",
-            "target_temperature": 24.0,
             CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
             CONF_HUMIDITY_SENSORS: ["sensor.living_humidity"],
             CONF_COOLING_START_DELTA: 0.5,
@@ -370,7 +385,9 @@ async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
             "designated_reference": False,
         }
     ]
-    assert topology["zones"][0][CONF_COOLING_START_DELTA] == 0.5
+    assert "target_temperature" not in topology["zones"][0]
+    assert topology["zones"][0]["thermostat"]["initial_target_temperature"] == 21.0
+    assert topology["zones"][0]["thermostat"][CONF_COOLING_START_DELTA] == 0.5
     assert topology["circuits"][0][CONF_COOLING_ENABLED] is True
     assert topology["circuits"][0][CONF_SUPPLY_TEMPERATURE_SENSOR] == "sensor.cooling_supply"
 

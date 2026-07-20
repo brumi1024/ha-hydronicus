@@ -22,7 +22,11 @@ from .model import (
     DeliveryRoute,
     EquipmentKind,
     Evaluation,
+    ExternalClimateThermostatConfig,
+    ExternalClimateThermostatState,
+    ExternalHvacAction,
     FeedbackObservation,
+    HydronicusThermostatState,
     InterlockStatus,
     ModeChangeoverPhase,
     ModeConflict,
@@ -44,6 +48,7 @@ from .model import (
     SourceSelectionRuntime,
     TemperatureAggregation,
     TemperatureObservation,
+    ThermostatHvacMode,
     ValveRuntime,
     ValveState,
     Zone,
@@ -349,6 +354,90 @@ def calculate_condensation_margin(reference_temperature: float, dew_point: float
 def _zone_runtime(runtime: RuntimeState, zone_id: str) -> ZoneRuntime:
     """Read the controller-owned timing and demand state for one zone."""
     return runtime.zone_runtime.get(zone_id, ZoneRuntime())
+
+
+def _thermostat_state(
+    zone: Zone, snapshot: PlantSnapshot
+) -> HydronicusThermostatState | ExternalClimateThermostatState:
+    """Return one normalized thermostat state without exposing adapter details to callers."""
+    state = snapshot.thermostats.get(zone.id)
+    if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
+        if isinstance(state, ExternalClimateThermostatState):
+            return state
+        return ExternalClimateThermostatState()
+    if isinstance(state, HydronicusThermostatState):
+        return state
+    # Preserve the pre-redesign pure-controller seam for callers that have not
+    # supplied runtime thermostat state. The Home Assistant adapter always does.
+    return HydronicusThermostatState(
+        target_temperature=zone.target_temperature,
+        preset=zone.thermostat.initial_preset,
+        hvac_mode=ThermostatHvacMode.AUTO,
+    )
+
+
+def _external_thermostat_demands(
+    state: ExternalClimateThermostatState,
+) -> tuple[bool, bool, ZoneDecisionStatus, str]:
+    """Accept only authoritative, non-contradictory external HVAC actions."""
+    if not state.available:
+        return False, False, ZoneDecisionStatus.SENSOR_BLOCKED, state.explanation
+    if not state.hvac_mode_valid:
+        return (
+            False,
+            False,
+            ZoneDecisionStatus.MODE_BLOCKED,
+            state.explanation,
+        )
+    action = state.hvac_action
+    if action is None:
+        return (
+            False,
+            False,
+            ZoneDecisionStatus.SENSOR_BLOCKED,
+            "External thermostat blocked: HVAC action is missing or unsupported.",
+        )
+    if action in {ExternalHvacAction.IDLE, ExternalHvacAction.OFF}:
+        return (
+            False,
+            False,
+            ZoneDecisionStatus.SATISFIED,
+            f"External thermostat is {action.value}; demand is released immediately.",
+        )
+    if action in {ExternalHvacAction.HEATING, ExternalHvacAction.PREHEATING}:
+        if state.hvac_mode in {ThermostatHvacMode.OFF, ThermostatHvacMode.COOL}:
+            return (
+                False,
+                False,
+                ZoneDecisionStatus.MODE_BLOCKED,
+                "External heating action is blocked by its HVAC mode.",
+            )
+        return (
+            True,
+            False,
+            ZoneDecisionStatus.REQUESTED,
+            f"External thermostat accepted authoritative {action.value} action.",
+        )
+    if action is ExternalHvacAction.COOLING:
+        if state.hvac_mode in {ThermostatHvacMode.OFF, ThermostatHvacMode.HEAT}:
+            return (
+                False,
+                False,
+                ZoneDecisionStatus.MODE_BLOCKED,
+                "External cooling action is blocked by its HVAC mode.",
+            )
+        return (
+            False,
+            True,
+            ZoneDecisionStatus.REQUESTED,
+            "External thermostat accepted authoritative cooling action pending safety checks.",
+        )
+    return (
+        False,
+        False,
+        ZoneDecisionStatus.SENSOR_BLOCKED,
+        "External thermostat blocked: contradictory or unsupported action.",
+    )
 
 
 def _zone_demand(
@@ -2179,8 +2268,46 @@ def _evaluate_heating_zones(
     for zone_id in sorted(plant.zones):
         zone = plant.zones[zone_id]
         previous = _zone_runtime(runtime, zone.id)
-        aggregation = aggregate_zone_temperature_result(zone, snapshot, now=now)
-        if aggregation.blocking_required_sensor_ids or aggregation.value is None:
+        thermostat_state = _thermostat_state(zone, snapshot)
+        aggregation = (
+            aggregate_zone_temperature_result(zone, snapshot, now=now)
+            if zone.temperature_sensor_metadata
+            else AggregationResult(
+                value=None,
+                explanation=(
+                    "External thermostat current_temperature is diagnostic only; "
+                    "configure a Zone temperature observation for cooling safety."
+                ),
+            )
+        )
+        if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
+            assert isinstance(thermostat_state, ExternalClimateThermostatState)
+            demand, _cooling_demand, status, reason = _external_thermostat_demands(thermostat_state)
+            transition_at = previous.last_demand_transition_at
+            if demand != previous.demand or transition_at is None:
+                transition_at = now
+            next_zone_runtime = ZoneRuntime(demand, transition_at)
+            deadline = None
+        elif not isinstance(thermostat_state, HydronicusThermostatState):
+            demand = False
+            next_zone_runtime = ZoneRuntime(False, now)
+            status = ZoneDecisionStatus.SENSOR_BLOCKED
+            deadline = None
+            reason = "Hydronicus thermostat state is missing or malformed."
+        elif thermostat_state.hvac_mode not in {
+            ThermostatHvacMode.HEAT,
+            ThermostatHvacMode.HEAT_COOL,
+            ThermostatHvacMode.AUTO,
+        }:
+            demand = False
+            transition_at = previous.last_demand_transition_at
+            if previous.demand or transition_at is None:
+                transition_at = now
+            next_zone_runtime = ZoneRuntime(False, transition_at)
+            status = ZoneDecisionStatus.SATISFIED
+            deadline = None
+            reason = f"Hydronicus thermostat is {thermostat_state.hvac_mode.value}; heating is off."
+        elif aggregation.blocking_required_sensor_ids or aggregation.value is None:
             # Sensor safety takes precedence over any comfort timing hold.
             demand = False
             transition_at = previous.last_demand_transition_at
@@ -2194,7 +2321,7 @@ def _evaluate_heating_zones(
             requested, reason = _zone_demand(
                 previous=previous.demand,
                 temperature=aggregation.value,
-                target=zone.target_temperature,
+                target=thermostat_state.target_temperature,
                 start_delta=zone.heating_start_delta,
                 stop_delta=zone.heating_stop_delta,
             )
@@ -2241,6 +2368,23 @@ class _CoolingEvaluation:
     circuit_reasons: dict[str, str]
 
 
+def _prevent_zone_dual_demand(heating: _HeatingEvaluation, cooling: _CoolingEvaluation) -> None:
+    """Fail closed if one Zone ever produces both demand directions."""
+    for zone_id in sorted(heating.zone_demands):
+        if not heating.zone_demands.get(zone_id) or not cooling.zone_demands.get(zone_id):
+            continue
+        reason = "Cooling blocked: this Zone already has an active heating demand."
+        prior = cooling.zone_decisions[zone_id]
+        cooling.zone_demands[zone_id] = False
+        cooling.zone_reasons[zone_id] = reason
+        cooling.zone_decisions[zone_id] = replace(
+            prior,
+            status=ZoneDecisionStatus.MODE_BLOCKED,
+            demand=False,
+            explanation=reason,
+        )
+
+
 def _evaluate_cooling_zones(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -2256,18 +2400,35 @@ def _evaluate_cooling_zones(
 
     for zone_id in sorted(plant.zones):
         zone = plant.zones[zone_id]
+        thermostat_state = _thermostat_state(zone, snapshot)
         previous_cooling = runtime.cooling_zone_demands.get(zone.id, False)
         temperature_aggregation = heating_decisions[zone.id].aggregation
         temperature = temperature_aggregation.value if temperature_aggregation else None
         humidity_aggregation = aggregate_zone_humidity_result(zone, snapshot, now=now)
         humidity = humidity_aggregation.value
-        requested, reason = _cooling_zone_demand(
-            previous=previous_cooling,
-            temperature=temperature,
-            target=zone.target_temperature,
-            start_delta=zone.cooling_start_delta,
-            stop_delta=zone.cooling_stop_delta,
-        )
+        external_status: ZoneDecisionStatus | None = None
+        if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
+            assert isinstance(thermostat_state, ExternalClimateThermostatState)
+            _heating, requested, external_status, reason = _external_thermostat_demands(
+                thermostat_state
+            )
+        elif isinstance(
+            thermostat_state, HydronicusThermostatState
+        ) and thermostat_state.hvac_mode in {
+            ThermostatHvacMode.COOL,
+            ThermostatHvacMode.HEAT_COOL,
+            ThermostatHvacMode.AUTO,
+        }:
+            requested, reason = _cooling_zone_demand(
+                previous=previous_cooling,
+                temperature=temperature,
+                target=thermostat_state.target_temperature,
+                start_delta=zone.cooling_start_delta,
+                stop_delta=zone.cooling_stop_delta,
+            )
+        else:
+            requested = False
+            reason = "Hydronicus thermostat mode does not permit cooling."
         safety_permitted, safety_reason, interlocks, dew_point, margin = _cooling_interlocks(
             plant,
             zone,
@@ -2291,7 +2452,16 @@ def _evaluate_cooling_zones(
             or humidity_aggregation.blocking_required_sensor_ids
             or humidity is None
         )
-        if cooling_enabled_route_exists and observation_blocked:
+        safety_observations_required = (
+            not isinstance(zone.thermostat, ExternalClimateThermostatConfig) or requested
+        )
+        if external_status in {
+            ZoneDecisionStatus.SENSOR_BLOCKED,
+            ZoneDecisionStatus.MODE_BLOCKED,
+        }:
+            demand = False
+            status = external_status
+        elif cooling_enabled_route_exists and safety_observations_required and observation_blocked:
             demand = False
             status = ZoneDecisionStatus.SENSOR_BLOCKED
             reason = (
@@ -2300,7 +2470,7 @@ def _evaluate_cooling_zones(
                 and temperature_aggregation.blocking_required_sensor_ids
                 else humidity_aggregation.explanation
             )
-        elif cooling_enabled_route_exists and not safety_permitted:
+        elif cooling_enabled_route_exists and safety_observations_required and not safety_permitted:
             demand = False
             status = ZoneDecisionStatus.SENSOR_BLOCKED
             reason = safety_reason
@@ -2311,7 +2481,7 @@ def _evaluate_cooling_zones(
         else:
             demand = requested
             status = ZoneDecisionStatus.REQUESTED if demand else ZoneDecisionStatus.SATISFIED
-            if not safety_permitted:
+            if requested and not safety_permitted:
                 status = ZoneDecisionStatus.SENSOR_BLOCKED
                 reason = safety_reason
             elif humidity_aggregation.excluded_optional_sensor_ids:
@@ -3386,6 +3556,7 @@ def evaluate(
         now,
         heating.zone_decisions,
     )
+    _prevent_zone_dual_demand(heating, cooling)
     route_eligibility = _filter_degraded_routes(
         plant,
         snapshot,

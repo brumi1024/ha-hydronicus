@@ -36,8 +36,9 @@ The current implementation includes:
 - Additional Zone, Circuit, and valve Actuator subentries.
 - Required and optional temperature sensors with freshness limits and calibration offsets.
 - Mean, median, minimum, maximum, designated-reference, and weighted-mean aggregation.
-- Comfort, eco, and away preset targets.
-- Configurable heating hysteresis plus minimum active and idle durations.
+- One thermostat owner per Zone: a Hydronicus digital thermostat or an existing Home Assistant climate entity.
+- Hydronicus-owned comfort, eco, and away preset targets.
+- Configurable Hydronicus thermostat hysteresis plus minimum active and idle durations.
 - Multiple zones per circuit and multiple circuits per zone.
 - Shared valve and pump modeling with active-consumer tracking.
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
@@ -86,7 +87,7 @@ Then complete the Hydronicus flow:
 
 1. Select **Add integration > Hydronicus**.
 2. Enter a Plant name.
-3. Add the first Comfort Zone, select the synthetic temperature sensor, choose an aggregation policy, and set a target temperature.
+3. Add the first Comfort Zone, choose the Hydronicus thermostat, select the synthetic temperature sensor, and choose an aggregation policy.
 4. Add the first Hydraulic Circuit, select the synthetic valve and pump entities, and keep the default timing values for a first test.
 5. Review the compiled topology and submit the flow.
 
@@ -98,7 +99,7 @@ The Zone demand entity should turn on, the virtual valve should move through ope
 Raise the synthetic sensor above the stop threshold to release demand.
 The virtual pump then follows its configured overrun period before the virtual valve closes.
 
-Changing a climate target changes the calculated demand and the latest proposed operations.
+Changing a Hydronicus climate target changes the calculated demand and the latest proposed operations.
 Dry run does not send a command to the configured valve, pump, or direct source-demand entity.
 If Dry run is turned off in an isolated test, heating valve and pump operations can execute after the configured confirmation.
 Cooling starts and source-selector operations remain proposed and do not execute.
@@ -120,7 +121,8 @@ Keep real equipment outside the actuator path until the exact staged scope has h
 Hydronicus uses explicit objects and relationships:
 
 - A Plant owns the complete topology and runtime state.
-- A Comfort Zone owns a target and its temperature observations.
+- A Comfort Zone owns its identity, observations, and topology relationships.
+- One Zone thermostat owns target, preset, mode, hysteresis, and demand semantics.
 - A Hydraulic Circuit describes a water path and its required valves and pump.
 - A Delivery Route connects one Zone to one Circuit.
 - A valve can be required by more than one Circuit.
@@ -130,6 +132,26 @@ Independent branches, shared pumps, shared valves, and one Zone routed to multip
 Sharing a valve or another hydraulically coupled component does not create independent physical control.
 
 Read [how Hydronicus works](docs/how-it-works.md) before mapping an existing plant.
+
+## Thermostat ownership
+
+Each Zone has exactly one thermostat owner.
+
+A Hydronicus thermostat is a published climate entity with restored target, preset, and HVAC mode state.
+
+An external thermostat is one existing `climate.*` entity whose `hvac_action` is normalized and consumed read-only.
+
+Heating and preheating actions request heat, cooling requests cooling, and idle or off releases demand immediately.
+
+Missing, unavailable, malformed, contradictory, or unsupported external actions fail closed.
+
+External target and current temperature attributes are diagnostic only and never reconstruct demand.
+
+Hydronicus never calls a service on an external thermostat.
+
+An external thermostat must not independently command an actuator also configured as Hydronicus-owned.
+
+Externally actuated or valve-less delivery routes are not supported by this redesign.
 
 ## Safety limits
 

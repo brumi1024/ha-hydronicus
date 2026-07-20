@@ -18,16 +18,64 @@ from custom_components.hydronicus.const import (
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSORS,
+    CONF_THERMOSTAT_KIND,
     CONF_VALVE_ENTITY,
     CONF_VALVE_OPENING_TIME,
     CONF_WEIGHT,
     DOMAIN,
+    THERMOSTAT_KIND_EXTERNAL_CLIMATE,
+    THERMOSTAT_KIND_HYDRONICUS,
 )
 from custom_components.hydronicus.core.configuration import (
     plant_configuration_from_entry_data,
 )
 from custom_components.hydronicus.core.model import TemperatureSensorMetadata
 from custom_components.hydronicus.core.topology import compile_topology
+
+
+def _schema_fields(result) -> set[str]:
+    """Return the field names exposed by a Home Assistant form schema."""
+    return {
+        str(field["name"])
+        for field in voluptuous_serialize.convert(
+            result["data_schema"], custom_serializer=cv.custom_serializer
+        )
+    }
+
+
+async def test_initial_internal_thermostat_has_no_target_question(hass) -> None:
+    """Hydronicus owns the fresh 21 °C fallback, not the Zone setup form."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Hydronic plant"}
+    )
+    assert result["step_id"] == "zone"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_THERMOSTAT_KIND: THERMOSTAT_KIND_HYDRONICUS}
+    )
+
+    fields = _schema_fields(result)
+    assert "target_temperature" not in fields
+    assert "initial_target_temperature" not in fields
+    assert "heating_start_delta" in fields
+    assert "minimum_idle_duration_seconds" in fields
+
+
+async def test_initial_external_thermostat_selects_existing_climate_entity(hass) -> None:
+    """External setup asks for one climate entity and hides internal policy fields."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "External plant"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_THERMOSTAT_KIND: THERMOSTAT_KIND_EXTERNAL_CLIMATE}
+    )
+
+    fields = _schema_fields(result)
+    assert "external_climate_entity" in fields
+    assert "target_temperature" not in fields
+    assert "heating_start_delta" not in fields
+    assert "comfort" not in fields
 
 
 async def test_user_config_flow_creates_entry(hass) -> None:

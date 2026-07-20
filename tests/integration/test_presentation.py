@@ -7,6 +7,7 @@ import json
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.presentation import PRESENTATION_SCHEMA_VERSION
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
@@ -35,14 +36,17 @@ def _entry() -> MockConfigEntry:
                     {
                         "id": ZONE_A,
                         "name": "Zone A",
-                        "target_temperature": 21.0,
+                        "thermostat": {
+                            "kind": "hydronicus",
+                            "initial_target_temperature": 21.0,
+                            "preset_targets": {"comfort": 22.0, "eco": 19.0},
+                        },
                         "temperature_sensor_metadata": [{"entity_id": "sensor.synthetic_zone_a"}],
-                        "preset_targets": {"comfort": 22.0, "eco": 19.0},
                     },
                     {
                         "id": ZONE_B,
                         "name": "Zone B",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.synthetic_zone_b"}],
                     },
                 ],
@@ -94,13 +98,15 @@ async def test_presentation_is_deterministic_redacted_and_topology_driven(hass) 
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     runtime = entry.runtime_data
+    await runtime.async_set_zone_hvac_mode(ZONE_A, ThermostatHvacMode.HEAT, hass=hass)
+    await runtime.async_set_zone_hvac_mode(ZONE_B, ThermostatHvacMode.HEAT, hass=hass)
     first = runtime.presentation_snapshot(hass)
     second = runtime.presentation_snapshot(hass)
 
     assert first == second
     assert first["schema_version"] == PRESENTATION_SCHEMA_VERSION
     assert first["plant"]["requested_mode"] == "auto"
-    assert first["zones"][0]["preset_modes"] == ["comfort", "eco"]
+    assert first["zones"][0]["thermostat"]["preset_modes"] == ["comfort", "eco"]
     assert first["topology"]["coupling_groups"]
     assert first["zones"][0]["coupling_group_ids"]
     shared_consumers = next(
@@ -137,6 +143,8 @@ async def test_presentation_updates_include_execution_boundary_and_alert_priorit
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_A, ThermostatHvacMode.HEAT, hass=hass)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_B, ThermostatHvacMode.HEAT, hass=hass)
     snapshot = entry.runtime_data.presentation_snapshot(hass)
 
     assert snapshot["plant"]["execution_boundary"]["mode"] == "dry_run"

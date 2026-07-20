@@ -19,24 +19,26 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import HydronicConfigEntry
-from .const import DOMAIN
+from .const import DEFAULT_TARGET_TEMPERATURE, DOMAIN
 from .core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
-    PlantMode,
+    HydronicusThermostatConfig,
+    ThermostatHvacMode,
     ZoneRuntime,
 )
 from .runtime import HydronicRuntime
 
 
-class ZoneClimate(ClimateEntity):
-    """A read-only climate interface for one zone's Hydronicus demand."""
+class ZoneClimate(ClimateEntity, RestoreEntity):
+    """A Hydronicus-owned digital thermostat for one Zone."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False
-    _attr_hvac_modes = [HVACMode.HEAT]
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_min_temp = MIN_ZONE_TARGET_TEMPERATURE
@@ -57,7 +59,12 @@ class ZoneClimate(ClimateEntity):
             route.zone_id == zone_id and runtime.plant.circuits[route.circuit_id].cooling_enabled
             for route in runtime.plant.routes
         ):
-            self._attr_hvac_modes = [HVACMode.HEAT, HVACMode.COOL]
+            self._attr_hvac_modes = [
+                HVACMode.OFF,
+                HVACMode.HEAT,
+                HVACMode.COOL,
+                HVACMode.HEAT_COOL,
+            ]
         if self._configured_preset_modes:
             self._attr_supported_features = (
                 ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.PRESET_MODE
@@ -69,7 +76,39 @@ class ZoneClimate(ClimateEntity):
         return cast(HydronicRuntime, self._entry.runtime_data)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to runtime evaluations after registration."""
+        """Restore mutable thermostat state, then subscribe to evaluations."""
+        await super().async_added_to_hass()
+        zone = self._runtime.plant.zones[self._zone_id]
+        assert isinstance(zone.thermostat, HydronicusThermostatConfig)
+        target = zone.thermostat.initial_target_temperature
+        preset = zone.thermostat.initial_preset
+        mode = ThermostatHvacMode.OFF
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            target = DEFAULT_TARGET_TEMPERATURE
+            preset = PRESET_NONE
+            try:
+                restored_target = float(last_state.attributes.get(ATTR_TEMPERATURE))
+                if MIN_ZONE_TARGET_TEMPERATURE <= restored_target <= MAX_ZONE_TARGET_TEMPERATURE:
+                    target = restored_target
+            except TypeError, ValueError:
+                pass
+            restored_preset = str(last_state.attributes.get("preset_mode", PRESET_NONE)).lower()
+            if restored_preset == PRESET_NONE or restored_preset in self._configured_preset_modes:
+                preset = restored_preset
+            try:
+                restored_mode = ThermostatHvacMode(last_state.state)
+                if HVACMode(restored_mode.value) in self.hvac_modes:
+                    mode = restored_mode
+            except ValueError:
+                pass
+        await self._runtime.async_restore_zone_thermostat(
+            self._zone_id,
+            target_temperature=target,
+            preset=preset,
+            hvac_mode=mode,
+            hass=self.hass,
+        )
         self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
@@ -104,16 +143,16 @@ class ZoneClimate(ClimateEntity):
 
     @property
     def hvac_mode(self) -> HVACMode:
-        """Expose the active shadow operating mode for this zone."""
-        if self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False):
-            return HVACMode.COOL
-        return HVACMode.HEAT
+        """Expose this thermostat's runtime mode, independent of the Plant constraint."""
+        return HVACMode(self._runtime.zone_hvac_modes[self._zone_id].value)
 
     @property
     def hvac_action(self) -> HVACAction | None:
         """Expose active or idle shadow heating demand."""
         if self._runtime.evaluation is None:
             return None
+        if self.hvac_mode is HVACMode.OFF:
+            return HVACAction.OFF
         if self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False):
             return HVACAction.COOLING
         if self._runtime.runtime_state.zone_runtime.get(self._zone_id, ZoneRuntime()).demand:
@@ -134,15 +173,12 @@ class ZoneClimate(ClimateEntity):
         await self._runtime.async_set_zone_preset_mode(self._zone_id, preset_mode, hass=self.hass)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        """Request a plant mode change through the shared safe-idle controller."""
-        requested_mode = {
-            HVACMode.HEAT: PlantMode.HEATING,
-            HVACMode.COOL: PlantMode.COOLING,
-            HVACMode.OFF: PlantMode.IDLE,
-        }.get(hvac_mode)
-        if requested_mode is None:
-            raise ValueError(f"Unsupported HVAC mode {hvac_mode!r}.")
-        await self._runtime.async_set_requested_mode(requested_mode, hass=self.hass)
+        """Change only this Zone's thermostat mode."""
+        try:
+            thermostat_mode = ThermostatHvacMode(hvac_mode.value)
+        except ValueError as error:
+            raise ValueError(f"Unsupported HVAC mode {hvac_mode!r}.") from error
+        await self._runtime.async_set_zone_hvac_mode(self._zone_id, thermostat_mode, hass=self.hass)
 
 
 async def async_setup_entry(
@@ -153,6 +189,8 @@ async def async_setup_entry(
     parent_entities: list[ZoneClimate] = []
     subentry_entities: dict[str, list[ZoneClimate]] = {}
     for zone in runtime.plant.zones.values():
+        if not isinstance(zone.thermostat, HydronicusThermostatConfig):
+            continue
         entity = ZoneClimate(entry, zone.id, zone.name)
         if subentry_id := runtime.zone_subentry_ids.get(zone.id):
             subentry_entities.setdefault(subentry_id, []).append(entity)

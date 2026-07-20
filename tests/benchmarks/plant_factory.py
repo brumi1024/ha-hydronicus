@@ -78,11 +78,14 @@ def build_large_synthetic_entry() -> dict[str, Any]:
             {
                 "id": _uuid(1000, zone_index),
                 "name": f"Synthetic zone {zone_index + 1:03d}",
-                "target_temperature": 21.0,
+                "thermostat": {
+                    "kind": "hydronicus",
+                    "initial_target_temperature": 21.0,
+                    "preset_targets": {"comfort": 21.5, "eco": 19.0, "away": 16.0},
+                },
                 "temperature_sensor_metadata": temperature_sensor_metadata,
                 "humidity_sensor_metadata": humidity_sensor_metadata,
                 "temperature_aggregation": "weighted_mean",
-                "preset_targets": {"comfort": 21.5, "eco": 19.0, "away": 16.0},
             }
         )
 

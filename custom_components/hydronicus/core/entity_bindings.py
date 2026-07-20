@@ -6,7 +6,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .model import CompiledPlant
+from .model import CompiledPlant, ExternalClimateThermostatConfig
 
 
 class BindingCategory(StrEnum):
@@ -15,6 +15,7 @@ class BindingCategory(StrEnum):
     SENSOR = "sensor"
     FEEDBACK = "feedback"
     ACTUATOR = "actuator"
+    THERMOSTAT = "thermostat"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,20 @@ def configured_entity_bindings(plant: CompiledPlant) -> tuple[EntityBinding, ...
         zone_circuit_ids = tuple(
             sorted({route.circuit_id for route in plant.routes if route.zone_id == zone_id})
         )
+        if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
+            bindings.append(
+                EntityBinding(
+                    BindingCategory.THERMOSTAT,
+                    "zone",
+                    zone.id,
+                    zone.name,
+                    "external_thermostat",
+                    "external climate thermostat",
+                    zone.thermostat.entity_id,
+                    zone_circuit_ids,
+                    (zone.id,),
+                )
+            )
         for index, sensor in enumerate(zone.sensor_metadata):
             bindings.append(
                 EntityBinding(
@@ -280,7 +295,8 @@ def degraded_circuit_ids(
     return frozenset(
         circuit_id
         for binding in configured_entity_bindings(plant)
-        if binding.category in {BindingCategory.ACTUATOR, BindingCategory.FEEDBACK}
+        if binding.category
+        in {BindingCategory.ACTUATOR, BindingCategory.FEEDBACK, BindingCategory.THERMOSTAT}
         and binding.entity_id in unresolved
         for circuit_id in binding.circuit_ids
     )

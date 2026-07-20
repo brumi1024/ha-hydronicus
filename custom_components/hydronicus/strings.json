@@ -25,10 +25,11 @@
       },
       "zone": {
         "title": "Add the first comfort zone",
-        "description": "Select one or more temperature sensors and an aggregation policy. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
+        "description": "Choose exactly one thermostat owner. Hydronicus can create the digital thermostat, or an existing Home Assistant climate entity can own demand. An external thermostat must not independently command actuators also configured in Hydronicus.",
         "data": {
           "name": "Zone name",
-          "target_temperature": "Target temperature",
+          "thermostat_kind": "Thermostat owner",
+          "external_climate_entity": "Existing climate thermostat",
           "temperature_sensors": "Temperature sensors",
           "humidity_sensors": "Humidity sensors",
           "humidity_sensor_metadata": "Humidity sensor metadata",
@@ -219,10 +220,11 @@
       "step": {
         "user": {
           "title": "Add a comfort zone",
-          "description": "Select one or more temperature sensors, choose an aggregation policy, and route the zone through existing circuits. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
+          "description": "Choose exactly one thermostat owner, then configure observations and route the Zone through existing circuits. An external thermostat is read-only to Hydronicus and must not independently command the same actuators.",
           "data": {
             "name": "Zone name",
-            "target_temperature": "Target temperature",
+            "thermostat_kind": "Thermostat owner",
+            "external_climate_entity": "Existing climate thermostat",
             "temperature_sensors": "Temperature sensors",
             "humidity_sensors": "Humidity sensors",
             "humidity_sensor_metadata": "Humidity sensor metadata",
@@ -242,10 +244,11 @@
         },
         "reconfigure": {
           "title": "Update comfort zone",
-          "description": "Change the zone target, temperature sensors, aggregation policy, or available circuits. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
+          "description": "Change the thermostat owner, observations, aggregation policy, or available circuits. Hydronicus remains read-only toward an external climate entity, which must not independently command the same actuators.",
           "data": {
             "name": "Zone name",
-            "target_temperature": "Target temperature",
+            "thermostat_kind": "Thermostat owner",
+            "external_climate_entity": "Existing climate thermostat",
             "temperature_sensors": "Temperature sensors",
             "humidity_sensors": "Humidity sensors",
             "humidity_sensor_metadata": "Humidity sensor metadata",
@@ -292,9 +295,10 @@
       },
       "error": {
         "name_required": "A zone name is required.",
-        "invalid_zone": "The zone cannot be added to this topology.",
-        "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
-        "confirm_required": "Confirm that you understand these warnings before saving."
+      "invalid_zone": "The zone cannot be added to this topology.",
+      "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
+      "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
+      "confirm_required": "Confirm that you understand these warnings before saving."
       },
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding a zone."
@@ -356,6 +360,10 @@
     "missing_actuator_binding": {
       "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
       "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Restore the actuator or open Hydronicus configuration, select the current actuator, and save the configuration."
+    },
+    "missing_thermostat_binding": {
+      "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
+      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Restore the climate entity or open Hydronicus configuration, select the current thermostat, and save the configuration."
     }
   }
 }

@@ -10,6 +10,8 @@ from uuid import UUID
 from .model import (
     Circuit,
     DeliveryRoute,
+    ExternalClimateThermostatConfig,
+    HydronicusThermostatConfig,
     PlantConfiguration,
     Pump,
     Source,
@@ -357,7 +359,7 @@ def humidity_sensor_metadata_from_mapping(
 
 
 def _temperature_aggregation(mapping: Mapping[str, Any]) -> TemperatureAggregation:
-    """Read a zone aggregation policy while defaulting legacy data to mean."""
+    """Read a zone aggregation policy with the canonical mean default."""
     value = mapping.get("temperature_aggregation", TemperatureAggregation.MEAN.value)
     try:
         return TemperatureAggregation(str(value))
@@ -381,6 +383,76 @@ def _preset_targets(mapping: Mapping[str, Any]) -> Mapping[str, float]:
         if name in mapping:
             targets[name] = _number(mapping, name, 0.0)
     return targets
+
+
+def _thermostat_from_mapping(
+    mapping: Mapping[str, Any],
+) -> HydronicusThermostatConfig | ExternalClimateThermostatConfig:
+    """Decode one canonical discriminated thermostat union."""
+    raw = mapping.get("thermostat")
+    if not isinstance(raw, Mapping):
+        raise StoredTopologyError("Stored Zone thermostat must be an object.")
+    kind = raw.get("kind")
+    if kind == "hydronicus":
+        allowed = {
+            "kind",
+            "initial_target_temperature",
+            "heating_start_delta",
+            "heating_stop_delta",
+            "cooling_start_delta",
+            "cooling_stop_delta",
+            "minimum_active_duration_seconds",
+            "minimum_idle_duration_seconds",
+            "preset_targets",
+            "initial_preset",
+        }
+        unknown = set(raw) - allowed
+        if unknown:
+            raise StoredTopologyError(
+                "Stored Hydronicus thermostat has unknown fields: "
+                + ", ".join(sorted(str(field) for field in unknown))
+                + "."
+            )
+        initial_preset = str(raw.get("initial_preset", "none")).lower()
+        presets = _preset_targets(raw)
+        if initial_preset != "none" and initial_preset not in presets:
+            raise StoredTopologyError(
+                "Stored Hydronicus thermostat initial preset must be none or configured."
+            )
+        return HydronicusThermostatConfig(
+            initial_target_temperature=_number(raw, "initial_target_temperature", 21.0),
+            heating_start_delta=_number(raw, "heating_start_delta", 0.3, non_negative=True),
+            heating_stop_delta=_number(raw, "heating_stop_delta", 0.1, non_negative=True),
+            cooling_start_delta=_number(raw, "cooling_start_delta", 0.3, non_negative=True),
+            cooling_stop_delta=_number(raw, "cooling_stop_delta", 0.1, non_negative=True),
+            minimum_active_duration_seconds=_number(
+                raw, "minimum_active_duration_seconds", 0.0, non_negative=True
+            ),
+            minimum_idle_duration_seconds=_number(
+                raw, "minimum_idle_duration_seconds", 0.0, non_negative=True
+            ),
+            preset_targets=presets,
+            initial_preset=initial_preset,
+        )
+    if kind == "external_climate":
+        unknown = set(raw) - {"kind", "entity_id"}
+        if unknown:
+            raise StoredTopologyError(
+                "Stored external thermostat has unsupported fields: "
+                + ", ".join(sorted(str(field) for field in unknown))
+                + "."
+            )
+        entity_id = raw.get("entity_id")
+        if (
+            not isinstance(entity_id, str)
+            or not entity_id.startswith("climate.")
+            or not entity_id.removeprefix("climate.").strip()
+        ):
+            raise StoredTopologyError(
+                "Stored external thermostat entity_id must belong to the climate domain."
+            )
+        return ExternalClimateThermostatConfig(entity_id)
+    raise StoredTopologyError("Stored Zone thermostat kind must be supported.")
 
 
 def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float, float, float]:
@@ -420,32 +492,40 @@ def _route_enabled(mapping: Mapping[str, Any]) -> bool:
 
 def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
     """Decode one canonical zone object."""
-    metadata = temperature_sensor_metadata_from_mapping(item)
+    _reject_unsupported_fields(
+        item,
+        {
+            "target_temperature",
+            "heating_start_delta",
+            "heating_stop_delta",
+            "cooling_start_delta",
+            "cooling_stop_delta",
+            "minimum_active_duration_seconds",
+            "minimum_idle_duration_seconds",
+            "preset_targets",
+            "preset_mode",
+            "comfort",
+            "eco",
+            "away",
+        },
+        "zone thermostat",
+    )
+    thermostat = _thermostat_from_mapping(item)
+    metadata = _sensor_metadata_from_mapping(
+        item,
+        _SENSOR_METADATA_KEY,
+        required_collection=isinstance(thermostat, HydronicusThermostatConfig),
+    )
     humidity_metadata = humidity_sensor_metadata_from_mapping(item)
     aggregation = _temperature_aggregation(item)
     metadata = _validate_reference_policy(aggregation, metadata)
-    (
-        start_delta,
-        stop_delta,
-        cooling_start_delta,
-        cooling_stop_delta,
-        active_duration,
-        idle_duration,
-    ) = _zone_timing(item)
     return Zone(
         id=_id(item, "id", require_uuid=True),
         name=str(_required(item, "name")),
-        target_temperature=_required_number(item, "target_temperature"),
         temperature_sensor_metadata=metadata,
         aggregation=aggregation,
-        heating_start_delta=start_delta,
-        heating_stop_delta=stop_delta,
-        cooling_start_delta=cooling_start_delta,
-        cooling_stop_delta=cooling_stop_delta,
-        minimum_active_duration_seconds=active_duration,
-        minimum_idle_duration_seconds=idle_duration,
-        preset_targets=_preset_targets(item),
         humidity_sensor_metadata=humidity_metadata,
+        thermostat=thermostat,
     )
 
 

@@ -18,6 +18,26 @@ The correct protection set depends on the equipment design and local requirement
 
 Never remove or bypass a physical interlock because Hydronicus reports that a route is ready.
 
+## Thermostat ownership
+
+Every Zone receives demand from exactly one thermostat.
+
+The Hydronicus thermostat owns its target, presets, HVAC mode, hysteresis, and duration timing.
+
+An external thermostat owns those decisions and Hydronicus consumes only its normalized `hvac_action`.
+
+External heating and preheating request heating.
+
+External cooling is accepted only through the existing explicit cooling and condensation safety observations.
+
+External idle, off, unavailable, unknown, malformed, contradictory, or unsupported input cannot create actuator demand.
+
+Hydronicus never calls a service on an external thermostat.
+
+An external thermostat must not independently command an actuator also configured as Hydronicus-owned.
+
+Externally actuated or valve-less delivery routes are unsupported.
+
 ## Current release boundary
 
 Every new Plant starts in Dry run.

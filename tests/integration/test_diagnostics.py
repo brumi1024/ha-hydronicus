@@ -13,6 +13,7 @@ from custom_components.hydronicus.const import (
     CONF_PLANT_ID,
     DOMAIN,
 )
+from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
@@ -38,7 +39,7 @@ def _entry(*, detailed_actuators: bool = False) -> MockConfigEntry:
                 {
                     "id": ZONE_ID,
                     "name": "Bedroom near the nursery",
-                    "target_temperature": 21.0,
+                    "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                     "temperature_sensor_metadata": [
                         {"entity_id": "sensor.private_bedroom_temperature"}
                     ],
@@ -136,6 +137,7 @@ async def test_reconciliation_diagnostics_and_telemetry_are_bounded(hass) -> Non
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     runtime = entry.runtime_data
+    await runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
     initial_evaluations = runtime.evaluation_count
 
     await runtime._async_periodic_reconciliation(hass)
@@ -163,6 +165,8 @@ async def test_repeated_identical_evaluations_do_not_publish_entity_updates(hass
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     runtime = entry.runtime_data
+    await runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+    initial_evaluations = runtime.evaluation_count
     publications: list[None] = []
     remove_listener = runtime.async_add_listener(lambda: publications.append(None))
     await runtime.async_refresh(hass)
@@ -170,7 +174,7 @@ async def test_repeated_identical_evaluations_do_not_publish_entity_updates(hass
     await runtime.async_refresh(hass)
     await runtime.async_refresh(hass)
 
-    assert runtime.evaluation_count == 4
+    assert runtime.evaluation_count == initial_evaluations + 3
     assert publications == []
     remove_listener()
 
@@ -184,6 +188,7 @@ async def test_detailed_actuator_diagnostics_are_explicitly_opt_in(hass) -> None
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     details = diagnostics["actuator_state"]["details"]
 

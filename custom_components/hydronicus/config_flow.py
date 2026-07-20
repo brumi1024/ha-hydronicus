@@ -10,6 +10,7 @@ from uuid import uuid4
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as entity_registry_helper
 from homeassistant.helpers import selector
 
 from .const import (
@@ -30,6 +31,7 @@ from .const import (
     CONF_DRY_RUN_CONFIRMATION,
     CONF_ECO_TARGET,
     CONF_ENTITY_ID,
+    CONF_EXTERNAL_CLIMATE_ENTITY,
     CONF_FAULT_FEEDBACK_ENTITY,
     CONF_FAULT_FEEDBACK_MAX_AGE,
     CONF_FLOW_FEEDBACK_ENTITY,
@@ -38,6 +40,8 @@ from .const import (
     CONF_HEATING_STOP_DELTA,
     CONF_HUMIDITY_SENSOR_METADATA,
     CONF_HUMIDITY_SENSORS,
+    CONF_INITIAL_PRESET,
+    CONF_INITIAL_TARGET_TEMPERATURE,
     CONF_MAX_AGE,
     CONF_MINIMUM_ACTIVE_DURATION,
     CONF_MINIMUM_IDLE_DURATION,
@@ -69,10 +73,11 @@ from .const import (
     CONF_SUPPLY_TEMPERATURE_SENSOR,
     CONF_SURFACE_TEMPERATURE_MAX_AGE,
     CONF_SURFACE_TEMPERATURE_SENSOR,
-    CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSOR_METADATA,
     CONF_TEMPERATURE_SENSORS,
+    CONF_THERMOSTAT,
+    CONF_THERMOSTAT_KIND,
     CONF_TOPOLOGY,
     CONF_VALVE_ENTITY,
     CONF_VALVE_IDS,
@@ -109,6 +114,8 @@ from .const import (
     SUBENTRY_TYPE_CIRCUIT,
     SUBENTRY_TYPE_SOURCE,
     SUBENTRY_TYPE_ZONE,
+    THERMOSTAT_KIND_EXTERNAL_CLIMATE,
+    THERMOSTAT_KIND_HYDRONICUS,
 )
 from .core.configuration import (
     StoredTopologyError,
@@ -510,7 +517,7 @@ def _zone_data(
 ) -> dict[str, Any]:
     """Normalize one zone and preserve route UUIDs for retained circuits."""
     circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
-    sensor_ids = [str(sensor_id) for sensor_id in user_input[CONF_TEMPERATURE_SENSORS]]
+    sensor_ids = [str(sensor_id) for sensor_id in user_input.get(CONF_TEMPERATURE_SENSORS, [])]
     raw_metadata = user_input.get(CONF_TEMPERATURE_SENSOR_METADATA)
     if raw_metadata is None:
         metadata_by_entity = {
@@ -585,34 +592,46 @@ def _zone_data(
     for preset_name in (CONF_COMFORT_TARGET, CONF_ECO_TARGET, CONF_AWAY_TARGET):
         if preset_name in user_input and user_input[preset_name] is not None:
             preset_targets[preset_name] = user_input[preset_name]
+    kind = str(user_input.get(CONF_THERMOSTAT_KIND, THERMOSTAT_KIND_HYDRONICUS))
+    if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE:
+        thermostat: dict[str, Any] = {
+            "kind": kind,
+            "entity_id": str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY]),
+        }
+    else:
+        thermostat = {
+            "kind": THERMOSTAT_KIND_HYDRONICUS,
+            CONF_INITIAL_TARGET_TEMPERATURE: DEFAULT_TARGET_TEMPERATURE,
+            CONF_HEATING_START_DELTA: user_input.get(
+                CONF_HEATING_START_DELTA, DEFAULT_HEATING_START_DELTA
+            ),
+            CONF_HEATING_STOP_DELTA: user_input.get(
+                CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA
+            ),
+            CONF_COOLING_START_DELTA: user_input.get(
+                CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA
+            ),
+            CONF_COOLING_STOP_DELTA: user_input.get(
+                CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA
+            ),
+            CONF_MINIMUM_ACTIVE_DURATION: user_input.get(
+                CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION
+            ),
+            CONF_MINIMUM_IDLE_DURATION: user_input.get(
+                CONF_MINIMUM_IDLE_DURATION, DEFAULT_MINIMUM_IDLE_DURATION
+            ),
+            CONF_PRESET_TARGETS: preset_targets,
+            CONF_INITIAL_PRESET: "none",
+        }
     return {
         "id": zone_id,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
-        CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
+        CONF_THERMOSTAT: thermostat,
         CONF_TEMPERATURE_SENSOR_METADATA: metadata,
         CONF_HUMIDITY_SENSOR_METADATA: humidity_metadata,
         CONF_TEMPERATURE_AGGREGATION: user_input.get(
             CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
         ),
-        CONF_HEATING_START_DELTA: user_input.get(
-            CONF_HEATING_START_DELTA, DEFAULT_HEATING_START_DELTA
-        ),
-        CONF_HEATING_STOP_DELTA: user_input.get(
-            CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA
-        ),
-        CONF_COOLING_START_DELTA: user_input.get(
-            CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA
-        ),
-        CONF_COOLING_STOP_DELTA: user_input.get(
-            CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA
-        ),
-        CONF_MINIMUM_ACTIVE_DURATION: user_input.get(
-            CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION
-        ),
-        CONF_MINIMUM_IDLE_DURATION: user_input.get(
-            CONF_MINIMUM_IDLE_DURATION, DEFAULT_MINIMUM_IDLE_DURATION
-        ),
-        CONF_PRESET_TARGETS: preset_targets,
         CONF_CIRCUIT_IDS: circuit_ids,
         CONF_ROUTES: _routes_with_retained_fields(
             existing_routes,
@@ -796,19 +815,18 @@ def _temperature_aggregation_selector(
 def _zone_schema(
     circuit_options: list[selector.SelectOptionDict],
     defaults: Mapping[str, Any] | None = None,
+    *,
+    thermostat_kind: str = THERMOSTAT_KIND_HYDRONICUS,
+    include_circuits: bool = True,
 ) -> vol.Schema:
     """Build the shared zone form schema."""
     defaults = defaults or {}
+    thermostat_defaults = defaults.get(CONF_THERMOSTAT, {})
+    if not isinstance(thermostat_defaults, Mapping):
+        thermostat_defaults = {}
     schema: dict[Any, Any] = {
         vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): str,
-        vol.Required(
-            CONF_TARGET_TEMPERATURE,
-            default=defaults.get(CONF_TARGET_TEMPERATURE, DEFAULT_TARGET_TEMPERATURE),
-        ): vol.All(
-            vol.Coerce(float),
-            vol.Range(min=MIN_ZONE_TARGET_TEMPERATURE, max=MAX_ZONE_TARGET_TEMPERATURE),
-        ),
-        vol.Required(
+        (vol.Required if thermostat_kind == THERMOSTAT_KIND_HYDRONICUS else vol.Optional)(
             CONF_TEMPERATURE_SENSORS,
             default=_zone_temperature_sensor_defaults(defaults),
         ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
@@ -826,13 +844,54 @@ def _zone_schema(
             CONF_CONFIGURE_SENSOR_METADATA,
             default=False,
         ): selector.BooleanSelector(),
-        vol.Required(
-            CONF_CIRCUIT_IDS,
-            default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
-        ): _topology_select(circuit_options, multiple=True),
     }
-    schema.update(_zone_advanced_fields(defaults))
+    if include_circuits:
+        schema[
+            vol.Required(
+                CONF_CIRCUIT_IDS,
+                default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
+            )
+        ] = _topology_select(circuit_options, multiple=True)
+    if thermostat_kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE:
+        schema[
+            vol.Required(
+                CONF_EXTERNAL_CLIMATE_ENTITY,
+                default=thermostat_defaults.get("entity_id", vol.UNDEFINED),
+            )
+        ] = selector.EntitySelector(selector.EntitySelectorConfig(domain="climate"))
+    else:
+        schema.update(_zone_advanced_fields(thermostat_defaults or defaults))
     return vol.Schema(schema)
+
+
+def _thermostat_kind_schema(default: str = THERMOSTAT_KIND_HYDRONICUS) -> vol.Schema:
+    """Build the first Zone step while accepting legacy test inputs as extras."""
+    return vol.Schema(
+        {
+            vol.Optional(CONF_THERMOSTAT_KIND, default=default): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(
+                            value=THERMOSTAT_KIND_HYDRONICUS,
+                            label="Hydronicus digital thermostat",
+                        ),
+                        selector.SelectOptionDict(
+                            value=THERMOSTAT_KIND_EXTERNAL_CLIMATE,
+                            label="Existing Home Assistant climate entity",
+                        ),
+                    ]
+                )
+            )
+        },
+        extra=vol.ALLOW_EXTRA,
+    )
+
+
+def _external_thermostat_is_hydronicus_owned(hass: Any, entity_id: str) -> bool:
+    """Reject feedback loops through a climate entity owned by this integration."""
+    registry = entity_registry_helper.async_get(hass)
+    entry = registry.async_get(entity_id)
+    return entry is not None and entry.platform == DOMAIN
 
 
 def _zone_validation_error(
@@ -869,6 +928,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
     _metadata_index: int
     _zone_reconfigure: bool
     _zone_compiled: CompiledPlant
+    _selected_thermostat_kind: str
 
     def _circuit_options(self) -> list[selector.SelectOptionDict]:
         configuration = plant_configuration_from_entry_data(self._get_entry().data)
@@ -923,7 +983,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             self._metadata_index += 1
         if self._metadata_index < len(sensor_ids):
             sensor_id = sensor_ids[self._metadata_index]
-            defaults = next(
+            defaults: Mapping[str, Any] = next(
                 (
                     record
                     for record in self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA]
@@ -964,81 +1024,107 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Create one comfort zone attached to one or more circuits."""
-        entry = self._get_entry()
+        """Choose the thermostat owner before collecting Zone-specific fields."""
         circuit_options = self._circuit_options()
         if not circuit_options:
             return self.async_abort(reason="no_circuits")
-
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            zone_id = str(uuid4())
-            data = _zone_data(user_input, zone_id)
-            if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
-                self._zone_draft = data
-                self._metadata_records = []
-                self._metadata_index = 0
-                self._zone_reconfigure = False
-                return await self.async_step_sensor_metadata()
-            if _requires_sensor_metadata_path(data) and (
-                CONF_TEMPERATURE_SENSOR_METADATA not in user_input
-            ):
-                errors["base"] = "sensor_metadata_required"
-            elif error := _zone_validation_error(entry, data):
-                errors["base"] = error
-            else:
-                self._zone_draft = data
-                self._zone_reconfigure = False
-                return await self._finish_zone()
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=_zone_schema(circuit_options),
-            errors=errors,
-        )
+        if user_input is None:
+            return self.async_show_form(step_id="user", data_schema=_thermostat_kind_schema())
+        kind = str(user_input.get(CONF_THERMOSTAT_KIND, THERMOSTAT_KIND_HYDRONICUS))
+        if set(user_input) <= {CONF_THERMOSTAT_KIND}:
+            self._selected_thermostat_kind = kind
+            self._zone_reconfigure = False
+            return await self.async_step_details()
+        return await self._async_process_zone_input(user_input, kind, reconfigure=False)
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Update one zone without changing retained zone or route UUIDs."""
-        entry = self._get_entry()
+        """Choose the thermostat owner before updating the Zone."""
         subentry = self._get_reconfigure_subentry()
-        circuit_options = self._circuit_options()
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            data = _zone_data(
-                user_input,
-                subentry.data["id"],
-                subentry.data[CONF_ROUTES],
-                subentry.data.get(CONF_TEMPERATURE_SENSOR_METADATA),
-                subentry.data.get(CONF_HUMIDITY_SENSOR_METADATA),
-            )
-            if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
-                self._zone_draft = data
-                self._metadata_records = []
-                self._metadata_index = 0
-                self._zone_reconfigure = True
-                return await self.async_step_sensor_metadata()
-            if _requires_sensor_metadata_path(data) and (
-                CONF_TEMPERATURE_SENSOR_METADATA not in user_input
-            ):
-                errors["base"] = "sensor_metadata_required"
-            elif error := _zone_validation_error(
-                entry,
-                data,
-                excluded_subentry_id=subentry.subentry_id,
-            ):
-                errors["base"] = error
-            else:
-                self._zone_draft = data
-                self._zone_reconfigure = True
-                return await self._finish_zone()
-
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=_zone_schema(circuit_options, subentry.data),
-            errors=errors,
+        thermostat = subentry.data.get(CONF_THERMOSTAT, {})
+        default_kind = (
+            str(thermostat.get("kind", THERMOSTAT_KIND_HYDRONICUS))
+            if isinstance(thermostat, Mapping)
+            else THERMOSTAT_KIND_HYDRONICUS
         )
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure", data_schema=_thermostat_kind_schema(default_kind)
+            )
+        kind = str(user_input.get(CONF_THERMOSTAT_KIND, default_kind))
+        if set(user_input) <= {CONF_THERMOSTAT_KIND}:
+            self._selected_thermostat_kind = kind
+            self._zone_reconfigure = True
+            return await self.async_step_details()
+        return await self._async_process_zone_input(user_input, kind, reconfigure=True)
+
+    async def async_step_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Collect only the fields owned by the selected thermostat kind."""
+        defaults: Mapping[str, Any] | None = None
+        if self._zone_reconfigure:
+            defaults = self._get_reconfigure_subentry().data
+        if user_input is not None:
+            return await self._async_process_zone_input(
+                {**user_input, CONF_THERMOSTAT_KIND: self._selected_thermostat_kind},
+                self._selected_thermostat_kind,
+                reconfigure=self._zone_reconfigure,
+            )
+        return self.async_show_form(
+            step_id="details",
+            data_schema=_zone_schema(
+                self._circuit_options(),
+                defaults,
+                thermostat_kind=self._selected_thermostat_kind,
+            ),
+        )
+
+    async def _async_process_zone_input(
+        self,
+        user_input: Mapping[str, Any],
+        kind: str,
+        *,
+        reconfigure: bool,
+    ) -> config_entries.SubentryFlowResult:
+        """Validate one complete thermostat-specific Zone form."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry() if reconfigure else None
+        zone_id = str(subentry.data["id"]) if subentry is not None else str(uuid4())
+        data = _zone_data(
+            {**user_input, CONF_THERMOSTAT_KIND: kind},
+            zone_id,
+            subentry.data[CONF_ROUTES] if subentry is not None else None,
+            subentry.data.get(CONF_TEMPERATURE_SENSOR_METADATA) if subentry is not None else None,
+            subentry.data.get(CONF_HUMIDITY_SENSOR_METADATA) if subentry is not None else None,
+        )
+        if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and _external_thermostat_is_hydronicus_owned(
+            self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
+        ):
+            return self.async_show_form(step_id="details", errors={"base": "thermostat_loop"})
+        if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
+            self._zone_draft = data
+            self._metadata_records = []
+            self._metadata_index = 0
+            self._zone_reconfigure = reconfigure
+            return await self.async_step_sensor_metadata()
+        if _requires_sensor_metadata_path(data) and (
+            CONF_TEMPERATURE_SENSOR_METADATA not in user_input
+        ):
+            return self.async_show_form(
+                step_id="details", errors={"base": "sensor_metadata_required"}
+            )
+        error = _zone_validation_error(
+            entry,
+            data,
+            excluded_subentry_id=subentry.subentry_id if subentry is not None else None,
+        )
+        if error:
+            return self.async_show_form(step_id="details", errors={"base": error})
+        self._zone_draft = data
+        self._zone_reconfigure = reconfigure
+        return await self._finish_zone()
 
     async def async_step_review(
         self, user_input: dict[str, Any] | None = None
@@ -1421,7 +1507,9 @@ class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         )
 
 
-class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class HydronicClimateConfigFlow(  # type: ignore[call-arg]
+    config_entries.ConfigFlow, domain=DOMAIN
+):
     """Handle creation of a hydronic plant config entry."""
 
     VERSION = CONFIG_ENTRY_VERSION
@@ -1431,6 +1519,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     _zone_draft: dict[str, Any]
     _metadata_records: list[dict[str, Any]]
     _metadata_index: int
+    _selected_thermostat_kind: str
 
     @classmethod
     @callback
@@ -1535,127 +1624,68 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Collect the first shadow-mode comfort zone."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            name = str(user_input[CONF_NAME]).strip()
-            if name:
-                sensor_ids = [str(sensor_id) for sensor_id in user_input[CONF_TEMPERATURE_SENSORS]]
-                humidity_ids = [
-                    str(sensor_id) for sensor_id in user_input.get(CONF_HUMIDITY_SENSORS, [])
-                ]
-                self._zone_draft = {
-                    "id": str(uuid4()),
-                    CONF_NAME: name,
-                    CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
-                    CONF_TEMPERATURE_SENSOR_METADATA: [
-                        {
-                            "entity_id": sensor_id,
-                            CONF_REQUIRED: True,
-                            CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
-                            CONF_CALIBRATION_OFFSET: 0.0,
-                            CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
-                            CONF_DESIGNATED_REFERENCE: False,
-                        }
-                        for sensor_id in sensor_ids
-                    ],
-                    CONF_HUMIDITY_SENSOR_METADATA: [
-                        {
-                            "entity_id": sensor_id,
-                            CONF_REQUIRED: True,
-                            CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
-                            CONF_CALIBRATION_OFFSET: 0.0,
-                            CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
-                            CONF_DESIGNATED_REFERENCE: False,
-                        }
-                        for sensor_id in humidity_ids
-                    ],
-                    CONF_TEMPERATURE_AGGREGATION: user_input.get(
-                        CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
-                    ),
-                    CONF_HEATING_START_DELTA: user_input.get(
-                        CONF_HEATING_START_DELTA, DEFAULT_HEATING_START_DELTA
-                    ),
-                    CONF_HEATING_STOP_DELTA: user_input.get(
-                        CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA
-                    ),
-                    CONF_COOLING_START_DELTA: user_input.get(
-                        CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA
-                    ),
-                    CONF_COOLING_STOP_DELTA: user_input.get(
-                        CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA
-                    ),
-                    CONF_MINIMUM_ACTIVE_DURATION: user_input.get(
-                        CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION
-                    ),
-                    CONF_MINIMUM_IDLE_DURATION: user_input.get(
-                        CONF_MINIMUM_IDLE_DURATION, DEFAULT_MINIMUM_IDLE_DURATION
-                    ),
-                    CONF_PRESET_TARGETS: {
-                        preset_name: user_input[preset_name]
-                        for preset_name in (
-                            CONF_COMFORT_TARGET,
-                            CONF_ECO_TARGET,
-                            CONF_AWAY_TARGET,
-                        )
-                        if user_input.get(preset_name) is not None
-                    },
-                }
-                if user_input.get(CONF_TEMPERATURE_SENSOR_METADATA) is not None:
-                    self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA] = user_input[
-                        CONF_TEMPERATURE_SENSOR_METADATA
-                    ]
-                if user_input.get(CONF_HUMIDITY_SENSOR_METADATA):
-                    self._zone_draft[CONF_HUMIDITY_SENSOR_METADATA] = user_input[
-                        CONF_HUMIDITY_SENSOR_METADATA
-                    ]
-                if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
-                    self._metadata_records = []
-                    self._metadata_index = 0
-                    return await self.async_step_sensor_metadata()
-                if _requires_sensor_metadata_path(self._zone_draft) and (
-                    CONF_TEMPERATURE_SENSOR_METADATA not in user_input
-                ):
-                    errors["base"] = "sensor_metadata_required"
-                else:
-                    self._draft[CONF_TOPOLOGY] = {CONF_ZONES: [self._zone_draft]}
-                    return await self.async_step_circuit()
-            else:
-                errors["base"] = "name_required"
+        """Choose the first Zone's thermostat owner."""
+        if user_input is None:
+            return self.async_show_form(step_id="zone", data_schema=_thermostat_kind_schema())
+        kind = str(user_input.get(CONF_THERMOSTAT_KIND, THERMOSTAT_KIND_HYDRONICUS))
+        if set(user_input) <= {CONF_THERMOSTAT_KIND}:
+            self._selected_thermostat_kind = kind
+            return await self.async_step_zone_details()
+        return await self._async_process_initial_zone(user_input, kind)
 
+    async def async_step_zone_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Collect only fields owned by the selected initial thermostat kind."""
+        if user_input is not None:
+            return await self._async_process_initial_zone(
+                {**user_input, CONF_THERMOSTAT_KIND: self._selected_thermostat_kind},
+                self._selected_thermostat_kind,
+            )
         return self.async_show_form(
-            step_id="zone",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_NAME): str,
-                    vol.Required(
-                        CONF_TARGET_TEMPERATURE, default=DEFAULT_TARGET_TEMPERATURE
-                    ): vol.All(
-                        vol.Coerce(float),
-                        vol.Range(
-                            min=MIN_ZONE_TARGET_TEMPERATURE,
-                            max=MAX_ZONE_TARGET_TEMPERATURE,
-                        ),
-                    ),
-                    vol.Required(CONF_TEMPERATURE_SENSORS): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor", multiple=True)
-                    ),
-                    vol.Optional(CONF_HUMIDITY_SENSORS, default=[]): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor", multiple=True)
-                    ),
-                    vol.Required(
-                        CONF_TEMPERATURE_AGGREGATION,
-                        default=DEFAULT_TEMPERATURE_AGGREGATION,
-                    ): _temperature_aggregation_selector(),
-                    vol.Optional(
-                        CONF_CONFIGURE_SENSOR_METADATA,
-                        default=False,
-                    ): selector.BooleanSelector(),
-                    **_zone_advanced_fields(),
-                }
+            step_id="zone_details",
+            data_schema=_zone_schema(
+                [],
+                thermostat_kind=self._selected_thermostat_kind,
+                include_circuits=False,
             ),
-            errors=errors,
         )
+
+    async def _async_process_initial_zone(
+        self, user_input: Mapping[str, Any], kind: str
+    ) -> config_entries.FlowResult:
+        """Normalize the first thermostat-specific Zone without adding a route yet."""
+        name = str(user_input.get(CONF_NAME, "")).strip()
+        if not name:
+            return self.async_show_form(step_id="zone_details", errors={"base": "name_required"})
+        if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and _external_thermostat_is_hydronicus_owned(
+            self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
+        ):
+            return self.async_show_form(step_id="zone_details", errors={"base": "thermostat_loop"})
+        draft = _zone_data(
+            {
+                **user_input,
+                CONF_NAME: name,
+                CONF_THERMOSTAT_KIND: kind,
+                CONF_CIRCUIT_IDS: ["pending"],
+            },
+            str(uuid4()),
+        )
+        draft.pop(CONF_CIRCUIT_IDS, None)
+        draft.pop(CONF_ROUTES, None)
+        self._zone_draft = draft
+        if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
+            self._metadata_records = []
+            self._metadata_index = 0
+            return await self.async_step_sensor_metadata()
+        if _requires_sensor_metadata_path(draft) and (
+            CONF_TEMPERATURE_SENSOR_METADATA not in user_input
+        ):
+            return self.async_show_form(
+                step_id="zone_details", errors={"base": "sensor_metadata_required"}
+            )
+        self._draft[CONF_TOPOLOGY] = {CONF_ZONES: [draft]}
+        return await self.async_step_circuit()
 
     async def async_step_sensor_metadata(
         self, user_input: dict[str, Any] | None = None
@@ -1667,7 +1697,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._metadata_index += 1
         if self._metadata_index < len(sensor_ids):
             sensor_id = sensor_ids[self._metadata_index]
-            defaults = next(
+            defaults: Mapping[str, Any] = next(
                 (
                     record
                     for record in self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA]

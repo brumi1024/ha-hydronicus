@@ -38,16 +38,30 @@ The integration sends one initial snapshot and subsequent meaningful snapshots a
 The card can show multiple configured Plants through separate card instances without mixing their snapshots.
 
 The header shows the Plant name, operational status, requested mode, active mode, execution boundary, active source, and recommended source.
-The Zones section shows current and target temperatures, presets, demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
+The Zones section shows thermostat ownership, current and target temperatures when available, presets for Hydronicus thermostats, demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
 The delivery path section renders the ordered Zone to Circuit to Valve to Pump to Source route.
 The actuator section shows shared ownership and the active Circuit consumer set using configured object IDs and names.
 The alert and explanation sections surface stable priority-ordered diagnostics and controller reasoning.
 The operation section distinguishes proposed, executed, suppressed, failed, and timed-out outcomes.
 
-The Zone target and preset controls call only the Hydronicus-owned climate entities returned in the presentation snapshot.
+The presentation schema is version 2.
+
+Hydronicus thermostat Zones receive a permission-filtered Hydronicus climate entity and expose target and preset controls.
+
+External thermostat Zones are explicitly read-only.
+
+The card displays their diagnostic target and current temperature values when available, but never renders target or preset controls for them.
+
+The card never calls the external climate entity.
+
+The backend uses each Zone's Hydronicus-owned demand entity for visibility filtering.
+
+A user without read access to that entity receives none of the Zone's name, observations, demand, routes, alerts, or explanations.
 The Plant mode control calls only the Hydronicus-owned mode select entity.
 Safe shutdown is a hold-to-confirm action and calls only the Hydronicus-owned shutdown button entity.
 Configured physical entity IDs do not cross the presentation boundary and are never rendered as card action targets.
+
+The configured external thermostat entity ID is also redacted from the presentation stream.
 
 The card displays the active Dry run or mixed execution boundary prominently.
 It does not provide a Dry run toggle.

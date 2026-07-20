@@ -1,6 +1,6 @@
 import type { PlantSnapshot, ZoneSnapshot } from "./types";
 
-export const PRESENTATION_SCHEMA_VERSION = 1;
+export const PRESENTATION_SCHEMA_VERSION = 2;
 
 export type ActionCall = {
   domain: string;
@@ -32,20 +32,20 @@ export function prioritizedAlerts(snapshot: Pick<PlantSnapshot, "alerts">): Plan
 }
 
 export function actionForTarget(zone: ZoneSnapshot, temperature: number): ActionCall | null {
-  if (!zone.climate_entity_id) return null;
+  if (zone.thermostat.kind !== "hydronicus" || !zone.thermostat.control_entity_id) return null;
   return {
     domain: "climate",
     service: "set_temperature",
-    data: { entity_id: zone.climate_entity_id, temperature },
+    data: { entity_id: zone.thermostat.control_entity_id, temperature },
   };
 }
 
 export function actionForPreset(zone: ZoneSnapshot, preset: string): ActionCall | null {
-  if (!zone.climate_entity_id) return null;
+  if (zone.thermostat.kind !== "hydronicus" || !zone.thermostat.control_entity_id) return null;
   return {
     domain: "climate",
     service: "set_preset_mode",
-    data: { entity_id: zone.climate_entity_id, preset_mode: preset },
+    data: { entity_id: zone.thermostat.control_entity_id, preset_mode: preset },
   };
 }
 
@@ -81,6 +81,10 @@ export function phaseLabel(phase: string): string {
   return phase.replaceAll("_", " ");
 }
 
-export function adjustTarget(zone: ZoneSnapshot, delta: number): number {
-  return Math.min(35, Math.max(5, Number((zone.target_temperature + delta).toFixed(1))));
+export function adjustTarget(zone: ZoneSnapshot, delta: number): number | null {
+  if (zone.thermostat.target_temperature === null) return null;
+  return Math.min(
+    35,
+    Math.max(5, Number((zone.thermostat.target_temperature + delta).toFixed(1))),
+  );
 }

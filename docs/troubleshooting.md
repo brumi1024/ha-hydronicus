@@ -32,7 +32,9 @@ First confirm whether a Plant with the same repository installation already exis
 
 ### A setup form cannot select an entity
 
-The first Zone form expects one or more `sensor` entities.
+The first Zone form first asks whether Hydronicus or an existing climate entity owns the thermostat.
+The Hydronicus thermostat path expects one or more `sensor` entities.
+The external thermostat path expects one existing `climate` entity.
 The first Circuit form expects a `switch` or `valve` entity for the valve and a `switch` entity for the pump.
 Confirm that the synthetic entities have the expected domain and are visible in Home Assistant.
 
@@ -77,6 +79,24 @@ Inspect the aggregate-temperature sensor attributes to confirm which observation
 Inspect the Zone explanation for a minimum-active hold or minimum-idle lockout deadline.
 Changing a target or preset reevaluates the Zone immediately but does not bypass a remaining duration.
 A required-sensor failure is the exception: it blocks and releases demand immediately.
+
+### An external thermostat does not create demand
+
+Inspect the external climate entity's `hvac_action` attribute.
+
+Only `heating`, `preheating`, and `cooling` are accepted demand actions.
+
+`idle` and `off` release demand immediately.
+
+Missing, unavailable, unknown, malformed, contradictory, or unsupported actions fail closed.
+
+The external target and current temperature attributes do not reconstruct demand.
+
+For cooling, verify that the Zone humidity observations and Circuit supply or surface safety observations are configured, fresh, and valid.
+
+Hydronicus never calls the external climate entity.
+
+If the external entity is missing, the Zone appears in Repairs as an unresolved thermostat binding.
 
 ## Warnings, explanations, and virtual states
 

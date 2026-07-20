@@ -15,3 +15,13 @@ Route Arbitration determines the Hydraulic Circuits requested by Eligible Delive
 ## Any Demand
 
 Any Demand requests every Hydraulic Circuit reached by an Eligible Delivery Route.
+
+## Thermostat ownership
+
+Every Comfort Zone receives demand from exactly one thermostat.
+
+The thermostat can be a Hydronicus-owned digital thermostat or one existing external Home Assistant climate entity.
+
+The Zone owns observations and topology relationships, while the thermostat owns target and demand state.
+
+External thermostat demand is accepted from normalized `hvac_action` only.

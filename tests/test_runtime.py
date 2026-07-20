@@ -65,6 +65,7 @@ runtime_module = import_module("custom_components.hydronicus.runtime")
 HydronicRuntime = runtime_module.HydronicRuntime
 RuntimeState = import_module("hydronicus_core.model").RuntimeState
 SafeShutdownPhase = import_module("hydronicus_core.model").SafeShutdownPhase
+ThermostatHvacMode = import_module("hydronicus_core.model").ThermostatHvacMode
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 PLANT_UUID = "00000000-0000-4000-8000-000000000001"
@@ -115,7 +116,7 @@ def _configured_entry(
     zone = {
         "id": ZONE_UUID,
         "name": "Test zone",
-        "target_temperature": 21.0,
+        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
         "temperature_sensor_metadata": [{"entity_id": "sensor.test_temperature"}],
     }
     if zone_overrides:
@@ -210,6 +211,7 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_timers_advance_valve_readiness_and_pump_overrun(self) -> None:
         runtime = HydronicRuntime.from_entry(_configured_entry())
+        runtime.zone_hvac_modes[ZONE_UUID] = ThermostatHvacMode.HEAT
         hass = _RuntimeHomeAssistant("20.0")
         scheduled: list[tuple[float, object, mock.Mock]] = []
 
@@ -280,6 +282,7 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
     async def test_due_now_transition_runs_as_a_tracked_home_assistant_task(self) -> None:
         """Zero overrun advances without relying on an untracked timer callback."""
         runtime = HydronicRuntime.from_entry(_configured_entry(pump_overrun_seconds=0))
+        runtime.zone_hvac_modes[ZONE_UUID] = ThermostatHvacMode.HEAT
         hass = _RuntimeHomeAssistant("20.0")
         scheduled: list[tuple[float, object]] = []
 

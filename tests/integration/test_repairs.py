@@ -7,6 +7,7 @@ from homeassistant.helpers import issue_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.core.model import ThermostatHvacMode
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_A = "00000000-0000-4000-8000-000000000002"
@@ -39,13 +40,13 @@ def _entry() -> MockConfigEntry:
                     {
                         "id": ZONE_A,
                         "name": "Zone A",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": MISSING_SENSOR}],
                     },
                     {
                         "id": ZONE_B,
                         "name": "Zone B",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.zone_b_temperature"}],
                     },
                 ],
@@ -130,6 +131,8 @@ async def test_setup_reload_and_restoration_create_and_remove_repairs(hass) -> N
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_A, ThermostatHvacMode.HEAT, hass=hass)
+    await entry.runtime_data.async_set_zone_hvac_mode(ZONE_B, ThermostatHvacMode.HEAT, hass=hass)
 
     repairs = _issues(hass)
     translation_keys = {issue.translation_key for issue in repairs.values()}

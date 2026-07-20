@@ -8,12 +8,13 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.hydronicus.const import (
     CONF_PUMP_ENTITY,
     CONF_PUMP_OVERRUN,
-    CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSORS,
+    CONF_THERMOSTAT_KIND,
     CONF_VALVE_ENTITY,
     CONF_VALVE_OPENING_TIME,
     DOMAIN,
+    THERMOSTAT_KIND_HYDRONICUS,
 )
 
 
@@ -31,11 +32,17 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={"name": "Public beta simulated plant"}
     )
+    assert result["step_id"] == "zone"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_THERMOSTAT_KIND: THERMOSTAT_KIND_HYDRONICUS},
+    )
+    assert result["step_id"] == "zone_details"
+    assert "target_temperature" not in {str(key.schema) for key in result["data_schema"].schema}
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
             "name": "Simulated zone",
-            CONF_TARGET_TEMPERATURE: 21.0,
             CONF_TEMPERATURE_SENSORS: [temperature_entity],
             CONF_TEMPERATURE_AGGREGATION: "mean",
         },
@@ -61,6 +68,16 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
         if entry.title == "Public beta simulated plant"
     )
     assert entry.data["dry_run"] is True
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        "climate",
+        "set_hvac_mode",
+        {
+            "entity_id": "climate.public_beta_simulated_plant_simulated_zone",
+            "hvac_mode": "heat",
+        },
+        blocking=True,
+    )
     await hass.async_block_till_done()
 
     assert entry.runtime_data.dry_run is True

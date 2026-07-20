@@ -63,13 +63,13 @@ def _entry() -> MockConfigEntry:
                     {
                         "id": ZONE_A,
                         "name": "Zone A",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.ws_zone_a"}],
                     },
                     {
                         "id": ZONE_B,
                         "name": "Zone B",
-                        "target_temperature": 21.0,
+                        "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
                         "temperature_sensor_metadata": [{"entity_id": "sensor.ws_zone_b"}],
                     },
                 ],
@@ -110,7 +110,7 @@ async def test_list_and_subscribe_are_permission_filtered_and_reconnect_on_reloa
 
     class _Permissions:
         def check_entity(self, entity_id: str, _permission: str) -> bool:
-            return entity_id.endswith("zone_a") or entity_id.endswith("safe_shutdown")
+            return entity_id.endswith("zone_a_demand") or entity_id.endswith("safe_shutdown")
 
     filtered_connection = _Connection(_User(_Permissions()))
     await ws_subscribe_plant.__wrapped__(  # type: ignore[attr-defined]
@@ -120,6 +120,7 @@ async def test_list_and_subscribe_are_permission_filtered_and_reconnect_on_reloa
     )
     initial = filtered_connection.results[0][1]["snapshot"]
     assert [zone["id"] for zone in initial["zones"]] == [ZONE_A]
+    assert initial["zones"][0]["thermostat"]["control_entity_id"] is None
     assert initial["controls"]["requested_mode"] is None
     assert filtered_connection.subscriptions
 

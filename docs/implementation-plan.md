@@ -1,6 +1,6 @@
 # Hydronicus implementation plan
 
-Status: Version `0.1.0` control-mode implementation is complete in the working tree; release is not ready.
+Status: Thermostat ownership redesign implementation is in the working tree; release and Home Assistant staging are not complete.
 
 This document is the current implementation and evidence snapshot for main.
 
@@ -9,13 +9,15 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 ## Current baseline
 
 - Repository: `brumi1024/ha-hydronicus`.
-- Main commit: `6a8bb45e5ce1be423a4e39e6b0fff18a94331252`.
-- `origin/main` matches the assessed main commit.
+- Main commit: `12c5319a538b67f6e33f7b2780381238516ddc72` before the current uncommitted redesign.
+- `origin/main` matches that assessed main commit.
 - Integration name: Hydronicus.
 - Domain: `hydronicus`.
 - Package: `custom_components/hydronicus`.
-- Candidate version: `0.1.0`.
-- The manifest, project metadata, README, packaging script, and HACS metadata agree on version `0.1.0`.
+- Candidate version: `0.1.0-rc.1`.
+- The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.1`.
+- Config-entry version `1.1` remains the canonical pre-release fresh-install contract.
+- Presentation schema version is `2`.
 - The historical merged baseline passed `make verify` with 352 tests.
 - The historical merged baseline reports 91.29 percent core coverage.
 - The current working tree requires a fresh verification pass after the control-mode implementation.
@@ -26,7 +28,7 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 - GitHub Actions checks named `syntax`, `test`, `hassfest`, and `hacs` are green for the assessed main commit.
 - Pull request #27 merged the M4-M7 safety implementation.
 - Pull request #28 merged the public-beta installation and benchmark implementation; its speculative migration machinery has been removed before the first public release.
-- No Git tag or GitHub Release currently exists for `v0.1.0`.
+- GitHub prerelease `v0.1.0-rc.1` is published with `hydronicus.zip`.
 - The working tree contains the uncommitted `0.1.0` candidate preparation, including this reconciled implementation-plan edit, and the protected untracked directory `docs/research/`.
 - `docs/research/` belongs to the user and must not be staged, modified, moved, deleted, or committed.
 - Existing worktrees are retained and must not be deleted or repurposed by this plan.

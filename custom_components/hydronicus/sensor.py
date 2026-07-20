@@ -190,10 +190,7 @@ class ZoneExplanationSensor(SensorEntity):
         """Return the cached human-readable controller explanation."""
         if self._runtime.evaluation is None:
             return None
-        return cast(
-            str | None,
-            self._runtime.evaluation.diagnostics.zone_reasons.get(self._zone_id),
-        )
+        return self._runtime.evaluation.diagnostics.zone_reasons.get(self._zone_id)
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

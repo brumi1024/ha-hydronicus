@@ -117,6 +117,33 @@ class ZoneDecisionStatus(StrEnum):
     MODE_BLOCKED = "mode_blocked"
 
 
+class ThermostatKind(StrEnum):
+    """Configured owner of one Zone's comfort demand."""
+
+    HYDRONICUS = "hydronicus"
+    EXTERNAL_CLIMATE = "external_climate"
+
+
+class ThermostatHvacMode(StrEnum):
+    """Home Assistant-independent thermostat operating modes."""
+
+    OFF = "off"
+    HEAT = "heat"
+    COOL = "cool"
+    HEAT_COOL = "heat_cool"
+    AUTO = "auto"
+
+
+class ExternalHvacAction(StrEnum):
+    """Normalized actions accepted from an external climate entity."""
+
+    OFF = "off"
+    IDLE = "idle"
+    HEATING = "heating"
+    PREHEATING = "preheating"
+    COOLING = "cooling"
+
+
 class SourceKind(StrEnum):
     """Supported source qualification strategies."""
 
@@ -149,26 +176,179 @@ class TemperatureSensorMetadata:
 
 
 @dataclass(frozen=True, slots=True)
-class Zone:
-    """A comfort target whose required sensors contribute to one demand value."""
+class HydronicusThermostatConfig:
+    """Static policy for a Hydronicus-owned digital thermostat."""
 
-    id: str
-    name: str
-    target_temperature: float
-    temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
-    aggregation: TemperatureAggregation = TemperatureAggregation.MEAN
+    initial_target_temperature: float = 21.0
     heating_start_delta: float = 0.3
     heating_stop_delta: float = 0.1
+    cooling_start_delta: float = 0.3
+    cooling_stop_delta: float = 0.1
     minimum_active_duration_seconds: float = 0.0
     minimum_idle_duration_seconds: float = 0.0
     preset_targets: Mapping[str, float] = field(default_factory=dict)
-    humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...] = ()
-    cooling_start_delta: float = 0.3
-    cooling_stop_delta: float = 0.1
+    initial_preset: str = "none"
+
+    @property
+    def kind(self) -> ThermostatKind:
+        """Return the persisted discriminator."""
+        return ThermostatKind.HYDRONICUS
 
     def __post_init__(self) -> None:
         """Freeze preset targets at the domain boundary."""
         object.__setattr__(self, "preset_targets", MappingProxyType(dict(self.preset_targets)))
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalClimateThermostatConfig:
+    """Reference to one read-only existing Home Assistant climate entity."""
+
+    entity_id: str
+
+    @property
+    def kind(self) -> ThermostatKind:
+        """Return the persisted discriminator."""
+        return ThermostatKind.EXTERNAL_CLIMATE
+
+
+type ThermostatConfig = HydronicusThermostatConfig | ExternalClimateThermostatConfig
+
+
+@dataclass(frozen=True, slots=True)
+class HydronicusThermostatState:
+    """Mutable digital-thermostat state normalized by the adapter."""
+
+    target_temperature: float = 21.0
+    preset: str = "none"
+    hvac_mode: ThermostatHvacMode = ThermostatHvacMode.OFF
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalClimateThermostatState:
+    """Read-only external climate state normalized by the adapter."""
+
+    available: bool = False
+    hvac_action: ExternalHvacAction | None = None
+    hvac_mode: ThermostatHvacMode | None = None
+    target_temperature: float | None = None
+    current_temperature: float | None = None
+    explanation: str = "External thermostat state is unavailable."
+    hvac_mode_valid: bool = True
+
+
+type ThermostatState = HydronicusThermostatState | ExternalClimateThermostatState
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class Zone:
+    """A comfort area whose demand is owned by exactly one thermostat."""
+
+    id: str
+    name: str
+    thermostat: ThermostatConfig
+    temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
+    aggregation: TemperatureAggregation
+    humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        target_temperature: float = 21.0,
+        temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...] = (),
+        aggregation: TemperatureAggregation = TemperatureAggregation.MEAN,
+        heating_start_delta: float = 0.3,
+        heating_stop_delta: float = 0.1,
+        minimum_active_duration_seconds: float = 0.0,
+        minimum_idle_duration_seconds: float = 0.0,
+        preset_targets: Mapping[str, float] | None = None,
+        humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...] = (),
+        cooling_start_delta: float = 0.3,
+        cooling_stop_delta: float = 0.1,
+        *,
+        thermostat: ThermostatConfig | None = None,
+    ) -> None:
+        """Create a Zone, accepting the former constructor as a test compatibility seam."""
+        if thermostat is None:
+            thermostat = HydronicusThermostatConfig(
+                initial_target_temperature=target_temperature,
+                heating_start_delta=heating_start_delta,
+                heating_stop_delta=heating_stop_delta,
+                cooling_start_delta=cooling_start_delta,
+                cooling_stop_delta=cooling_stop_delta,
+                minimum_active_duration_seconds=minimum_active_duration_seconds,
+                minimum_idle_duration_seconds=minimum_idle_duration_seconds,
+                preset_targets=preset_targets or {},
+            )
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "thermostat", thermostat)
+        object.__setattr__(self, "temperature_sensor_metadata", temperature_sensor_metadata)
+        object.__setattr__(self, "aggregation", aggregation)
+        object.__setattr__(self, "humidity_sensor_metadata", humidity_sensor_metadata)
+
+    @property
+    def target_temperature(self) -> float:
+        """Return the internal thermostat's initialization fallback for legacy callers."""
+        if isinstance(self.thermostat, HydronicusThermostatConfig):
+            return self.thermostat.initial_target_temperature
+        return 21.0
+
+    @property
+    def heating_start_delta(self) -> float:
+        return (
+            self.thermostat.heating_start_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def heating_stop_delta(self) -> float:
+        return (
+            self.thermostat.heating_stop_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def cooling_start_delta(self) -> float:
+        return (
+            self.thermostat.cooling_start_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def cooling_stop_delta(self) -> float:
+        return (
+            self.thermostat.cooling_stop_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def minimum_active_duration_seconds(self) -> float:
+        return (
+            self.thermostat.minimum_active_duration_seconds
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def minimum_idle_duration_seconds(self) -> float:
+        return (
+            self.thermostat.minimum_idle_duration_seconds
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def preset_targets(self) -> Mapping[str, float]:
+        return (
+            self.thermostat.preset_targets
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else MappingProxyType({})
+        )
 
     @property
     def temperature_sensors(self) -> tuple[str, ...]:
@@ -505,6 +685,7 @@ class PlantSnapshot:
     """
 
     temperatures: Mapping[str, TemperatureObservation]
+    thermostats: Mapping[str, ThermostatState] = field(default_factory=dict)
     humidities: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     supply_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     surface_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
