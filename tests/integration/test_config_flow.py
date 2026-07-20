@@ -9,6 +9,7 @@ from homeassistant.helpers import config_validation as cv
 from custom_components.hydronicus.const import (
     CONF_CALIBRATION_OFFSET,
     CONF_CONFIGURE_SENSOR_METADATA,
+    CONF_COOLING_ENABLED,
     CONF_DESIGNATED_REFERENCE,
     CONF_MAX_AGE,
     CONF_PUMP_ENTITY,
@@ -179,8 +180,8 @@ async def test_initial_zone_schema_serializes_for_home_assistant_ui(hass) -> Non
     voluptuous_serialize.convert(result["data_schema"], custom_serializer=cv.custom_serializer)
 
 
-async def test_invalid_initial_topology_keeps_review_placeholders(hass) -> None:
-    """A validation error should not break the translated review description."""
+async def test_initial_circuit_rejects_duplicate_actuator_entity(hass) -> None:
+    """The initial flow should explain a valve and pump entity collision inline."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={"name": "Hydronic plant"}
@@ -206,14 +207,44 @@ async def test_invalid_initial_topology_keeps_review_placeholders(hass) -> None:
     )
 
     assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "circuit"
+    assert result["errors"] == {"base": "duplicate_actuator_entity"}
+
+
+async def test_initial_review_explains_topology_validation_error(hass) -> None:
+    """The review should expose the compiler reason for other invalid topology."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Hydronic plant"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Living room",
+            CONF_TARGET_TEMPERATURE: 21.5,
+            CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
+            CONF_TEMPERATURE_AGGREGATION: "median",
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Floor loop",
+            CONF_VALVE_ENTITY: "switch.floor_valve",
+            CONF_PUMP_ENTITY: "switch.floor_pump",
+            CONF_VALVE_OPENING_TIME: 30,
+            CONF_PUMP_OVERRUN: 120,
+            CONF_COOLING_ENABLED: True,
+        },
+    )
+
+    assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "review"
     assert result["errors"] == {"base": "invalid_topology"}
-    assert result["description_placeholders"] == {
-        "zone": "Living room",
-        "circuit": "Floor loop",
-        "logic": "- Topology could not be compiled.",
-        "warnings": "- None",
-    }
+    assert (
+        "requires a supply or surface temperature reference"
+        in result["description_placeholders"]["logic"]
+    )
 
 
 async def test_advanced_sensor_editor_persists_metadata_and_weighted_policy(hass) -> None:

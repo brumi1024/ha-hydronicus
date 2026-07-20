@@ -98,6 +98,7 @@
     },
     "error": {
       "name_required": "A plant name is required.",
+      "duplicate_actuator_entity": "The valve and pump must use different Home Assistant entities.",
       "invalid_topology": "The initial topology is not valid.",
       "dry_run_confirmation_required": "Confirm that the configured heating outputs may be controlled.",
       "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit Dry run again after the shutdown finishes.",

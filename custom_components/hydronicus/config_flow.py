@@ -320,13 +320,15 @@ def _warning_text(compiled: Any) -> str:
 
 
 def _initial_review_placeholders(
-    topology: Mapping[str, Any], compiled: CompiledPlant | None
+    topology: Mapping[str, Any],
+    compiled: CompiledPlant | None,
+    validation_error: str | None = None,
 ) -> dict[str, str]:
     """Render complete initial-review context, including validation failures."""
     logic = (
         "\n".join(f"- {line}" for line in compiled.logic_summary)
         if compiled is not None
-        else "- Topology could not be compiled."
+        else f"- Topology could not be compiled: {validation_error or 'unknown validation error'}"
     )
     return {
         "zone": str(topology[CONF_ZONES][0][CONF_NAME]),
@@ -1743,7 +1745,11 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         errors: dict[str, str] = {}
         if user_input is not None:
             name = str(user_input[CONF_NAME]).strip()
-            if name:
+            if not name:
+                errors["base"] = "name_required"
+            elif user_input[CONF_VALVE_ENTITY] == user_input[CONF_PUMP_ENTITY]:
+                errors["base"] = "duplicate_actuator_entity"
+            else:
                 circuit_id = str(uuid4())
                 valve_id = str(uuid4())
                 pump_id = str(uuid4())
@@ -1813,8 +1819,6 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                     {"id": str(uuid4()), "zone_id": zone_id, "circuit_id": circuit_id}
                 ]
                 return await self.async_step_review()
-            errors["base"] = "name_required"
-
         return self.async_show_form(
             step_id="circuit",
             data_schema=vol.Schema(
@@ -1887,11 +1891,11 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         topology = self._draft[CONF_TOPOLOGY]
         try:
             plant = compile_topology(plant_configuration_from_entry_data(self._draft))
-        except StoredTopologyError, TopologyValidationError:
+        except (StoredTopologyError, TopologyValidationError) as error:
             return self.async_show_form(
                 step_id="review",
                 errors={"base": "invalid_topology"},
-                description_placeholders=_initial_review_placeholders(topology, None),
+                description_placeholders=_initial_review_placeholders(topology, None, str(error)),
             )
 
         if user_input is not None:
