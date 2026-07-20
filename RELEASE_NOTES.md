@@ -1,7 +1,14 @@
 # Hydronicus {{VERSION}}
 
-This is the first installable release candidate for supervised Dry run evaluation.
+This is the second installable release candidate for supervised Dry run evaluation.
 Use it in Dry run before considering active heating control.
+
+## Changes since rc.1
+
+- Add a topology-driven Hydronicus Plant card backed by a redacted, read-only presentation stream.
+- Add explicit thermostat ownership so each Zone uses either a Hydronicus thermostat or one existing Home Assistant climate entity.
+- Accept external thermostat demand only from normalized `hvac_action` state.
+- Add frontend release verification and the Home Assistant validation dependencies required by GitHub checks.
 
 ## Highlights
 
@@ -13,6 +20,7 @@ Use it in Dry run before considering active heating control.
 - Cooling condensation diagnostics and deterministic Dry run source recommendations.
 - Explicit idempotent actuator execution with one Plant-level Dry run control.
 - Proposed-versus-executed operation reporting and ordered safe shutdown when Dry run is re-enabled.
+- Topology-driven Plant status with shared hydraulic relationships and precise proposed, executed, suppressed, failed, and shadow states.
 
 ## Upgrade
 

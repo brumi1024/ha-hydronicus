@@ -1,6 +1,6 @@
 # Hydronicus implementation plan
 
-Status: Thermostat ownership redesign implementation is in the working tree; release and Home Assistant staging are not complete.
+Status: Thermostat ownership is implemented on main; `0.1.0-rc.2` is prepared as a prerelease, while Home Assistant staging remains incomplete.
 
 This document is the current implementation and evidence snapshot for main.
 
@@ -9,18 +9,18 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 ## Current baseline
 
 - Repository: `brumi1024/ha-hydronicus`.
-- Main commit: `12c5319a538b67f6e33f7b2780381238516ddc72` before the current uncommitted redesign.
+- Main commit: `651ea95264c8bbdd55aa3e5cc48cfc73a6193ce9` before the `0.1.0-rc.2` release preparation.
 - `origin/main` matches that assessed main commit.
 - Integration name: Hydronicus.
 - Domain: `hydronicus`.
 - Package: `custom_components/hydronicus`.
-- Candidate version: `0.1.0-rc.1`.
-- The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.1`.
+- Candidate version: `0.1.0-rc.2`.
+- The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.2`.
 - Config-entry version `1.1` remains the canonical pre-release fresh-install contract.
 - Presentation schema version is `2`.
-- The historical merged baseline passed `make verify` with 352 tests.
-- The historical merged baseline reports 91.29 percent core coverage.
-- The current working tree requires a fresh verification pass after the control-mode implementation.
+- The `0.1.0-rc.2` candidate passed `make verify` with 385 Python tests and 6 frontend tests.
+- The `0.1.0-rc.2` candidate reports 92.25 percent core coverage.
+- Release metadata, the bundled frontend, the HACS archive, and public-beta checks passed for `0.1.0-rc.2`.
 - The current working tree preserves the simplified topology and removes the obsolete migration-only package and tests.
 - The previous focused release, actuator, cooling, source, and operating-scenario suite passed before the migration cleanup.
 - The current `scripts/public_beta_smoke.py` run passed all public-beta repository checks.
@@ -29,7 +29,7 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 - Pull request #27 merged the M4-M7 safety implementation.
 - Pull request #28 merged the public-beta installation and benchmark implementation; its speculative migration machinery has been removed before the first public release.
 - GitHub prerelease `v0.1.0-rc.1` is published with `hydronicus.zip`.
-- The working tree contains the uncommitted `0.1.0` candidate preparation, including this reconciled implementation-plan edit, and the protected untracked directory `docs/research/`.
+- The `0.1.0-rc.2` candidate includes the Plant presentation stream, Lovelace Plant card, release-validation hardening, and thermostat ownership changes added after `v0.1.0-rc.1`.
 - `docs/research/` belongs to the user and must not be staged, modified, moved, deleted, or committed.
 - Existing worktrees are retained and must not be deleted or repurposed by this plan.
 
