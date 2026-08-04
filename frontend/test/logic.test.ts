@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, parseSnapshot, prioritizedAlerts } from "../src/logic";
+import { actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, isFlowingState, parseSnapshot, plantVisualState, prioritizedAlerts } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
@@ -33,6 +33,32 @@ describe("Hydronicus presentation logic", () => {
       { code: "a", severity: "error", priority: 1, scope: "plant", message: "" },
     ] });
     expect(alerts.map((alert) => alert.code)).toEqual(["a", "z"]);
+  });
+
+  it("derives presentation-only Plant color from real operating state", () => {
+    expect(plantVisualState(snapshot)).toBe("heating");
+    expect(plantVisualState({
+      ...snapshot,
+      plant: { ...snapshot.plant, status: "cooling", active_mode: "cooling" },
+    })).toBe("cooling");
+    expect(plantVisualState({
+      ...snapshot,
+      alerts: [{ code: "blocked", severity: "error", priority: 1, scope: "plant", message: "Blocked" }],
+    })).toBe("attention");
+    expect(plantVisualState({
+      ...snapshot,
+      plant: { ...snapshot.plant, status: "idle", active_mode: "idle" },
+    })).toBe("idle");
+  });
+
+  it("animates only states that represent hydraulic movement or preparation", () => {
+    expect(isFlowingState("active")).toBe(true);
+    expect(isFlowingState("opening")).toBe(true);
+    expect(isFlowingState("waiting")).toBe(true);
+    expect(isFlowingState("selected")).toBe(true);
+    expect(isFlowingState("idle")).toBe(false);
+    expect(isFlowingState("blocked")).toBe(false);
+    expect(isFlowingState("unavailable")).toBe(false);
   });
 
   it("uses existing entity actions for every card write", () => {

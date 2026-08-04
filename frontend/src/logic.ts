@@ -8,6 +8,23 @@ export type ActionCall = {
   data: Record<string, unknown>;
 };
 
+export type PlantVisualState = "attention" | "cooling" | "heating" | "idle";
+
+const FLOWING_STATES = new Set([
+  "active",
+  "cooling",
+  "heating",
+  "open",
+  "opening",
+  "overrun",
+  "ready",
+  "requested",
+  "running",
+  "selected",
+  "starting",
+  "waiting",
+]);
+
 export function parseSnapshot(value: unknown): PlantSnapshot {
   if (!value || typeof value !== "object") {
     throw new Error("Hydronicus returned no Plant snapshot.");
@@ -29,6 +46,31 @@ export function prioritizedAlerts(snapshot: Pick<PlantSnapshot, "alerts">): Plan
       left.code.localeCompare(right.code) ||
       left.scope.localeCompare(right.scope),
   );
+}
+
+export function plantVisualState(
+  snapshot: Pick<PlantSnapshot, "alerts" | "plant" | "safe_shutdown">,
+): PlantVisualState {
+  const health = snapshot.plant.health.toLowerCase();
+  const hasCriticalAlert = snapshot.alerts.some(
+    (alert) => alert.severity === "critical" || alert.severity === "error",
+  );
+  if (
+    snapshot.safe_shutdown.active ||
+    hasCriticalAlert ||
+    ["blocked", "critical", "error", "failed", "unhealthy"].includes(health)
+  ) {
+    return "attention";
+  }
+
+  const activeState = `${snapshot.plant.active_mode} ${snapshot.plant.status}`.toLowerCase();
+  if (activeState.includes("cool")) return "cooling";
+  if (activeState.includes("heat")) return "heating";
+  return "idle";
+}
+
+export function isFlowingState(state: string): boolean {
+  return FLOWING_STATES.has(state.toLowerCase());
 }
 
 export function actionForTarget(zone: ZoneSnapshot, temperature: number): ActionCall | null {

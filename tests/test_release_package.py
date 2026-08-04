@@ -18,6 +18,16 @@ from scripts.package_release import (
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
+def test_frontend_build_preserves_lit_attribute_bindings() -> None:
+    """The release build must retain distinct Lit tagged-template call sites."""
+    build_script = (REPOSITORY_ROOT / "frontend" / "build.mjs").read_text(encoding="utf-8")
+
+    assert "minifyIdentifiers: true" in build_script
+    assert "minifySyntax: false" in build_script
+    assert "minifyWhitespace: true" in build_script
+    assert "minify: true" not in build_script
+
+
 def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> None:
     """HACS can extract the release directly into its integration directory."""
 

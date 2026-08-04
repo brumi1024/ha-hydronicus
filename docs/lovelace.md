@@ -57,6 +57,8 @@ The card never calls the external climate entity.
 The backend uses each Zone's Hydronicus-owned demand entity for visibility filtering.
 
 A user without read access to that entity receives none of the Zone's name, observations, demand, routes, alerts, or explanations.
+Source summaries and source-selection operations remain Plant-wide because sources serve the shared hydraulic system.
+Any user allowed to discover the Plant can see that source state, while configured physical source entity IDs remain redacted.
 The Plant mode control calls only the Hydronicus-owned mode select entity.
 Safe shutdown is a hold-to-confirm action and calls only the Hydronicus-owned shutdown button entity.
 Configured physical entity IDs do not cross the presentation boundary and are never rendered as card action targets.
@@ -71,11 +73,34 @@ The existing Plant configuration and its safety gates remain the authority for w
 
 The card exposes Home Assistant Sections grid options with a default six-row by six-column footprint.
 The minimum footprint is four rows by three columns.
-The card uses a responsive Zone grid and collapses its controls for narrow layouts.
+The card uses a responsive Zone grid, horizontally scrollable hydraulic paths, and controls that collapse for narrow layouts.
 The `comfortable` and `compact` density values provide a readable default and a denser dashboard option.
 Colors are based on Home Assistant theme variables with light and dark theme fallbacks.
+The translucent surfaces inherit the dashboard behind them and use backdrop blur when the browser supports it.
+Heating, cooling, idle, and attention colors are derived from the real Plant snapshot and do not change controller behavior.
+Active, requested, waiting, and overrun delivery paths animate in the flow direction.
+Idle, blocked, and unavailable paths remain still so motion never implies flow that the controller did not report.
 Interactive controls have visible focus indicators, keyboard labels, disabled states, and touch-friendly minimum sizes.
 Safe shutdown accepts pointer or keyboard hold input and shows hold progress.
+The card disables ambient, flow, loading, and state animations when the operating system requests reduced motion.
+
+### Liquid glass theme variables
+
+The card works without custom theme values, but a dashboard theme can tune the glass and motion through inherited CSS variables.
+
+```css
+--hydronicus-glass-blur: 24px;
+--hydronicus-glass-opacity: 68%;
+--hydronicus-heating-color: #ff9b62;
+--hydronicus-cooling-color: #55c9f6;
+--hydronicus-idle-color: var(--primary-color);
+--hydronicus-attention-color: var(--error-color);
+--hydronicus-flow-duration: 2.2s;
+--hydronicus-ambient-duration: 16s;
+```
+
+Use a lower glass opacity when the dashboard background should remain more visible.
+Keep enough contrast between the card surface and text to preserve readability in both light and dark themes.
 
 ## Synthetic staging checks
 

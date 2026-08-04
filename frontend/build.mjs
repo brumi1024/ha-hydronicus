@@ -9,7 +9,11 @@ const result = await build({
   bundle: true,
   format: "esm",
   target: "es2022",
-  minify: true,
+  // Full esbuild minification corrupts Lit attribute bindings in this bundle.
+  // Keep the safe size reductions while preserving tagged-template call sites.
+  minifyIdentifiers: true,
+  minifySyntax: false,
+  minifyWhitespace: true,
   legalComments: "none",
   define: { HYDRONICUS_FRONTEND_VERSION: JSON.stringify(manifest.version) },
   outfile: "../custom_components/hydronicus/frontend/hydronicus-plant-card.js",
