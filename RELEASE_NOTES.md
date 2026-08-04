@@ -1,13 +1,14 @@
 # Hydronicus {{VERSION}}
 
-This is the fourth installable release candidate for supervised Dry run evaluation.
+This is the fifth installable release candidate for supervised Dry run evaluation.
 Use it in Dry run before considering active heating control.
 
-## Changes since rc.3
+## Changes since rc.4
 
-- Fix the HACS release archive so integration files extract directly into `config/custom_components/hydronicus`.
-- Add a regression check that simulates HACS extraction and requires `manifest.json` at the integration-directory root.
-- Replace an RC1, RC2, or RC3 installation through HACS, then restart Home Assistant before opening Add integration.
+- Redesign the Plant card as a responsive liquid-glass operational dashboard.
+- Animate delivery routes from live proposed, executed, suppressed, failure, and shadow state while respecting reduced-motion preferences.
+- Improve responsive route visualization, hierarchy, status legibility, and compact layouts.
+- Preserve Lit reactive attribute bindings in the optimized frontend build and add release-package regression coverage.
 
 ## Highlights
 

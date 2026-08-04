@@ -1,6 +1,6 @@
 # Hydronicus implementation plan
 
-Status: The HACS ZIP layout fix is implemented in the `0.1.0-rc.4` candidate, while clean public installation and Home Assistant staging evidence remain incomplete.
+Status: The liquid-glass Plant visualization is implemented in the `0.1.0-rc.5` candidate, while clean public installation and Home Assistant staging evidence remain incomplete.
 
 This document is the current implementation and evidence snapshot for main.
 
@@ -9,19 +9,19 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 ## Current baseline
 
 - Repository: `brumi1024/ha-hydronicus`.
-- Main commit: `e2d59443fa1dc4e13a50868cb956fb401f20590c` before the `0.1.0-rc.4` release preparation.
+- Main commit: `93fc3ab9a3cf3ccdc3fe4947e981e6b0bbbb749d` before the `0.1.0-rc.5` release preparation.
 - `origin/main` matches that assessed main commit.
 - Integration name: Hydronicus.
 - Domain: `hydronicus`.
 - Package: `custom_components/hydronicus`.
-- Candidate version: `0.1.0-rc.4`.
-- The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.4`.
+- Candidate version: `0.1.0-rc.5`.
+- The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.5`.
 - Config-entry version `1.1` remains the canonical pre-release fresh-install contract.
 - Presentation schema version is `2`.
-- The `0.1.0-rc.4` candidate passed `make verify` with 386 Python tests and 6 frontend tests.
+- The `0.1.0-rc.5` candidate passed `make verify` with 387 Python tests and 8 frontend tests.
 - The release-package regression test simulates extraction directly into `config/custom_components/hydronicus` and requires `manifest.json` at that root.
-- The `0.1.0-rc.4` candidate reports 92.25 percent core coverage.
-- Release metadata, the bundled frontend, the HACS archive, and public-beta checks passed for `0.1.0-rc.4`.
+- The `0.1.0-rc.5` candidate reports 92.25 percent core coverage.
+- Release metadata, the bundled frontend, the HACS archive, and public-beta checks passed for `0.1.0-rc.5`.
 - The current working tree preserves the simplified topology and removes the obsolete migration-only package and tests.
 - The previous focused release, actuator, cooling, source, and operating-scenario suite passed before the migration cleanup.
 - The current `scripts/public_beta_smoke.py` run passed all public-beta repository checks.
@@ -30,7 +30,7 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 - Pull request #27 merged the M4-M7 safety implementation.
 - Pull request #28 merged the public-beta installation and benchmark implementation; its speculative migration machinery has been removed before the first public release.
 - GitHub prereleases `v0.1.0-rc.1`, `v0.1.0-rc.2`, and `v0.1.0-rc.3` are published with incorrectly nested `hydronicus.zip` assets.
-- The `0.1.0-rc.4` archive places integration files at its root so HACS extracts `manifest.json` directly into `config/custom_components/hydronicus`.
+- The `0.1.0-rc.5` archive places integration files at its root so HACS extracts `manifest.json` directly into `config/custom_components/hydronicus`.
 - `docs/research/` belongs to the user and must not be staged, modified, moved, deleted, or committed.
 - Existing worktrees are retained and must not be deleted or repurposed by this plan.
 
@@ -394,7 +394,7 @@ uv run python scripts/package_release.py --version v0.1.0 --inspect dist/hydroni
 
 This audit built and inspected `dist/hydronicus.zip` successfully with the package script.
 
-The inspected `0.1.0-rc.4` archive contains the integration files at its root and no nested `custom_components` directory.
+The inspected `0.1.0-rc.5` archive contains the integration files at its root and no nested `custom_components` directory.
 
 The GitHub release workflow is `.github/workflows/release.yml`.
 
