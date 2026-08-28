@@ -8,10 +8,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from hydronicus_core.controller import (
+    aggregate_humidity,
     aggregate_temperature,
-    aggregate_zone_humidity_result,
-    aggregate_zone_temperature,
-    aggregate_zone_temperature_result,
     condensation_margin,
     dew_point_celsius,
     evaluate,
@@ -112,11 +110,11 @@ def test_zone_temperature_aggregation_is_deterministic(aggregation, expected) ->
         }
     )
 
-    assert aggregate_zone_temperature(zone, snapshot) == expected
+    assert aggregate_temperature(zone, snapshot, now=NOW).value == expected
 
 
-def test_zone_temperature_aggregation_defaults_legacy_zones_to_mean() -> None:
-    """Zones created before aggregation support retain mean semantics."""
+def test_zone_temperature_aggregation_defaults_to_mean() -> None:
+    """Zones without an explicit aggregation policy use mean semantics."""
     zone = Zone("living", "Living", 21.0, _metadata("temperature.living", "temperature.backup"))
     snapshot = PlantSnapshot(
         {
@@ -125,7 +123,7 @@ def test_zone_temperature_aggregation_defaults_legacy_zones_to_mean() -> None:
         }
     )
 
-    assert aggregate_zone_temperature(zone, snapshot) == 20.0
+    assert aggregate_temperature(zone, snapshot, now=NOW).value == 20.0
 
 
 def test_designated_reference_aggregation_is_calibrated_and_order_independent() -> None:
@@ -152,7 +150,7 @@ def test_designated_reference_aggregation_is_calibrated_and_order_independent() 
         }
     )
 
-    result = aggregate_zone_temperature_result(reverse, snapshot, now=NOW)
+    result = aggregate_temperature(reverse, snapshot, now=NOW)
 
     assert result.value == 19.0
     assert result.usable_sensor_ids == (
@@ -196,7 +194,7 @@ def test_calibrated_aggregation_applies_offsets_before_every_policy(
         }
     )
 
-    result = aggregate_zone_temperature_result(zone, snapshot, now=NOW)
+    result = aggregate_temperature(zone, snapshot, now=NOW)
 
     assert result.value == expected
 
@@ -212,7 +210,7 @@ def test_optional_sensor_is_excluded_and_required_sensor_remains_usable() -> Non
             TemperatureSensorMetadata("temperature.optional", required=False),
         ),
     )
-    result = aggregate_zone_temperature_result(
+    result = aggregate_temperature(
         zone,
         PlantSnapshot(
             {
@@ -240,7 +238,7 @@ def test_stale_required_sensor_blocks_immediately() -> None:
             TemperatureSensorMetadata("temperature.required", max_age_seconds=30),
         ),
     )
-    result = aggregate_zone_temperature_result(
+    result = aggregate_temperature(
         zone,
         PlantSnapshot(
             {"temperature.required": TemperatureObservation(19.0, NOW - timedelta(seconds=31))}
@@ -263,7 +261,7 @@ def test_aggregation_reports_missing_and_invalid_timestamp_health() -> None:
             TemperatureSensorMetadata("temperature.optional", required=False),
         ),
     )
-    missing = aggregate_zone_temperature_result(optional_zone, PlantSnapshot({}), now=NOW)
+    missing = aggregate_temperature(optional_zone, PlantSnapshot({}), now=NOW)
     assert missing.value is None
     assert missing.excluded_optional_sensor_ids == ("temperature.optional",)
     assert "no usable" in missing.explanation
@@ -274,12 +272,12 @@ def test_aggregation_reports_missing_and_invalid_timestamp_health() -> None:
         21.0,
         temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.required"),),
     )
-    no_timestamp = aggregate_zone_temperature_result(
+    no_timestamp = aggregate_temperature(
         required_zone,
         PlantSnapshot({"temperature.required": TemperatureObservation(19.0, None)}),
         now=NOW,
     )
-    invalid_timestamp = aggregate_zone_temperature_result(
+    invalid_timestamp = aggregate_temperature(
         required_zone,
         PlantSnapshot(
             {"temperature.required": TemperatureObservation(19.0, NOW.replace(tzinfo=None))}
@@ -302,7 +300,7 @@ def test_aggregation_rejects_non_finite_calibration_result_and_bad_weight() -> N
             TemperatureSensorMetadata("temperature.required", calibration_offset=1e308),
         ),
     )
-    overflow = aggregate_zone_temperature_result(
+    overflow = aggregate_temperature(
         overflow_zone,
         PlantSnapshot({"temperature.required": TemperatureObservation(1e308, NOW)}),
         now=NOW,
@@ -314,7 +312,7 @@ def test_aggregation_rejects_non_finite_calibration_result_and_bad_weight() -> N
         temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.weight", weight=0),),
         aggregation=TemperatureAggregation.WEIGHTED_MEAN,
     )
-    weighted = aggregate_zone_temperature_result(
+    weighted = aggregate_temperature(
         weighted_zone,
         PlantSnapshot({"temperature.weight": TemperatureObservation(19.0, NOW)}),
         now=NOW,
@@ -350,19 +348,6 @@ def test_optional_designated_reference_does_not_fallback_to_another_policy() -> 
     assert result.usable_sensor_ids == ("temperature.backup",)
     assert result.excluded_optional_sensor_ids == ("temperature.reference",)
     assert "designated reference" in result.explanation
-
-
-def test_legacy_aggregation_helpers_preserve_value_only_contract() -> None:
-    """The adapter compatibility helpers expose values while structured callers use results."""
-    snapshot = PlantSnapshot(
-        {
-            "temperature.a": TemperatureObservation(19.0, NOW),
-            "temperature.b": TemperatureObservation(21.0, NOW),
-        }
-    )
-    zone = Zone("living", "Living", 21.0, _metadata("temperature.a", "temperature.b"))
-
-    assert aggregate_zone_temperature(zone, snapshot) == 20.0
 
 
 def _timed_plant(
@@ -815,7 +800,7 @@ def test_humidity_aggregation_excludes_optional_and_applies_calibration() -> Non
             TemperatureSensorMetadata("humidity.backup", required=False),
         ),
     )
-    result = aggregate_zone_humidity_result(
+    result = aggregate_humidity(
         zone,
         PlantSnapshot(
             temperatures={"temperature.living": TemperatureObservation(25.0, NOW)},

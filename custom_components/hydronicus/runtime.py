@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -22,6 +23,7 @@ from .const import (
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
     CONF_DRY_RUN,
     CONF_NAME,
+    CONF_OUTPUT_AUTHORIZATION,
     CONF_PLANT_ID,
     CONF_REQUESTED_MODE,
     MAX_RECONCILIATION_INTERVAL_SECONDS,
@@ -73,9 +75,15 @@ from .core.model import (
     ZoneDecisionStatus,
 )
 from .core.topology import compile_topology
-from .entry_configuration import effective_plant_configuration
+from .entry_configuration import (
+    effective_plant_configuration,
+    output_authorization,
+    runtime_configuration_fingerprint,
+)
 from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
 from .repairs import async_sync_repairs
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -90,6 +98,8 @@ class HydronicRuntime:
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     diagnostics_include_actuator_details: bool = False
     source_subentry_ids: Mapping[str, str] = field(default_factory=dict)
+    plant_device_id: str | None = None
+    configuration_fingerprint: str = ""
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
@@ -108,6 +118,7 @@ class HydronicRuntime:
     _listeners: set[Callable[[], None]] = field(default_factory=set)
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     _refresh_task: asyncio.Task[Any] | None = None
+    _operation_lock: asyncio.Lock = field(init=False, repr=False)
     _stopping: bool = False
     _initializing: bool = False
     refresh_count: int = 0
@@ -116,6 +127,8 @@ class HydronicRuntime:
     reconciliation_count: int = 0
     reconciliation_changed_count: int = 0
     reconciliation_unchanged_count: int = 0
+    late_actuator_completion_count: int = 0
+    late_actuator_error_count: int = 0
     last_reconciliation_status: str = "not_started"
     last_reconciliation_changed_actuator_count: int = 0
     _last_publication_signature: str | None = None
@@ -123,6 +136,7 @@ class HydronicRuntime:
 
     def __post_init__(self) -> None:
         """Create an executor whose state starts unknown until observed."""
+        self._operation_lock = asyncio.Lock()
         self.executor = ActuatorExecutor.from_plant(
             self.plant,
             dry_run=self.dry_run,
@@ -144,6 +158,7 @@ class HydronicRuntime:
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
             ),
             source_subentry_ids=effective.source_subentry_ids,
+            configuration_fingerprint=runtime_configuration_fingerprint(entry),
             runtime_state=RuntimeState(
                 requested_mode=_stored_requested_mode(entry),
             ),
@@ -168,7 +183,13 @@ class HydronicRuntime:
             _entry=entry,
         )
 
-    async def async_set_dry_run(self, dry_run: bool, *, hass: HomeAssistant | None = None) -> bool:
+    async def async_set_dry_run(
+        self,
+        dry_run: bool,
+        *,
+        hass: HomeAssistant | None = None,
+        authorization: Mapping[str, Any] | None = None,
+    ) -> bool:
         """Apply Plant Dry run, safely releasing active heating before suppression."""
         requested = bool(dry_run)
         if requested == self.dry_run:
@@ -177,33 +198,66 @@ class HydronicRuntime:
         if active_hass is None or self._entry is None:
             raise RuntimeError("Hydronic runtime is not started.")
 
-        if requested:
-            report = await self.async_safe_shutdown(active_hass, force_dry_run=False)
-            while (
-                not report.execution.failures
-                and report.plan.next_deadline is None
-                and report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
-            ):
-                report = await self.async_safe_shutdown(active_hass, force_dry_run=False)
-            if report.execution.failures or (
-                report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
-            ):
-                return False
-            self.runtime_state = replace(
-                report.next_runtime,
-                safe_shutdown_phase=SafeShutdownPhase.IDLE,
-                safe_shutdown_started_at=None,
-            )
+        async with self._operation_lock:
+            if requested:
+                report = await self._async_safe_shutdown_locked(active_hass, force_dry_run=False)
+                while (
+                    not report.execution.failures
+                    and report.plan.next_deadline is None
+                    and report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
+                ):
+                    report = await self._async_safe_shutdown_locked(
+                        active_hass, force_dry_run=False
+                    )
+                if report.execution.failures or (
+                    report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
+                ):
+                    return False
+                self.runtime_state = replace(
+                    report.next_runtime,
+                    safe_shutdown_phase=SafeShutdownPhase.IDLE,
+                    safe_shutdown_started_at=None,
+                )
 
-        data = dict(self._entry.data)
-        data[CONF_DRY_RUN] = requested
-        active_hass.config_entries.async_update_entry(self._entry, data=data)
-        self.dry_run = requested
-        self.executor.dry_run = requested
-        if requested:
-            self._notify_listeners_if_changed()
-        else:
-            await self.async_refresh(active_hass)
+            data = dict(self._entry.data)
+            data[CONF_DRY_RUN] = requested
+            if requested:
+                data.pop(CONF_OUTPUT_AUTHORIZATION, None)
+            else:
+                expected_authorization = output_authorization(data)
+                if authorization is None or dict(authorization) != expected_authorization:
+                    raise ValueError(
+                        "Leaving Dry run requires authorization for the exact current outputs."
+                    )
+                data[CONF_OUTPUT_AUTHORIZATION] = expected_authorization
+            active_hass.config_entries.async_update_entry(self._entry, data=data)
+            self.dry_run = requested
+            self.executor.dry_run = requested
+            if requested:
+                self._notify_listeners_if_changed()
+            else:
+                await self._async_refresh_locked(active_hass)
+        return True
+
+    async def async_prepare_configuration_change(
+        self,
+        hass: HomeAssistant | None = None,
+    ) -> bool:
+        """Reach Dry run before an already-requested destructive graph change."""
+        active_hass = hass or self._hass
+        if active_hass is None:
+            return False
+        while not self.dry_run:
+            if self._stopping:
+                return False
+            if await self.async_set_dry_run(True, hass=active_hass):
+                return True
+            if self.last_execution is not None and self.last_execution.failures:
+                return False
+            delay = self._next_transition_delay(self._now())
+            if delay is None:
+                return False
+            await asyncio.sleep(max(0.01, delay))
         return True
 
     async def async_set_requested_mode(
@@ -220,11 +274,12 @@ class HydronicRuntime:
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
             raise RuntimeError("Hydronic runtime is not started.")
-        data = dict(self._entry.data)
-        data[CONF_REQUESTED_MODE] = requested.value
-        active_hass.config_entries.async_update_entry(self._entry, data=data)
-        self.runtime_state = replace(self.runtime_state, requested_mode=requested)
-        await self.async_refresh(active_hass)
+        async with self._operation_lock:
+            data = dict(self._entry.data)
+            data[CONF_REQUESTED_MODE] = requested.value
+            active_hass.config_entries.async_update_entry(self._entry, data=data)
+            self.runtime_state = replace(self.runtime_state, requested_mode=requested)
+            await self._async_refresh_locked(active_hass)
 
     def requested_mode(self) -> PlantMode:
         """Return the persisted operator request."""
@@ -285,37 +340,71 @@ class HydronicRuntime:
         self._initializing = False
         if self._hass is not None:
             async_sync_repairs(self._hass, self.plant_id, ())
-        if self._remove_state_listener is not None:
-            with suppress(ValueError):
-                self._remove_state_listener()
-            self._remove_state_listener = None
-        self._cancel_transition_timer()
-        self._cancel_reconciliation_timer()
-        if self._remove_stop_listener is not None:
-            with suppress(ValueError):
-                self._remove_stop_listener()
-            self._remove_stop_listener = None
-        current_task = asyncio.current_task()
-        pending = [task for task in self._tasks if task is not current_task and not task.done()]
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        self._tasks.difference_update(pending)
-        # A cancelled periodic task can finish its finally block while the
-        # gather above is unwinding, so make the timer cancellation idempotent
-        # once more before detaching the Home Assistant instance.
-        self._cancel_transition_timer()
-        self._cancel_reconciliation_timer()
-        self._refresh_task = None
-        self._last_publication_signature = None
-        self._listeners.clear()
-        self._hass = None
-        self._entry = None
+        async with self._operation_lock:
+            if self._remove_state_listener is not None:
+                with suppress(ValueError):
+                    self._remove_state_listener()
+                self._remove_state_listener = None
+            self._cancel_transition_timer()
+            self._cancel_reconciliation_timer()
+            if self._remove_stop_listener is not None:
+                with suppress(ValueError):
+                    self._remove_stop_listener()
+                self._remove_stop_listener = None
+            current_task = asyncio.current_task()
+            pending = [task for task in self._tasks if task is not current_task and not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            self._tasks.difference_update(pending)
+            # A cancelled periodic task can finish its finally block while the
+            # gather above is unwinding, so make the timer cancellation idempotent
+            # once more before detaching the Home Assistant instance.
+            self._cancel_transition_timer()
+            self._cancel_reconciliation_timer()
+            self._refresh_task = None
+            self._last_publication_signature = None
+            self._listeners.clear()
+            self._hass = None
+            self._entry = None
 
     async def _async_handle_homeassistant_stop(self, _event: Event[Any]) -> None:
-        """Cancel runtime work when Home Assistant itself is stopping."""
+        """Cancel runtime work without starting an incomplete shutdown sequence."""
+        # Home Assistant removes a one-shot listener before invoking it.
+        # Clear our stale remover so async_stop does not ask Core to remove it twice.
+        self._remove_stop_listener = None
+        if active_ids := self.active_equipment_ids():
+            _LOGGER.warning(
+                "Plant %s is stopping with active equipment %s; no equipment commands "
+                "are issued during Home Assistant shutdown, so independent safeguards "
+                "must return the plant to a safe state",
+                self.plant_id,
+                ", ".join(active_ids),
+            )
         await self.async_stop()
+
+    def active_equipment_ids(self) -> tuple[str, ...]:
+        """Return positively observed or retained active physical outputs."""
+        active: set[str] = set()
+        if not self.dry_run:
+            active.update(
+                actuator_id
+                for actuator_id, state in self.runtime_state.valves.items()
+                if state.state is not ValveState.CLOSED
+            )
+            active.update(
+                actuator_id
+                for actuator_id, state in self.runtime_state.pumps.items()
+                if state.state is not PumpState.OFF
+            )
+        for actuator_id in self.executor.bindings:
+            observed = self.executor.actuator_state(actuator_id)
+            if observed in {ActuatorObservedState.ON, ActuatorObservedState.OPEN}:
+                active.add(actuator_id)
+        if not self.dry_run and self.runtime_state.selected_source_id is not None:
+            active.add(f"source:{self.runtime_state.selected_source_id}")
+        return tuple(sorted(active))
 
     async def async_set_zone_target_temperature(
         self, zone_id: str, temperature: float, *, hass: HomeAssistant | None = None
@@ -330,9 +419,10 @@ class HydronicRuntime:
         if active_hass is None or self._entry is None:
             raise RuntimeError("Hydronic runtime is not started.")
 
-        self.zone_target_temperatures[zone_id] = temperature
-        self.zone_preset_modes[zone_id] = "none"
-        await self.async_refresh(active_hass)
+        async with self._operation_lock:
+            self.zone_target_temperatures[zone_id] = temperature
+            self.zone_preset_modes[zone_id] = "none"
+            await self._async_refresh_locked(active_hass)
 
     async def async_set_zone_preset_mode(
         self, zone_id: str, preset_mode: str, *, hass: HomeAssistant | None = None
@@ -359,9 +449,10 @@ class HydronicRuntime:
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
             raise RuntimeError("Hydronic runtime is not started.")
-        self.zone_target_temperatures[zone_id] = target
-        self.zone_preset_modes[zone_id] = normalized
-        await self.async_refresh(active_hass)
+        async with self._operation_lock:
+            self.zone_target_temperatures[zone_id] = target
+            self.zone_preset_modes[zone_id] = normalized
+            await self._async_refresh_locked(active_hass)
 
     async def async_set_zone_hvac_mode(
         self,
@@ -381,8 +472,9 @@ class HydronicRuntime:
         active_hass = hass or self._hass
         if active_hass is None:
             raise RuntimeError("Hydronic runtime is not started.")
-        self.zone_hvac_modes[zone_id] = mode
-        await self.async_refresh(active_hass)
+        async with self._operation_lock:
+            self.zone_hvac_modes[zone_id] = mode
+            await self._async_refresh_locked(active_hass)
 
     async def async_restore_zone_thermostat(
         self,
@@ -394,11 +486,14 @@ class HydronicRuntime:
         hass: HomeAssistant,
     ) -> None:
         """Apply one validated RestoreEntity state atomically and reevaluate."""
-        self.zone_target_temperatures[zone_id] = _validate_target_temperature(target_temperature)
-        self.zone_preset_modes[zone_id] = preset
-        self.zone_hvac_modes[zone_id] = hvac_mode
-        if not self._initializing:
-            await self.async_refresh(hass)
+        async with self._operation_lock:
+            self.zone_target_temperatures[zone_id] = _validate_target_temperature(
+                target_temperature
+            )
+            self.zone_preset_modes[zone_id] = preset
+            self.zone_hvac_modes[zone_id] = hvac_mode
+            if not self._initializing:
+                await self._async_refresh_locked(hass)
 
     def zone_current_temperature(self, zone_id: str) -> float | None:
         """Return the current aggregate temperature for one zone."""
@@ -487,18 +582,15 @@ class HydronicRuntime:
             "failures": [failure.explanation for failure in report.failures],
         }
 
-    def presentation_snapshot(self, hass: HomeAssistant | None = None) -> dict[str, object]:
+    def presentation_snapshot(
+        self,
+        hass: HomeAssistant | None = None,
+        *,
+        control_entities: Mapping[str, str] | None = None,
+    ) -> dict[str, object]:
         """Return the versioned, redacted Plant presentation contract."""
-        active_hass = hass or self._hass
         entities = (
-            presentation_entity_ids(
-                active_hass,
-                self._entry.entry_id if self._entry is not None else "",
-                self.plant_id,
-                tuple(self.plant.zones),
-            )
-            if active_hass is not None
-            else {}
+            self.presentation_entities(hass) if control_entities is None else control_entities
         )
         return build_plant_presentation(self, control_entities=entities)
 
@@ -506,17 +598,17 @@ class HydronicRuntime:
         """Return deterministic JSON for a presentation snapshot."""
         return serialize_presentation(self.presentation_snapshot(hass))
 
-    def presentation_entity_ids(self, hass: HomeAssistant | None = None) -> tuple[str, ...]:
-        """Return only Hydronicus-owned entities used for permission filtering."""
-        if hass is None:
-            return ()
-        entities = presentation_entity_ids(
-            hass,
+    def presentation_entities(self, hass: HomeAssistant | None = None) -> dict[str, str]:
+        """Resolve Hydronicus-owned entities used by presentation and permissions."""
+        active_hass = hass or self._hass
+        if active_hass is None:
+            return {}
+        return presentation_entity_ids(
+            active_hass,
             self._entry.entry_id if self._entry is not None else "",
             self.plant_id,
             tuple(self.plant.zones),
         )
-        return tuple(sorted(set(entities.values())))
 
     async def async_safe_shutdown(
         self,
@@ -529,6 +621,22 @@ class HydronicRuntime:
         active_hass = hass or self._hass
         if active_hass is None:
             raise RuntimeError("Hydronic runtime is not started.")
+        effective_now = now or self._now()
+        async with self._operation_lock:
+            return await self._async_safe_shutdown_locked(
+                active_hass,
+                now=effective_now,
+                force_dry_run=force_dry_run,
+            )
+
+    async def _async_safe_shutdown_locked(
+        self,
+        active_hass: HomeAssistant,
+        *,
+        now: datetime | None = None,
+        force_dry_run: bool | None = None,
+    ) -> SafeShutdownReport:
+        """Execute safe shutdown while the runtime mutation lock is held."""
         effective_now = now or self._now()
         report = await self.executor.async_safe_shutdown(
             self.plant,
@@ -547,7 +655,7 @@ class HydronicRuntime:
         self.runtime_state = report.next_runtime
         self.last_execution = report.execution
         self._apply_execution_contract(report.execution, effective_now)
-        if report.plan.next_deadline is not None:
+        if not report.execution.failures and report.plan.next_deadline is not None:
             self._schedule_next_transition(active_hass, effective_now)
         self._notify_listeners_if_changed()
         return report
@@ -638,9 +746,18 @@ class HydronicRuntime:
         """Observe actuator feedback and re-evaluate after a configured state changes."""
         if self._stopping:
             return
+        if self._hass is not None:
+            self._schedule_task(self._hass, self._async_handle_state_change_async(event))
+
+    async def _async_handle_state_change_async(self, event: Event[EventStateChangedData]) -> None:
+        """Apply one state change under the runtime mutation lock."""
+        if self._stopping:
+            return
         entity_id = event.data.get("entity_id")
         new_state = event.data.get("new_state")
-        if entity_id is not None:
+        if entity_id is None:
+            return
+        async with self._operation_lock:
             self.executor.observe_entity_state(
                 entity_id,
                 getattr(new_state, "state", None),
@@ -648,11 +765,11 @@ class HydronicRuntime:
             actuator_ids = self._actuator_ids_for_entity(entity_id)
             if actuator_ids:
                 self._reconcile_actuator_runtime(actuator_ids)
-        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-            self._notify_listeners_if_changed()
-            return
-        if self._hass is not None:
-            self._schedule_refresh(self._hass)
+            if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+                self._notify_listeners_if_changed()
+                return
+            if self._hass is not None and not self._stopping:
+                self._schedule_refresh(self._hass)
 
     @callback
     def _async_handle_transition_timer(self, _now: datetime) -> None:
@@ -675,34 +792,39 @@ class HydronicRuntime:
         """Re-read actuator state, then schedule the next periodic reconciliation."""
         try:
             if not self._stopping:
-                previous_status = self.last_reconciliation_status
-                previous_observed = dict(self.executor.observed_states)
-                previous_feedback = dict(self.executor.feedback_states)
-                self.executor.observe_entities(self._actuator_states(hass))
-                changed_actuators = {
-                    actuator_id
-                    for actuator_id in set(previous_observed) | set(self.executor.observed_states)
-                    if previous_observed.get(actuator_id)
-                    != self.executor.observed_states.get(actuator_id)
-                }
-                changed_actuators.update(
-                    f"feedback:{actuator_id}"
-                    for actuator_id in set(previous_feedback) | set(self.executor.feedback_states)
-                    if previous_feedback.get(actuator_id)
-                    != self.executor.feedback_states.get(actuator_id)
-                )
-                self.reconciliation_count += 1
-                self.last_reconciliation_changed_actuator_count = len(changed_actuators)
-                if changed_actuators:
-                    self.reconciliation_changed_count += 1
-                    self.last_reconciliation_status = "changed"
-                    self._reconcile_actuator_runtime()
-                    await self.async_refresh(hass)
-                else:
-                    self.reconciliation_unchanged_count += 1
-                    self.last_reconciliation_status = "unchanged"
-                    if self.last_reconciliation_status != previous_status:
-                        self._notify_listeners_if_changed()
+                async with self._operation_lock:
+                    if self._stopping:
+                        return
+                    previous_status = self.last_reconciliation_status
+                    previous_observed = dict(self.executor.observed_states)
+                    previous_feedback = dict(self.executor.feedback_states)
+                    self.executor.observe_entities(self._actuator_states(hass))
+                    changed_actuators = {
+                        actuator_id
+                        for actuator_id in set(previous_observed)
+                        | set(self.executor.observed_states)
+                        if previous_observed.get(actuator_id)
+                        != self.executor.observed_states.get(actuator_id)
+                    }
+                    changed_actuators.update(
+                        f"feedback:{actuator_id}"
+                        for actuator_id in set(previous_feedback)
+                        | set(self.executor.feedback_states)
+                        if previous_feedback.get(actuator_id)
+                        != self.executor.feedback_states.get(actuator_id)
+                    )
+                    self.reconciliation_count += 1
+                    self.last_reconciliation_changed_actuator_count = len(changed_actuators)
+                    if changed_actuators:
+                        self.reconciliation_changed_count += 1
+                        self.last_reconciliation_status = "changed"
+                        self._reconcile_actuator_runtime()
+                        await self._async_refresh_locked(hass)
+                    else:
+                        self.reconciliation_unchanged_count += 1
+                        self.last_reconciliation_status = "unchanged"
+                        if self.last_reconciliation_status != previous_status:
+                            self._notify_listeners_if_changed()
         finally:
             if self._hass is hass and not self._stopping:
                 self._schedule_periodic_reconciliation(hass)
@@ -736,6 +858,22 @@ class HydronicRuntime:
             self.coalesced_refresh_count += 1
             return
         self._refresh_task = self._schedule_task(hass, self.async_refresh(hass))
+
+    @callback
+    def _async_handle_late_actuator_completion(self, task: asyncio.Task[Any]) -> None:
+        """Consume a timed-out service result and conservatively re-read HA state."""
+        try:
+            service_error = task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.late_actuator_error_count += 1
+        else:
+            if service_error is not None:
+                self.late_actuator_error_count += 1
+        self.late_actuator_completion_count += 1
+        if self._hass is not None and not self._stopping:
+            self._schedule_refresh(self._hass)
 
     def _cancel_transition_timer(self) -> None:
         """Cancel the pending one-shot transition timer, if any."""
@@ -827,12 +965,8 @@ class HydronicRuntime:
             readiness = self.executor.readiness_state(actuator_id)
             retained = self.executor.requested_state(actuator_id)
             failure = self.executor.failure_for(actuator_id)
-            if (
-                failure is not None
-                and failure.operation.target_state is ActuatorObservedState.ON
-                and observed is not ActuatorObservedState.ON
-            ):
-                valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
+            if failure is not None and observed is not failure.operation.target_state:
+                valves[actuator_id] = ValveRuntime(ValveState.INDETERMINATE, now, False)
                 continue
             if readiness is True:
                 valves[actuator_id] = ValveRuntime(
@@ -1018,20 +1152,46 @@ class HydronicRuntime:
         self, hass: HomeAssistant, operation: ActuatorOperation
     ) -> None:
         """Translate a generic operation into one explicit Home Assistant service call."""
+        service_data: dict[str, object] = {"entity_id": operation.entity_id}
+        if operation.service == "select_option":
+            if operation.target_value is None:
+                raise ValueError("A selector operation requires an explicit option.")
+            service_data["option"] = operation.target_value
         service_task = self._schedule_task(
             hass,
-            hass.services.async_call(
-                operation.domain,
-                operation.service,
-                {"entity_id": operation.entity_id},
-                blocking=True,
-            ),
+            self._async_call_actuator_service(hass, operation, service_data),
         )
         try:
-            await asyncio.wait_for(asyncio.shield(service_task), ACTUATOR_COMMAND_TIMEOUT_SECONDS)
+            service_error = await asyncio.wait_for(
+                asyncio.shield(service_task),
+                ACTUATOR_COMMAND_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            service_task.add_done_callback(self._async_handle_late_actuator_completion)
+            raise
         finally:
             if service_task.done():
                 self._tasks.discard(service_task)
+        if service_error is not None:
+            raise service_error
+
+    @staticmethod
+    async def _async_call_actuator_service(
+        hass: HomeAssistant,
+        operation: ActuatorOperation,
+        service_data: Mapping[str, object],
+    ) -> Exception | None:
+        """Capture an HA service rejection so a shielded late task cannot leak it."""
+        try:
+            await hass.services.async_call(
+                operation.domain,
+                operation.service,
+                service_data,
+                blocking=True,
+            )
+        except Exception as error:
+            return error
+        return None
 
     def _actuator_transition_delays(self, now: datetime) -> list[float]:
         """Return pending changeover, valve, and pump delays."""
@@ -1351,7 +1511,10 @@ class HydronicRuntime:
         self.last_execution = await self.executor.async_execute(
             result.control_plan,
             lambda operation: self._async_dispatch_actuator(hass, operation),
-            unavailable_actuator_ids=self._unavailable_actuator_ids(),
+            unavailable_actuator_ids=(
+                self._unavailable_actuator_ids()
+                | self._actuator_ids_blocked_by_failed_valve_starts()
+            ),
             force_dry_run_start_actuator_ids=result.control_plan.cooling_actuator_ids,
             force_dry_run_actuator_ids=(
                 frozenset({self.plant.source_selector.id})
@@ -1364,12 +1527,17 @@ class HydronicRuntime:
 
     async def async_refresh(self, hass: HomeAssistant) -> None:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
+        async with self._operation_lock:
+            await self._async_refresh_locked(hass)
+
+    async def _async_refresh_locked(self, hass: HomeAssistant) -> None:
+        """Read sensor states and evaluate the controller while holding the mutation lock."""
         if self._stopping:
             return
         self._refresh_binding_health(hass)
         self.refresh_count += 1
         if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-            await self.async_safe_shutdown(hass)
+            await self._async_safe_shutdown_locked(hass)
             return
 
         self._refresh_actuator_observations(hass)
@@ -1535,7 +1703,7 @@ class HydronicRuntime:
             ActuatorObservedState.ON,
             ActuatorObservedState.OPEN,
         }:
-            valves[operation.actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
+            valves[operation.actuator_id] = ValveRuntime(ValveState.INDETERMINATE, now, False)
             return True
         if operation.actuator_id in self.plant.valves and operation.target_state in {
             ActuatorObservedState.OFF,
@@ -1544,7 +1712,7 @@ class HydronicRuntime:
             valves[operation.actuator_id] = ValveRuntime(
                 ValveState.CLOSED
                 if self.executor.actuator_state(operation.actuator_id) is operation.target_state
-                else ValveState.OPENING,
+                else ValveState.INDETERMINATE,
                 now,
                 False,
             )
@@ -1584,8 +1752,34 @@ class HydronicRuntime:
                 pumps,
                 now,
             )
+        for valve_id in self._failed_valve_start_ids():
+            current = valves.get(valve_id)
+            if current is not None and current.state is not ValveState.CLOSED:
+                valves[valve_id] = ValveRuntime(ValveState.INDETERMINATE, now, False)
+                changed = True
         if changed:
             self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
+
+    def _actuator_ids_blocked_by_failed_valve_starts(self) -> frozenset[str]:
+        """Block dependent pump starts while a valve-open command is indeterminate."""
+        failed_valve_ids = self._failed_valve_start_ids()
+        if not failed_valve_ids:
+            return frozenset()
+        return frozenset(
+            circuit.pump_id
+            for circuit in self.plant.circuits.values()
+            if any(valve_id in failed_valve_ids for valve_id in circuit.valve_ids)
+        )
+
+    def _failed_valve_start_ids(self) -> frozenset[str]:
+        """Return valves whose last open command has not been safely reconciled."""
+        return frozenset(
+            valve_id
+            for valve_id in self.plant.valves
+            if (failure := self.executor.failure_for(valve_id)) is not None
+            and failure.operation.target_state
+            in {ActuatorObservedState.ON, ActuatorObservedState.OPEN}
+        )
 
 
 def _stored_requested_mode(entry: Any) -> PlantMode:
@@ -1601,10 +1795,8 @@ _PRESET_MODES = {"comfort", "eco", "away"}
 
 
 def _entity_reference_is_resolved(state: Any) -> bool:
-    """Return whether Home Assistant currently exposes a usable entity state."""
-    if state is None:
-        return False
-    return str(getattr(state, "state", "")).strip().lower() not in {"unknown", "unavailable"}
+    """Return whether Home Assistant currently exposes the configured entity."""
+    return state is not None
 
 
 def _state_is_available(state: Any) -> bool:
@@ -1690,50 +1882,3 @@ def _validate_target_temperature(temperature: float) -> float:
     ):
         raise ValueError("Zone target temperature must be finite and between 5 and 35 °C.")
     return value
-
-
-def _stored_zone_preset_mode(
-    entry: Any, zone_id: str, zone: Any, subentry_ids: Mapping[str, str]
-) -> str:
-    """Recover an active preset while treating removed presets as manual targets."""
-    data: Mapping[str, Any] | None = None
-    subentry_id = subentry_ids.get(zone_id)
-    if subentry_id is not None:
-        subentry = getattr(entry, "subentries", {}).get(subentry_id)
-        if subentry is not None:
-            data = subentry.data
-    else:
-        topology = entry.data.get("topology", {})
-        if isinstance(topology, Mapping):
-            for raw_zone in topology.get("zones", []):
-                if isinstance(raw_zone, Mapping) and str(raw_zone.get("id")) == zone_id:
-                    data = raw_zone
-                    break
-    if data is None:
-        return "none"
-    value = str(data.get("preset_mode", "none")).lower()
-    return value if value in _PRESET_MODES and value in zone.preset_targets else "none"
-
-
-def _zone_preset_mode_update(
-    data: Mapping[str, Any], zone_id: str, preset_mode: str, is_subentry: bool
-) -> Mapping[str, Any]:
-    """Store the active preset in the zone record, including parent-owned zones."""
-    if is_subentry:
-        return {**data, "preset_mode": preset_mode}
-    topology = data.get("topology", {})
-    if not isinstance(topology, Mapping):
-        return {**data, "preset_mode": preset_mode}
-    raw_zones = topology.get("zones", [])
-    if not isinstance(raw_zones, list):
-        return {**data, "preset_mode": preset_mode}
-    zones = [
-        {
-            **raw_zone,
-            "preset_mode": preset_mode,
-        }
-        if isinstance(raw_zone, Mapping) and str(raw_zone.get("id")) == zone_id
-        else raw_zone
-        for raw_zone in raw_zones
-    ]
-    return {**data, "topology": {**topology, "zones": zones}}

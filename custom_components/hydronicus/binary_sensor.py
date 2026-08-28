@@ -6,12 +6,11 @@ from typing import cast
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
-from .const import DOMAIN
 from .core.model import PumpState, ValveState, ZoneRuntime
+from .entity_device import plant_device_info, topology_device_info
 from .runtime import HydronicRuntime
 
 
@@ -24,9 +23,7 @@ class HydronicShadowEntity(BinarySensorEntity):
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the entity to one plant runtime."""
         self._runtime: HydronicRuntime = cast(HydronicRuntime, entry.runtime_data)
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._runtime.plant_id)}, name=self._runtime.name
-        )
+        self._attr_device_info = plant_device_info(self._runtime)
 
     async def async_added_to_hass(self) -> None:
         """Subscribe after Home Assistant has registered the entity."""
@@ -102,7 +99,8 @@ class ZoneDemandBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_demand"
-        self._attr_name = f"{name} demand"
+        self._attr_name = "Demand"
+        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -119,7 +117,8 @@ class ZoneBlockedBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_blocked"
-        self._attr_name = f"{name} blocked"
+        self._attr_name = "Blocked"
+        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -148,7 +147,8 @@ class ZoneCoolingDemandBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_demand"
-        self._attr_name = f"{name} cooling demand"
+        self._attr_name = "Cooling demand"
+        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -177,7 +177,8 @@ class ZoneCoolingBlockedBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_blocked"
-        self._attr_name = f"{name} cooling blocked"
+        self._attr_name = "Cooling blocked"
+        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -202,7 +203,8 @@ class SourceDemandBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_demand"
-        self._attr_name = f"{name} demand"
+        self._attr_name = "Demand"
+        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -233,7 +235,8 @@ class SourceAvailableBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_available"
-        self._attr_name = f"{name} available"
+        self._attr_name = "Available"
+        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -259,7 +262,8 @@ class SourceActiveBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_active"
-        self._attr_name = f"{name} active"
+        self._attr_name = "Active"
+        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -277,7 +281,8 @@ class SourceBlockedBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_blocked"
-        self._attr_name = f"{name} blocked"
+        self._attr_name = "Blocked"
+        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -302,7 +307,10 @@ class ActuatorRequestedBinarySensor(HydronicShadowEntity):
         self._actuator_id = actuator_id
         self._kind = kind
         self._attr_unique_id = f"{self._runtime.plant_id}_{kind}_{actuator_id}_requested"
-        self._attr_name = f"{actuator_name} requested"
+        self._attr_name = "Requested"
+        self._attr_device_info = topology_device_info(
+            self._runtime, kind, actuator_id, actuator_name
+        )
 
     @property
     def is_on(self) -> bool:
@@ -326,7 +334,9 @@ class ActuatorMismatchBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._actuator_id = actuator_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_mismatch"
-        self._attr_name = f"{name} mismatch"
+        self._attr_name = "Mismatch"
+        kind = "valve" if actuator_id in self._runtime.plant.valves else "pump"
+        self._attr_device_info = topology_device_info(self._runtime, kind, actuator_id, name)
 
     @property
     def is_on(self) -> bool:
@@ -359,7 +369,9 @@ class ActuatorBlockedBinarySensor(HydronicShadowEntity):
         super().__init__(entry)
         self._actuator_id = actuator_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_blocked"
-        self._attr_name = f"{name} blocked"
+        self._attr_name = "Blocked"
+        kind = "valve" if actuator_id in self._runtime.plant.valves else "pump"
+        self._attr_device_info = topology_device_info(self._runtime, kind, actuator_id, name)
 
     @property
     def is_on(self) -> bool:

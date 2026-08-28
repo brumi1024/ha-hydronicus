@@ -4,14 +4,16 @@ from typing import Final
 
 DOMAIN: Final = "hydronicus"
 PLATFORMS: Final = ("binary_sensor", "button", "climate", "select", "sensor")
-CONFIG_ENTRY_VERSION: Final = 1
-CONFIG_ENTRY_MINOR_VERSION: Final = 1
+CONFIG_ENTRY_VERSION: Final = 2
+CONFIG_ENTRY_MINOR_VERSION: Final = 0
 CONF_NAME: Final = "name"
 CONF_ACTUATOR_KIND: Final = "actuator_kind"
 CONF_PLANT_ID: Final = "plant_id"
 CONF_DRY_RUN: Final = "dry_run"
 CONF_DRY_RUN_CONFIRMATION: Final = "dry_run_confirmation"
 CONF_REQUESTED_MODE: Final = "requested_mode"
+CONF_OUTPUT_AUTHORIZATION: Final = "output_authorization"
+CONF_SUBENTRY_OBJECTS: Final = "subentry_objects"
 CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS: Final = "diagnostics_include_actuator_details"
 CONF_TOPOLOGY: Final = "topology"
 CONF_ZONES: Final = "zones"

@@ -19,9 +19,11 @@
     "source_selector": true,
     "dry_run": true,
     "thresholds": {
-      "compile_ms_max": 1000.0,
-      "evaluation_ms_max": 2000.0,
-      "peak_memory_mib_max": 128.0,
+      "compile_ms_max": 100.0,
+      "evaluation_ms_max": 200.0,
+      "peak_memory_mib_max": 8.0,
+      "setup_ms_max": 1500.0,
+      "runtime_refresh_ms_max": 150.0,
       "minimum_reconciliation_count": 2,
       "minimum_entity_update_count": 1,
       "maximum_service_call_count": 0

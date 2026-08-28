@@ -18,6 +18,7 @@ class ValveState(StrEnum):
     CLOSED = "closed"
     OPENING = "opening"
     OPEN = "open"
+    INDETERMINATE = "indeterminate"
 
 
 class PumpState(StrEnum):
@@ -93,6 +94,15 @@ class EquipmentKind(StrEnum):
     VALVE = "valve"
     PUMP = "pump"
     SOURCE = "source"
+
+
+class BindingCategory(StrEnum):
+    """Safety category for one configured Home Assistant entity reference."""
+
+    SENSOR = "sensor"
+    FEEDBACK = "feedback"
+    ACTUATOR = "actuator"
+    THERMOSTAT = "thermostat"
 
 
 class TemperatureAggregation(StrEnum):
@@ -595,6 +605,23 @@ class DeliveryRoute:
 
 
 @dataclass(frozen=True, slots=True)
+class EntityBinding:
+    """One topology-owned entity reference without any Home Assistant dependency."""
+
+    category: BindingCategory
+    object_type: str
+    object_id: str
+    object_name: str
+    binding_key: str
+    label: str
+    entity_id: str
+    circuit_ids: tuple[str, ...] = ()
+    zone_ids: tuple[str, ...] = ()
+    actuator_id: str | None = None
+    required: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class PlantConfiguration:
     """User topology before validation and compilation."""
 
@@ -619,6 +646,7 @@ class CompiledPlant:
     circuits: Mapping[str, Circuit]
     routes: tuple[DeliveryRoute, ...]
     logic_summary: tuple[str, ...]
+    entity_bindings: tuple[EntityBinding, ...] = ()
     warnings: tuple[TopologyWarning, ...] = ()
     sources: Mapping[str, Source] = field(default_factory=dict)
     source_selector: SourceSelectionActuator | None = None

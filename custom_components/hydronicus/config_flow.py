@@ -128,7 +128,16 @@ from .core.model import (
     TemperatureAggregation,
 )
 from .core.topology import TopologyValidationError, compile_topology
-from .entry_configuration import effective_plant_configuration
+from .entry_configuration import (
+    authorization_output_lines,
+    authorize_outputs,
+    effective_plant_configuration,
+    entry_data_with_subentry_draft,
+    invalidate_output_authorization,
+    output_authorization,
+    subentry_draft,
+    subentry_owned_ids,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +147,34 @@ class CircuitOptions:
     zones: list[selector.SelectOptionDict]
     valves: list[selector.SelectOptionDict]
     pumps: list[selector.SelectOptionDict]
+
+
+def _subentry_handle(draft: Mapping[str, Any]) -> dict[str, str]:
+    """Store only the stable pointer needed for UI and entity ownership."""
+    return {"id": str(draft["id"])}
+
+
+async def _async_persist_subentry_graph(
+    flow: config_entries.ConfigSubentryFlow,
+    entry: config_entries.ConfigEntry,
+    subentry_type: str,
+    draft: Mapping[str, Any],
+    *,
+    excluded_subentry_id: str | None = None,
+) -> bool:
+    """Safely persist one complete graph mutation before returning its UI handle."""
+    if not bool(entry.data.get(CONF_DRY_RUN, True)):
+        runtime = getattr(entry, "runtime_data", None)
+        if runtime is None or not await runtime.async_set_dry_run(True, hass=flow.hass):
+            return False
+    data = entry_data_with_subentry_draft(
+        entry,
+        subentry_type,
+        draft,
+        excluded_subentry_id=excluded_subentry_id,
+    )
+    flow.hass.config_entries.async_update_entry(entry, data=data)
+    return True
 
 
 def _routes_with_retained_fields(
@@ -335,6 +372,7 @@ def _initial_review_placeholders(
         "circuit": str(topology[CONF_CIRCUITS][0][CONF_NAME]),
         "logic": logic,
         "warnings": _warning_text(compiled) or "- None",
+        "outputs": authorization_output_lines({CONF_PLANT_ID: "pending", CONF_TOPOLOGY: topology}),
     }
 
 
@@ -352,6 +390,15 @@ def _dry_run_confirmation_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_DRY_RUN_CONFIRMATION, default=False): selector.BooleanSelector(),
+        }
+    )
+
+
+def _dry_run_reconfigure_schema(default: bool) -> vol.Schema:
+    """Return the Plant Dry run reconfigure schema."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_DRY_RUN, default=default): selector.BooleanSelector(),
         }
     )
 
@@ -383,15 +430,20 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
 
     def _options(self) -> CircuitOptions:
         """Return parent-owned dependencies with deletion-safe lifecycles."""
-        configuration = plant_configuration_from_entry_data(self._get_entry().data)
+        entry = self._get_entry()
+        configuration = plant_configuration_from_entry_data(entry.data)
+        dynamic_zone_ids = subentry_owned_ids(entry.data, SUBENTRY_TYPE_ZONE)
+        dynamic_valve_ids = subentry_owned_ids(entry.data, SUBENTRY_TYPE_ACTUATOR)
         return CircuitOptions(
             zones=[
                 selector.SelectOptionDict(value=zone.id, label=zone.name)
                 for zone in configuration.zones
+                if zone.id not in dynamic_zone_ids
             ],
             valves=[
                 selector.SelectOptionDict(value=valve.id, label=valve.name)
                 for valve in configuration.valves
+                if valve.id not in dynamic_valve_ids
             ],
             pumps=[
                 selector.SelectOptionDict(value=pump.id, label=pump.name)
@@ -424,8 +476,20 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    entry,
+                    SUBENTRY_TYPE_CIRCUIT,
+                    data,
+                ):
+                    errors["base"] = "dry_run_shutdown_in_progress"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_circuit_schema(options, defaults=user_input),
+                        errors=errors,
+                    )
                 return self.async_create_entry(
-                    title=data[CONF_NAME], data=data, unique_id=circuit_id
+                    title=data[CONF_NAME], data=_subentry_handle(data), unique_id=circuit_id
                 )
 
         return self.async_show_form(
@@ -440,13 +504,14 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Update a circuit without changing retained circuit or route UUIDs."""
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
+        defaults = subentry_draft(entry, subentry)
         options = self._options()
         errors: dict[str, str] = {}
         if user_input is not None:
             data = _circuit_data(
                 user_input,
-                subentry.data["id"],
-                subentry.data[CONF_ROUTES],
+                defaults["id"],
+                defaults[CONF_ROUTES],
             )
             if error := _circuit_validation_error(
                 entry,
@@ -465,15 +530,31 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    entry,
+                    SUBENTRY_TYPE_CIRCUIT,
+                    data,
+                    excluded_subentry_id=subentry.subentry_id,
+                ):
+                    errors["base"] = "dry_run_shutdown_in_progress"
+                    return self.async_show_form(
+                        step_id="reconfigure",
+                        data_schema=_circuit_schema(options, defaults=defaults),
+                        errors=errors,
+                    )
                 return self.async_update_and_abort(
-                    entry, subentry, title=data[CONF_NAME], data=data
+                    entry,
+                    subentry,
+                    title=data[CONF_NAME],
+                    data=_subentry_handle(data),
                 )
 
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=_circuit_schema(
                 options,
-                defaults=subentry.data,
+                defaults=defaults,
             ),
             errors=errors,
         )
@@ -492,15 +573,40 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 )
             if self._reconfigure:
                 subentry = self._get_reconfigure_subentry()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    self._get_entry(),
+                    SUBENTRY_TYPE_CIRCUIT,
+                    self._draft,
+                    excluded_subentry_id=subentry.subentry_id,
+                ):
+                    return self.async_show_form(
+                        step_id="review",
+                        data_schema=_warning_review_schema(),
+                        errors={"base": "dry_run_shutdown_in_progress"},
+                        description_placeholders={"warnings": _warning_text(self._draft_compiled)},
+                    )
                 return self.async_update_and_abort(
                     self._get_entry(),
                     subentry,
                     title=self._draft[CONF_NAME],
-                    data=self._draft,
+                    data=_subentry_handle(self._draft),
+                )
+            if not await _async_persist_subentry_graph(
+                self,
+                self._get_entry(),
+                SUBENTRY_TYPE_CIRCUIT,
+                self._draft,
+            ):
+                return self.async_show_form(
+                    step_id="review",
+                    data_schema=_warning_review_schema(),
+                    errors={"base": "dry_run_shutdown_in_progress"},
+                    description_placeholders={"warnings": _warning_text(self._draft_compiled)},
                 )
             return self.async_create_entry(
                 title=self._draft[CONF_NAME],
-                data=self._draft,
+                data=_subentry_handle(self._draft),
                 unique_id=self._draft["id"],
             )
         return self.async_show_form(
@@ -933,10 +1039,13 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
     _selected_thermostat_kind: str
 
     def _circuit_options(self) -> list[selector.SelectOptionDict]:
-        configuration = plant_configuration_from_entry_data(self._get_entry().data)
+        entry = self._get_entry()
+        configuration = plant_configuration_from_entry_data(entry.data)
+        dynamic_circuit_ids = subentry_owned_ids(entry.data, SUBENTRY_TYPE_CIRCUIT)
         return [
             selector.SelectOptionDict(value=circuit.id, label=circuit.name)
             for circuit in configuration.circuits
+            if circuit.id not in dynamic_circuit_ids
         ]
 
     async def _finish_zone(self) -> config_entries.SubentryFlowResult:
@@ -963,15 +1072,36 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             return await self.async_step_review()
         if self._zone_reconfigure:
             subentry = self._get_reconfigure_subentry()
+            if not await _async_persist_subentry_graph(
+                self,
+                entry,
+                SUBENTRY_TYPE_ZONE,
+                self._zone_draft,
+                excluded_subentry_id=subentry.subentry_id,
+            ):
+                return self.async_show_form(
+                    step_id="sensor_policy",
+                    errors={"base": "dry_run_shutdown_in_progress"},
+                )
             return self.async_update_and_abort(
                 entry,
                 subentry,
                 title=self._zone_draft[CONF_NAME],
-                data=self._zone_draft,
+                data=_subentry_handle(self._zone_draft),
+            )
+        if not await _async_persist_subentry_graph(
+            self,
+            entry,
+            SUBENTRY_TYPE_ZONE,
+            self._zone_draft,
+        ):
+            return self.async_show_form(
+                step_id="sensor_policy",
+                errors={"base": "dry_run_shutdown_in_progress"},
             )
         return self.async_create_entry(
             title=self._zone_draft[CONF_NAME],
-            data=self._zone_draft,
+            data=_subentry_handle(self._zone_draft),
             unique_id=self._zone_draft["id"],
         )
 
@@ -1044,7 +1174,8 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
     ) -> config_entries.SubentryFlowResult:
         """Choose the thermostat owner before updating the Zone."""
         subentry = self._get_reconfigure_subentry()
-        thermostat = subentry.data.get(CONF_THERMOSTAT, {})
+        defaults = subentry_draft(self._get_entry(), subentry)
+        thermostat = defaults.get(CONF_THERMOSTAT, {})
         default_kind = (
             str(thermostat.get("kind", THERMOSTAT_KIND_HYDRONICUS))
             if isinstance(thermostat, Mapping)
@@ -1067,7 +1198,8 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Collect only the fields owned by the selected thermostat kind."""
         defaults: Mapping[str, Any] | None = None
         if self._zone_reconfigure:
-            defaults = self._get_reconfigure_subentry().data
+            subentry = self._get_reconfigure_subentry()
+            defaults = subentry_draft(self._get_entry(), subentry)
         if user_input is not None:
             return await self._async_process_zone_input(
                 {**user_input, CONF_THERMOSTAT_KIND: self._selected_thermostat_kind},
@@ -1093,13 +1225,14 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Validate one complete thermostat-specific Zone form."""
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry() if reconfigure else None
-        zone_id = str(subentry.data["id"]) if subentry is not None else str(uuid4())
+        defaults = subentry_draft(entry, subentry) if subentry is not None else None
+        zone_id = str(defaults["id"]) if defaults is not None else str(uuid4())
         data = _zone_data(
             {**user_input, CONF_THERMOSTAT_KIND: kind},
             zone_id,
-            subentry.data[CONF_ROUTES] if subentry is not None else None,
-            subentry.data.get(CONF_TEMPERATURE_SENSOR_METADATA) if subentry is not None else None,
-            subentry.data.get(CONF_HUMIDITY_SENSOR_METADATA) if subentry is not None else None,
+            defaults[CONF_ROUTES] if defaults is not None else None,
+            defaults.get(CONF_TEMPERATURE_SENSOR_METADATA) if defaults is not None else None,
+            defaults.get(CONF_HUMIDITY_SENSOR_METADATA) if defaults is not None else None,
         )
         if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and _external_thermostat_is_hydronicus_owned(
             self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
@@ -1142,15 +1275,40 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 )
             if self._zone_reconfigure:
                 subentry = self._get_reconfigure_subentry()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    self._get_entry(),
+                    SUBENTRY_TYPE_ZONE,
+                    self._zone_draft,
+                    excluded_subentry_id=subentry.subentry_id,
+                ):
+                    return self.async_show_form(
+                        step_id="review",
+                        data_schema=_warning_review_schema(),
+                        errors={"base": "dry_run_shutdown_in_progress"},
+                        description_placeholders={"warnings": _warning_text(self._zone_compiled)},
+                    )
                 return self.async_update_and_abort(
                     self._get_entry(),
                     subentry,
                     title=self._zone_draft[CONF_NAME],
-                    data=self._zone_draft,
+                    data=_subentry_handle(self._zone_draft),
+                )
+            if not await _async_persist_subentry_graph(
+                self,
+                self._get_entry(),
+                SUBENTRY_TYPE_ZONE,
+                self._zone_draft,
+            ):
+                return self.async_show_form(
+                    step_id="review",
+                    data_schema=_warning_review_schema(),
+                    errors={"base": "dry_run_shutdown_in_progress"},
+                    description_placeholders={"warnings": _warning_text(self._zone_compiled)},
                 )
             return self.async_create_entry(
                 title=self._zone_draft[CONF_NAME],
-                data=self._zone_draft,
+                data=_subentry_handle(self._zone_draft),
                 unique_id=self._zone_draft["id"],
             )
         return self.async_show_form(
@@ -1247,9 +1405,11 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
     def _circuit_options(self) -> list[selector.SelectOptionDict]:
         entry = self._get_entry()
         configuration = plant_configuration_from_entry_data(entry.data)
+        dynamic_circuit_ids = subentry_owned_ids(entry.data, SUBENTRY_TYPE_CIRCUIT)
         return [
             selector.SelectOptionDict(value=circuit.id, label=circuit.name)
             for circuit in configuration.circuits
+            if circuit.id not in dynamic_circuit_ids
         ]
 
     async def async_step_user(
@@ -1277,8 +1437,20 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    entry,
+                    SUBENTRY_TYPE_ACTUATOR,
+                    data,
+                ):
+                    errors["base"] = "dry_run_shutdown_in_progress"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_valve_actuator_schema(circuit_options, user_input),
+                        errors=errors,
+                    )
                 return self.async_create_entry(
-                    title=data[CONF_NAME], data=data, unique_id=actuator_id
+                    title=data[CONF_NAME], data=_subentry_handle(data), unique_id=actuator_id
                 )
 
         return self.async_show_form(
@@ -1293,10 +1465,11 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Update one valve actuator without changing its stable UUID."""
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
+        defaults = subentry_draft(entry, subentry)
         circuit_options = self._circuit_options()
         errors: dict[str, str] = {}
         if user_input is not None:
-            data = _valve_actuator_data(user_input, subentry.data["id"])
+            data = _valve_actuator_data(user_input, defaults["id"])
             if error := _actuator_validation_error(
                 entry,
                 data,
@@ -1314,13 +1487,29 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    entry,
+                    SUBENTRY_TYPE_ACTUATOR,
+                    data,
+                    excluded_subentry_id=subentry.subentry_id,
+                ):
+                    errors["base"] = "dry_run_shutdown_in_progress"
+                    return self.async_show_form(
+                        step_id="reconfigure",
+                        data_schema=_valve_actuator_schema(circuit_options, defaults),
+                        errors=errors,
+                    )
                 return self.async_update_and_abort(
-                    entry, subentry, title=data[CONF_NAME], data=data
+                    entry,
+                    subentry,
+                    title=data[CONF_NAME],
+                    data=_subentry_handle(data),
                 )
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_valve_actuator_schema(circuit_options, subentry.data),
+            data_schema=_valve_actuator_schema(circuit_options, defaults),
             errors=errors,
         )
 
@@ -1338,15 +1527,40 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 )
             if self._reconfigure:
                 subentry = self._get_reconfigure_subentry()
+                if not await _async_persist_subentry_graph(
+                    self,
+                    self._get_entry(),
+                    SUBENTRY_TYPE_ACTUATOR,
+                    self._draft,
+                    excluded_subentry_id=subentry.subentry_id,
+                ):
+                    return self.async_show_form(
+                        step_id="review",
+                        data_schema=_warning_review_schema(),
+                        errors={"base": "dry_run_shutdown_in_progress"},
+                        description_placeholders={"warnings": _warning_text(self._draft_compiled)},
+                    )
                 return self.async_update_and_abort(
                     self._get_entry(),
                     subentry,
                     title=self._draft[CONF_NAME],
-                    data=self._draft,
+                    data=_subentry_handle(self._draft),
+                )
+            if not await _async_persist_subentry_graph(
+                self,
+                self._get_entry(),
+                SUBENTRY_TYPE_ACTUATOR,
+                self._draft,
+            ):
+                return self.async_show_form(
+                    step_id="review",
+                    data_schema=_warning_review_schema(),
+                    errors={"base": "dry_run_shutdown_in_progress"},
+                    description_placeholders={"warnings": _warning_text(self._draft_compiled)},
                 )
             return self.async_create_entry(
                 title=self._draft[CONF_NAME],
-                data=self._draft,
+                data=_subentry_handle(self._draft),
                 unique_id=self._draft["id"],
             )
         return self.async_show_form(
@@ -1471,8 +1685,20 @@ class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             if error := _source_validation_error(entry, data):
                 errors["base"] = error
             else:
+                if not await _async_persist_subentry_graph(
+                    self,
+                    entry,
+                    SUBENTRY_TYPE_SOURCE,
+                    data,
+                ):
+                    errors["base"] = "dry_run_shutdown_in_progress"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_source_schema(user_input),
+                        errors=errors,
+                    )
                 return self.async_create_entry(
-                    title=data[CONF_NAME], data=data, unique_id=source_id
+                    title=data[CONF_NAME], data=_subentry_handle(data), unique_id=source_id
                 )
         return self.async_show_form(
             step_id="user",
@@ -1486,9 +1712,10 @@ class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Update a source while preserving its stable UUID."""
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
+        defaults = subentry_draft(entry, subentry)
         errors: dict[str, str] = {}
         if user_input is not None:
-            data = _source_data(user_input, subentry.data["id"])
+            data = _source_data(user_input, defaults["id"])
             if error := _source_validation_error(
                 entry,
                 data,
@@ -1496,15 +1723,28 @@ class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             ):
                 errors["base"] = error
             else:
+                if not await _async_persist_subentry_graph(
+                    self,
+                    entry,
+                    SUBENTRY_TYPE_SOURCE,
+                    data,
+                    excluded_subentry_id=subentry.subentry_id,
+                ):
+                    errors["base"] = "dry_run_shutdown_in_progress"
+                    return self.async_show_form(
+                        step_id="reconfigure",
+                        data_schema=_source_schema(defaults),
+                        errors=errors,
+                    )
                 return self.async_update_and_abort(
                     entry,
                     subentry,
                     title=data[CONF_NAME],
-                    data=data,
+                    data=_subentry_handle(data),
                 )
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_source_schema(subentry.data),
+            data_schema=_source_schema(defaults),
             errors=errors,
         )
 
@@ -1576,11 +1816,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
             return await self._async_apply_dry_run(entry, requested_dry_run)
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_DRY_RUN, default=current_dry_run): selector.BooleanSelector(),
-                }
-            ),
+            data_schema=_dry_run_reconfigure_schema(current_dry_run),
         )
 
     async def async_step_dry_run_confirmation(
@@ -1594,11 +1830,13 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                     step_id="dry_run_confirmation",
                     data_schema=_dry_run_confirmation_schema(),
                     errors={"base": "dry_run_confirmation_required"},
+                    description_placeholders={"outputs": authorization_output_lines(entry.data)},
                 )
             return await self._async_apply_dry_run(entry, self._requested_dry_run)
         return self.async_show_form(
             step_id="dry_run_confirmation",
             data_schema=_dry_run_confirmation_schema(),
+            description_placeholders={"outputs": authorization_output_lines(entry.data)},
         )
 
     async def _async_apply_dry_run(
@@ -1607,19 +1845,27 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         """Apply Dry run, completing any active heating shutdown first."""
         runtime = getattr(entry, "runtime_data", None)
         if runtime is not None:
-            if not await runtime.async_set_dry_run(dry_run, hass=self.hass):
+            authorization = None if dry_run else output_authorization(entry.data)
+            if not await runtime.async_set_dry_run(
+                dry_run,
+                hass=self.hass,
+                authorization=authorization,
+            ):
                 return self.async_show_form(
                     step_id="reconfigure",
-                    data_schema=vol.Schema(
-                        {
-                            vol.Required(CONF_DRY_RUN, default=dry_run): selector.BooleanSelector(),
-                        }
-                    ),
+                    data_schema=_dry_run_reconfigure_schema(dry_run),
                     errors={"base": "dry_run_shutdown_in_progress"},
                 )
         else:
-            data = dict(entry.data)
-            data[CONF_DRY_RUN] = dry_run
+            if not dry_run:
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=_dry_run_reconfigure_schema(
+                        bool(entry.data.get(CONF_DRY_RUN, True))
+                    ),
+                    errors={"base": "dry_run_runtime_unavailable"},
+                )
+            data = invalidate_output_authorization(entry.data)
             self.hass.config_entries.async_update_entry(entry, data=data)
         return self.async_abort(reason="reconfigure_successful")
 
@@ -1910,6 +2156,8 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                 )
             await self.async_set_unique_id(self._draft[CONF_PLANT_ID])
             self._abort_if_unique_id_configured()
+            if not self._draft[CONF_DRY_RUN]:
+                self._draft = authorize_outputs(self._draft)
             return self.async_create_entry(title=self._draft[CONF_NAME], data=self._draft)
 
         return self.async_show_form(

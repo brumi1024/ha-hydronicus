@@ -78,7 +78,7 @@ def build_plant_presentation(
 
     snapshot: dict[str, object] = {
         "schema_version": PRESENTATION_SCHEMA_VERSION,
-        "plant": _plant_snapshot(runtime, diagnostics),
+        "plant": build_plant_summary(runtime),
         "controls": {
             "requested_mode": control_entities.get("requested_mode"),
             "safe_shutdown": control_entities.get("safe_shutdown"),
@@ -101,7 +101,10 @@ def serialize_presentation(snapshot: Mapping[str, object]) -> str:
     return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _plant_snapshot(runtime: Any, diagnostics: Any) -> dict[str, object]:
+def build_plant_summary(runtime: Any) -> dict[str, object]:
+    """Build the lightweight Plant header used by discovery and full snapshots."""
+    evaluation = runtime.evaluation
+    diagnostics = evaluation.diagnostics if evaluation is not None else None
     status = runtime.operational_status()
     if runtime.unresolved_bindings:
         health = "unavailable"

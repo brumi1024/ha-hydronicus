@@ -315,6 +315,7 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
 
     assert hass.states.get("select.shared_mode_plant_requested_mode").state == "auto"
     assert hass.states.get("sensor.shared_mode_plant_operating_mode").state == "heating"
+    runtime = entry.runtime_data
 
     hass.states.async_set("sensor.cooling_temperature", "25.0")
     await hass.services.async_call(
@@ -328,6 +329,7 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
     )
     await hass.async_block_till_done()
 
+    assert entry.runtime_data is runtime
     assert hass.states.get("binary_sensor.shared_mode_plant_mode_changeover_lockout").state == "on"
     assert hass.states.get("sensor.shared_mode_plant_operating_mode").state == "idle"
     assert (

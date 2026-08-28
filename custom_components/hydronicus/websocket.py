@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
 
 from .const import DOMAIN
-from .presentation import PRESENTATION_SCHEMA_VERSION, presentation_entity_ids
+from .presentation import PRESENTATION_SCHEMA_VERSION, build_plant_summary
 
 WS_LIST_PLANTS = "hydronicus/list_plants"
 WS_SUBSCRIBE_PLANT = "hydronicus/subscribe_plant"
@@ -30,13 +30,15 @@ class PlantSubscription:
     plant_id: str
     _remove_runtime_listener: Any = None
 
-    def bind(self, runtime: Any | None, *, send_initial: bool = False) -> None:
-        """Bind to the current runtime and optionally publish a fresh snapshot."""
+    def bind(self, runtime: Any | None) -> None:
+        """Bind to the current runtime without changing the stream payload."""
         self.unbind()
         if runtime is not None:
             self._remove_runtime_listener = runtime.async_add_listener(self.publish)
-        if send_initial:
-            self.publish()
+
+    def send_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Send an already-built snapshot on the subscription event channel."""
+        self.connection.send_event(self.msg_id, {"snapshot": snapshot})
 
     @callback
     def publish(self) -> None:
@@ -48,13 +50,17 @@ class PlantSubscription:
                 {"status": "unavailable", "plant_id": self.plant_id},
             )
             return
-        if not _can_read_plant(self.hass, self.connection.user, runtime):
-            self.close()
+        entities = runtime.presentation_entities(self.hass)
+        allowed = _readable_entity_ids(self.connection.user, entities)
+        if not _has_read_access(allowed):
+            self.revoke()
             return
         snapshot = _filter_snapshot_for_user(
-            runtime.presentation_snapshot(self.hass), runtime, self.hass, self.connection.user
+            runtime.presentation_snapshot(self.hass, control_entities=entities),
+            entities,
+            allowed,
         )
-        self.connection.send_event(self.msg_id, {"snapshot": snapshot})
+        self.send_snapshot(snapshot)
 
     @callback
     def unbind(self) -> None:
@@ -64,13 +70,18 @@ class PlantSubscription:
             self._remove_runtime_listener = None
 
     @callback
+    def revoke(self) -> None:
+        """Remove this subscription when access is revoked while connected."""
+        self.connection.subscriptions.pop(self.msg_id, None)
+        self.close()
+
+    @callback
     def close(self) -> None:
-        """Remove this subscription from both runtime and connection registries."""
+        """Detach without mutating Core's subscription map during connection close."""
         self.unbind()
         subscriptions = _subscriptions(self.hass)
         if self in subscriptions:
             subscriptions.remove(self)
-        self.connection.subscriptions.pop(self.msg_id, None)
 
 
 async def async_setup(hass: HomeAssistant, _config: Any) -> bool:
@@ -93,9 +104,10 @@ async def ws_list_plants(
     """List only Plants for which the user can read Hydronicus-owned entities."""
     plants = []
     for plant_id, runtime in sorted(_runtimes(hass).items()):
-        if not _can_read_plant(hass, connection.user, runtime):
+        allowed = _readable_entity_ids(connection.user, runtime.presentation_entities(hass))
+        if not _has_read_access(allowed):
             continue
-        presentation = runtime.presentation_snapshot(hass)["plant"]
+        presentation = build_plant_summary(runtime)
         plants.append(
             {
                 "id": plant_id,
@@ -131,7 +143,9 @@ async def ws_subscribe_plant(
             msg["id"], "plant_not_found", "Hydronicus Plant is missing or unloaded."
         )
         return
-    if not _can_read_plant(hass, connection.user, runtime):
+    entities = runtime.presentation_entities(hass)
+    allowed = _readable_entity_ids(connection.user, entities)
+    if not _has_read_access(allowed):
         raise Unauthorized()
 
     existing = connection.subscriptions.pop(msg["id"], None)
@@ -141,7 +155,9 @@ async def ws_subscribe_plant(
     _subscriptions(hass).append(subscription)
     connection.subscriptions[msg["id"]] = subscription.close
     snapshot = _filter_snapshot_for_user(
-        runtime.presentation_snapshot(hass), runtime, hass, connection.user
+        runtime.presentation_snapshot(hass, control_entities=entities),
+        entities,
+        allowed,
     )
     connection.send_result(
         msg["id"],
@@ -151,7 +167,8 @@ async def ws_subscribe_plant(
     # to the card callback, while the command result resolves its promise.
     # Publish the same initial snapshot on the event channel as well so cards
     # work with both HA connection implementations.
-    subscription.bind(runtime, send_initial=True)
+    subscription.bind(runtime)
+    subscription.send_snapshot(snapshot)
 
 
 def register_runtime(hass: HomeAssistant, runtime: Any) -> None:
@@ -159,7 +176,8 @@ def register_runtime(hass: HomeAssistant, runtime: Any) -> None:
     _runtimes(hass)[runtime.plant_id] = runtime
     for subscription in tuple(_subscriptions(hass)):
         if subscription.plant_id == runtime.plant_id:
-            subscription.bind(runtime, send_initial=True)
+            subscription.bind(runtime)
+            subscription.publish()
 
 
 def unregister_runtime(hass: HomeAssistant, plant_id: str) -> None:
@@ -167,7 +185,8 @@ def unregister_runtime(hass: HomeAssistant, plant_id: str) -> None:
     _runtimes(hass).pop(plant_id, None)
     for subscription in tuple(_subscriptions(hass)):
         if subscription.plant_id == plant_id:
-            subscription.bind(None, send_initial=True)
+            subscription.bind(None)
+            subscription.publish()
 
 
 def _runtimes(hass: HomeAssistant) -> dict[str, Any]:
@@ -181,42 +200,38 @@ def _subscriptions(hass: HomeAssistant) -> list[PlantSubscription]:
     )
 
 
-def _can_read_plant(hass: HomeAssistant, user: Any, runtime: Any) -> bool:
-    """Require read access to at least one Plant-owned presentation entity."""
-    entity_ids = runtime.presentation_entity_ids(hass)
+def _readable_entity_ids(user: Any, entities: dict[str, str]) -> frozenset[str] | None:
+    """Resolve readable entity IDs once, or None for test and legacy seams."""
     permissions = getattr(user, "permissions", None)
     checker = getattr(permissions, "check_entity", None)
     if checker is None:
-        # Lightweight test seams and older HA versions do not expose the
-        # permissions object.  Real connections always have it.
-        return True
-    return any(checker(entity_id, POLICY_READ) for entity_id in entity_ids)
+        return None
+    return frozenset(
+        entity_id for entity_id in set(entities.values()) if checker(entity_id, POLICY_READ)
+    )
+
+
+def _has_read_access(allowed: frozenset[str] | None) -> bool:
+    """Require one readable Plant entity when Home Assistant exposes ACLs."""
+    return allowed is None or bool(allowed)
 
 
 def _filter_snapshot_for_user(
-    snapshot: dict[str, Any], runtime: Any, hass: HomeAssistant, user: Any
+    snapshot: dict[str, Any],
+    entities: dict[str, str],
+    allowed: frozenset[str] | None,
 ) -> dict[str, Any]:
     """Remove Hydronicus-owned zones and controls hidden by entity ACLs."""
-    entity_ids = set(runtime.presentation_entity_ids(hass))
-    permissions = getattr(user, "permissions", None)
-    checker = getattr(permissions, "check_entity", None)
-    if checker is None:
+    if allowed is None:
         return snapshot
-    allowed = {entity_id for entity_id in entity_ids if checker(entity_id, POLICY_READ)}
     controls = dict(snapshot["controls"])
     for key, entity_id in tuple(controls.items()):
         if entity_id is not None and entity_id not in allowed:
             controls[key] = None
-    indexed = presentation_entity_ids(
-        hass,
-        runtime._entry.entry_id if runtime._entry is not None else "",
-        runtime.plant_id,
-        tuple(runtime.plant.zones),
-    )
     zones = []
     for zone in snapshot["zones"]:
         zone_id = zone["id"]
-        presentation_entity = indexed.get(f"zone:{zone_id}")
+        presentation_entity = entities.get(f"zone:{zone_id}")
         if presentation_entity is None or presentation_entity not in allowed:
             continue
         visible_zone = dict(zone)
@@ -268,6 +283,7 @@ def _filter_snapshot_for_user(
         valve_id for circuit in topology["circuits"] for valve_id in circuit["valve_ids"]
     }
     visible_actuator_ids.update(circuit["pump_id"] for circuit in topology["circuits"])
+    plant_actuator_ids = {actuator["id"] for actuator in snapshot["actuators"]}
     filtered["actuators"] = [
         {
             **actuator,
@@ -280,6 +296,26 @@ def _filter_snapshot_for_user(
         for actuator in snapshot["actuators"]
         if actuator["id"] in visible_actuator_ids
     ]
+    execution = dict(snapshot["execution"])
+    boundary = dict(execution["boundary"])
+    boundary["forced_shadow_actuators"] = [
+        actuator_id
+        for actuator_id in boundary["forced_shadow_actuators"]
+        if actuator_id in visible_actuator_ids
+    ]
+    execution["boundary"] = boundary
+    execution["operations"] = {
+        result: [
+            operation
+            for operation in operations
+            # Sources serve the shared Plant, so source and selector operations
+            # remain visible once the user can read any Plant presentation entity.
+            if operation["actuator_id"] not in plant_actuator_ids
+            or operation["actuator_id"] in visible_actuator_ids
+        ]
+        for result, operations in execution["operations"].items()
+    }
+    filtered["execution"] = execution
     topology["active_consumer_sets"] = {
         kind: [
             {
@@ -323,4 +359,6 @@ def _filter_snapshot_for_user(
         for step in snapshot["explanations"]
         if step["scope"] == "plant" or step["scope"] in visible_scopes
     ]
+    # Source summaries are Plant-wide. Physical source entity IDs are already
+    # excluded by the presentation whitelist and never cross this boundary.
     return filtered

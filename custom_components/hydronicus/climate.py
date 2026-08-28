@@ -17,12 +17,11 @@ from homeassistant.components.climate import (
 )
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import HydronicConfigEntry
-from .const import DEFAULT_TARGET_TEMPERATURE, DOMAIN
+from .const import DEFAULT_TARGET_TEMPERATURE
 from .core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
@@ -30,6 +29,7 @@ from .core.model import (
     ThermostatHvacMode,
     ZoneRuntime,
 )
+from .entity_device import topology_device_info
 from .runtime import HydronicRuntime
 
 
@@ -51,10 +51,8 @@ class ZoneClimate(ClimateEntity, RestoreEntity):
         runtime = entry.runtime_data
         self._zone_id = zone_id
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_climate"
-        self._attr_name = name
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
+        self._attr_name = None
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
         if any(
             route.zone_id == zone_id and runtime.plant.circuits[route.circuit_id].cooling_enabled
             for route in runtime.plant.routes

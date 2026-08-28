@@ -16,7 +16,8 @@ It models comfort zones, hydraulic circuits, delivery routes, valves, pumps, and
 The release target is `0.1.0`.
 The current candidate supports end-to-end Dry run behavior and a configurable Plant control boundary.
 Anyone can install Hydronicus, configure a Plant through the Home Assistant UI, exercise heating and cooling demand, inspect hydraulic sequencing and source recommendations, and troubleshoot the result without operating equipment.
-Release publication and complete disposable staging evidence remain pending.
+A disposable Home Assistant 2026.8.2 working-tree run has validated configuration flows, migration, object ownership, diagnostics, reload, deletion, removal, and a clean Dry run shutdown with zero actuator service calls.
+Release publication and HACS-installed evidence from an exact committed candidate remain pending.
 
 | Capability | Current candidate | `v0.1.0` release target |
 | --- | --- | --- |
@@ -48,7 +49,7 @@ The current implementation includes:
 - Structured non-fatal warnings when shared valves limit independent control.
 
 Home Assistant Repairs for unresolved bindings, redacted downloadable diagnostics, startup reconciliation, and bounded command-failure handling are implemented.
-Cooling starts, source changeover, source-demand starts, and physical actuator rollout remain gated milestone work.
+Cooling starts, source-selector changeover, and physical actuator rollout remain gated milestone work.
 Treat the roadmap as a statement of intent rather than authorization to use those paths on physical equipment.
 
 ## Installation
@@ -65,7 +66,7 @@ Use a disposable or staging Home Assistant instance for initial evaluation.
 7. After the integration starts, open **Settings > Dashboards > Resources** and add `/hydronicus/hydronicus-plant-card.js` as a **JavaScript Module**.
 8. Add the card from the Lovelace editor and select one configured Plant.
 
-The minimum Home Assistant version declared by this repository is `2026.7.0`.
+The minimum Home Assistant version declared by this repository is `2026.8.0`.
 The integration is not currently part of the HACS default repository list, so the custom-repository step is required.
 
 ## First simulated Plant

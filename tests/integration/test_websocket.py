@@ -10,6 +10,8 @@ from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLA
 from custom_components.hydronicus.websocket import (
     WS_LIST_PLANTS,
     WS_SUBSCRIBE_PLANT,
+    _filter_snapshot_for_user,
+    _readable_entity_ids,
     ws_list_plants,
     ws_subscribe_plant,
 )
@@ -123,6 +125,7 @@ async def test_list_and_subscribe_are_permission_filtered_and_reconnect_on_reloa
     assert initial["zones"][0]["thermostat"]["control_entity_id"] is None
     assert initial["controls"]["requested_mode"] is None
     assert filtered_connection.subscriptions
+    assert filtered_connection.events == [(2, {"snapshot": initial})]
 
     old_runtime = entry.runtime_data
     assert await hass.config_entries.async_reload(entry.entry_id)
@@ -131,8 +134,73 @@ async def test_list_and_subscribe_are_permission_filtered_and_reconnect_on_reloa
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert filtered_connection.events[-1][1]["status"] == "unavailable"
-    filtered_connection.subscriptions[2]()
+    filtered_connection.subscriptions.pop(2)()
     assert not filtered_connection.subscriptions
+
+
+async def test_connection_close_can_iterate_multiple_plant_subscriptions(hass) -> None:
+    """Subscription cleanup must not mutate Core's map while Core iterates it."""
+    hass.states.async_set("sensor.ws_zone_a", "18")
+    hass.states.async_set("sensor.ws_zone_b", "19")
+    hass.states.async_set("switch.ws_valve", "off")
+    hass.states.async_set("switch.ws_pump", "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    connection = _Connection(_User())
+
+    for message_id in (2, 3):
+        await ws_subscribe_plant.__wrapped__(  # type: ignore[attr-defined]
+            hass,
+            connection,
+            {"id": message_id, "type": WS_SUBSCRIBE_PLANT, "plant_id": PLANT_ID},
+        )
+
+    for unsubscribe in connection.subscriptions.values():
+        unsubscribe()
+    connection.subscriptions.clear()
+
+    assert connection.subscriptions == {}
+
+
+async def test_permission_filter_hides_zone_equipment_but_keeps_plant_source_state(hass) -> None:
+    """Zone equipment follows topology ACLs while shared source state stays Plant-wide."""
+    hass.states.async_set("sensor.ws_zone_a", "18")
+    hass.states.async_set("sensor.ws_zone_b", "19")
+    hass.states.async_set("switch.ws_valve", "off")
+    hass.states.async_set("switch.ws_pump", "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+
+    class _Permissions:
+        def check_entity(self, entity_id: str, _permission: str) -> bool:
+            return entity_id.endswith("zone_a_demand")
+
+    snapshot = runtime.presentation_snapshot(hass)
+    hidden_actuator_id = "00000000-0000-4000-8000-000000000199"
+    snapshot["actuators"].append({"id": hidden_actuator_id, "active_consumers": []})
+    snapshot["execution"]["boundary"]["forced_shadow_actuators"] = [
+        VALVE_ID,
+        hidden_actuator_id,
+    ]
+    snapshot["execution"]["operations"]["proposed"] = [
+        {"actuator_id": VALVE_ID},
+        {"actuator_id": hidden_actuator_id},
+        {"actuator_id": "source:plant"},
+    ]
+    snapshot["sources"] = [{"id": "shared-source", "name": "Shared source"}]
+    entities = runtime.presentation_entities(hass)
+    allowed = _readable_entity_ids(_User(_Permissions()), entities)
+
+    filtered = _filter_snapshot_for_user(snapshot, entities, allowed)
+
+    assert filtered["execution"]["boundary"]["forced_shadow_actuators"] == [VALVE_ID]
+    assert [
+        operation["actuator_id"] for operation in filtered["execution"]["operations"]["proposed"]
+    ] == [VALVE_ID, "source:plant"]
+    assert filtered["sources"] == [{"id": "shared-source", "name": "Shared source"}]
 
 
 async def test_subscribe_missing_plant_returns_defined_error(hass) -> None:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -13,10 +15,27 @@ from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
     DOMAIN,
 )
-from custom_components.hydronicus.core.executor import ActuatorFailureKind, ActuatorObservedState
-from custom_components.hydronicus.core.model import ActuatorAction, ThermostatHvacMode
+from custom_components.hydronicus.core.executor import (
+    ActuatorFailureKind,
+    ActuatorObservedState,
+    ActuatorOperation,
+)
+from custom_components.hydronicus.core.model import (
+    ActuatorAction,
+    PlantMode,
+    PumpRuntime,
+    PumpState,
+    RuntimeState,
+    SafeShutdownPhase,
+    ThermostatHvacMode,
+    ValveRuntime,
+    ValveState,
+)
+from custom_components.hydronicus.entry_configuration import authorize_outputs
 from custom_components.hydronicus.runtime import HydronicRuntime
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
@@ -100,7 +119,15 @@ def _entry(
         ]
     if readiness_entity_id is not None:
         data["topology"]["valves"][0]["readiness_entity_id"] = readiness_entity_id
-    return MockConfigEntry(domain=DOMAIN, title="Synthetic plant", data=data)
+    if not dry_run:
+        data = authorize_outputs(data)
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Synthetic plant",
+        data=data,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
+    )
 
 
 def _register_recorder(hass, calls: list[tuple[str, str, str]]) -> None:
@@ -122,6 +149,104 @@ async def _enable_heating(hass, runtime: HydronicRuntime) -> None:
     """Opt the fresh default-off synthetic thermostat into heating."""
     await runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
     await hass.async_block_till_done()
+
+
+async def _start_active_synthetic_plant(
+    hass, calls: list[tuple[str, str, str]]
+) -> tuple[MockConfigEntry, HydronicRuntime]:
+    """Start one intercepted active Plant for lifecycle boundary tests."""
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(
+        dry_run=False,
+        valve_opening_seconds=0.0,
+        pump_overrun_seconds=0.0,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _enable_heating(hass, entry.runtime_data)
+    hass.states.async_set("switch.synthetic_valve", "on")
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.synthetic_pump", "on")
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    assert set(runtime.active_equipment_ids()) == {VALVE_ID, PUMP_ID}
+    calls.clear()
+    return entry, runtime
+
+
+async def test_selector_dispatch_preserves_the_selected_option(hass) -> None:
+    """The HA adapter sends the core's explicit selector target unchanged."""
+    calls: list[dict[str, object]] = []
+
+    async def record(call) -> None:
+        calls.append(dict(call.data))
+
+    hass.services.async_register("select", "select_option", record)
+    runtime = HydronicRuntime.from_entry(_entry(dry_run=False))
+    operation = ActuatorOperation(
+        actuator_id="source-selector",
+        entity_id="select.synthetic_source",
+        domain="select",
+        service="select_option",
+        target_state=ActuatorObservedState.SELECTED,
+        target_value="buffer",
+        reason="Select the recommended source.",
+    )
+
+    await runtime._async_dispatch_actuator(hass, operation)
+
+    assert calls == [{"entity_id": "select.synthetic_source", "option": "buffer"}]
+
+
+async def test_refresh_waits_for_safe_shutdown_before_mutation(hass, monkeypatch) -> None:
+    """A refresh in the safe-shutdown branch should serialize against later mutations."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+
+    async def blocked_shutdown(self, active_hass, *, now=None, force_dry_run=None):
+        nonlocal active
+        active += 1
+        entered.set()
+        await release.wait()
+        active -= 1
+        return object()
+
+    monkeypatch.setattr(
+        HydronicRuntime,
+        "_async_safe_shutdown_locked",
+        blocked_shutdown,
+    )
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(dry_run=True)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+    runtime.runtime_state = replace(
+        runtime.runtime_state,
+        safe_shutdown_phase=SafeShutdownPhase.SOURCE_RELEASED,
+        safe_shutdown_started_at=runtime._now(),
+    )
+
+    first = asyncio.create_task(runtime.async_refresh(hass))
+    await entered.wait()
+    second = asyncio.create_task(
+        runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+    )
+    await asyncio.sleep(0)
+
+    assert active == 1
+    assert not second.done()
+
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert runtime.zone_hvac_modes[ZONE_ID] is ThermostatHvacMode.HEAT
 
 
 @pytest.mark.parametrize(
@@ -217,7 +342,7 @@ async def test_rejected_service_call_is_explained_without_failing_setup(hass) ->
     assert report.failures[0].kind is ActuatorFailureKind.REJECTED
     assert "synthetic rejection" in report.failures[0].explanation
     assert entry.runtime_data.executor.failure_for(VALVE_ID) == report.failures[0]
-    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state.value == "closed"
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state is ValveState.INDETERMINATE
 
 
 async def test_rejected_valve_close_keeps_runtime_conservative(hass) -> None:
@@ -239,7 +364,11 @@ async def test_rejected_valve_close_keeps_runtime_conservative(hass) -> None:
     hass.states.async_set("sensor.synthetic_temperature", "22.0")
     await hass.async_block_till_done()
 
-    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state.value == "opening"
+    failure = entry.runtime_data.executor.failure_for(VALVE_ID)
+    assert failure is not None
+    assert failure.kind is ActuatorFailureKind.REJECTED
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state is ValveState.INDETERMINATE
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is False
 
 
 async def test_rejected_pump_start_is_retained_as_failure(hass) -> None:
@@ -310,6 +439,244 @@ async def test_delayed_service_success_is_reconciled_without_a_duplicate_command
     assert entry.runtime_data.executor.failure_for(VALVE_ID) is None
     assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.ON
     assert calls == ["switch.synthetic_valve"]
+
+
+async def test_late_service_completion_triggers_conservative_reconciliation(hass) -> None:
+    """A late accepted call is rechecked without treating completion as feedback."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def delayed_open(call) -> None:
+        calls.append(call.data["entity_id"])
+        started.set()
+        await release.wait()
+
+    hass.services.async_register("switch", "turn_on", delayed_open)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(dry_run=False)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS", 0.01)
+        mode_task = asyncio.create_task(
+            entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await mode_task
+
+    failure = entry.runtime_data.executor.failure_for(VALVE_ID)
+    assert failure is not None
+    assert failure.kind is ActuatorFailureKind.TIMEOUT
+    refresh_count = entry.runtime_data.refresh_count
+
+    release.set()
+    async with asyncio.timeout(1.0):
+        while entry.runtime_data.refresh_count == refresh_count:
+            await asyncio.sleep(0)
+
+    assert entry.runtime_data.executor.failure_for(VALVE_ID) == failure
+    assert calls == ["switch.synthetic_valve"]
+    assert entry.runtime_data.late_actuator_completion_count == 1
+    assert entry.runtime_data.late_actuator_error_count == 0
+
+
+async def test_late_service_error_is_consumed_and_reconciled(hass) -> None:
+    """A service that rejects after timeout is consumed and remains indeterminate."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_rejection(_call) -> None:
+        started.set()
+        await release.wait()
+        raise HomeAssistantError("late synthetic rejection")
+
+    hass.services.async_register("switch", "turn_on", delayed_rejection)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(dry_run=False)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS", 0.01)
+        mode_task = asyncio.create_task(
+            entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await mode_task
+
+    failure = entry.runtime_data.executor.failure_for(VALVE_ID)
+    assert failure is not None
+    assert failure.kind is ActuatorFailureKind.TIMEOUT
+
+    release.set()
+    async with asyncio.timeout(1.0):
+        while entry.runtime_data.late_actuator_completion_count == 0:
+            await asyncio.sleep(0)
+
+    assert entry.runtime_data.executor.failure_for(VALVE_ID) == failure
+    assert entry.runtime_data.late_actuator_completion_count == 1
+    assert entry.runtime_data.late_actuator_error_count == 1
+
+
+async def test_timed_out_open_does_not_block_an_opposite_close_command(hass) -> None:
+    """Turning a zone off closes a transitional valve before a late open finishes."""
+    open_started = asyncio.Event()
+    release_open = asyncio.Event()
+    close_called = asyncio.Event()
+    calls: list[tuple[str, str]] = []
+
+    async def delayed_open(call) -> None:
+        calls.append((call.service, call.data["entity_id"]))
+        hass.states.async_set("valve.synthetic_valve", "opening")
+        open_started.set()
+        await release_open.wait()
+        hass.states.async_set("valve.synthetic_valve", "open")
+
+    async def close_valve(call) -> None:
+        calls.append((call.service, call.data["entity_id"]))
+        hass.states.async_set("valve.synthetic_valve", "closed")
+        close_called.set()
+
+    hass.services.async_register("valve", "open_valve", delayed_open)
+    hass.services.async_register("valve", "close_valve", close_valve)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("valve.synthetic_valve", "closed")
+    entry = _entry(dry_run=False, valve_entity_id="valve.synthetic_valve")
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS", 0.01)
+        mode_task = asyncio.create_task(
+            entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+        )
+        await asyncio.wait_for(open_started.wait(), timeout=1.0)
+        await mode_task
+
+    failure = entry.runtime_data.executor.failure_for(VALVE_ID)
+    assert failure is not None
+    assert failure.kind is ActuatorFailureKind.TIMEOUT
+
+    try:
+        await entry.runtime_data.async_set_zone_hvac_mode(
+            ZONE_ID,
+            ThermostatHvacMode.OFF,
+            hass=hass,
+        )
+        await asyncio.wait_for(close_called.wait(), timeout=0.2)
+        assert not release_open.is_set()
+    finally:
+        release_open.set()
+        await hass.async_block_till_done()
+
+    assert calls[:2] == [
+        ("open_valve", "valve.synthetic_valve"),
+        ("close_valve", "valve.synthetic_valve"),
+    ]
+
+
+async def test_native_valve_open_timeout_cannot_advance_to_pump_start_on_unknown_feedback(
+    hass,
+) -> None:
+    """A failed native valve open stays indeterminate until feedback repairs it."""
+    open_started = asyncio.Event()
+    release_open = asyncio.Event()
+    calls: list[tuple[str, str, str]] = []
+
+    async def delayed_open(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+        open_started.set()
+        await release_open.wait()
+
+    async def record_switch(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+
+    hass.services.async_register("valve", "open_valve", delayed_open)
+    hass.services.async_register("switch", "turn_on", record_switch)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("valve.synthetic_valve", "closed")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(
+        dry_run=False,
+        valve_entity_id="valve.synthetic_valve",
+        valve_opening_seconds=0.0,
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS", 0.01)
+        mode_task = asyncio.create_task(
+            entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+        )
+        await asyncio.wait_for(open_started.wait(), timeout=1.0)
+        await mode_task
+
+    failure = entry.runtime_data.executor.failure_for(VALVE_ID)
+    assert failure is not None
+    assert failure.kind is ActuatorFailureKind.TIMEOUT
+
+    hass.states.async_set("valve.synthetic_valve", "opening")
+    await entry.runtime_data.async_refresh(hass)
+
+    try:
+        assert entry.runtime_data.executor.failure_for(VALVE_ID) == failure
+        assert not entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready
+        assert ("switch", "turn_on", "switch.synthetic_pump") not in calls
+    finally:
+        release_open.set()
+        await hass.async_block_till_done()
+
+
+async def test_failed_source_release_keeps_safe_shutdown_retryable(hass, monkeypatch) -> None:
+    """A failed source-demand release must not advance past the retryable source phase."""
+    calls: list[str] = []
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    hass.states.async_set("switch.synthetic_source", "off")
+    entry = _entry(
+        dry_run=False,
+        source_demand=True,
+        valve_opening_seconds=0.0,
+        pump_overrun_seconds=0.0,
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    started_at = runtime._now()
+    runtime.runtime_state = replace(
+        runtime.runtime_state,
+        plant_mode=PlantMode.HEATING,
+        valves={VALVE_ID: ValveRuntime(ValveState.OPEN, started_at, True)},
+        pumps={PUMP_ID: PumpRuntime(PumpState.RUNNING, started_at)},
+        safe_shutdown_phase=SafeShutdownPhase.IDLE,
+    )
+
+    async def fail_source(self, active_hass, operation) -> None:
+        calls.append(operation.actuator_id)
+        if operation.actuator_id.startswith("source:"):
+            raise HomeAssistantError("synthetic source release failed")
+
+    monkeypatch.setattr(HydronicRuntime, "_async_dispatch_actuator", fail_source)
+
+    first = await runtime.async_safe_shutdown(hass, now=started_at)
+    second = await runtime.async_safe_shutdown(hass, now=started_at)
+
+    assert first.execution.failures
+    assert second.execution.failures
+    assert runtime.runtime_state.safe_shutdown_phase is SafeShutdownPhase.IDLE
+    assert calls == [f"source:{SOURCE_ID}", f"source:{SOURCE_ID}"]
 
 
 async def test_periodic_reconciliation_repairs_a_missed_feedback_event_without_churn(hass) -> None:
@@ -391,6 +758,91 @@ async def test_readiness_feedback_allows_pump_only_after_the_valve_is_ready(hass
     assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is True
 
 
+async def test_rejected_native_valve_open_never_becomes_timer_ready(hass) -> None:
+    """Unknown native-valve feedback cannot erase a failed open and release the pump."""
+    calls: list[tuple[str, str, str]] = []
+
+    async def reject_open(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+        raise HomeAssistantError("synthetic native valve rejection")
+
+    async def record(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+
+    hass.services.async_register("valve", "open_valve", reject_open)
+    hass.services.async_register("valve", "close_valve", record)
+    hass.services.async_register("switch", "turn_on", record)
+    hass.services.async_register("switch", "turn_off", record)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("valve.synthetic_valve", "closed")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(
+        dry_run=False,
+        valve_entity_id="valve.synthetic_valve",
+        valve_opening_seconds=0.0,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await _enable_heating(hass, entry.runtime_data)
+    assert calls == [("valve", "open_valve", "valve.synthetic_valve")]
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state is ValveState.INDETERMINATE
+
+    hass.states.async_set("valve.synthetic_valve", "unknown")
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state is ValveState.INDETERMINATE
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is False
+    assert all(
+        binding.entity_id != "valve.synthetic_valve"
+        for binding in entry.runtime_data.unresolved_bindings
+    )
+    assert all(entity_id != "switch.synthetic_pump" for _, _, entity_id in calls)
+
+
+async def test_failed_source_release_keeps_runtime_in_retryable_shutdown_phase(hass) -> None:
+    """Runtime state cannot advance beyond source release after a rejected command."""
+    attempts: list[str] = []
+
+    async def reject_source(call) -> None:
+        attempts.append(call.data["entity_id"])
+        raise HomeAssistantError("synthetic source release rejection")
+
+    hass.services.async_register("switch", "turn_off", reject_source)
+    entry = _entry(
+        dry_run=False,
+        pump_overrun_seconds=10.0,
+        valve_opening_seconds=0.0,
+        source_demand=True,
+    )
+    runtime = HydronicRuntime.from_entry(entry)
+    started_at = datetime(2026, 7, 18, tzinfo=UTC)
+    runtime.runtime_state = RuntimeState(
+        valves={VALVE_ID: ValveRuntime(ValveState.OPEN, started_at, True)},
+        pumps={PUMP_ID: PumpRuntime(PumpState.RUNNING, started_at)},
+        selected_source_id=SOURCE_ID,
+    )
+
+    first = await runtime.async_safe_shutdown(hass, now=started_at)
+
+    assert attempts == ["switch.synthetic_source"]
+    assert len(first.execution.failures) == 1
+    assert runtime.runtime_state.safe_shutdown_phase is SafeShutdownPhase.IDLE
+    assert runtime.runtime_state.selected_source_id == SOURCE_ID
+
+    async def accept_source(call) -> None:
+        attempts.append(call.data["entity_id"])
+
+    hass.services.async_register("switch", "turn_off", accept_source)
+    second = await runtime.async_safe_shutdown(hass, now=started_at)
+
+    assert attempts == ["switch.synthetic_source", "switch.synthetic_source"]
+    assert second.execution.failures == ()
+    assert runtime.runtime_state.safe_shutdown_phase is SafeShutdownPhase.PUMP_OVERRUN
+    await runtime.async_stop()
+
+
 async def test_dry_run_keeps_the_desired_plan_without_service_calls(hass) -> None:
     """Dry run preserves the command and explanation while issuing no call."""
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
@@ -413,6 +865,7 @@ async def test_dry_run_keeps_the_desired_plan_without_service_calls(hass) -> Non
     assert summary["dry_run"] is True
     assert summary["proposed"]
     assert summary["executed"] == []
+    assert runtime.active_equipment_ids() == ()
 
 
 async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> None:
@@ -423,6 +876,7 @@ async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> Non
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    runtime = entry.runtime_data
 
     result = await entry.start_reconfigure_flow(hass)
     assert result["type"] == "form"
@@ -438,6 +892,7 @@ async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> Non
     assert result["type"] == "abort"
     await hass.async_block_till_done()
     assert entry.data[CONF_DRY_RUN] is False
+    assert entry.runtime_data is runtime
     assert entry.runtime_data.dry_run is False
 
 
@@ -500,6 +955,101 @@ async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworth
 
     assert isinstance(entry.runtime_data, HydronicRuntime)
     assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.UNKNOWN
+
+
+@pytest.mark.parametrize("action", ["reload", "unload", "remove"])
+async def test_active_reload_unload_and_removal_issue_no_implicit_equipment_commands(
+    hass, caplog, action: str
+) -> None:
+    """Lifecycle teardown is command-free and warns about the hardware safety boundary."""
+    calls: list[tuple[str, str, str]] = []
+    entry, _runtime = await _start_active_synthetic_plant(hass, calls)
+
+    if action == "reload":
+        assert await hass.config_entries.async_reload(entry.entry_id)
+    elif action == "unload":
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    else:
+        result = await hass.config_entries.async_remove(entry.entry_id)
+        assert result == {"require_restart": False}
+
+    assert calls == []
+    assert "without issuing equipment commands" in caplog.text
+    assert "independent safeguards" in caplog.text
+
+
+async def test_home_assistant_stop_detaches_active_runtime_without_commands(hass, caplog) -> None:
+    """Host shutdown never starts an overrun sequence it cannot remain alive to finish."""
+    calls: list[tuple[str, str, str]] = []
+    _entry, runtime = await _start_active_synthetic_plant(hass, calls)
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    assert calls == []
+    assert runtime._hass is None
+    assert runtime._entry is None
+    assert not runtime._tasks
+    assert "no equipment commands are issued during Home Assistant shutdown" in caplog.text
+    assert "independent safeguards" in caplog.text
+    assert "Unable to remove unknown job listener" not in caplog.text
+
+
+async def test_home_assistant_stop_cancels_a_timed_out_actuator_service(hass, caplog) -> None:
+    """Host shutdown consumes and cancels a shielded service task after its timeout."""
+    open_started = asyncio.Event()
+    service_cancelled = asyncio.Event()
+    release_open = asyncio.Event()
+    calls: list[tuple[str, str, str]] = []
+
+    async def delayed_open(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+        open_started.set()
+        try:
+            await release_open.wait()
+        except asyncio.CancelledError:
+            service_cancelled.set()
+            raise
+
+    hass.services.async_register("valve", "open_valve", delayed_open)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("valve.synthetic_valve", "closed")
+    entry = _entry(dry_run=False, valve_entity_id="valve.synthetic_valve")
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS",
+            0.01,
+        )
+        mode_task = asyncio.create_task(
+            runtime.async_set_zone_hvac_mode(
+                ZONE_ID,
+                ThermostatHvacMode.HEAT,
+                hass=hass,
+            )
+        )
+        await asyncio.wait_for(open_started.wait(), timeout=1.0)
+        await mode_task
+
+    failure = runtime.executor.failure_for(VALVE_ID)
+    assert failure is not None
+    assert failure.kind is ActuatorFailureKind.TIMEOUT
+    assert any(not task.done() for task in runtime._tasks)
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    assert service_cancelled.is_set()
+    assert calls == [("valve", "open_valve", "valve.synthetic_valve")]
+    assert runtime._hass is None
+    assert runtime._entry is None
+    assert not runtime._tasks
+    assert runtime.late_actuator_completion_count == 0
+    assert "no equipment commands are issued during Home Assistant shutdown" in caplog.text
 
 
 async def test_reload_during_valve_opening_does_not_start_pump_early(hass) -> None:

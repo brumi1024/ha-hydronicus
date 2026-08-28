@@ -19,6 +19,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
     SUBENTRY_TYPE_CIRCUIT,
 )
+from custom_components.hydronicus.entry_configuration import subentry_draft
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 LIVING_ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -247,7 +248,8 @@ async def test_reconfigure_circuit_preserves_retained_relationship_uuids(hass) -
         item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
-    route_ids = {route["zone_id"]: route["id"] for route in subentry.data["routes"]}
+    stored_draft = subentry_draft(entry, subentry)
+    route_ids = {route["zone_id"]: route["id"] for route in stored_draft["routes"]}
     runtime_after_add = entry.runtime_data
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
@@ -270,8 +272,11 @@ async def test_reconfigure_circuit_preserves_retained_relationship_uuids(hass) -
     assert result["reason"] == "reconfigure_successful"
     assert entry.runtime_data is not runtime_after_add
     assert subentry.data["id"] == circuit_id
+    assert subentry.data == {"id": circuit_id}
     assert subentry.title == "Updated ceiling loop"
-    assert subentry.data["routes"] == [{"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}]
+    assert subentry_draft(entry, subentry)["routes"] == [
+        {"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}
+    ]
     circuit = entry.runtime_data.plant.circuits[circuit_id]
     assert circuit.name == "Updated ceiling loop"
     routes = [route for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id]
@@ -304,15 +309,19 @@ async def test_reconfigure_circuit_preserves_retained_route_enablement(hass) -> 
     subentry = next(
         item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
+    stored_draft = subentry_draft(entry, subentry)
     disabled_route_id = next(
-        route["id"] for route in subentry.data["routes"] if route["zone_id"] == LIVING_ZONE_ID
+        route["id"] for route in stored_draft["routes"] if route["zone_id"] == LIVING_ZONE_ID
     )
-    updated_data = {
-        **subentry.data,
-        "routes": [dict(route) for route in subentry.data["routes"]],
-    }
-    updated_data["routes"][0]["enabled"] = False
-    hass.config_entries.async_update_subentry(entry, subentry, data=updated_data)
+    office_route_id = next(
+        route["id"] for route in stored_draft["routes"] if route["zone_id"] == OFFICE_ZONE_ID
+    )
+    updated_data = deepcopy(dict(entry.data))
+    disabled_route = next(
+        route for route in updated_data["topology"]["routes"] if route["id"] == disabled_route_id
+    )
+    disabled_route["enabled"] = False
+    hass.config_entries.async_update_entry(entry, data=updated_data)
     await hass.async_block_till_done()
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
@@ -329,14 +338,10 @@ async def test_reconfigure_circuit_preserves_retained_route_enablement(hass) -> 
     result = await _confirm_warning_review(hass, result)
 
     assert result["reason"] == "reconfigure_successful"
-    assert subentry.data["routes"] == [
+    assert subentry_draft(entry, subentry)["routes"] == [
         {"id": disabled_route_id, "zone_id": LIVING_ZONE_ID, "enabled": False},
         {
-            "id": next(
-                route["id"]
-                for route in updated_data["routes"]
-                if route["zone_id"] == OFFICE_ZONE_ID
-            ),
+            "id": office_route_id,
             "zone_id": OFFICE_ZONE_ID,
         },
     ]
@@ -371,8 +376,9 @@ async def test_reconfigure_cooling_circuit_preserves_mode_and_route_uuids(hass) 
         item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
-    route_ids = {route["zone_id"]: route["id"] for route in subentry.data["routes"]}
-    assert subentry.data[CONF_COOLING_ENABLED] is True
+    stored_draft = subentry_draft(entry, subentry)
+    route_ids = {route["zone_id"]: route["id"] for route in stored_draft["routes"]}
+    assert stored_draft[CONF_COOLING_ENABLED] is True
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
     result = await hass.config_entries.subentries.async_configure(
@@ -391,8 +397,10 @@ async def test_reconfigure_cooling_circuit_preserves_mode_and_route_uuids(hass) 
 
     assert result["reason"] == "reconfigure_successful"
     assert subentry.data["id"] == circuit_id
-    assert subentry.data[CONF_COOLING_ENABLED] is True
-    assert subentry.data["routes"] == [{"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}]
+    assert subentry.data == {"id": circuit_id}
+    updated_draft = subentry_draft(entry, subentry)
+    assert updated_draft[CONF_COOLING_ENABLED] is True
+    assert updated_draft["routes"] == [{"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}]
     assert entry.runtime_data.plant.circuits[circuit_id].cooling_enabled is True
     assert [
         route.id for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id
@@ -508,11 +516,15 @@ async def test_reconfigure_rejects_stale_relationship_atomically(hass) -> None:
     assert result["type"] == FlowResultType.FORM
 
     updated_data = deepcopy(dict(entry.data))
-    updated_data["topology"]["zones"] = [updated_data["topology"]["zones"][0]]
-    updated_data["topology"]["routes"] = [updated_data["topology"]["routes"][0]]
+    updated_data["topology"]["zones"] = [
+        zone for zone in updated_data["topology"]["zones"] if zone["id"] != OFFICE_ZONE_ID
+    ]
+    updated_data["topology"]["routes"] = [
+        route for route in updated_data["topology"]["routes"] if route["zone_id"] != OFFICE_ZONE_ID
+    ]
     hass.config_entries.async_update_entry(entry, data=updated_data)
     await hass.async_block_till_done()
-    original_data = dict(subentry.data)
+    original_data = deepcopy(dict(entry.data))
     valid_runtime = entry.runtime_data
 
     result = await hass.config_entries.subentries.async_configure(
@@ -529,7 +541,8 @@ async def test_reconfigure_rejects_stale_relationship_atomically(hass) -> None:
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "reconfigure"
     assert result["errors"] == {"base": "invalid_circuit"}
-    assert dict(subentry.data) == original_data
+    assert dict(subentry.data) == {"id": subentry.unique_id}
+    assert dict(entry.data) == original_data
     assert entry.runtime_data is valid_runtime
 
 
@@ -559,7 +572,7 @@ async def test_reload_reconstructs_persisted_circuit_subentry(hass) -> None:
         item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
-    route_ids = {route["id"] for route in subentry.data["routes"]}
+    route_ids = {route["id"] for route in subentry_draft(entry, subentry)["routes"]}
     runtime_after_add = entry.runtime_data
 
     assert await hass.config_entries.async_reload(entry.entry_id)

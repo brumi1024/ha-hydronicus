@@ -88,6 +88,7 @@ def test_binding_inventory_is_stable_and_keeps_categories_distinct() -> None:
 
     bindings = configured_entity_bindings(plant)
 
+    assert bindings is plant.entity_bindings
     assert [(binding.category, binding.binding_key) for binding in bindings] == [
         (BindingCategory.SENSOR, "temperature_sensor_0"),
         (BindingCategory.SENSOR, "temperature_sensor_0"),

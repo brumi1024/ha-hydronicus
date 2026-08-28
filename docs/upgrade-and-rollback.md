@@ -1,8 +1,9 @@
 # Install, update, and rollback
 
-The thermostat-ownership redesign uses config-entry version 1.1 as its canonical fresh-install contract.
-Development and staging Plants created before this boundary are disposable and must be recreated through the UI.
-Hydronicus carries no migration hooks, predecessor fixtures, or legacy schema decoder for those entries.
+Hydronicus uses config-entry version 2.0 as its canonical persisted contract.
+Version 1.1 Plants are migrated automatically before runtime setup.
+The migration moves complete subentry payloads into one parent-owned Plant graph, leaves ID-only subentry handles for Home Assistant ownership, invalidates prior output authorization, and returns the Plant to Dry run.
+The migration is restart-safe, but a Home Assistant backup remains the rollback boundary.
 
 ## Fresh HACS installation
 
@@ -24,6 +25,7 @@ Create a Home Assistant backup before updating Hydronicus, changing a Plant that
 Keep Dry run enabled until the configured sensors, valves, pumps, source demand, topology preview, and proposed operations match the intended Plant.
 
 Do not update or reload Hydronicus during a physical heating intervention.
+Use the Safe shutdown action or enable Dry run and confirm the ordered shutdown completes before updating, reloading, unloading, or removing an active Plant.
 
 ## Updating after later releases exist
 
@@ -32,24 +34,37 @@ Use HACS to install the selected released version and restart Home Assistant whe
 After the restart:
 
 1. Confirm the Hydronicus version.
-2. Confirm that every Plant loads.
-3. Review the topology preview and configured entities.
-4. Confirm the Dry run setting.
-5. Exercise the smallest safe scenario before relying on active heating.
+2. Confirm that every Plant loads and reports config-entry version 2.0 behavior.
+3. Confirm migrated object subentries still exist and can be reconfigured through the UI.
+4. Review the topology preview, object devices, and configured entities.
+5. Confirm the Plant returned to Dry run after migration or any topology edit.
+6. Review the exact output list before authorizing active heating again.
+7. Exercise the smallest safe scenario before relying on active heating.
 
 Release-specific compatibility instructions belong in the release that introduces them.
-The current pre-release schema does not carry speculative predecessor support.
+The current schema supports the concrete version 1.1 predecessor only.
 
 ## Rolling back a development checkout
 
 Keep the Plant in Dry run.
 Stop the isolated Home Assistant test instance before replacing integration files.
-Restore `custom_components/hydronicus` from the recorded commit or a clean backup.
-Start Home Assistant and verify the config entry, topology preview, and Dry run behavior.
+If the older checkout understands config-entry version 2.0, restore `custom_components/hydronicus` from the recorded commit or a clean backup.
+If the older checkout predates version 2.0, restore the complete Home Assistant backup created before migration.
+Start Home Assistant and verify the config entry, object devices, topology preview, and Dry run behavior.
 
 If the configuration is no longer trustworthy, restore the complete Home Assistant backup rather than editing `.storage` by hand.
 
 Never use a destructive Git operation against a working tree that contains someone else's changes.
+
+## Lifecycle boundary
+
+Reload, unload, removal, and Home Assistant stop do not issue implicit equipment commands.
+This avoids beginning a timed hydraulic shutdown that the lifecycle operation may not remain alive to complete.
+When active equipment is observed or conservatively retained, Hydronicus logs an explicit warning and relies on independent hardware safeguards.
+This boundary is not a substitute for using Safe shutdown or enabling Dry run before planned maintenance.
+Deleting a topology subentry is handled differently because it changes the graph rather than merely stopping the integration.
+Hydronicus waits for the old graph to reach Dry run before removing the object from parent storage.
+If that transition fails, Hydronicus retains the old parent graph and logs the incomplete deletion instead of claiming a safe topology change.
 
 ## If rollback is incomplete
 

@@ -29,27 +29,35 @@ Run the narrowest relevant target while developing and run `make verify` before 
 The pre-commit hook applies Ruff formatting to every changed Python file.
 The CI format check covers the same complete source tree.
 
-## Canonical pre-release configuration
+## Canonical configuration and migration
 
-Config-entry version 1 and minor version 1 are the initial supported persisted contract.
-Fresh UI setup and reconfiguration are the source of truth for that contract.
-They persist UUID-backed Plant, Zone, Circuit, Delivery Route, Valve, Pump, Source, and selector objects with one field name and representation per concept.
-Zone observations are stored as typed temperature and humidity metadata collections, not parallel scalar IDs, ID lists, maps, or standalone weight fields.
-Parent-owned initial objects and config-subentry-owned repeatable objects are composed before one atomic topology compile.
+Config-entry version 2 and minor version 0 are the supported persisted contract.
+The parent config entry owns one complete UUID-backed graph in `topology`, including every Plant, Zone, Circuit, Delivery Route, Valve, Pump, Source, and selector relationship.
+The `subentry_objects` map records which graph objects are exposed through Home Assistant config subentries.
+Each version 2 subentry is only a stable Home Assistant ownership handle containing `{"id": "<object UUID>"}`.
+No topology field is duplicated between the parent graph and a subentry.
+Fresh UI setup, reconfiguration, and deletion compile the proposed complete graph before it is persisted.
+If Home Assistant removes a subentry while a Plant is active, Hydronicus completes the ordered transition to Dry run against the old graph before deleting that object from the parent graph.
+If the shutdown cannot complete, the parent graph and active runtime are retained and the failure is logged.
+Zone observations use typed temperature and humidity metadata collections rather than parallel legacy representations.
 
-Hydronicus has no published release or tag, so development and staging Plants created before this boundary are disposable and must be recreated.
-Do not add migration hooks, predecessor fixtures, rollback decoders, or speculative aliases for those entries.
-Compatibility begins only after a schema has shipped in a published release with real users.
+Version 1.1 entries are migrated to version 2.0 before runtime setup.
+Migration first makes the complete graph durable in the parent entry, then minimizes each legacy subentry to its object ID.
+Repeating migration after an interruption is safe because both phases are idempotent.
+Migration invalidates output authorization and returns the Plant to Dry run.
+Do not add speculative schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
 
 ## Architecture boundaries
 
 `custom_components/hydronicus/core/configuration.py` decodes only the canonical persisted objects into typed domain values.
-`custom_components/hydronicus/entry_configuration.py` composes parent and subentry ownership without importing controller policy.
+`custom_components/hydronicus/entry_configuration.py` owns graph mutation, migration, subentry ownership, and exact output-authorization fingerprints without importing controller policy.
 `custom_components/hydronicus/core/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
 `custom_components/hydronicus/core/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.
 Its public evaluation result, diagnostics, deadlines, and command order are the contract; private phase helper structure is not.
 `custom_components/hydronicus/runtime.py` owns the Home Assistant boundary and runs snapshot, evaluate, execute, and publish stages in that order.
-Runtime deadline scheduling and per-operation reconciliation remain adapter concerns because they depend on Home Assistant time, observations, and service results.
+One per-Plant operation lock serializes refresh, execution, reconciliation, safe shutdown, mode changes, Dry run changes, and teardown.
+Runtime deadline scheduling, target-aware command reconciliation, and late service completion remain adapter concerns because they depend on Home Assistant time, observations, and service results.
+Reload, unload, removal, and Home Assistant stop are deliberately command-free lifecycle boundaries and must never claim that physical shutdown occurred.
 
 ## Test boundaries
 
@@ -57,6 +65,7 @@ Pure controller behavior belongs under `tests/core/` and must use only the depen
 Home Assistant setup, subentry, entity, reload, and adapter behavior belongs under `tests/integration/`.
 Multi-step behavior with a fake clock belongs under `tests/scenarios/` and should use the reusable scenario harness.
 Safety invariants that must hold across many topology shapes or timings belong in property-based tests.
+The large synthetic benchmark covers pure compilation, pure evaluation, Home Assistant setup, runtime refresh, reconciliation, entity publication, memory, and zero-service-call Dry run behavior.
 
 The current coverage threshold applies only to `custom_components/hydronicus/core`.
 This keeps the safety-critical deterministic package measurable without obscuring incomplete adapter milestones behind a repository-wide percentage.

@@ -165,8 +165,22 @@ Keep the Plant in Dry run.
 Check for an invalid or partially edited subentry and restore the last known-good configuration from a Home Assistant backup if necessary.
 Then restart or reload the integration and confirm that the topology preview returns.
 
-The current unload path does not issue equipment commands.
+Reload, unload, removal, and Home Assistant stop do not issue equipment commands.
+If Hydronicus observes or conservatively retains active equipment, it logs a warning that names the affected actuator IDs without claiming they were shut down.
+Use Safe shutdown or enable Dry run before planned lifecycle work, and wait until the ordered source, pump, and valve sequence completes.
 Physical equipment must still have its own independent controls and manual recovery procedure.
+
+### A topology edit unexpectedly enabled Dry run
+
+This is expected.
+Every topology or physical binding change invalidates the prior output fingerprint and returns the Plant to Dry run.
+Review the complete graph and the exact valve, pump, and direct source-demand output list before authorizing active heating again.
+
+### A deleted object still appears in the topology preview
+
+Check the Hydronicus log for a message saying that the Plant could not reach Dry run after a config subentry was removed.
+Hydronicus deliberately retains the parent graph when safe shutdown fails because deleting an actuator from the active runtime would hide its physical state.
+Resolve the actuator failure, use Safe shutdown or enable Dry run, then trigger a Plant reload so the pending deletion can be reconciled.
 
 ### The test instance is no longer trustworthy
 

@@ -7,38 +7,32 @@ from typing import Any, cast
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import (
-    DOMAIN,
     MAX_RECONCILIATION_INTERVAL_SECONDS,
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
+from .entity_device import plant_device_info, topology_device_info
 from .runtime import HydronicRuntime
 
 _MAX_STATE_LENGTH = 255
 
 
-class ControllerStatusSensor(SensorEntity):
-    """Expose one low-cardinality plant status for Recorder and dashboards."""
+class _HydronicSensor(SensorEntity):
+    """Keep runtime lookup, device binding, and updates consistent for all sensors."""
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = True
-    _attr_icon = "mdi:state-machine"
     _attr_should_poll = False
+    _listen_for_runtime_updates = True
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
-        """Bind the status to one plant runtime."""
         self._entry = entry
-        runtime = entry.runtime_data
-        self._attr_unique_id = f"{runtime.plant_id}_controller_status"
-        self._attr_name = "Controller status"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
+        runtime = self._runtime
+        self._attr_device_info = plant_device_info(runtime)
 
     @property
     def _runtime(self) -> HydronicRuntime:
@@ -46,8 +40,23 @@ class ControllerStatusSensor(SensorEntity):
         return cast(HydronicRuntime, self._entry.runtime_data)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic controller evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        """Subscribe dynamic sensors to atomic runtime updates."""
+        if self._listen_for_runtime_updates:
+            self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+
+class ControllerStatusSensor(_HydronicSensor):
+    """Expose one low-cardinality plant status for Recorder and dashboards."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:state-machine"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the status to one plant runtime."""
+        super().__init__(entry)
+        runtime = self._runtime
+        self._attr_unique_id = f"{runtime.plant_id}_controller_status"
+        self._attr_name = "Controller status"
 
     @property
     def native_value(self) -> str:
@@ -64,32 +73,18 @@ class ControllerStatusSensor(SensorEntity):
         }
 
 
-class ReconciliationStatusSensor(SensorEntity):
+class ReconciliationStatusSensor(_HydronicSensor):
     """Expose bounded reconciliation status without high-cardinality attributes."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = True
     _attr_icon = "mdi:sync-circle"
-    _attr_should_poll = False
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind reconciliation telemetry to one plant runtime."""
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_reconciliation_status"
         self._attr_name = "Reconciliation status"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to bounded reconciliation updates."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:
@@ -106,28 +101,19 @@ class ReconciliationStatusSensor(SensorEntity):
         return {"interval_seconds": interval, "bounded": True}
 
 
-class TopologyPreviewSensor(SensorEntity):
+class TopologyPreviewSensor(_HydronicSensor):
     """Expose the compiled plant graph in a persistent diagnostic entity."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = True
     _attr_icon = "mdi:graph-outline"
-    _attr_should_poll = False
+    _listen_for_runtime_updates = False
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the preview to one compiled plant runtime."""
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_topology_preview"
         self._attr_name = "Topology preview"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
 
     @property
     def native_value(self) -> str:
@@ -159,31 +145,17 @@ class TopologyPreviewSensor(SensorEntity):
         }
 
 
-class ZoneExplanationSensor(SensorEntity):
+class ZoneExplanationSensor(_HydronicSensor):
     """Expose the last controller explanation for a comfort zone."""
-
-    _attr_has_entity_name = True
-    _attr_should_poll = False
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind a diagnostic entity to one zone."""
-        self._entry = entry
+        super().__init__(entry)
         self._zone_id = zone_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_explanation"
-        self._attr_name = f"{name} explanation"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Explanation"
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
     def native_value(self) -> str | None:
@@ -198,34 +170,21 @@ class ZoneExplanationSensor(SensorEntity):
         return _zone_diagnostic_attributes(self._runtime, self._zone_id)
 
 
-class ZoneAggregateTemperatureSensor(SensorEntity):
+class ZoneAggregateTemperatureSensor(_HydronicSensor):
     """Expose the temperature aggregate used by the controller."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the aggregate to one comfort zone."""
-        self._entry = entry
+        super().__init__(entry)
         self._zone_id = zone_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_aggregate_temperature"
-        self._attr_name = f"{name} aggregate temperature"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Aggregate temperature"
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
     def native_value(self) -> float | None:
@@ -238,32 +197,19 @@ class ZoneAggregateTemperatureSensor(SensorEntity):
         return _zone_diagnostic_attributes(self._runtime, self._zone_id)
 
 
-class ZoneBlockedReasonSensor(SensorEntity):
+class ZoneBlockedReasonSensor(_HydronicSensor):
     """Expose the structured sensor-health reason for one zone."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:alert-circle-outline"
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the blocked reason to one comfort zone."""
-        self._entry = entry
+        super().__init__(entry)
         self._zone_id = zone_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_blocked_reason"
-        self._attr_name = f"{name} blocked reason"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Blocked reason"
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
     def native_value(self) -> str:
@@ -277,31 +223,17 @@ class ZoneBlockedReasonSensor(SensorEntity):
         return _zone_diagnostic_attributes(self._runtime, self._zone_id)
 
 
-class RecommendedSourceSensor(SensorEntity):
+class RecommendedSourceSensor(_HydronicSensor):
     """Expose the current deterministic shadow source recommendation."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:fire-circle"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the plant-level recommendation to the current runtime."""
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_recommended_source"
         self._attr_name = "Recommended source"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic runtime evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:
@@ -323,31 +255,17 @@ class RecommendedSourceSensor(SensorEntity):
         }
 
 
-class SourceRecommendationExplanationSensor(SensorEntity):
+class SourceRecommendationExplanationSensor(_HydronicSensor):
     """Expose the explanation for the source recommendation."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:text-box-check-outline"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the explanation to the current runtime."""
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_source_recommendation"
         self._attr_name = "Source recommendation"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic runtime evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:
@@ -369,28 +287,16 @@ class SourceRecommendationExplanationSensor(SensorEntity):
         }
 
 
-class ActiveSourceSensor(SensorEntity):
+class ActiveSourceSensor(_HydronicSensor):
     """Expose the source owning the latest guarded heating demand."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:heat-pump"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_active_source"
         self._attr_name = "Active source"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:
@@ -410,28 +316,16 @@ class ActiveSourceSensor(SensorEntity):
         }
 
 
-class SourceChangeoverSensor(SensorEntity):
+class SourceChangeoverSensor(_HydronicSensor):
     """Expose the deterministic source selection phase and guard."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:swap-horizontal-circle"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_source_changeover"
         self._attr_name = "Source changeover"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:
@@ -453,29 +347,17 @@ class SourceChangeoverSensor(SensorEntity):
         }
 
 
-class SourceDwellSensor(SensorEntity):
+class SourceDwellSensor(_HydronicSensor):
     """Expose remaining source minimum dwell time from the atomic evaluation."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:timer-lock-outline"
     _attr_native_unit_of_measurement = "s"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_source_dwell"
         self._attr_name = "Source dwell"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> float:
@@ -483,29 +365,18 @@ class SourceDwellSensor(SensorEntity):
         return float(getattr(selection, "dwell_remaining_seconds", 0.0))
 
 
-class SourceBlockedReasonSensor(SensorEntity):
+class SourceBlockedReasonSensor(_HydronicSensor):
     """Expose a bounded source-specific block explanation."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:source-branch-alert"
 
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
-        self._entry = entry
+        super().__init__(entry)
         self._source_id = source_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{source_id}_blocked_reason"
-        self._attr_name = f"{name} blocked reason"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Blocked reason"
+        self._attr_device_info = topology_device_info(runtime, "source", source_id, name)
 
     @property
     def native_value(self) -> str:
@@ -526,32 +397,19 @@ class SourceBlockedReasonSensor(SensorEntity):
         }
 
 
-class ZoneCoolingBlockedReasonSensor(SensorEntity):
+class ZoneCoolingBlockedReasonSensor(_HydronicSensor):
     """Expose the cooling interlock explanation for one comfort zone."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:water-alert-outline"
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the cooling explanation to one comfort zone."""
-        self._entry = entry
+        super().__init__(entry)
         self._zone_id = zone_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_cooling_blocked_reason"
-        self._attr_name = f"{name} cooling blocked reason"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Cooling blocked reason"
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
     def native_value(self) -> str:
@@ -565,34 +423,21 @@ class ZoneCoolingBlockedReasonSensor(SensorEntity):
         return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
 
 
-class ZoneDewPointSensor(SensorEntity):
+class ZoneDewPointSensor(_HydronicSensor):
     """Expose the calculated zone dew point used by cooling safety."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the dew-point diagnostic to one zone."""
-        self._entry = entry
+        super().__init__(entry)
         self._zone_id = zone_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_dew_point"
-        self._attr_name = f"{name} cooling dew point"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Cooling dew point"
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
     def native_value(self) -> float | None:
@@ -605,34 +450,21 @@ class ZoneDewPointSensor(SensorEntity):
         return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
 
 
-class ZoneCondensationMarginSensor(SensorEntity):
+class ZoneCondensationMarginSensor(_HydronicSensor):
     """Expose the lowest configured reference margin for a zone."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the condensation margin diagnostic to one zone."""
-        self._entry = entry
+        super().__init__(entry)
         self._zone_id = zone_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_condensation_margin"
-        self._attr_name = f"{name} cooling condensation margin"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Cooling condensation margin"
+        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
     def native_value(self) -> float | None:
@@ -645,32 +477,20 @@ class ZoneCondensationMarginSensor(SensorEntity):
         return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
 
 
-class ActuatorFeedbackReasonSensor(SensorEntity):
+class ActuatorFeedbackReasonSensor(_HydronicSensor):
     """Expose the structured feedback or manual-intervention explanation."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:information-outline"
 
     def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
         """Bind one diagnostic state to an actuator."""
-        self._entry = entry
+        super().__init__(entry)
         self._actuator_id = actuator_id
-        runtime = entry.runtime_data
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{actuator_id}_feedback_reason"
-        self._attr_name = f"{name} feedback reason"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        self._attr_name = "Feedback reason"
+        kind = "valve" if actuator_id in runtime.plant.valves else "pump"
+        self._attr_device_info = topology_device_info(runtime, kind, actuator_id, name)
 
     @property
     def native_value(self) -> str:
@@ -729,31 +549,17 @@ def _zone_diagnostic_attributes(runtime: Any, zone_id: str) -> dict[str, object]
     return attributes
 
 
-class PlantModeSensor(SensorEntity):
+class PlantModeSensor(_HydronicSensor):
     """Expose the mode currently permitted to use shared equipment."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:state-machine"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the active mode to the plant runtime."""
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_operating_mode"
         self._attr_name = "Operating mode"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic controller evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:
@@ -781,31 +587,17 @@ class PlantModeSensor(SensorEntity):
         }
 
 
-class ModeChangeoverExplanationSensor(SensorEntity):
+class ModeChangeoverExplanationSensor(_HydronicSensor):
     """Explain why a requested mode is active, idle, or locked."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_icon = "mdi:text-box-outline"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the explanation to the plant runtime."""
-        self._entry = entry
-        runtime = entry.runtime_data
+        super().__init__(entry)
+        runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_mode_changeover_explanation"
         self._attr_name = "Mode changeover explanation"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic controller evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
     @property
     def native_value(self) -> str:

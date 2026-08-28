@@ -15,6 +15,9 @@ from custom_components.hydronicus.const import (
     DOMAIN,
     SUBENTRY_TYPE_ACTUATOR,
 )
+from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.entry_configuration import output_authorization
+from custom_components.hydronicus.runtime import HydronicRuntime
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -353,3 +356,122 @@ async def test_delete_valve_subentry_removes_runtime_and_entity(hass) -> None:
     assert entry.runtime_data.plant.circuits[CIRCUIT_ID].valve_ids == (BASE_VALVE_ID,)
     assert hass.states.get(entity_id) is None
     assert registry.async_get(entity_id) is None
+
+
+async def test_active_valve_deletion_reaches_dry_run_before_graph_removal(hass) -> None:
+    """Deleting an active object completes safe shutdown against the old graph first."""
+    calls: list[tuple[str, str]] = []
+
+    async def record_switch(call) -> None:
+        entity_id = call.data["entity_id"]
+        calls.append((call.service, entity_id))
+        hass.states.async_set(entity_id, "on" if call.service == "turn_on" else "off")
+
+    hass.services.async_register("switch", "turn_on", record_switch)
+    hass.services.async_register("switch", "turn_off", record_switch)
+    hass.states.async_set("sensor.living_temperature", "18.0")
+    hass.states.async_set("switch.floor_valve", "off")
+    hass.states.async_set("switch.return_valve", "off")
+    hass.states.async_set("switch.floor_pump", "off")
+    entry = _plant_entry()
+    entry.data["topology"]["valves"][0]["opening_time_seconds"] = 0.0
+    entry.data["topology"]["pumps"][0]["overrun_seconds"] = 0.02
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ACTUATOR),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Return valve",
+            CONF_ENTITY_ID: "switch.return_valve",
+            CONF_OPENING_TIME: 0.0,
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    actuator_id = subentry.data["id"]
+    runtime = entry.runtime_data
+    assert await runtime.async_set_dry_run(
+        False,
+        hass=hass,
+        authorization=output_authorization(entry.data),
+    )
+    await runtime.async_set_zone_hvac_mode(
+        ZONE_ID,
+        ThermostatHvacMode.HEAT,
+        hass=hass,
+    )
+    await hass.async_block_till_done()
+    assert runtime.active_equipment_ids()
+    calls.clear()
+
+    assert hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+    await hass.async_block_till_done()
+
+    assert entry.data["dry_run"] is True
+    assert "output_authorization" not in entry.data
+    assert actuator_id not in entry.runtime_data.plant.valves
+    assert calls == [
+        ("turn_off", "switch.floor_pump"),
+        ("turn_off", "switch.floor_valve"),
+        ("turn_off", "switch.return_valve"),
+    ]
+
+
+async def test_failed_shutdown_retains_parent_graph_after_subentry_removal(
+    hass, monkeypatch, caplog
+) -> None:
+    """A failed safety transition cannot delete the graph used by the active runtime."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ACTUATOR),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Return valve",
+            CONF_ENTITY_ID: "switch.return_valve",
+            CONF_OPENING_TIME: 45.0,
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    actuator_id = subentry.data["id"]
+    runtime = entry.runtime_data
+    active_data = dict(entry.data)
+    active_data["dry_run"] = False
+    hass.config_entries.async_update_entry(entry, data=active_data)
+    runtime.dry_run = False
+    runtime.executor.dry_run = False
+
+    attempts: list[HydronicRuntime] = []
+
+    async def fail_transition(active_runtime: HydronicRuntime, _hass) -> bool:
+        attempts.append(active_runtime)
+        return False
+
+    monkeypatch.setattr(
+        HydronicRuntime,
+        "async_prepare_configuration_change",
+        fail_transition,
+    )
+
+    assert hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+    await hass.async_block_till_done()
+
+    assert attempts == [runtime]
+    assert any(valve["id"] == actuator_id for valve in entry.data["topology"]["valves"])
+    assert actuator_id in runtime.plant.valves
+    assert entry.data["dry_run"] is False
+    assert "parent graph and active runtime were retained" in caplog.text

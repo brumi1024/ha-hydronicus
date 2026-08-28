@@ -18,17 +18,23 @@
       },
       "dry_run_confirmation": {
         "title": "Confirm heating control",
-        "description": "Hydronicus will be allowed to control the configured heating valves, pumps, and direct source-demand output when the plan permits them.",
+        "description": "Hydronicus will be allowed to control only these exact heating outputs when the plan permits them:\n{outputs}",
         "data": {
           "dry_run_confirmation": "I understand these heating outputs may be controlled"
         }
       },
       "zone": {
-        "title": "Add the first comfort zone",
+        "title": "Choose the first comfort zone thermostat",
         "description": "Choose exactly one thermostat owner. Hydronicus can create the digital thermostat, or an existing Home Assistant climate entity can own demand. An external thermostat must not independently command actuators also configured in Hydronicus.",
         "data": {
+          "thermostat_kind": "Thermostat owner"
+        }
+      },
+      "zone_details": {
+        "title": "Add the first comfort zone",
+        "description": "Configure the observations and policy owned by this comfort zone.",
+        "data": {
           "name": "Zone name",
-          "thermostat_kind": "Thermostat owner",
           "external_climate_entity": "Existing climate thermostat",
           "temperature_sensors": "Temperature sensors",
           "humidity_sensors": "Humidity sensors",
@@ -102,6 +108,7 @@
       "invalid_topology": "The initial topology is not valid.",
       "dry_run_confirmation_required": "Confirm that the configured heating outputs may be controlled.",
       "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit Dry run again after the shutdown finishes.",
+      "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
       "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation."
     }
   },

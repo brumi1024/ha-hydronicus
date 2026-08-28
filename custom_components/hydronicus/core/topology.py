@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 
+from .entity_bindings import configured_entity_bindings
 from .model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
@@ -693,7 +694,7 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     enabled_routes = _validate_relationships(configuration, index, source_selector)
     summary, warnings = _build_summary_and_warnings(configuration, index, enabled_routes)
 
-    return CompiledPlant(
+    plant = CompiledPlant(
         id=configuration.id,
         zones=zones,
         valves=valves,
@@ -705,3 +706,4 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         warnings=warnings,
         source_selector=source_selector,
     )
+    return replace(plant, entity_bindings=configured_entity_bindings(plant))

@@ -11,6 +11,7 @@ from hydronicus_core.executor import (
     ActuatorFailureKind,
     ActuatorObservedState,
     ActuatorOperation,
+    ReconciliationStatus,
     observed_state_for,
     operation_for,
 )
@@ -25,6 +26,8 @@ from hydronicus_core.model import (
     SourceSelectionActuator,
     Valve,
 )
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 def _plan(*commands: ActuatorCommand) -> ControlPlan:
@@ -246,6 +249,68 @@ async def test_executor_safe_shutdown_releases_bound_source_selector() -> None:
 
 
 @pytest.mark.asyncio
+async def test_safe_shutdown_failure_stops_the_ordered_phase_and_keeps_it_retryable() -> None:
+    """A failed source release must not run later commands or commit the phase."""
+    plant = CompiledPlant(
+        id="plant",
+        zones={},
+        valves={},
+        pumps={},
+        circuits={},
+        routes=(),
+        logic_summary=(),
+        sources={
+            "source": Source(
+                "source",
+                "Source",
+                demand_entity_id="switch.source_demand",
+            )
+        },
+        source_selector=SourceSelectionActuator(
+            "selector",
+            "Synthetic selector",
+            entity_id="select.synthetic_source",
+            release_option="none",
+            shadow_only=False,
+        ),
+    )
+    executor = ActuatorExecutor.from_plant(plant, dry_run=False)
+    runtime = RuntimeState(selected_source_id="source")
+    failed: list[ActuatorOperation] = []
+
+    async def reject(operation: ActuatorOperation) -> None:
+        failed.append(operation)
+        raise RuntimeError("synthetic release rejection")
+
+    first = await executor.async_safe_shutdown(
+        plant,
+        runtime,
+        datetime(2026, 7, 18, tzinfo=UTC),
+        reject,
+    )
+
+    assert [operation.actuator_id for operation in failed] == ["selector"]
+    assert len(first.execution.failures) == 1
+    assert first.next_runtime == runtime
+
+    retried: list[ActuatorOperation] = []
+
+    async def accept(operation: ActuatorOperation) -> None:
+        retried.append(operation)
+
+    second = await executor.async_safe_shutdown(
+        plant,
+        first.next_runtime,
+        datetime(2026, 7, 18, tzinfo=UTC),
+        accept,
+    )
+
+    assert [operation.actuator_id for operation in retried] == ["selector", "source:source"]
+    assert second.execution.failures == ()
+    assert second.next_runtime.safe_shutdown_phase.value == "valves_closed"
+
+
+@pytest.mark.asyncio
 async def test_executor_suppresses_an_already_satisfied_command() -> None:
     """Executing the same desired operation twice results in one dispatch."""
     executor = ActuatorExecutor(
@@ -353,6 +418,112 @@ async def test_timeout_is_distinguished_from_a_rejected_service_call() -> None:
     assert report.failures[0].explanation == (
         "Command open for actuator valve timed out: synthetic command timeout"
     )
+
+    retry = await executor.async_execute(
+        _plan(ActuatorCommand("valve", ActuatorAction.OPEN, "synthetic demand")),
+        timeout,
+    )
+
+    assert retry.failures == ()
+    assert len(retry.suppressed) == 1
+    assert executor.reconciliations["valve"].status is ReconciliationStatus.INDETERMINATE
+
+
+@pytest.mark.asyncio
+@given(
+    failed_action=st.sampled_from((ActuatorAction.OPEN, ActuatorAction.CLOSE)),
+    next_action=st.sampled_from((ActuatorAction.OPEN, ActuatorAction.CLOSE)),
+    failure_kind=st.sampled_from((ActuatorFailureKind.TIMEOUT, ActuatorFailureKind.REJECTED)),
+)
+async def test_failure_reconciliation_is_scoped_to_the_complete_target(
+    failed_action: ActuatorAction,
+    next_action: ActuatorAction,
+    failure_kind: ActuatorFailureKind,
+) -> None:
+    """A stale failure suppresses only the exact intent that produced it."""
+    executor = ActuatorExecutor(
+        {"valve": ActuatorBinding("valve", "switch.floor_valve")},
+        dry_run=False,
+    )
+
+    async def fail(_operation: ActuatorOperation) -> None:
+        if failure_kind is ActuatorFailureKind.TIMEOUT:
+            raise TimeoutError("synthetic timeout")
+        raise RuntimeError("synthetic rejection")
+
+    await executor.async_execute(
+        _plan(ActuatorCommand("valve", failed_action, "first intent")),
+        fail,
+    )
+    dispatched: list[ActuatorOperation] = []
+
+    async def accept(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_execute(
+        _plan(ActuatorCommand("valve", next_action, "next intent")),
+        accept,
+    )
+
+    if next_action is failed_action:
+        assert dispatched == []
+        assert len(report.suppressed) == 1
+        assert executor.reconciliations["valve"].status is (
+            ReconciliationStatus.INDETERMINATE
+            if failure_kind is ActuatorFailureKind.TIMEOUT
+            else ReconciliationStatus.FAILED
+        )
+    else:
+        assert report.executed == tuple(dispatched)
+        assert len(dispatched) == 1
+        assert executor.failure_for("valve") is None
+
+
+@pytest.mark.asyncio
+@given(
+    failed_option=st.sampled_from(("buffer", "boiler")),
+    next_option=st.sampled_from(("buffer", "boiler")),
+)
+async def test_selector_failure_reconciliation_includes_the_target_option(
+    failed_option: str,
+    next_option: str,
+) -> None:
+    """Selector failures and feedback are matched against the exact option."""
+
+    def selection_command(option: str) -> ActuatorCommand:
+        return ActuatorCommand(
+            "selector",
+            ActuatorAction.SELECT,
+            "synthetic selection",
+            option,
+        )
+
+    executor = ActuatorExecutor(
+        {"selector": ActuatorBinding("selector", "select.synthetic_source")},
+        dry_run=False,
+    )
+
+    async def timeout(_operation: ActuatorOperation) -> None:
+        raise TimeoutError("synthetic timeout")
+
+    await executor.async_execute(_plan(selection_command(failed_option)), timeout)
+    executor.observe_entity_state("select.synthetic_source", next_option)
+
+    if next_option == failed_option:
+        assert executor.failure_for("selector") is None
+    else:
+        assert executor.failure_for("selector") is not None
+
+    dispatched: list[ActuatorOperation] = []
+
+    async def accept(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_execute(_plan(selection_command(next_option)), accept)
+
+    assert dispatched == []
+    assert len(report.suppressed) == 1
+    assert executor.failure_for("selector") is None
 
 
 @pytest.mark.asyncio

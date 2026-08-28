@@ -21,6 +21,7 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_SOURCE,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.entry_configuration import subentry_draft
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -152,7 +153,8 @@ async def test_source_setup_reconfigure_reload_delete_and_entities(hass) -> None
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.ABORT
     assert subentry.data["id"] == source_id
-    assert subentry.data[CONF_SOURCE_TYPE] == "external"
+    assert subentry.data == {"id": source_id}
+    assert subentry_draft(entry, subentry)[CONF_SOURCE_TYPE] == "external"
     assert entry.runtime_data.plant.sources[source_id].kind.value == "external"
 
     runtime_before_reload = entry.runtime_data

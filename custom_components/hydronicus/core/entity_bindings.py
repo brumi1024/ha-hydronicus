@@ -3,40 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
-from enum import StrEnum
 
-from .model import CompiledPlant, ExternalClimateThermostatConfig
-
-
-class BindingCategory(StrEnum):
-    """Safety category for one configured Home Assistant entity reference."""
-
-    SENSOR = "sensor"
-    FEEDBACK = "feedback"
-    ACTUATOR = "actuator"
-    THERMOSTAT = "thermostat"
-
-
-@dataclass(frozen=True, slots=True)
-class EntityBinding:
-    """One topology-owned entity reference without any Home Assistant dependency."""
-
-    category: BindingCategory
-    object_type: str
-    object_id: str
-    object_name: str
-    binding_key: str
-    label: str
-    entity_id: str
-    circuit_ids: tuple[str, ...] = ()
-    zone_ids: tuple[str, ...] = ()
-    actuator_id: str | None = None
-    required: bool = True
+from .model import BindingCategory, CompiledPlant, EntityBinding, ExternalClimateThermostatConfig
 
 
 def configured_entity_bindings(plant: CompiledPlant) -> tuple[EntityBinding, ...]:
     """Return every configured entity reference in stable topology order."""
+    if plant.entity_bindings:
+        return plant.entity_bindings
     circuit_zone_ids: dict[str, tuple[str, ...]] = {
         circuit_id: tuple(
             sorted({route.zone_id for route in plant.routes if route.circuit_id == circuit_id})

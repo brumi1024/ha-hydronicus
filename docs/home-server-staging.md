@@ -34,6 +34,34 @@ Then perform the applicable staging checks:
 
 Record the Home Assistant version, commit SHA, scenario name, result, and any log excerpt needed to explain a failure.
 
+## Observed disposable run on 2026-08-28
+
+The production-hardening working tree was staged against Home Assistant `2026.8.2` in a new disposable configuration derived from base commit `7b9defc2f3f6cb7913fb8550cc21b92d37ff2513`.
+Because the hardening changes were not committed, this run is working-tree evidence and is not release-artifact or HACS-install evidence.
+
+The run observed all of the following behavior:
+
+- Home Assistant created one Plant through its config-flow HTTP surface in Dry run.
+- The synthetic Plant contained one initial Zone, one Circuit, one valve, and one pump.
+- Home Assistant added a second Zone subentry, reconfigured it without changing its subentry or object ID, and rebuilt the complete runtime graph.
+- The resulting registry contained five Plant or topology devices and 42 Hydronicus entities with singular config-entry and config-subentry ownership.
+- Every topology device pointed to the parent Plant through `via_device_id`.
+- A real Hydronicus climate service call produced proposed heating operations while the synthetic valve and pump stayed off.
+- A WebSocket subscription to Home Assistant service-call events observed zero calls targeting either synthetic actuator.
+- A forced stored version `1.1` entry with a full legacy subentry, disabled Dry run, and stale output authorization migrated to version `2.0` on restart.
+- Migration restored Dry run, removed stale authorization, rebuilt parent ownership, and minimized the subentry to its ID-only handle.
+- Downloaded diagnostics remained redacted and contained none of the configured names or entity IDs.
+- Config-entry reload, subentry deletion, parent-graph reconciliation, full entry removal, and registry cleanup completed without actuator calls.
+- The final service-level Home Assistant stop exited with status zero and logged no Hydronicus warning or error.
+
+The first shutdown reproduced two real lifecycle defects before the final pass: WebSocket cleanup mutated Home Assistant's subscription map during iteration, and a one-shot Home Assistant stop listener was removed twice.
+Both defects now have regression tests and were absent from the final disposable run.
+
+The host environment logged its standard custom-integration warning, a zlib acceleration fallback, and a missing FFmpeg executable from Home Assistant's own loaded components.
+The same FFmpeg message occurred without a Hydronicus operation and is recorded as staging-environment noise rather than an integration failure.
+
+This run does not authorize physical control, replace a HACS installation test from a committed archive, complete the separate cooling or source pilots, or satisfy non-author installation approval.
+
 ## Activation boundary
 
 Do not use staging to exercise real actuator service calls until the implementation plan reaches the corresponding staged rollout and provides an immediate manual rollback.

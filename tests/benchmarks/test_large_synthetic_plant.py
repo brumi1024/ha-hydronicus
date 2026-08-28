@@ -129,12 +129,22 @@ async def test_large_synthetic_plant_benchmark_is_bounded_and_shadow_only(hass) 
         entity_update_count += 1
 
     with patch.object(type(hass.services), "async_call", new=service_call):
+        setup_started = time.perf_counter_ns()
         assert await hass.config_entries.async_setup(entry.entry_id)
+        metrics["setup_ms"] = round(
+            (time.perf_counter_ns() - setup_started) / 1_000_000,
+            3,
+        )
         runtime = entry.runtime_data
         remove_listener = runtime.async_add_listener(count_entity_update)
         hass.states.async_set("sensor.synthetic_zone_temperature_001_1", "24.0")
         await hass.async_block_till_done()
+        refresh_started = time.perf_counter_ns()
         await runtime.async_refresh(hass)
+        metrics["runtime_refresh_ms"] = round(
+            (time.perf_counter_ns() - refresh_started) / 1_000_000,
+            3,
+        )
         await runtime._async_periodic_reconciliation(hass)
         await runtime._async_periodic_reconciliation(hass)
         await hass.async_block_till_done()
@@ -157,6 +167,8 @@ async def test_large_synthetic_plant_benchmark_is_bounded_and_shadow_only(hass) 
     assert metrics["compile_ms"] <= thresholds["compile_ms_max"]
     assert metrics["evaluation_ms"] <= thresholds["evaluation_ms_max"]
     assert metrics["peak_memory_mib"] <= thresholds["peak_memory_mib_max"]
+    assert metrics["setup_ms"] <= thresholds["setup_ms_max"]
+    assert metrics["runtime_refresh_ms"] <= thresholds["runtime_refresh_ms_max"]
     assert metrics["reconciliation_count"] >= thresholds["minimum_reconciliation_count"]
     assert metrics["entity_update_count"] >= thresholds["minimum_entity_update_count"]
     assert metrics["service_call_count"] <= thresholds["maximum_service_call_count"]

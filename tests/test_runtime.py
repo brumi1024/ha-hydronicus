@@ -425,7 +425,7 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
         cancel_state.assert_called_once_with()
         cancel_transition.assert_called_once_with()
         cancel_reconciliation.assert_called_once_with()
-        cancel_stop_listener.assert_called_once_with()
+        cancel_stop_listener.assert_not_called()
         self.assertTrue(task.cancelled())
         self.assertIsNone(runtime._hass)
         self.assertTrue(runtime._stopping)

@@ -48,6 +48,7 @@ from .model import (
     SourceSelectionRuntime,
     TemperatureAggregation,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     ThermostatHvacMode,
     ValveRuntime,
     ValveState,
@@ -77,7 +78,7 @@ def _observation_is_usable(
     observation: TemperatureObservation | None,
     *,
     max_age_seconds: float,
-    now: datetime | None,
+    now: datetime,
 ) -> tuple[bool, str]:
     """Return whether one observation is valid at the controller evaluation time."""
     if observation is None:
@@ -86,36 +87,32 @@ def _observation_is_usable(
         return False, "non-finite"
     if observation.observed_at is None:
         return False, "missing timestamp"
-    if now is not None:
-        try:
-            age = now - observation.observed_at
-        except TypeError, ValueError:
-            return False, "invalid timestamp"
-        if age > timedelta(seconds=max_age_seconds):
-            return False, "stale"
+    try:
+        age = now - observation.observed_at
+    except TypeError, ValueError:
+        return False, "invalid timestamp"
+    if age > timedelta(seconds=max_age_seconds):
+        return False, "stale"
     return True, "usable"
 
 
-def aggregate_zone_temperature_result(
-    zone: Zone,
-    snapshot: PlantSnapshot,
+def _aggregate_observations(
+    metadata: tuple[TemperatureSensorMetadata, ...],
+    observations: Mapping[str, TemperatureObservation],
     *,
-    now: datetime | None = None,
+    aggregation: TemperatureAggregation,
+    measurement: str,
+    unit: str,
+    now: datetime,
 ) -> AggregationResult:
-    """Aggregate a zone's observations and report sensor health structurally.
-
-    ``now`` is optional only for compatibility with the pre-Milestone 3
-    adapter helper.  Controller evaluations always provide it, so freshness
-    is enforced at the safety decision boundary.
-    """
-    metadata = tuple(sorted(zone.sensor_metadata, key=lambda sensor: sensor.entity_id))
-    usable: list[tuple[str, float, float]] = []
+    """Aggregate calibrated observations with one fail-closed health policy."""
+    usable: list[tuple[TemperatureSensorMetadata, float]] = []
     excluded_optional: list[str] = []
     blocking_required: list[str] = []
     failure_reasons: dict[str, str] = {}
 
-    for sensor in metadata:
-        observation = snapshot.temperatures.get(sensor.entity_id)
+    for sensor in sorted(metadata, key=lambda item: item.entity_id):
+        observation = observations.get(sensor.entity_id)
         valid, reason = _observation_is_usable(
             observation,
             max_age_seconds=sensor.max_age_seconds,
@@ -138,64 +135,51 @@ def aggregate_zone_temperature_result(
             else:
                 excluded_optional.append(sensor.entity_id)
             continue
-        usable.append((sensor.entity_id, calibrated, sensor.weight))
+        usable.append((sensor, calibrated))
 
-    usable_ids = tuple(sensor_id for sensor_id, _value, _weight in usable)
+    usable_ids = tuple(sensor.entity_id for sensor, _value in usable)
     excluded_ids = tuple(sorted(excluded_optional))
     blocking_ids = tuple(sorted(blocking_required))
-    failure_text = "; ".join(
-        f"{sensor_id} ({failure_reasons[sensor_id]})" for sensor_id in sorted(failure_reasons)
-    )
 
     value: float | None = None
     if not blocking_ids and usable:
-        values = [reading for _sensor_id, reading, _weight in usable]
-        if zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE:
-            references = [
-                reading
-                for sensor_id, reading, _weight in usable
-                if next(
-                    sensor.designated_reference
-                    for sensor in metadata
-                    if sensor.entity_id == sensor_id
-                )
-            ]
-            # Topology validation guarantees one configured reference.  A
-            # missing optional reference remains blocked rather than silently
-            # changing the user's selected aggregation policy.
-            if references:
-                value = references[0]
-        elif zone.aggregation is TemperatureAggregation.MEAN:
+        values = [reading for _sensor, reading in usable]
+        if aggregation is TemperatureAggregation.DESIGNATED_REFERENCE:
+            value = next(
+                (reading for sensor, reading in usable if sensor.designated_reference),
+                None,
+            )
+        elif aggregation is TemperatureAggregation.MEAN:
             value = fsum(values) / len(values)
-        elif zone.aggregation is TemperatureAggregation.MEDIAN:
+        elif aggregation is TemperatureAggregation.MEDIAN:
             value = float(median(values))
-        elif zone.aggregation is TemperatureAggregation.MINIMUM:
+        elif aggregation is TemperatureAggregation.MINIMUM:
             value = min(values)
-        elif zone.aggregation is TemperatureAggregation.MAXIMUM:
+        elif aggregation is TemperatureAggregation.MAXIMUM:
             value = max(values)
-        elif zone.aggregation is TemperatureAggregation.WEIGHTED_MEAN:
-            weights = [weight for _sensor_id, _reading, weight in usable]
+        elif aggregation is TemperatureAggregation.WEIGHTED_MEAN:
+            weights = [sensor.weight for sensor, _reading in usable]
             if all(isfinite(weight) and weight > 0 for weight in weights):
-                value = fsum(reading * weight for _sensor_id, reading, weight in usable) / fsum(
-                    weights
-                )
+                value = fsum(sensor.weight * reading for sensor, reading in usable) / fsum(weights)
 
     if blocking_ids:
-        explanation = "Blocked: required temperature sensors are unusable: " + ", ".join(
-            failure_text
-            for failure_text in failure_text.split("; ")
-            if failure_text.split(" ", 1)[0] in blocking_ids
+        explanation = f"Blocked: required {measurement} sensors are unusable: " + ", ".join(
+            f"{sensor_id} ({failure_reasons[sensor_id]})" for sensor_id in blocking_ids
         )
     elif not usable:
-        explanation = "Blocked: no usable temperature sensors remain."
+        explanation = f"Blocked: no usable {measurement} sensors remain."
     elif value is None:
         explanation = (
             "Blocked: the designated reference sensor is not usable."
-            if zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE
-            else "Blocked: the selected aggregation could not produce a finite value."
+            if aggregation is TemperatureAggregation.DESIGNATED_REFERENCE
+            else (
+                "Blocked: the selected aggregation could not produce a finite value."
+                if measurement == "temperature"
+                else "Blocked: humidity aggregation could not produce a finite value."
+            )
         )
     else:
-        explanation = f"Aggregated {value:.2f} °C from {', '.join(usable_ids)}."
+        explanation = f"Aggregated {value:.2f} {unit} from {', '.join(usable_ids)}."
 
     if excluded_ids:
         explanation += (
@@ -216,105 +200,34 @@ def aggregate_temperature(
     zone: Zone,
     snapshot: PlantSnapshot,
     *,
-    now: datetime | None = None,
+    now: datetime,
 ) -> AggregationResult:
-    """Named structured aggregation seam for adapters and diagnostics."""
-    return aggregate_zone_temperature_result(zone, snapshot, now=now)
-
-
-def aggregate_zone_temperature(
-    zone: Zone,
-    snapshot: PlantSnapshot,
-    *,
-    now: datetime | None = None,
-) -> float | None:
-    """Return only the aggregate value for legacy entity callers."""
-    return aggregate_zone_temperature_result(zone, snapshot, now=now).value
-
-
-def aggregate_zone_humidity_result(
-    zone: Zone,
-    snapshot: PlantSnapshot,
-    *,
-    now: datetime | None = None,
-) -> AggregationResult:
-    """Aggregate required and optional relative-humidity observations."""
-    metadata = tuple(sorted(zone.humidity_sensor_metadata, key=lambda sensor: sensor.entity_id))
-    usable: list[tuple[str, float, float]] = []
-    excluded_optional: list[str] = []
-    blocking_required: list[str] = []
-    failure_reasons: dict[str, str] = {}
-    for sensor in metadata:
-        observation = snapshot.humidities.get(sensor.entity_id)
-        valid, reason = _observation_is_usable(
-            observation,
-            max_age_seconds=sensor.max_age_seconds,
-            now=now,
-        )
-        if not valid:
-            failure_reasons[sensor.entity_id] = reason
-            if sensor.required:
-                blocking_required.append(sensor.entity_id)
-            else:
-                excluded_optional.append(sensor.entity_id)
-            continue
-        assert observation is not None
-        assert observation.value is not None
-        calibrated = observation.value + sensor.calibration_offset
-        if not isfinite(calibrated):
-            failure_reasons[sensor.entity_id] = "non-finite after calibration"
-            if sensor.required:
-                blocking_required.append(sensor.entity_id)
-            else:
-                excluded_optional.append(sensor.entity_id)
-            continue
-        usable.append((sensor.entity_id, calibrated, sensor.weight))
-
-    usable_ids = tuple(sensor_id for sensor_id, _value, _weight in usable)
-    excluded_ids = tuple(sorted(excluded_optional))
-    blocking_ids = tuple(sorted(blocking_required))
-    value: float | None = None
-    if not blocking_ids and usable:
-        weights = [weight for _sensor_id, _value, weight in usable]
-        if all(isfinite(weight) and weight > 0 for weight in weights):
-            value = fsum(value * weight for _sensor_id, value, weight in usable) / fsum(weights)
-
-    failure_text = "; ".join(
-        f"{sensor_id} ({failure_reasons[sensor_id]})" for sensor_id in sorted(failure_reasons)
-    )
-    if blocking_ids:
-        explanation = "Blocked: required humidity sensors are unusable: " + ", ".join(
-            item for item in failure_text.split("; ") if item.split(" ", 1)[0] in blocking_ids
-        )
-    elif not usable:
-        explanation = "Blocked: no usable humidity sensors remain."
-    elif value is None:
-        explanation = "Blocked: humidity aggregation could not produce a finite value."
-    else:
-        explanation = f"Aggregated {value:.2f} % from {', '.join(usable_ids)}."
-    if excluded_ids:
-        explanation += (
-            " Excluded optional sensors: "
-            + ", ".join(f"{sensor_id} ({failure_reasons[sensor_id]})" for sensor_id in excluded_ids)
-            + "."
-        )
-    return AggregationResult(
-        value=value,
-        usable_sensor_ids=usable_ids,
-        excluded_optional_sensor_ids=excluded_ids,
-        blocking_required_sensor_ids=blocking_ids,
-        explanation=explanation,
+    """Aggregate temperature observations at the controller evaluation time."""
+    return _aggregate_observations(
+        zone.temperature_sensor_metadata,
+        snapshot.temperatures,
+        aggregation=zone.aggregation,
+        measurement="temperature",
+        unit="°C",
+        now=now,
     )
 
 
-def aggregate_zone_humidity(
+def aggregate_humidity(
     zone: Zone,
     snapshot: PlantSnapshot,
     *,
-    now: datetime | None = None,
-) -> float | None:
-    """Return the deterministic relative-humidity aggregate."""
-    return aggregate_zone_humidity_result(zone, snapshot, now=now).value
+    now: datetime,
+) -> AggregationResult:
+    """Aggregate relative-humidity observations at the controller evaluation time."""
+    return _aggregate_observations(
+        zone.humidity_sensor_metadata,
+        snapshot.humidities,
+        aggregation=TemperatureAggregation.WEIGHTED_MEAN,
+        measurement="humidity",
+        unit="%",
+        now=now,
+    )
 
 
 def dew_point_celsius(temperature_celsius: float, relative_humidity: float) -> float | None:
@@ -333,22 +246,12 @@ def dew_point_celsius(temperature_celsius: float, relative_humidity: float) -> f
     return result if isfinite(result) else None
 
 
-def calculate_dew_point(temperature_celsius: float, relative_humidity: float) -> float | None:
-    """Compatibility name for the public dew-point calculation seam."""
-    return dew_point_celsius(temperature_celsius, relative_humidity)
-
-
 def condensation_margin(reference_temperature: float, dew_point: float) -> float | None:
     """Return the temperature distance between a reference and dew point."""
     if not isfinite(reference_temperature) or not isfinite(dew_point):
         return None
     result = reference_temperature - dew_point
     return result if isfinite(result) else None
-
-
-def calculate_condensation_margin(reference_temperature: float, dew_point: float) -> float | None:
-    """Compatibility name for the public condensation-margin seam."""
-    return condensation_margin(reference_temperature, dew_point)
 
 
 def _zone_runtime(runtime: RuntimeState, zone_id: str) -> ZoneRuntime:
@@ -2193,11 +2096,12 @@ def safe_shutdown(
             "Source demand released; observing pump overrun before stopping pumps.",
         )
         return plan, RuntimeState(
-            cooling_zone_demands={},
+            cooling_zone_demands={zone_id: False for zone_id in plant.zones},
             zone_runtime=runtime.zone_runtime,
             valves=valves,
             pumps=pumps,
             plant_mode=PlantMode.IDLE,
+            requested_mode=runtime.requested_mode,
             selected_source_id=None,
             safe_shutdown_phase=SafeShutdownPhase.PUMP_OVERRUN,
             safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
@@ -2212,11 +2116,12 @@ def safe_shutdown(
             "Source released and pumps stopped; valve closure is the next safe step.",
         )
         return plan, RuntimeState(
-            cooling_zone_demands={},
+            cooling_zone_demands={zone_id: False for zone_id in plant.zones},
             zone_runtime=runtime.zone_runtime,
             valves=valves,
             pumps=pumps,
             plant_mode=PlantMode.IDLE,
+            requested_mode=runtime.requested_mode,
             selected_source_id=None,
             safe_shutdown_phase=SafeShutdownPhase.PUMPS_STOPPED,
             safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
@@ -2232,20 +2137,21 @@ def safe_shutdown(
         "All source demand, pumps, and valves are safely released.",
     )
     return plan, RuntimeState(
-        cooling_zone_demands={},
+        cooling_zone_demands={zone_id: False for zone_id in plant.zones},
         zone_runtime=runtime.zone_runtime,
         valves=valves,
         pumps=pumps,
         plant_mode=PlantMode.IDLE,
+        requested_mode=runtime.requested_mode,
         selected_source_id=None,
         safe_shutdown_phase=phase,
         safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _HeatingEvaluation:
-    """Pure heating-demand phase output."""
+    """Heating-demand state refined by later safety phases."""
 
     zone_demands: dict[str, bool]
     zone_runtime: dict[str, ZoneRuntime]
@@ -2270,7 +2176,7 @@ def _evaluate_heating_zones(
         previous = _zone_runtime(runtime, zone.id)
         thermostat_state = _thermostat_state(zone, snapshot)
         aggregation = (
-            aggregate_zone_temperature_result(zone, snapshot, now=now)
+            aggregate_temperature(zone, snapshot, now=now)
             if zone.temperature_sensor_metadata
             else AggregationResult(
                 value=None,
@@ -2357,9 +2263,9 @@ def _evaluate_heating_zones(
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _CoolingEvaluation:
-    """Pure cooling-demand and safety-interlock phase output."""
+    """Cooling-demand state refined by later safety phases."""
 
     zone_demands: dict[str, bool]
     zone_reasons: dict[str, str]
@@ -2404,7 +2310,7 @@ def _evaluate_cooling_zones(
         previous_cooling = runtime.cooling_zone_demands.get(zone.id, False)
         temperature_aggregation = heating_decisions[zone.id].aggregation
         temperature = temperature_aggregation.value if temperature_aggregation else None
-        humidity_aggregation = aggregate_zone_humidity_result(zone, snapshot, now=now)
+        humidity_aggregation = aggregate_humidity(zone, snapshot, now=now)
         humidity = humidity_aggregation.value
         external_status: ZoneDecisionStatus | None = None
         if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
@@ -3023,9 +2929,9 @@ def _coordinate_source(
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ValvePlan:
-    """Valve planning output and the readiness it exposes to pumps."""
+    """Valve plan refined when final pump state is known."""
 
     consumers: dict[str, set[str]]
     cooling_consumers: dict[str, set[str]]
@@ -3087,9 +2993,14 @@ def _plan_valves(
         valve_consumers = consumers.get(valve.id, set())
         previous = runtime.valves.get(valve.id, ValveRuntime())
         if valve.entity_id in snapshot.unavailable_entity_ids:
-            current = ValveRuntime(ValveState.CLOSED, now, False)
+            current = (
+                previous
+                if previous.state is ValveState.CLOSED
+                else ValveRuntime(ValveState.INDETERMINATE, now, False)
+            )
             actuator_reasons[valve.id] = (
-                "Blocked: the configured valve actuator binding is unresolved."
+                "Blocked: the configured valve actuator binding is unresolved, so its "
+                "physical position is indeterminate."
             )
         elif valve_consumers:
             position_feedback = feedback_diagnostics[valve.id]
@@ -3129,6 +3040,11 @@ def _plan_valves(
                         False,
                     )
                     actuator_reasons[valve.id] = "Waiting for valve readiness feedback or timer."
+            elif previous.state is ValveState.INDETERMINATE:
+                current = previous
+                actuator_reasons[valve.id] = (
+                    "Blocked: valve state is indeterminate after an unsuccessful command."
+                )
             else:
                 current = previous
                 actuator_reasons[valve.id] = "Held open for active circuit consumers."
@@ -3157,9 +3073,9 @@ def _plan_valves(
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _PumpPlan:
-    """Pump planning output after valve readiness is established."""
+    """Pump plan refined during final command assembly."""
 
     consumers: dict[str, set[str]]
     cooling_consumers: dict[str, set[str]]

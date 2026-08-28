@@ -1,6 +1,6 @@
 # Hydronicus implementation plan
 
-Status: The liquid-glass Plant visualization is implemented in the `0.1.0-rc.5` candidate, while clean public installation and Home Assistant staging evidence remain incomplete.
+Status: Production-hardening work, full local verification, and scoped disposable Home Assistant 2026.8.2 working-tree staging are complete, while an exact committed candidate, HACS-installed release evidence, physical pilots, human approvals, and release publication remain incomplete.
 
 This document is the current implementation and evidence snapshot for main.
 
@@ -9,26 +9,29 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 ## Current baseline
 
 - Repository: `brumi1024/ha-hydronicus`.
-- Main commit: `93fc3ab9a3cf3ccdc3fe4947e981e6b0bbbb749d` before the `0.1.0-rc.5` release preparation.
+- Main commit: `7b9defc2f3f6cb7913fb8550cc21b92d37ff2513` for the `0.1.0-rc.5` release preparation.
 - `origin/main` matches that assessed main commit.
 - Integration name: Hydronicus.
 - Domain: `hydronicus`.
 - Package: `custom_components/hydronicus`.
 - Candidate version: `0.1.0-rc.5`.
 - The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.5`.
-- Config-entry version `1.1` remains the canonical pre-release fresh-install contract.
+- Config-entry version `2.0` is the canonical contract in the hardening working tree.
+- Version `1.1` has a tested, restart-safe migration into one parent-owned graph with ID-only subentry handles.
 - Presentation schema version is `2`.
-- The `0.1.0-rc.5` candidate passed `make verify` with 387 Python tests and 8 frontend tests.
+- The current working tree passed `make verify` with 420 Python tests and 8 frontend tests.
 - The release-package regression test simulates extraction directly into `config/custom_components/hydronicus` and requires `manifest.json` at that root.
-- The `0.1.0-rc.5` candidate reports 92.25 percent core coverage.
+- The current working tree reports 92.67 percent core coverage.
 - Release metadata, the bundled frontend, the HACS archive, and public-beta checks passed for `0.1.0-rc.5`.
-- The current working tree preserves the simplified topology and removes the obsolete migration-only package and tests.
+- The current working tree preserves the pure evaluation seam while adding parent-owned graph persistence, concrete migration coverage, single-writer runtime mutation, target-aware timeout reconciliation, and Home Assistant 2026.8 object devices.
 - The previous focused release, actuator, cooling, source, and operating-scenario suite passed before the migration cleanup.
 - The current `scripts/public_beta_smoke.py` run passed all public-beta repository checks.
 - Ruff, formatting, mypy, compileall, JSON validation, package validation, and public-beta validation pass in the merged evidence.
 - GitHub Actions checks named `syntax`, `test`, `hassfest`, and `hacs` are green for the assessed main commit.
 - Pull request #27 merged the M4-M7 safety implementation.
-- Pull request #28 merged the public-beta installation and benchmark implementation; its speculative migration machinery has been removed before the first public release.
+- Pull request #28 merged the public-beta installation and benchmark implementation.
+- The current hardening work replaces earlier speculative migration ideas with a concrete version 1.1 to 2.0 migration backed by persisted predecessor fixtures.
+- A disposable Home Assistant `2026.8.2` working-tree run passed config creation, subentry add and reconfiguration, version 1.1 to 2.0 migration, device ownership, redacted diagnostics, reload, subentry deletion, entry removal, and service-level shutdown with zero synthetic actuator service calls.
 - GitHub prereleases `v0.1.0-rc.1`, `v0.1.0-rc.2`, and `v0.1.0-rc.3` are published with incorrectly nested `hydronicus.zip` assets.
 - The `0.1.0-rc.5` archive places integration files at its root so HACS extracts `manifest.json` directly into `config/custom_components/hydronicus`.
 - `docs/research/` belongs to the user and must not be staged, modified, moved, deleted, or committed.
@@ -139,7 +142,8 @@ Reload and restart reconstruct actuator state conservatively from Home Assistant
 
 Independent hardware controls must leave the physical plant safe if Home Assistant or Hydronicus disappears.
 
-Because there is no public installed version, the pre-release schema uses the final `dry_run` model without a migration layer.
+Config-entry version 2.0 preserves the `dry_run` model and migrates the concrete version 1.1 predecessor before runtime setup.
+Migration and every topology or binding change invalidate output authorization and return the Plant to Dry run.
 
 ### Safety invariants
 
@@ -158,7 +162,7 @@ The three control-mode slices are implemented in the current working tree.
 
 1. Replace the legacy mode flag with the user-facing `dry_run` setting and show proposed versus executed operations. Complete.
 2. Add the simple setup and reconfiguration control, direct source-demand execution, and safe transition back to Dry run. Complete.
-3. Verify with synthetic and intercepted entities, then stop for the explicitly authorized physical heating check before any physical release decision. In progress.
+3. Verify with synthetic and intercepted entities, then stop for the explicitly authorized physical heating check before any physical release decision. Synthetic verification is complete and the physical authorization gate remains closed.
 
 The affected public test seams are `tests/core/` for execution invariants, `tests/integration/` for Home Assistant configuration and dispatch, and `tests/scenarios/` for demand, shutdown, reload, and failure timelines.
 
@@ -198,7 +202,8 @@ Issue #9, actuator feedback, mismatch handling, and safe shutdown, is closed wit
 
 Issue #12 remains open as the human review required before the project adds or uses a supported partial-heating activation path.
 
-The remaining M4 gates are a disposable synthetic actuator transcript, an exact proposed valve, pump, circuit, observer, rollback action, and explicit human approval before any physical service call.
+The working-tree disposable run records proposed valve and pump operations with zero actuator service calls.
+The remaining M4 gates are an exact committed-candidate packet naming the physical valve, pump, circuit, observer, rollback action, and explicit human approval before any physical service call.
 
 ### M5: Operational hardening
 
@@ -210,7 +215,8 @@ Issue #13, actionable Repairs for unresolved bindings, is closed with merged cod
 
 Issue #14, bounded redacted diagnostics, is closed with merged code and automated evidence.
 
-The remaining M5 gate is disposable-instance observation of reload, unload, restart, Repairs, diagnostics, and unexpected-log behavior as part of the release and pilot evidence.
+The working-tree disposable run covers reload, restart, migration, diagnostics, removal, and unexpected-log inspection.
+Repairs behavior and repetition from an exact committed release candidate remain part of the release and pilot evidence.
 
 ### M6: Cooling and condensation protection
 
@@ -252,7 +258,8 @@ Issue #18 is still open because a public release does not yet exist and the curr
 
 The obsolete synthetic installation transcript was removed during the documentation cleanup because automated output must not be mistaken for live staging evidence.
 
-A new redacted transcript may be added only after the current candidate has actually been observed in the disposable Home Assistant environment.
+The observed working-tree evidence is recorded below.
+A redacted transcript for the exact committed HACS candidate remains pending until that candidate has actually been installed in the disposable Home Assistant environment.
 
 Issue #19 is a separate non-author installation gate and cannot be self-approved by an agent.
 
@@ -266,7 +273,7 @@ Issue #21 is the Dry run-only cooling pilot and requires representative humidity
 
 Issue #22 is the shadow or intercepted-command source review and requires reviewed traces, guarded-demand evidence, and human signoff.
 
-Issue #23 contains benchmark evidence, but its migration requirements are obsolete because no predecessor release was installed or distributed.
+Issue #23 contains benchmark evidence and now has a concrete version 1.1 to 2.0 migration target from the published release-candidate line.
 
 Issue #24 is the final human stable-release audit and must not self-approve `v1.0.0`.
 
@@ -277,10 +284,10 @@ Issue #24 is the final human stable-release audit and must not self-approve `v1.
 | #8 | Closed | Complete in PR #27 | Merged | Required for rollout confidence | Covered by #12 | Does not authorize physical control |
 | #9 | Closed | Complete in PR #27 | Merged | Required for rollout confidence | Covered by #12 | Does not authorize physical control |
 | #10 | Closed | Complete in PR #27 | Merged | Cooling shadow pilot required | Covered by #21 | Blocked from physical cooling |
-| #11 | Closed | Complete in PR #27 | Merged | Reload and reconciliation observation required | No separate approval | Supports #12 and #18 |
-| #12 | Open | Safety gate prepared | Required checks green | Synthetic actuator transcript required | Explicit human approval required | Blocks #20 |
+| #11 | Closed | Complete in PR #27 | Merged | Working-tree reload and restart passed; exact candidate link remains | No separate approval | Supports #12 and #18 |
+| #12 | Open | Safety gate prepared | Required checks green | Working-tree Dry run transcript passed; exact candidate packet remains | Explicit human approval required | Blocks #20 |
 | #13 | Closed | Complete in PR #27 | Merged | Repairs observation required | No separate approval | Supports #18 and #20 |
-| #14 | Closed | Complete in PR #27 | Merged | Diagnostics observation required | No separate approval | Supports #20 |
+| #14 | Closed | Complete in PR #27 | Merged | Working-tree redacted diagnostics passed; exact candidate link remains | No separate approval | Supports #20 |
 | #15 | Closed | Complete in PR #27 | Merged | Cooling changeover shadow observation required | Covered by #21 | Blocks stable cooling acceptance |
 | #16 | Closed | Complete in PR #27 | Merged | Source transition observation required | Covered by #22 | Blocks stable source acceptance |
 | #17 | Closed | Complete in PR #27 | Merged | Guarded source-demand observation required | Covered by #22 | Blocks stable source acceptance |
@@ -289,7 +296,7 @@ Issue #24 is the final human stable-release audit and must not self-approve `v1.
 | #20 | Open | Pilot procedure to be prepared | Required checks green | Supervised physical pilot only after approval | Exact human authorization required | Depends on #12 and #18 |
 | #21 | Open | Cooling implementation merged | Scenario tests merged | Dry run-only pilot required | Human signoff required | Depends on #18 |
 | #22 | Open | Source implementation merged | Scenario tests merged | Shadow or intercepted review required | Human signoff required | Depends on #18 |
-| #23 | Open | Migration and benchmark implementation merged | Substantial evidence merged | Candidate rerun and release linkage required | No separate physical approval | Blocked by #18 |
+| #23 | Open | Migration and benchmark implementation merged | Current working tree green | Version 1.1 to 2.0 run passed; committed-candidate release linkage remains | No separate physical approval | Blocked by #18 |
 | #24 | Open | Audit preparation allowed | Depends on accepted evidence | Depends on #19, #20, #21, #22, and #23 | Human stable-release approval required | Final gate |
 
 ## Merged automated evidence
@@ -298,11 +305,14 @@ PR #27 reports 344 tests and 91.10 percent core coverage for the M4-M7 implement
 
 PR #28 reports 352 tests and 91.29 percent core coverage for the current public-beta candidate.
 
+The production-hardening working tree reports 420 passing Python tests, 8 passing frontend tests, and 92.67 percent core coverage from `make verify`.
+
 The merged public-beta evidence validates package layout, version metadata, benchmark limits, and documentation contracts.
 
 The large synthetic benchmark covers 48 zones, 24 circuits, 12 shared valves, 6 shared pumps, 3 sources, and 96 routes.
 
-The recorded benchmark results are approximately 8.6 milliseconds for compile, 25.2 milliseconds for evaluation, 0.218 MiB peak traced memory, 2 reconciliations, and 3 entity updates.
+Five repeated working-tree benchmark runs measured approximately 7.6 to 8.1 milliseconds for compile, 11.8 to 12.1 milliseconds for pure evaluation, 11.4 to 11.7 milliseconds for a warm Home Assistant runtime refresh, 162 to 168 milliseconds for large-Plant setup, and 0.257 MiB peak traced memory.
+Each run observed 2 reconciliations, 3 entity updates, and zero service calls.
 
 The recorded benchmark observed zero intercepted Home Assistant service calls and zero physical Home Assistant service calls.
 
@@ -314,7 +324,7 @@ The corrected focused suite and full `make verify` run both passed, so neither s
 
 ## Disposable Home Assistant staging gate
 
-The development Home Assistant instance is a shared disposable environment at the currently approved Home Assistant release.
+Staging may use either a protected shared development instance or a new isolated disposable configuration at the approved Home Assistant release.
 
 Only one staging owner may operate the shared instance at a time.
 
@@ -338,7 +348,7 @@ The staging pass must establish a reversible baseline before changing the dispos
 
 Python, manifest, or translation changes require a Home Assistant restart.
 
-The staging pass must confirm that Hydronicus reports version `0.1.0`.
+The release staging pass must confirm that Hydronicus reports the exact declared candidate version.
 
 The staging owner must create a new issue-specific synthetic Plant without modifying existing Plants.
 
@@ -358,19 +368,23 @@ The evidence document may be updated only after these observations occur.
 
 Automated pytest output must not be described as live Home Assistant staging evidence.
 
-An authorized browser session subsequently confirmed Home Assistant Core `2026.7.2`, Hydronicus `0.5.0`, the protected synthetic `Hydronic plant`, its idle shadow state, no pending Repairs, and no current log issues.
+On 2026-08-28, a new isolated configuration ran the production-hardening working tree on Home Assistant `2026.8.2`.
 
-The observed Plant contained one Zone, one Circuit, one valve, and one pump backed by synthetic helpers.
+Home Assistant created one Dry run Plant, added and reconfigured a Zone subentry, exposed five Plant or object devices and 42 Hydronicus entities, proposed heating operations, and issued zero service calls to the synthetic valve or pump.
 
-The browser-control path could inspect the runtime but could not reliably activate the Home Assistant custom action controls needed for issue-specific creation, helper driving, reload, diagnostics download, or removal.
+The same disposable configuration restarted from a deliberately forced version `1.1` entry with a full legacy subentry, disabled Dry run, and stale authorization.
 
-Those actions remain live-unverified and must not be recorded as product failures without a manual reproduction.
+Startup migrated it to version `2.0`, restored Dry run, removed stale authorization, rebuilt parent ownership, and minimized the handle to its object ID.
 
-Historical logs contained an earlier translation-format error, but the recovered current runtime showed no new issue.
+Redacted diagnostics, reload, subentry deletion, parent-graph reconciliation, entry removal, registry cleanup, WebSocket close, and Home Assistant service-level shutdown passed.
 
-No Home Assistant state was mutated during that inspection.
+The run found and then verified fixes for a WebSocket subscription-map mutation and duplicate one-shot stop-listener removal.
 
-The `0.1.0` candidate still requires deployment from an exact committed SHA and the complete issue-specific staging procedure above.
+The final log had no Hydronicus warning or error.
+
+Home Assistant's own components reported a missing FFmpeg executable and zlib acceleration fallback in this host environment.
+
+This evidence is scoped to the uncommitted working tree and does not replace the exact committed candidate, HACS archive installation, cooling pilot, source pilot, Repairs staging, non-author installation, or physical approval gates.
 
 ## Release candidate procedure for #18
 
@@ -429,7 +443,7 @@ The old implementation-wave launcher is retired.
 The current graph is:
 
 ```text
-main 6a8bb45
+base 7b9defc plus the production-hardening working tree
   |
   +--> reversible synthetic Home Assistant staging
   |       |
@@ -530,15 +544,15 @@ Guarded heat-pump demand must show a valid pump path.
 
 Reviewed traces and human signoff are required.
 
-## #23 benchmark audit
+## #23 migration and benchmark audit
 
-The issue must be updated to remove predecessor migration requirements because no public predecessor exists.
+The audit must verify the concrete version 1.1 to 2.0 migration, including interruption after the parent graph write, ID-only handles, object-device ownership, authorization invalidation, and Dry run fallback.
 
 The audit must confirm configured thresholds, environment, timing, memory, reconciliation counts, and entity-update evidence.
 
 The audit must confirm `make verify` for the final #18 candidate.
 
-The audit must not add imaginary predecessor releases or migration fixtures.
+The audit must not add migration aliases or predecessor shapes that are not represented by checked-in fixtures.
 
 ## #24 stable-release audit
 
@@ -568,11 +582,11 @@ Keep code complete, automated evidence complete, disposable staging complete, hu
 
 ## Immediate next actions
 
-The primary writer must implement the control-mode slices above without enabling or operating physical outputs.
+The primary writer must preserve the completed hardening and verification evidence without enabling or operating physical outputs.
 
-The primary writer must complete core, integration, and scenario verification before requesting a candidate commit.
+The next candidate handoff must record an exact commit SHA and repeat the release-relevant checks from the committed tree or its inspected archive.
 
-After implementation is committed, the primary writer must record the exact SHA and finish reversible synthetic Home Assistant staging.
+Issue #18 still requires a genuine HACS-style install, upgrade or migration, rollback, and redacted transcript for the approved public artifact.
 
 The relevant evidence document may be created or updated only from observed staging results.
 

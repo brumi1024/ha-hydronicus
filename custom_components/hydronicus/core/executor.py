@@ -42,6 +42,7 @@ class ReconciliationStatus(StrEnum):
     OBSERVED = "observed"
     RETAINED = "retained"
     REQUIRED = "required"
+    INDETERMINATE = "indeterminate"
     FAILED = "failed"
 
 
@@ -217,6 +218,14 @@ def _is_observed_command_satisfied(
     )
 
 
+def _operations_have_same_target(
+    left: ActuatorOperation,
+    right: ActuatorOperation,
+) -> bool:
+    """Return whether two operations express the same complete actuator intent."""
+    return left.target_state is right.target_state and left.target_value == right.target_value
+
+
 @dataclass(slots=True)
 class ActuatorExecutor:
     """Execute explicit, idempotent commands against generic HA entities."""
@@ -353,10 +362,19 @@ class ActuatorExecutor:
             or self.requested_values.get(operation.actuator_id) == operation.target_value
         )
         if observed_satisfies:
+            self.failure_states.pop(operation.actuator_id, None)
             status = ReconciliationStatus.OBSERVED
             explanation = "Observed feedback already satisfies the desired state."
-        elif failure is not None and retained is None:
-            status = ReconciliationStatus.FAILED
+        elif (
+            failure is not None
+            and retained is None
+            and _operations_have_same_target(failure.operation, operation)
+        ):
+            status = (
+                ReconciliationStatus.INDETERMINATE
+                if failure.kind is ActuatorFailureKind.TIMEOUT
+                else ReconciliationStatus.FAILED
+            )
             explanation = failure.explanation
         elif retained_satisfies:
             status = ReconciliationStatus.RETAINED
@@ -413,7 +431,12 @@ class ActuatorExecutor:
                     self.requested_values.pop(actuator_id, None)
                     self.failure_states.pop(actuator_id, None)
                 failure = self.failure_states.get(actuator_id)
-                if failure is not None and failure.operation.target_state is observed:
+                if failure is not None and _is_observed_command_satisfied(
+                    failure.operation.target_state,
+                    failure.operation.target_value,
+                    observed,
+                    state,
+                ):
                     self.failure_states.pop(actuator_id, None)
         for actuator_id, feedback_entity_id in self.readiness_bindings.items():
             if feedback_entity_id == entity_id:
@@ -447,7 +470,12 @@ class ActuatorExecutor:
             elif _entity_domain(binding.entity_id) == "select" and state is not None:
                 self.observed_values[binding.actuator_id] = str(state)
             failure = self.failure_states.get(binding.actuator_id)
-            if failure is not None and failure.operation.target_state is observed:
+            if failure is not None and _is_observed_command_satisfied(
+                failure.operation.target_state,
+                failure.operation.target_value,
+                observed,
+                state,
+            ):
                 self.failure_states.pop(binding.actuator_id, None)
         for actuator_id, entity_id in self.readiness_bindings.items():
             self.feedback_states[actuator_id] = observed_state_for(entity_id, states.get(entity_id))
@@ -461,6 +489,7 @@ class ActuatorExecutor:
         force_dry_run_actuator_ids: frozenset[str] = frozenset(),
         force_dry_run_start_actuator_ids: frozenset[str] = frozenset(),
         force_dispatch: bool = False,
+        stop_on_failure: bool = False,
         unavailable_actuator_ids: frozenset[str] = frozenset(),
     ) -> ExecutionReport:
         """Dispatch only unsatisfied, allowed explicit operations."""
@@ -482,6 +511,7 @@ class ActuatorExecutor:
             if not force_dispatch and reconciliation.status in {
                 ReconciliationStatus.OBSERVED,
                 ReconciliationStatus.RETAINED,
+                ReconciliationStatus.INDETERMINATE,
                 ReconciliationStatus.FAILED,
             }:
                 suppressed.append(operation)
@@ -507,8 +537,11 @@ class ActuatorExecutor:
                     f"timed out: {error or 'no response'}",
                 )
                 self.requested_states.pop(command.actuator_id, None)
+                self.requested_values.pop(command.actuator_id, None)
                 self.failure_states[command.actuator_id] = failure
                 failures.append(failure)
+                if stop_on_failure:
+                    break
                 continue
             except Exception as error:
                 failure = ActuatorExecutionFailure(
@@ -518,18 +551,18 @@ class ActuatorExecutor:
                     f"was rejected: {error or type(error).__name__}",
                 )
                 self.requested_states.pop(command.actuator_id, None)
+                self.requested_values.pop(command.actuator_id, None)
                 self.failure_states[command.actuator_id] = failure
                 failures.append(failure)
+                if stop_on_failure:
+                    break
                 continue
             self.requested_states[command.actuator_id] = operation.target_state
             if operation.target_value is not None:
                 self.requested_values[command.actuator_id] = operation.target_value
-            if (
-                command.actuator_id in self.failure_states
-                and self.failure_states[command.actuator_id].operation.target_state
-                is not operation.target_state
-            ):
-                self.failure_states.pop(command.actuator_id, None)
+            else:
+                self.requested_values.pop(command.actuator_id, None)
+            self.failure_states.pop(command.actuator_id, None)
             executed.append(operation)
         return ExecutionReport(tuple(executed), tuple(suppressed), tuple(proposed), tuple(failures))
 
@@ -557,6 +590,14 @@ class ActuatorExecutor:
             force_dry_run=force_dry_run,
             force_dry_run_actuator_ids=force_dry_run_actuator_ids,
             force_dispatch=True,
+            stop_on_failure=True,
             unavailable_actuator_ids=unavailable_actuator_ids,
         )
-        return SafeShutdownReport(plan, next_runtime, execution)
+        # Every shutdown phase is an atomic safety transition.  If any command
+        # fails, retain the prior phase so the complete idempotent phase is
+        # retried instead of claiming that downstream hydraulic work is safe.
+        return SafeShutdownReport(
+            plan,
+            runtime if execution.failures else next_runtime,
+            execution,
+        )

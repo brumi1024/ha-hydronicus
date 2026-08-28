@@ -6,12 +6,11 @@ from typing import cast
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
-from .const import DOMAIN
 from .core.model import PlantMode
+from .entity_device import plant_device_info
 from .runtime import HydronicRuntime
 
 
@@ -28,9 +27,7 @@ class PlantModeSelect(SelectEntity):
         runtime = entry.runtime_data
         self._attr_unique_id = f"{runtime.plant_id}_requested_mode"
         self._attr_name = "Requested mode"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
+        self._attr_device_info = plant_device_info(runtime)
 
     @property
     def _runtime(self) -> HydronicRuntime:

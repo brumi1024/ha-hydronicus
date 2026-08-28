@@ -6,11 +6,10 @@ from typing import cast
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
-from .const import DOMAIN
+from .entity_device import plant_device_info
 from .runtime import HydronicRuntime
 
 
@@ -26,9 +25,7 @@ class SafeShutdownButton(ButtonEntity):
         runtime = cast(HydronicRuntime, entry.runtime_data)
         self._attr_unique_id = f"{runtime.plant_id}_safe_shutdown"
         self._attr_name = "Safe shutdown"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
-        )
+        self._attr_device_info = plant_device_info(runtime)
 
     @property
     def _runtime(self) -> HydronicRuntime:

@@ -5,13 +5,19 @@ from __future__ import annotations
 import voluptuous_serialize
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import translation
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
     CONF_CALIBRATION_OFFSET,
     CONF_CONFIGURE_SENSOR_METADATA,
     CONF_COOLING_ENABLED,
     CONF_DESIGNATED_REFERENCE,
+    CONF_DRY_RUN,
+    CONF_DRY_RUN_CONFIRMATION,
     CONF_MAX_AGE,
+    CONF_NAME,
+    CONF_PLANT_ID,
     CONF_PUMP_ENTITY,
     CONF_PUMP_OVERRUN,
     CONF_REQUIRED,
@@ -42,6 +48,87 @@ def _schema_fields(result) -> set[str]:
             result["data_schema"], custom_serializer=cv.custom_serializer
         )
     }
+
+
+async def test_reconfigure_cannot_disable_dry_run_without_loaded_runtime(hass) -> None:
+    """Leaving Dry run requires a live runtime to own activation safety."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        data={
+            CONF_NAME: "Hydronic plant",
+            CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
+            CONF_DRY_RUN: True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_DRY_RUN: False}
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "dry_run_confirmation"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_DRY_RUN_CONFIRMATION: True}
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+    assert result["errors"] == {"base": "dry_run_runtime_unavailable"}
+    assert entry.data[CONF_DRY_RUN] is True
+
+
+async def test_reconfigure_can_enable_dry_run_without_loaded_runtime(hass) -> None:
+    """Re-enabling Dry run is a safe persisted fallback when runtime is unloaded."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        data={
+            CONF_NAME: "Hydronic plant",
+            CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
+            CONF_DRY_RUN: False,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_DRY_RUN: True}
+    )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_DRY_RUN] is True
+
+
+async def test_initial_zone_details_fields_have_translations(hass) -> None:
+    """Every field shown on the initial Zone details form has a UI label."""
+    translations = await translation.async_get_translations(
+        hass, "en", "config", integrations={DOMAIN}
+    )
+    for thermostat_kind in (
+        THERMOSTAT_KIND_HYDRONICUS,
+        THERMOSTAT_KIND_EXTERNAL_CLIMATE,
+    ):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={"name": f"{thermostat_kind} plant"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_THERMOSTAT_KIND: thermostat_kind}
+        )
+        translation_prefix = f"component.{DOMAIN}.config.step.{result['step_id']}.data."
+
+        assert result["step_id"] == "zone_details"
+        assert {
+            field
+            for field in _schema_fields(result)
+            if translation_prefix + field not in translations
+        } == set()
 
 
 async def test_initial_internal_thermostat_has_no_target_question(hass) -> None:

@@ -10,7 +10,10 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
-from custom_components.hydronicus.websocket import _filter_snapshot_for_user
+from custom_components.hydronicus.websocket import (
+    _filter_snapshot_for_user,
+    _readable_entity_ids,
+)
 
 PLANT_ID = "00000000-0000-4000-8000-000000000101"
 ZONE_ID = "00000000-0000-4000-8000-000000000102"
@@ -155,11 +158,11 @@ async def test_external_zone_visibility_uses_hydronicus_demand_acl(hass) -> None
             return entity_id.endswith("external_room_demand")
 
     user = type("User", (), {"permissions": _Permissions()})()
+    entities = entry.runtime_data.presentation_entities(hass)
     filtered = _filter_snapshot_for_user(
         entry.runtime_data.presentation_snapshot(hass),
-        entry.runtime_data,
-        hass,
-        user,
+        entities,
+        _readable_entity_ids(user, entities),
     )
     assert [zone["id"] for zone in filtered["zones"]] == [ZONE_ID]
     assert filtered["zones"][0]["thermostat"]["control_entity_id"] is None
