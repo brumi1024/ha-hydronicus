@@ -14,10 +14,11 @@ It models comfort zones, hydraulic circuits, delivery routes, valves, pumps, and
 ## Current status
 
 The release target is `0.1.0`.
+The current prerelease candidate is `0.1.0-rc.6`.
 The current candidate supports end-to-end Dry run behavior and a configurable Plant control boundary.
 Anyone can install Hydronicus, configure a Plant through the Home Assistant UI, exercise heating and cooling demand, inspect hydraulic sequencing and source recommendations, and troubleshoot the result without operating equipment.
 A disposable Home Assistant 2026.8.2 working-tree run has validated configuration flows, migration, object ownership, diagnostics, reload, deletion, removal, and a clean Dry run shutdown with zero actuator service calls.
-Release publication and HACS-installed evidence from an exact committed candidate remain pending.
+HACS-installed evidence from the exact committed candidate remains pending.
 
 | Capability | Current candidate | `v0.1.0` release target |
 | --- | --- | --- |

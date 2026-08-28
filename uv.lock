@@ -974,7 +974,7 @@ wheels = [
 
 [[package]]
 name = "ha-hydronicus"
-version = "0.1.0rc5"
+version = "0.1.0rc6"
 source = { virtual = "." }
 
 [package.optional-dependencies]
