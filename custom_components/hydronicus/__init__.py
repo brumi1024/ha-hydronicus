@@ -28,6 +28,11 @@ from .entry_configuration import (
     runtime_configuration_fingerprint,
 )
 from .frontend import async_register_frontend
+from .output_ownership import (
+    async_create_output_conflict_issue,
+    async_sync_output_conflict_issues,
+    live_output_conflict,
+)
 from .runtime import HydronicRuntime
 from .websocket import (
     async_setup as async_setup_websocket,
@@ -174,11 +179,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
             entry,
             data=invalidate_output_authorization(entry.data),
         )
+    # Check and claim with no await in between: of two live Plants sharing an
+    # output, the one whose setup reaches this point second always yields, and
+    # it does so before its runtime exists, so it never sends a command.
+    if not bool(entry.data.get(CONF_DRY_RUN, True)) and (
+        conflict := live_output_conflict(hass, entry.entry_id, entry.data)
+    ):
+        _LOGGER.warning(
+            "Hydronicus Plant %s shares outputs %s with live Plant %s and returned to Dry run",
+            entry.entry_id,
+            ", ".join(conflict.entity_ids),
+            conflict.other_entry_id,
+        )
+        hass.config_entries.async_update_entry(
+            entry,
+            data=invalidate_output_authorization(entry.data),
+        )
+        async_create_output_conflict_issue(hass, entry, conflict)
     try:
         runtime = HydronicRuntime.from_entry(entry)
     except (StoredTopologyError, TopologyValidationError) as error:
         raise _stored_graph_error(entry, error) from error
     entry.runtime_data = runtime
+    async_sync_output_conflict_issues(hass)
     remove_update_listener = entry.add_update_listener(_async_reload_entry)
     registered = False
     try:
@@ -214,6 +237,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) ->
     if unloaded:
         unregister_runtime(hass, runtime.plant_id)
         await runtime.async_stop()
+        async_sync_output_conflict_issues(hass)
     return bool(unloaded)
 
 
@@ -221,4 +245,4 @@ async def async_remove_entry(hass: HomeAssistant, entry: HydronicConfigEntry) ->
     """Remove stored ownership after the command-free unload boundary."""
     # Home Assistant invokes this only after attempting async_unload_entry.
     # Device and entity registry cleanup belongs to Home Assistant itself.
-    return None
+    async_sync_output_conflict_issues(hass, removed_entry_id=entry.entry_id)

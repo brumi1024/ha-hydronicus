@@ -14,6 +14,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as entity_registry_helper
 from homeassistant.helpers import selector
 
@@ -150,6 +151,7 @@ from .entry_configuration import (
     subentry_draft,
     subentry_owned_ids,
 )
+from .output_ownership import bound_by_other_plant
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,14 +287,39 @@ class _OwnEntityPickerMixin:
     """Keep Hydronicus entities out of the entity pickers of every form.
 
     Selecting one, such as a zone's aggregate temperature, would create a feedback loop.
+    It also flags outputs that another Plant already binds, naming that Plant in
+    the next form it shows.
     """
 
     hass: Any
+    _other_plant_placeholders: dict[str, str] | None = None
+
+    def _other_plant_binding_errors(
+        self, entry_id: str | None, fields: Mapping[str, Any]
+    ) -> dict[str, str]:
+        """Flag submitted outputs that another Plant already binds.
+
+        This is advisory, so users learn about sharing before it matters. The
+        runtime guard that keeps one live Plant per output is authoritative.
+        """
+        errors: dict[str, str] = {}
+        self._other_plant_placeholders = None
+        for field, entity_id in fields.items():
+            if conflict := bound_by_other_plant(self.hass, entry_id, entity_id):
+                errors[field] = "actuator_entity_in_other_plant"
+                if self._other_plant_placeholders is None:
+                    self._other_plant_placeholders = {"other_plant": conflict.other_plant}
+        return errors
 
     def async_show_form(self, *, data_schema: vol.Schema | None = None, **kwargs: Any) -> Any:
         """Show a form whose entity pickers exclude this integration's entities."""
         if data_schema is not None:
             data_schema = _schema_without_own_entities(data_schema, _own_entity_ids(self.hass))
+        if self._other_plant_placeholders:
+            kwargs["description_placeholders"] = {
+                **self._other_plant_placeholders,
+                **(kwargs.get("description_placeholders") or {}),
+            }
         return super().async_show_form(data_schema=data_schema, **kwargs)  # type: ignore[misc]
 
 
@@ -1745,6 +1772,11 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
             errors[CONF_CIRCUIT_IDS] = "circuits_required"
         if user_input is not None:
             errors.update(_own_entity_errors(self.hass, user_input))
+            errors.update(
+                self._other_plant_binding_errors(
+                    entry.entry_id, {CONF_ENTITY_ID: user_input.get(CONF_ENTITY_ID)}
+                )
+            )
         if user_input is not None and not errors:
             actuator_id = str(uuid4())
             data = _valve_actuator_data(user_input, actuator_id)
@@ -1792,6 +1824,11 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
             errors[CONF_CIRCUIT_IDS] = "circuits_required"
         if user_input is not None:
             errors.update(_own_entity_errors(self.hass, user_input))
+            errors.update(
+                self._other_plant_binding_errors(
+                    entry.entry_id, {CONF_ENTITY_ID: user_input.get(CONF_ENTITY_ID)}
+                )
+            )
         if user_input is not None and not errors:
             data = _valve_actuator_data(user_input, defaults["id"])
             if validation_errors := _actuator_validation_errors(
@@ -2040,6 +2077,14 @@ def _source_validation_errors(
 class SourceSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSubentryFlow):
     """Add a source used by the read-only source recommendation."""
 
+    def _other_plant_demand_errors(
+        self, entry: config_entries.ConfigEntry, data: Mapping[str, Any]
+    ) -> dict[str, str]:
+        """Flag a source demand switch that another Plant already binds."""
+        return self._other_plant_binding_errors(
+            entry.entry_id, {CONF_SOURCE_DEMAND_ENTITY: data[CONF_SOURCE_DEMAND_ENTITY]}
+        )
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
@@ -2050,6 +2095,7 @@ class SourceSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSube
             source_id = str(uuid4())
             data = _source_data(user_input, source_id)
             errors = _own_entity_errors(self.hass, user_input)
+            errors.update(self._other_plant_demand_errors(entry, data))
             if not errors:
                 errors = _source_validation_errors(entry, data)
             if not errors:
@@ -2080,6 +2126,7 @@ class SourceSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSube
         if user_input is not None:
             data = _source_data(user_input, defaults["id"])
             errors = _own_entity_errors(self.hass, user_input)
+            errors.update(self._other_plant_demand_errors(entry, data))
             if not errors:
                 errors = _source_validation_errors(
                     entry, data, excluded_subentry_id=subentry.subentry_id
@@ -2119,6 +2166,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     _metadata_records: list[dict[str, Any]]
     _metadata_index: int
     _selected_thermostat_kind: str
+    _shown_authorization: dict[str, Any]
 
     @classmethod
     @callback
@@ -2185,28 +2233,58 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     ) -> config_entries.ConfigFlowResult:
         """Confirm the exact heating outputs before leaving Dry run."""
         entry = self._get_reconfigure_entry()
-        if user_input is not None:
-            if not user_input.get(CONF_DRY_RUN_CONFIRMATION, False):
-                return self.async_show_form(
-                    step_id="dry_run_confirmation",
-                    data_schema=_dry_run_confirmation_schema(),
-                    errors={"base": "dry_run_confirmation_required"},
-                    description_placeholders={"outputs": authorization_output_lines(entry.data)},
+        if user_input is None:
+            return self._dry_run_confirmation_form(entry)
+        if not user_input.get(CONF_DRY_RUN_CONFIRMATION, False):
+            return self._dry_run_confirmation_form(
+                entry, errors={"base": "dry_run_confirmation_required"}
+            )
+        try:
+            # Authorize exactly the outputs the form showed, never a later graph.
+            return await self._async_apply_dry_run(
+                entry, self._requested_dry_run, authorization=self._shown_authorization
+            )
+        except ServiceValidationError as error:
+            if error.translation_key == "output_authorization_mismatch":
+                return self._dry_run_confirmation_form(entry, errors={"base": "outputs_changed"})
+            if error.translation_key == "output_conflict":
+                placeholders = dict(error.translation_placeholders or {})
+                placeholders.pop("plant", None)
+                return self._dry_run_confirmation_form(
+                    entry, errors={"base": "output_conflict"}, placeholders=placeholders
                 )
-            return await self._async_apply_dry_run(entry, self._requested_dry_run)
+            raise
+
+    def _dry_run_confirmation_form(
+        self,
+        entry: config_entries.ConfigEntry,
+        *,
+        errors: dict[str, str] | None = None,
+        placeholders: Mapping[str, str] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Show the current outputs and remember exactly what the user confirms."""
+        data = entry.data
+        self._shown_authorization = output_authorization(data)
         return self.async_show_form(
             step_id="dry_run_confirmation",
             data_schema=_dry_run_confirmation_schema(),
-            description_placeholders={"outputs": authorization_output_lines(entry.data)},
+            errors=errors,
+            description_placeholders={
+                "outputs": authorization_output_lines(data),
+                **(placeholders or {}),
+            },
         )
 
     async def _async_apply_dry_run(
-        self, entry: config_entries.ConfigEntry, dry_run: bool
+        self,
+        entry: config_entries.ConfigEntry,
+        dry_run: bool,
+        *,
+        authorization: Mapping[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """Apply Dry run, completing any active heating shutdown first."""
         runtime = getattr(entry, "runtime_data", None)
         if runtime is not None:
-            authorization = None if dry_run else output_authorization(entry.data)
             if not await runtime.async_set_dry_run(
                 dry_run,
                 hass=self.hass,
@@ -2392,6 +2470,14 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                 errors["base"] = "duplicate_actuator_entity"
             elif own_entity_errors := _own_entity_errors(self.hass, user_input):
                 errors.update(own_entity_errors)
+            elif other_plant_errors := self._other_plant_binding_errors(
+                None,
+                {
+                    CONF_VALVE_ENTITY: fields[CONF_VALVE_ENTITY],
+                    CONF_PUMP_ENTITY: fields[CONF_PUMP_ENTITY],
+                },
+            ):
+                errors.update(other_plant_errors)
             else:
                 circuit_id = str(uuid4())
                 valve_id = str(uuid4())

@@ -86,6 +86,7 @@ from .entry_configuration import (
     output_authorization,
     runtime_configuration_fingerprint,
 )
+from .output_ownership import async_sync_output_conflict_issues, live_output_conflict
 from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
 from .repairs import async_sync_repairs
 
@@ -269,10 +270,19 @@ class HydronicRuntime:
                         translation_key="output_authorization_mismatch",
                         translation_placeholders={"plant": self.name},
                     )
+                # No await separates this check from the flip below, so a Plant
+                # setting up concurrently either sees this Plant live or is seen.
+                if conflict := live_output_conflict(active_hass, self._entry.entry_id, data):
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key="output_conflict",
+                        translation_placeholders={"plant": self.name, **conflict.placeholders},
+                    )
                 data[CONF_OUTPUT_AUTHORIZATION] = expected_authorization
             active_hass.config_entries.async_update_entry(self._entry, data=data)
             self.dry_run = requested
             self.executor.dry_run = requested
+            async_sync_output_conflict_issues(active_hass)
             if requested:
                 self._notify_listeners_if_changed()
             else:

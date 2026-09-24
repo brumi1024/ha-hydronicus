@@ -746,9 +746,27 @@ def invalidate_output_authorization(data: Mapping[str, Any]) -> dict[str, Any]:
     return updated
 
 
+def exclusive_output_entity_ids(data: Mapping[str, Any]) -> frozenset[str]:
+    """Return the entities a live Plant commands, which no other live Plant may command.
+
+    These are exactly the authorized outputs. The source selector is left out
+    because the runtime keeps every source-selector operation in Dry run, so no
+    Plant ever commands it; add it here if that ever changes.
+    """
+    return frozenset(output["entity_id"] for output in output_authorization(data)["outputs"])
+
+
 def authorization_output_lines(data: Mapping[str, Any]) -> str:
-    """Render exact output bindings for Home Assistant confirmation forms."""
-    outputs = output_authorization(data)["outputs"]
-    if not outputs:
+    """Render exact output bindings, and the source selector, for confirmation forms."""
+    lines = [
+        f"- {output['kind']}: {output['entity_id']}"
+        for output in output_authorization(data)["outputs"]
+    ]
+    selector = _topology_copy(data).get("source_selector")
+    if isinstance(selector, Mapping) and isinstance(selector.get("entity_id"), str):
+        lines.append(
+            f"- source_selector: {selector['entity_id']} (source selection stays in Dry run)"
+        )
+    if not lines:
         return "- No physical outputs are configured"
-    return "\n".join(f"- {output['kind']}: {output['entity_id']}" for output in outputs)
+    return "\n".join(lines)

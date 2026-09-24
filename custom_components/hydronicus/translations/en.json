@@ -211,7 +211,10 @@
       "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
       "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
       "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in the zone this circuit serves. Turn cooling off, or restart setup and add a humidity sensor to the zone.",
-      "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed."
+      "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
+      "actuator_entity_in_other_plant": "{other_plant} already binds this entity. One actuator entity belongs to one live plant, so only one of the two plants can leave Dry run while both bind it. Choose a different entity, or keep one plant in Dry run.",
+      "outputs_changed": "The outputs changed since this form was shown. Review the updated list and confirm again.",
+      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live plant. Turn on Dry run for {other_plant}, or bind different entities in this plant, then try again."
     },
     "abort": {
       "already_configured": "This plant is already configured.",
@@ -309,7 +312,8 @@
         "confirm_required": "Confirm that you understand these warnings before saving.",
         "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
         "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
-        "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity."
+        "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
+        "actuator_entity_in_other_plant": "{other_plant} already binds this entity. One actuator entity belongs to one live plant, so only one of the two plants can leave Dry run while both bind it. Choose a different entity, or keep one plant in Dry run."
       },
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding an actuator.",
@@ -631,7 +635,8 @@
         "invalid_source": "The source configuration is not valid.",
         "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
         "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
-        "buffer_temperature_required": "A temperature-qualified buffer needs a temperature entity."
+        "buffer_temperature_required": "A temperature-qualified buffer needs a temperature entity.",
+        "actuator_entity_in_other_plant": "{other_plant} already binds this entity. One actuator entity belongs to one live plant, so only one of the two plants can leave Dry run while both bind it. Choose a different entity, or keep one plant in Dry run."
       },
       "abort": {
         "already_configured": "This object is already configured.",
@@ -887,6 +892,10 @@
           "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
         }
       }
+    },
+    "output_conflict": {
+      "title": "{plant} was moved to Dry run",
+      "description": "{plant} and {other_plant} both bind {entities}, and {other_plant} was already out of Dry run. Two live plants would fight over these entities, so Hydronicus put {plant} into Dry run and removed its output authorization. One actuator entity belongs to one live plant. To fix this, bind different entities in one of the plants, remove one of the plants, or turn on Dry run for {other_plant} and then turn off Dry run for {plant}. This repair clears automatically when the plants no longer share a live output."
     }
   },
   "exceptions": {
@@ -919,6 +928,9 @@
     },
     "unsupported_preset_mode": {
       "message": "The preset {preset_mode} is not supported."
+    },
+    "output_conflict": {
+      "message": "Plant {plant} cannot leave Dry run because live plant {other_plant} already controls {entities}. One actuator entity belongs to one live plant."
     }
   }
 }

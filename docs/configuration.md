@@ -178,6 +178,16 @@ It warns when a shared valve prevents independent hydraulic control.
 
 Read [how Hydronicus works](how-it-works.md) for diagrams and the complete ownership rules.
 
+## One live Plant per actuator entity
+
+One actuator entity belongs to one live Plant.
+Sharing equipment between Circuits happens inside one Plant, never across Plants.
+A valve, pump, or source-demand entity that two Plants bind can be commanded by only one of them at a time, because two live Plants would switch it against each other and either one's Safe shutdown could stop equipment the other needs.
+Plants in Dry run may bind the same entities, for example to compare a draft configuration with the live one.
+The setup and subentry forms flag an entity that another Plant already binds, so the overlap is visible before it matters.
+Turning Dry run off is refused while another live Plant controls one of the same entities, and the error names that Plant and the shared entities.
+If two live Plants share an entity when Home Assistant starts, the Plant that sets up second is moved to Dry run before it sends any command, and a repair explains the conflict.
+
 ## Configuration checklist
 
 Before accepting a simulated Plant, check all of the following:

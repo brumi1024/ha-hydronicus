@@ -202,6 +202,21 @@ This is expected.
 Every topology or physical binding change invalidates the prior output fingerprint and returns the Plant to Dry run.
 Review the complete graph and the exact valve, pump, and direct source-demand output list before authorizing active heating again.
 
+### A Plant was moved to Dry run because of shared outputs
+
+One actuator entity belongs to one live Plant.
+When two Plants bind the same valve, pump, or source-demand entity and both are out of Dry run, the Plant that sets up second is moved to Dry run before it sends any command.
+Hydronicus removes that Plant's output authorization and raises a repair that names the other Plant and the shared entities.
+Bind different entities in one of the Plants, remove one of the Plants, or turn on Dry run for the other Plant.
+The repair clears on its own once the Plants no longer share a live output, and you can then turn Dry run off again after reviewing the outputs.
+
+### Turning Dry run off reports another Plant or changed outputs
+
+If the confirmation reports that another Plant controls some of the same entities, that Plant is out of Dry run and owns them.
+Resolve the overlap as described above before trying again.
+If the confirmation reports that the outputs changed since the form was shown, the Plant configuration was edited while the form was open.
+Review the updated output list that the form now shows, and confirm again only if it is what you expect.
+
 ### A deleted object still appears in the topology preview
 
 Check the Hydronicus log for a message saying that the Plant could not reach Dry run after a config subentry was removed.
