@@ -6,10 +6,12 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus import async_setup_entry
+from custom_components.hydronicus import async_setup_entry, async_unload_entry
 from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_NAME,
@@ -272,3 +274,77 @@ async def test_unload_waits_for_inflight_refresh_before_detaching_runtime(
     assert await unload_task
     await refresh_task
     assert not hasattr(entry, "runtime_data")
+
+
+async def test_unload_entry_leaves_runtime_data_cleanup_to_home_assistant(hass) -> None:
+    """The integration stops the runtime, and Home Assistant clears runtime data."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        data={
+            CONF_NAME: "Hydronic plant",
+            CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
+            CONF_DRY_RUN: True,
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+
+    assert await async_unload_entry(hass, entry)
+
+    assert entry.runtime_data is runtime
+    assert runtime._stopping is True
+    assert runtime._hass is None
+
+
+@pytest.mark.parametrize(
+    "topology",
+    [
+        pytest.param(
+            {"zones": [{"id": "00000000-0000-4000-8000-000000000002", "legacy": True}]},
+            id="undecodable",
+        ),
+        pytest.param(
+            {
+                "routes": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000006",
+                        "zone_id": "00000000-0000-4000-8000-000000000002",
+                        "circuit_id": "00000000-0000-4000-8000-000000000005",
+                    }
+                ]
+            },
+            id="uncompilable",
+        ),
+    ],
+)
+async def test_setup_with_invalid_stored_graph_raises_translated_config_entry_error(
+    hass, topology: dict[str, object]
+) -> None:
+    """A stored graph that cannot be decoded or compiled fails setup with a translation."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
+        data={
+            CONF_NAME: "Hydronic plant",
+            CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
+            CONF_DRY_RUN: True,
+            "topology": topology,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryError) as error:
+        await async_setup_entry(hass, entry)
+    assert error.value.translation_domain == DOMAIN
+    assert error.value.translation_key == "invalid_stored_graph"
+    assert error.value.translation_placeholders["plant"] == "Hydronic plant"
+    assert error.value.translation_placeholders["error"]
+    assert not hasattr(entry, "runtime_data")
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.error_reason_translation_key == "invalid_stored_graph"

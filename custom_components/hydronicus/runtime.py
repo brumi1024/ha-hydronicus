@@ -9,14 +9,18 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
-from typing import Any, cast
+from typing import Any
 
-try:
-    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-except ImportError:  # pragma: no cover - lightweight unit-test Home Assistant stub
-    EVENT_HOMEASSISTANT_STOP = "homeassistant_stop"
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    EVENT_HOMEASSISTANT_STOP,
+    PERCENTAGE,
+    UnitOfTemperature,
+)
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
     ACTUATOR_COMMAND_TIMEOUT_SECONDS,
@@ -26,6 +30,7 @@ from .const import (
     CONF_OUTPUT_AUTHORIZATION,
     CONF_PLANT_ID,
     CONF_REQUESTED_MODE,
+    DOMAIN,
     MAX_RECONCILIATION_INTERVAL_SECONDS,
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
@@ -183,6 +188,22 @@ class HydronicRuntime:
             _entry=entry,
         )
 
+    def _not_started_error(self) -> HomeAssistantError:
+        """Describe an operation that reached a runtime without Home Assistant attached."""
+        return HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="runtime_not_started",
+            translation_placeholders={"plant": self.name},
+        )
+
+    def _unknown_zone_error(self, zone_id: str) -> ServiceValidationError:
+        """Describe a request for a Zone without a Hydronicus-owned thermostat."""
+        return ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="unknown_zone",
+            translation_placeholders={"zone_id": zone_id, "plant": self.name},
+        )
+
     async def async_set_dry_run(
         self,
         dry_run: bool,
@@ -196,7 +217,7 @@ class HydronicRuntime:
             return True
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
-            raise RuntimeError("Hydronic runtime is not started.")
+            raise self._not_started_error()
 
         async with self._operation_lock:
             if requested:
@@ -226,8 +247,10 @@ class HydronicRuntime:
             else:
                 expected_authorization = output_authorization(data)
                 if authorization is None or dict(authorization) != expected_authorization:
-                    raise ValueError(
-                        "Leaving Dry run requires authorization for the exact current outputs."
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key="output_authorization_mismatch",
+                        translation_placeholders={"plant": self.name},
                     )
                 data[CONF_OUTPUT_AUTHORIZATION] = expected_authorization
             active_hass.config_entries.async_update_entry(self._entry, data=data)
@@ -270,10 +293,14 @@ class HydronicRuntime:
         try:
             requested = PlantMode(mode)
         except ValueError as error:
-            raise ValueError(f"Unsupported plant mode {mode!r}.") from error
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_plant_mode",
+                translation_placeholders={"mode": str(mode)},
+            ) from error
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
-            raise RuntimeError("Hydronic runtime is not started.")
+            raise self._not_started_error()
         async with self._operation_lock:
             data = dict(self._entry.data)
             data[CONF_REQUESTED_MODE] = requested.value
@@ -319,11 +346,9 @@ class HydronicRuntime:
         self._remove_state_listener = async_track_state_change_event(
             hass, self._observed_entity_ids(), self._async_handle_state_change
         )
-        bus = getattr(hass, "bus", None)
-        if bus is not None and hasattr(bus, "async_listen_once"):
-            self._remove_stop_listener = bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STOP, self._async_handle_homeassistant_stop
-            )
+        self._remove_stop_listener = hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP, self._async_handle_homeassistant_stop
+        )
         if not defer_initial_refresh:
             await self.async_refresh(hass)
             self._schedule_periodic_reconciliation(hass)
@@ -414,10 +439,10 @@ class HydronicRuntime:
         if zone_id not in self.plant.zones or not isinstance(
             self.plant.zones[zone_id].thermostat, HydronicusThermostatConfig
         ):
-            raise ValueError(f"Unknown zone {zone_id}.")
+            raise self._unknown_zone_error(zone_id)
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
-            raise RuntimeError("Hydronic runtime is not started.")
+            raise self._not_started_error()
 
         async with self._operation_lock:
             self.zone_target_temperatures[zone_id] = temperature
@@ -431,24 +456,30 @@ class HydronicRuntime:
         if zone_id not in self.plant.zones or not isinstance(
             self.plant.zones[zone_id].thermostat, HydronicusThermostatConfig
         ):
-            raise ValueError(f"Unknown zone {zone_id}.")
+            raise self._unknown_zone_error(zone_id)
         normalized = str(preset_mode).lower()
         zone = self.plant.zones[zone_id]
         if normalized == "none":
             target = self.zone_target_temperatures[zone_id]
         else:
             if normalized not in _PRESET_MODES:
-                raise ValueError(f"Unsupported preset mode {preset_mode!r}.")
+                raise ServiceValidationError(
+                    translation_domain=DOMAIN,
+                    translation_key="unsupported_preset_mode",
+                    translation_placeholders={"preset_mode": str(preset_mode)},
+                )
             try:
                 target = _validate_target_temperature(zone.preset_targets[normalized])
             except KeyError as error:
-                raise ValueError(
-                    f"Preset {normalized!r} is not configured for zone {zone.name}."
+                raise ServiceValidationError(
+                    translation_domain=DOMAIN,
+                    translation_key="preset_not_configured",
+                    translation_placeholders={"preset_mode": normalized, "zone": zone.name},
                 ) from error
 
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
-            raise RuntimeError("Hydronic runtime is not started.")
+            raise self._not_started_error()
         async with self._operation_lock:
             self.zone_target_temperatures[zone_id] = target
             self.zone_preset_modes[zone_id] = normalized
@@ -464,14 +495,18 @@ class HydronicRuntime:
         """Update one internal thermostat mode without changing the Plant constraint."""
         zone = self.plant.zones.get(zone_id)
         if zone is None or not isinstance(zone.thermostat, HydronicusThermostatConfig):
-            raise ValueError(f"Unknown Hydronicus thermostat Zone {zone_id}.")
+            raise self._unknown_zone_error(zone_id)
         try:
             mode = ThermostatHvacMode(hvac_mode)
         except ValueError as error:
-            raise ValueError(f"Unsupported thermostat HVAC mode {hvac_mode!r}.") from error
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_hvac_mode",
+                translation_placeholders={"hvac_mode": str(hvac_mode)},
+            ) from error
         active_hass = hass or self._hass
         if active_hass is None:
-            raise RuntimeError("Hydronic runtime is not started.")
+            raise self._not_started_error()
         async with self._operation_lock:
             self.zone_hvac_modes[zone_id] = mode
             await self._async_refresh_locked(active_hass)
@@ -620,7 +655,7 @@ class HydronicRuntime:
         """Release source demand, observe overrun, then stop pumps and valves."""
         active_hass = hass or self._hass
         if active_hass is None:
-            raise RuntimeError("Hydronic runtime is not started.")
+            raise self._not_started_error()
         effective_now = now or self._now()
         async with self._operation_lock:
             return await self._async_safe_shutdown_locked(
@@ -842,15 +877,10 @@ class HydronicRuntime:
 
     def _schedule_task(self, hass: HomeAssistant, coroutine: Any) -> asyncio.Task[Any]:
         """Track an asynchronous runtime operation so unload can cancel it."""
-        try:
-            task = hass.async_create_task(coroutine, eager_start=False)
-        except TypeError:
-            # The lightweight Home Assistant test seam predates the optional
-            # eager_start argument.
-            task = hass.async_create_task(coroutine)
+        task = hass.async_create_task(coroutine, eager_start=False)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return cast(asyncio.Task[Any], task)
+        return task
 
     def _schedule_refresh(self, hass: HomeAssistant) -> None:
         """Coalesce state-event refreshes into one tracked task."""
@@ -913,12 +943,6 @@ class HydronicRuntime:
 
     def _refresh_binding_health(self, hass: HomeAssistant) -> None:
         """Resolve configured references and synchronize the public Repairs state."""
-        if not hasattr(hass, "bus"):
-            # Preserve the small Home Assistant-free runtime seam used by the
-            # deterministic scheduling tests.
-            self.unresolved_bindings = ()
-            self.unavailable_entity_ids = frozenset()
-            return
         bindings = configured_entity_bindings(self.plant)
         resolved_entity_ids = {
             binding.entity_id
@@ -1155,7 +1179,11 @@ class HydronicRuntime:
         service_data: dict[str, object] = {"entity_id": operation.entity_id}
         if operation.service == "select_option":
             if operation.target_value is None:
-                raise ValueError("A selector operation requires an explicit option.")
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="selector_option_missing",
+                    translation_placeholders={"entity_id": operation.entity_id},
+                )
             service_data["option"] = operation.target_value
         service_task = self._schedule_task(
             hass,
@@ -1371,19 +1399,13 @@ class HydronicRuntime:
 
     @staticmethod
     def _temperature_observation(hass: HomeAssistant, entity_id: str) -> TemperatureObservation:
-        """Read one numeric observation with its Home Assistant timestamp."""
-        state = hass.states.get(entity_id)
-        try:
-            value = float(state.state) if state is not None else None
-        except TypeError, ValueError:
-            value = None
-        if state is None:
-            observed_at = None
-        else:
-            observed_at = getattr(state, "last_reported", None)
-            if observed_at is None:
-                observed_at = getattr(state, "last_updated", None)
-        return TemperatureObservation(value=value, observed_at=observed_at)
+        """Read one temperature observation in Celsius with its Home Assistant timestamp."""
+        return _numeric_observation(hass.states.get(entity_id), celsius_from_unit)
+
+    @staticmethod
+    def _humidity_observation(hass: HomeAssistant, entity_id: str) -> TemperatureObservation:
+        """Read one relative humidity observation in percent with its timestamp."""
+        return _numeric_observation(hass.states.get(entity_id), relative_humidity_from_unit)
 
     @staticmethod
     def _feedback_observation(
@@ -1408,9 +1430,11 @@ class HydronicRuntime:
 
     def _build_snapshot(self, hass: HomeAssistant) -> PlantSnapshot:
         """Build one immutable controller snapshot from current HA state."""
-        observations = {
+        temperature_observations = {
             sensor_id: self._temperature_observation(hass, sensor_id)
-            for sensor_id in self._observation_sensor_ids()
+            for sensor_id in dict.fromkeys(
+                (*self._temperature_sensor_ids(), *self._reference_sensor_ids())
+            )
         }
         source_temperatures: dict[str, TemperatureObservation] = {}
         source_availability: dict[str, bool] = {}
@@ -1482,14 +1506,23 @@ class HydronicRuntime:
                 )
             else:
                 thermostat_states[zone_id] = _external_climate_state(
-                    hass.states.get(zone.thermostat.entity_id)
+                    hass.states.get(zone.thermostat.entity_id),
+                    hass.config.units.temperature_unit,
                 )
         return PlantSnapshot(
-            temperatures={sensor_id: observations[sensor_id] for sensor_id in temperature_ids},
+            temperatures={
+                sensor_id: temperature_observations[sensor_id] for sensor_id in temperature_ids
+            },
             thermostats=thermostat_states,
-            humidities={sensor_id: observations[sensor_id] for sensor_id in humidity_ids},
-            supply_temperatures={sensor_id: observations[sensor_id] for sensor_id in supply_ids},
-            surface_temperatures={sensor_id: observations[sensor_id] for sensor_id in surface_ids},
+            humidities={
+                sensor_id: self._humidity_observation(hass, sensor_id) for sensor_id in humidity_ids
+            },
+            supply_temperatures={
+                sensor_id: temperature_observations[sensor_id] for sensor_id in supply_ids
+            },
+            surface_temperatures={
+                sensor_id: temperature_observations[sensor_id] for sensor_id in surface_ids
+            },
             source_temperatures=source_temperatures,
             source_availability=source_availability,
             source_selector_states=source_selector_states,
@@ -1818,6 +1851,46 @@ def _state_is_on(state: Any) -> bool:
     return str(state.state).strip().lower() in {"on", "true", "1", "yes"}
 
 
+def celsius_from_unit(value: float, unit: object) -> float | None:
+    """Apply the observation unit policy to one temperature reading.
+
+    Celsius, Fahrenheit, and kelvin are converted to Celsius. A reading without a
+    unit is assumed to be Celsius. Any other unit makes the reading unusable, so
+    the controller treats it like any other invalid observation and fails closed.
+    """
+    if unit is None or unit == "" or unit == UnitOfTemperature.CELSIUS:
+        return value
+    if unit not in TemperatureConverter.VALID_UNITS:
+        return None
+    return TemperatureConverter.convert(value, str(unit), UnitOfTemperature.CELSIUS)
+
+
+def relative_humidity_from_unit(value: float, unit: object) -> float | None:
+    """Accept relative humidity in percent, or without a unit, and nothing else."""
+    if unit is None or unit == "" or unit == PERCENTAGE:
+        return value
+    return None
+
+
+def _numeric_observation(
+    state: State | None,
+    normalize: Callable[[float, object], float | None],
+) -> TemperatureObservation:
+    """Read one numeric observation, normalized by its unit, with its timestamp."""
+    if state is None:
+        return TemperatureObservation(value=None, observed_at=None)
+    try:
+        value: float | None = float(state.state)
+    except TypeError, ValueError:
+        value = None
+    if value is not None:
+        value = normalize(value, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT))
+    return TemperatureObservation(
+        value=value,
+        observed_at=state.last_reported or state.last_updated,
+    )
+
+
 def _finite_state_attribute(state: Any, key: str) -> float | None:
     """Read one finite diagnostic climate attribute without guessing."""
     attributes = getattr(state, "attributes", {})
@@ -1831,8 +1904,20 @@ def _finite_state_attribute(state: Any, key: str) -> float | None:
     return value if isfinite(value) else None
 
 
-def _external_climate_state(state: Any) -> ExternalClimateThermostatState:
-    """Normalize an external climate entity before it reaches the pure evaluator."""
+def _climate_temperature_attribute(state: Any, key: str, unit: str) -> float | None:
+    """Read one climate temperature attribute, reported in the system unit, as Celsius."""
+    value = _finite_state_attribute(state, key)
+    if value is None:
+        return None
+    return celsius_from_unit(value, unit)
+
+
+def _external_climate_state(state: Any, temperature_unit: str) -> ExternalClimateThermostatState:
+    """Normalize an external climate entity before it reaches the pure evaluator.
+
+    Home Assistant reports climate temperature attributes in the configured unit
+    system, so they are converted to Celsius here.
+    """
     if state is None:
         return ExternalClimateThermostatState(
             explanation="External thermostat blocked: the climate entity is missing."
@@ -1865,8 +1950,10 @@ def _external_climate_state(state: Any) -> ExternalClimateThermostatState:
         hvac_action=hvac_action,
         hvac_mode=hvac_mode,
         hvac_mode_valid=hvac_mode_valid,
-        target_temperature=_finite_state_attribute(state, "temperature"),
-        current_temperature=_finite_state_attribute(state, "current_temperature"),
+        target_temperature=_climate_temperature_attribute(state, "temperature", temperature_unit),
+        current_temperature=_climate_temperature_attribute(
+            state, "current_temperature", temperature_unit
+        ),
         explanation=explanation,
     )
 
@@ -1876,9 +1963,22 @@ def _validate_target_temperature(temperature: float) -> float:
     try:
         value = float(temperature)
     except (TypeError, ValueError) as error:
-        raise ValueError("Zone target temperature must be numeric.") from error
+        raise _invalid_target_temperature_error(temperature) from error
     if not isfinite(value) or not MIN_ZONE_TARGET_TEMPERATURE <= value <= (
         MAX_ZONE_TARGET_TEMPERATURE
     ):
-        raise ValueError("Zone target temperature must be finite and between 5 and 35 °C.")
+        raise _invalid_target_temperature_error(temperature)
     return value
+
+
+def _invalid_target_temperature_error(temperature: object) -> ServiceValidationError:
+    """Describe a rejected zone setpoint with the advertised Celsius bounds."""
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key="invalid_target_temperature",
+        translation_placeholders={
+            "temperature": str(temperature),
+            "minimum": f"{MIN_ZONE_TARGET_TEMPERATURE:g}",
+            "maximum": f"{MAX_ZONE_TARGET_TEMPERATURE:g}",
+        },
+    )

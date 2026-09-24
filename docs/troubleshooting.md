@@ -54,9 +54,24 @@ An unusable optional sensor is excluded from aggregation and appears in the aggr
 If no usable sensor remains, the Zone blocks even when every configured observation is optional.
 
 Check the sensor state in **Developer tools > States**.
-Use a numeric Celsius value for the simulated sensor.
+Use a numeric value with a supported unit for the simulated sensor.
 Check the observation's configured required status, maximum age, and calibration offset before changing the topology.
 Do not paste private device attributes into a public report.
+
+### A sensor with a valid number is still unusable
+
+Check the sensor's `unit_of_measurement` attribute in **Developer tools > States**.
+A temperature observation must report `°C`, `°F`, `K`, or no unit, and a humidity observation must report `%` or no unit.
+Any other unit, including a misspelled one such as `C` or `degC`, makes the observation unusable, so a required sensor blocks the Zone and demand is released.
+This is deliberate: Hydronicus fails closed rather than guessing what an unknown unit means.
+Fix the unit on the source entity, for example in the template sensor definition, and the Zone recovers on the next state change.
+A value without a unit is assumed to be Celsius, so a unit-less sensor that reports Fahrenheit produces a wrong temperature rather than a blocked Zone; add the unit to such a sensor.
+
+### The temperature differs from the value Home Assistant shows
+
+Hydronicus converts `°F` and `K` observations to Celsius before evaluation, and its own entities store Celsius.
+Home Assistant displays those entities in the configured unit system, so a converted value can look different from the source sensor while describing the same temperature.
+Compare the values after converting them to one unit before changing a target or calibration offset.
 
 ### A battery sensor appears stale
 
@@ -162,6 +177,8 @@ Use the [diagnostic bug-report template](../.github/ISSUE_TEMPLATE/diagnostic-bu
 ### The integration reload fails
 
 Keep the Plant in Dry run.
+If the integration card reports that the stored configuration cannot be loaded safely, the stored Plant graph could not be decoded or compiled, and Hydronicus did not start a runtime for it.
+The message names the first problem it found.
 Check for an invalid or partially edited subentry and restore the last known-good configuration from a Home Assistant backup if necessary.
 Then restart or reload the integration and confirm that the topology preview returns.
 

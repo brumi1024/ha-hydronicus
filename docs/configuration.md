@@ -58,6 +58,26 @@ Select one of the available policies:
 - **Heating-oriented minimum** uses the lowest reading.
 - **Cooling-oriented maximum** supports cooling shadow evaluation, but physical cooling starts are not supported or authorized in this release.
 - **Designated reference** uses the one observation marked as the reference.
+
+### Observation units
+
+Hydronicus evaluates every temperature in degrees Celsius and every humidity in percent, whatever unit system Home Assistant displays.
+It reads each observation's `unit_of_measurement` attribute and normalizes the value once, when the observation is read.
+The same rules apply to Zone temperature sensors, Zone humidity sensors, Circuit supply and surface temperature sensors, and Source temperature inputs.
+
+| Observation | Accepted unit | Result |
+| --- | --- | --- |
+| Temperature | `°C` | Used as reported. |
+| Temperature | `°F` or `K` | Converted to Celsius. |
+| Temperature | No unit | Assumed to be Celsius. |
+| Temperature | Any other unit | Unusable. |
+| Humidity | `%` or no unit | Used as relative humidity in percent. |
+| Humidity | Any other unit | Unusable. |
+
+A sensor without a unit is assumed to report Celsius, so give a unit-less template sensor a Celsius value or add the correct `unit_of_measurement`.
+An unusable observation takes the same path as an unavailable or non-numeric one, so a required sensor blocks its Zone and the controller fails closed.
+An existing external climate entity reports its current and target temperatures in the Home Assistant unit system, and Hydronicus converts them to Celsius as well.
+Hydronicus-owned sensors, diagnostics, and the Plant card data carry Celsius values, and Home Assistant converts the entity values for display.
 - **Weighted mean** applies the positive weights configured through detailed sensor editing.
 
 Designated-reference and weighted-mean policies become available after completing the detailed sensor editor because they depend on per-sensor metadata.
@@ -146,6 +166,7 @@ Read [how Hydronicus works](how-it-works.md) for diagrams and the complete owner
 Before accepting a simulated Plant, check all of the following:
 
 - Every temperature sensor is numeric and available.
+- Every temperature sensor reports `°C`, `°F`, `K`, or a Celsius value without a unit.
 - Every selected sensor belongs to the intended test configuration.
 - Each Zone has at least one selected Circuit.
 - Each Circuit has a valid valve path and pump.

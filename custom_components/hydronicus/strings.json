@@ -373,5 +373,37 @@
       "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
       "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Restore the climate entity or open Hydronicus configuration, select the current thermostat, and save the configuration."
     }
+  },
+  "exceptions": {
+    "invalid_stored_graph": {
+      "message": "The stored configuration of Plant {plant} cannot be loaded safely: {error} Reconfigure or remove the affected objects, then reload the integration."
+    },
+    "invalid_target_temperature": {
+      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
+    },
+    "output_authorization_mismatch": {
+      "message": "Leaving Dry run for Plant {plant} requires authorization for the exact current outputs. Review the outputs and confirm again."
+    },
+    "preset_not_configured": {
+      "message": "The preset {preset_mode} is not configured for zone {zone}."
+    },
+    "runtime_not_started": {
+      "message": "Plant {plant} is not running. Wait until the integration has finished loading and try again."
+    },
+    "selector_option_missing": {
+      "message": "The source selector command for {entity_id} has no option to select."
+    },
+    "unknown_zone": {
+      "message": "Zone {zone_id} is not a Hydronicus thermostat zone of Plant {plant}."
+    },
+    "unsupported_hvac_mode": {
+      "message": "The HVAC mode {hvac_mode} is not supported by this zone thermostat."
+    },
+    "unsupported_plant_mode": {
+      "message": "The plant mode {mode} is not supported."
+    },
+    "unsupported_preset_mode": {
+      "message": "The preset {preset_mode} is not supported."
+    }
   }
 }

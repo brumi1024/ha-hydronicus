@@ -8,6 +8,7 @@ from contextlib import suppress
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
@@ -43,7 +44,7 @@ _RELOAD_TASKS: dict[tuple[int, str], asyncio.Task[None]] = {}
 
 
 def _clear_runtime_data(entry: ConfigEntry) -> None:
-    """Remove runtime data after unload or failed setup."""
+    """Remove runtime data after a failed setup."""
     with suppress(AttributeError):
         del entry.runtime_data
 
@@ -145,9 +146,22 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return False
 
 
+def _stored_graph_error(entry: ConfigEntry, error: Exception) -> ConfigEntryError:
+    """Describe a stored Plant graph that cannot be decoded or compiled safely."""
+    return ConfigEntryError(
+        translation_domain=DOMAIN,
+        translation_key="invalid_stored_graph",
+        translation_placeholders={"plant": entry.title, "error": str(error)},
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> bool:
     """Set up a hydronic plant from a config entry."""
-    if reconciled := reconcile_removed_subentries(entry):
+    try:
+        reconciled = reconcile_removed_subentries(entry)
+    except (StoredTopologyError, TopologyValidationError) as error:
+        raise _stored_graph_error(entry, error) from error
+    if reconciled:
         hass.config_entries.async_update_entry(entry, data=reconciled)
     if not bool(entry.data.get(CONF_DRY_RUN, True)) and not output_authorization_is_valid(
         entry.data
@@ -160,7 +174,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
             entry,
             data=invalidate_output_authorization(entry.data),
         )
-    runtime = HydronicRuntime.from_entry(entry)
+    try:
+        runtime = HydronicRuntime.from_entry(entry)
+    except (StoredTopologyError, TopologyValidationError) as error:
+        raise _stored_graph_error(entry, error) from error
     entry.runtime_data = runtime
     remove_update_listener = entry.add_update_listener(_async_reload_entry)
     registered = False
@@ -197,7 +214,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) ->
     if unloaded:
         unregister_runtime(hass, runtime.plant_id)
         await runtime.async_stop()
-        _clear_runtime_data(entry)
     return bool(unloaded)
 
 
