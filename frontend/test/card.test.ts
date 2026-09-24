@@ -236,7 +236,7 @@ describe("C6 hold to shut down", () => {
     const { hass, button } = await shutdownButton();
     button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await vi.advanceTimersByTimeAsync(1_300);
-    expect(hass.calls).toEqual([{ domain: "button", service: "press", data: { entity_id: "button.hydronic_shutdown" } }]);
+    expect(hass.calls).toEqual([{ domain: "button", service: "press", data: { entity_id: "button.hydronic_shutdown" }, notifyOnError: false }]);
   });
 
   it.each(["pointerleave", "pointercancel", "lostpointercapture", "pointerup"])(
@@ -274,6 +274,103 @@ describe("C7 failed actions", () => {
     root(card).querySelector<HTMLButtonElement>(".action-error button")?.click();
     await settle(card);
     expect(root(card).querySelector(".action-error")).toBeNull();
+  });
+
+  it("shows the error only inline, without Home Assistant's own toast", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection);
+    hass.failNextCall = "Entity is unavailable.";
+
+    root(card).querySelector<HTMLButtonElement>(".zone-actions button")?.click();
+    await settle(card);
+
+    expect(hass.calls).toHaveLength(1);
+    expect(hass.calls[0].notifyOnError).toBe(false);
+    expect(root(card).querySelector(".action-error")?.textContent).toContain("Entity is unavailable.");
+  });
+});
+
+describe("Zone presets", () => {
+  it.each([[[]], [["none"]]])("hides the preset control when a Zone has no presets (%j)", async (presetModes) => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone();
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, preset: "none", preset_modes: presetModes } }] }));
+
+    expect(root(card).querySelector("select.preset")).toBeNull();
+    expect(text(card)).not.toContain("Preset:");
+    expect(root(card).querySelectorAll(".zone-actions button")).toHaveLength(2);
+  });
+
+  it("offers each configured preset once", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone();
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, preset_modes: ["none", "comfort", "eco"] } }] }));
+
+    const options = [...root(card).querySelectorAll("select.preset option")].map((option) => (option as HTMLOptionElement).value);
+    expect(options).toEqual(["none", "comfort", "eco"]);
+  });
+});
+
+describe("Translated states", () => {
+  const TRANSLATIONS: Record<string, string> = {
+    "component.hydronicus.entity.sensor.controller_status.state.heating": "Heizen (Status)",
+    "component.hydronicus.entity.select.requested_mode.state.heating": "Heizen (angefordert)",
+    "component.hydronicus.entity.select.requested_mode.state.auto": "Automatisch",
+    "component.hydronicus.entity.select.requested_mode.state.idle": "Leerlauf",
+    "component.hydronicus.entity.select.requested_mode.state.cooling": "Kühlen",
+    "component.hydronicus.entity.sensor.operating_mode.state.idle": "Leerlauf (aktiv)",
+  };
+  const localize = (key: string) => TRANSLATIONS[key] ?? "";
+
+  it("labels entity-backed values with Home Assistant's translated states", async () => {
+    const hass = makeHass({ localize });
+    const card = await mount(hass);
+    const snapshot = makeSnapshot();
+    await deliver(card, hass.connection, makeSnapshot({ plant: { ...snapshot.plant, active_mode: "idle", controller: { evaluated: true, mode_explanation: "heating demand" } } }));
+
+    expect(root(card).querySelector(".status-primary")?.textContent).toContain("Heizen (Status)");
+    const detail = root(card).querySelector(".mode-detail")?.textContent ?? "";
+    expect(detail).toContain("Heizen (angefordert)");
+    expect(detail).toContain("Leerlauf (aktiv)");
+    const options = [...root(card).querySelectorAll(".mode-control option")].map((option) => option.textContent?.trim());
+    expect(options).toEqual(["Automatisch", "Leerlauf", "Heizen (angefordert)", "Kühlen"]);
+    // Free-text explanations stay as they are.
+    expect(text(card)).toContain("heating demand");
+  });
+
+  it("falls back to readable raw values without translations", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot();
+    await deliver(card, hass.connection, makeSnapshot({ plant: { ...snapshot.plant, status: "safe_shutdown" } }));
+
+    expect(root(card).querySelector(".status-primary")?.textContent).toContain("safe shutdown");
+  });
+});
+
+describe("Right-to-left prose", () => {
+  it("lets English prose pick its own direction", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot({
+      explanations: [{ order: 1, scope: "zone", code: "demand", message: "No demand in this Zone." }],
+      actuators: [
+        { id: "a", name: "Pump", kind: "pump", state: "idle", requested: null, observed: "off", ready: true, blocked: false, mismatch: false, reason: "Waiting.", active_consumers: [] },
+      ],
+      alerts: [{ code: "stale", severity: "warning", priority: 1, scope: "plant", message: "Sensor is stale." }],
+    });
+    await deliver(card, hass.connection, snapshot);
+
+    for (const selector of [".boundary-copy", ".zone-note", ".operation-copy", ".alert", ".actuator .meta", ".header-copy > p.meta:last-of-type", ".diagnostic-chip", ".section-head > .meta"]) {
+      const nodes = [...root(card).querySelectorAll(selector)];
+      expect(nodes.length, selector).toBeGreaterThan(0);
+      for (const node of nodes) expect(node.getAttribute("dir"), selector).toBe("auto");
+    }
+    // A signed step such as "−0.5" has no strong direction of its own.
+    for (const button of root(card).querySelectorAll(".zone-actions button")) expect(button.getAttribute("dir")).toBe("ltr");
   });
 });
 
@@ -366,7 +463,7 @@ describe("C12 units and locale", () => {
     await settle(card);
 
     expect(hass.calls).toEqual([
-      { domain: "climate", service: "set_temperature", data: { entity_id: "climate.hydronic_living_room", temperature: 70 } },
+      { domain: "climate", service: "set_temperature", data: { entity_id: "climate.hydronic_living_room", temperature: 70 }, notifyOnError: false },
     ]);
   });
 
@@ -443,11 +540,34 @@ describe("C9 configuration", () => {
     const plant = form.schema.find((field) => field.name === "plant");
     expect(plant).toMatchObject({
       required: true,
-      selector: { select: { custom_value: true, options: [{ value: PLANT_ID, label: "Test plant" }, { value: OTHER_PLANT_ID, label: "Other" }] } },
+      selector: { select: { mode: "dropdown", options: [{ value: PLANT_ID, label: "Test plant" }, { value: OTHER_PLANT_ID, label: "Other" }] } },
     });
     expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID })).not.toThrow();
     expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: { nested: true } })).toThrow();
     expect("getConfigElement" in cardClass).toBe(false);
+  });
+
+  it("shows the Plant name instead of its UUID in the editor", async () => {
+    // With `custom_value`, Home Assistant renders a combo box that shows the
+    // raw value. A plain dropdown shows the label of the matching option,
+    // and a UUID that is not listed, for example from YAML, as itself.
+    const cardClass = customElements.get(TAG) as CardClass;
+    const hass = makeHass();
+    hass.connection.plants = [{ id: PLANT_ID, name: "Hydronic plant" }];
+    await cardClass.getStubConfig(hass);
+    const form = await cardClass.getConfigForm();
+    const plant = form.schema.find((field) => field.name === "plant") as { selector: { select: Record<string, unknown> } };
+    expect(plant.selector.select.custom_value).toBeFalsy();
+    expect(plant.selector.select.options).toEqual([{ value: PLANT_ID, label: "Hydronic plant" }]);
+  });
+
+  it("falls back to free text input when no Plant can be listed", async () => {
+    const cardClass = customElements.get(TAG) as CardClass;
+    const hass = makeHass();
+    hass.connection.plants = [];
+    await cardClass.getStubConfig(hass);
+    const form = await cardClass.getConfigForm();
+    expect(form.schema.find((field) => field.name === "plant")).toMatchObject({ required: true, selector: { text: {} } });
   });
 
   it("keeps existing plant UUID YAML working and rejects invalid config", async () => {

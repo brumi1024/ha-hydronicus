@@ -128,6 +128,23 @@ export function phaseLabel(phase: string): string {
   return phase.replaceAll("_", " ");
 }
 
+/** Hydronicus entities whose states Home Assistant translates. */
+export type TranslatedState = "select.requested_mode" | "sensor.operating_mode" | "sensor.controller_status";
+
+/**
+ * The label Home Assistant shows for a state of a Hydronicus entity, from
+ * the integration's entity translations, or the readable raw value.
+ */
+export function stateLabel(localize: ((key: string) => string) | undefined, entity: TranslatedState, state: string): string {
+  const [platform, key] = entity.split(".");
+  return localize?.(`component.hydronicus.entity.${platform}.${key}.state.${state}`) || phaseLabel(state);
+}
+
+/** The presets a Zone offers besides "none"; empty when it has none. */
+export function zonePresets(zone: ZoneSnapshot): string[] {
+  return [...new Set(zone.thermostat.preset_modes)].filter((preset) => preset !== "none");
+}
+
 /**
  * The next target one step up or down, in the user's unit system, from the
  * Celsius target in the snapshot.

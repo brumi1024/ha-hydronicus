@@ -154,12 +154,19 @@ export class FakeConnection {
 export interface FakeHass {
   connection: FakeConnection;
   connected: boolean;
-  callService: (domain: string, service: string, data: Record<string, unknown>) => Promise<void>;
-  calls: Array<{ domain: string; service: string; data: Record<string, unknown> }>;
+  callService: (
+    domain: string,
+    service: string,
+    data: Record<string, unknown>,
+    target?: Record<string, unknown>,
+    notifyOnError?: boolean,
+  ) => Promise<void>;
+  calls: Array<{ domain: string; service: string; data: Record<string, unknown>; notifyOnError: boolean }>;
   failNextCall: string | null;
   config: { unit_system: { temperature: string } };
   language: string;
   locale: { language: string; number_format: string };
+  localize?: (key: string) => string;
 }
 
 export function makeHass(overrides: Partial<FakeHass> = {}): FakeHass {
@@ -171,8 +178,9 @@ export function makeHass(overrides: Partial<FakeHass> = {}): FakeHass {
     config: { unit_system: { temperature: "°C" } },
     language: "en",
     locale: { language: "en", number_format: "language" },
-    async callService(domain, service, data) {
-      hass.calls.push({ domain, service, data });
+    // Like Home Assistant, notify on error unless told not to.
+    async callService(domain, service, data, _target, notifyOnError = true) {
+      hass.calls.push({ domain, service, data, notifyOnError });
       if (hass.failNextCall) {
         const message = hass.failNextCall;
         hass.failNextCall = null;

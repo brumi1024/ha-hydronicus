@@ -93,7 +93,7 @@ const LABELS: Record<string, string> = {
 };
 
 const HELPERS: Record<string, string> = {
-  plant: "The Plant this card shows. Only Plants you can read are listed.",
+  plant: "The Plant this card shows. Only Plants you can read are listed; one that is not listed shows its UUID.",
   density: "Compact uses less spacing for dense dashboards.",
 };
 
@@ -104,23 +104,28 @@ export interface ConfigForm {
   assertConfig(config: Record<string, unknown>): void;
 }
 
+/**
+ * A plain dropdown shows the name of the chosen Plant. `custom_value` would
+ * turn it into a combo box that shows the raw UUID instead. A dropdown keeps
+ * a UUID that is not listed, for example one from YAML or one the user
+ * cannot currently read, and shows it as the UUID until another is picked.
+ * Without any listed Plant, free text input still lets the user enter one.
+ */
+function plantSelector(plants: PlantSummary[]): Record<string, unknown> {
+  if (plants.length === 0) return { text: {} };
+  return {
+    select: {
+      mode: "dropdown",
+      options: plants.map((plant) => ({ value: plant.id, label: plant.name })),
+    },
+  };
+}
+
 export async function configForm(): Promise<ConfigForm> {
   const plants = await plantDirectory.settled();
   return {
     schema: [
-      {
-        name: "plant",
-        required: true,
-        selector: {
-          select: {
-            mode: "dropdown",
-            // Keep a Plant UUID that is not listed, for example one from YAML
-            // or one the user cannot currently read, instead of clearing it.
-            custom_value: true,
-            options: plants.map((plant) => ({ value: plant.id, label: plant.name })),
-          },
-        },
-      },
+      { name: "plant", required: true, selector: plantSelector(plants) },
       {
         name: "density",
         selector: {

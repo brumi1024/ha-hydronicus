@@ -168,11 +168,20 @@ export interface HomeAssistantConnection {
   removeEventListener?(type: "ready" | "disconnected", listener: () => void): void;
 }
 
+/**
+ * Home Assistant's `callService`. With `notifyOnError` false, a failure is
+ * only rejected, without the frontend's own error toast.
+ */
 export type CallService = (
   domain: string,
   service: string,
   data: Record<string, unknown>,
+  target?: Record<string, unknown>,
+  notifyOnError?: boolean,
 ) => Promise<unknown>;
+
+/** Home Assistant's translation lookup; returns "" for an unknown key. */
+export type Localize = (key: string) => string;
 
 export interface FrontendLocale {
   language: string;
@@ -190,6 +199,7 @@ export interface HomeAssistantLike {
   config?: { unit_system?: UnitSystem };
   language?: string;
   locale?: FrontendLocale;
+  localize?: Localize;
 }
 
 /** Values of the Home Assistant frontend context groups the card consumes. */
@@ -209,4 +219,5 @@ export interface HassConfigContextValue {
 export interface HassInternationalizationContextValue {
   language: string;
   locale: FrontendLocale;
+  localize?: Localize;
 }
