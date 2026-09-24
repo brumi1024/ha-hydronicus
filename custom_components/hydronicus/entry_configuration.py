@@ -68,6 +68,7 @@ class EffectivePlantConfiguration:
 
     configuration: PlantConfiguration
     actuator_subentry_ids: Mapping[str, str]
+    circuit_subentry_ids: Mapping[str, str]
     zone_subentry_ids: Mapping[str, str]
     source_subentry_ids: Mapping[str, str]
 
@@ -391,8 +392,9 @@ def _subentry_maps(
     ownership: Mapping[str, str],
     *,
     excluded_subentry_id: str | None = None,
-) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     actuator_ids: dict[str, str] = {}
+    circuit_ids: dict[str, str] = {}
     zone_ids: dict[str, str] = {}
     source_ids: dict[str, str] = {}
     seen_object_ids: set[str] = set()
@@ -416,12 +418,13 @@ def _subentry_maps(
             )
         target = {
             SUBENTRY_TYPE_ACTUATOR: actuator_ids,
+            SUBENTRY_TYPE_CIRCUIT: circuit_ids,
             SUBENTRY_TYPE_ZONE: zone_ids,
             SUBENTRY_TYPE_SOURCE: source_ids,
         }.get(subentry_type)
         if target is not None:
             target[object_id] = subentry.subentry_id
-    return actuator_ids, zone_ids, source_ids
+    return actuator_ids, circuit_ids, zone_ids, source_ids
 
 
 def _entry_data_with_drafts(
@@ -495,7 +498,7 @@ def effective_plant_configuration(
     )
     topology = _topology_copy(data)
     ownership = _ownership(data)
-    actuator_ids, zone_ids, source_ids = _subentry_maps(
+    actuator_ids, circuit_ids, zone_ids, source_ids = _subentry_maps(
         entry,
         topology,
         ownership,
@@ -504,6 +507,7 @@ def effective_plant_configuration(
     return EffectivePlantConfiguration(
         configuration=plant_configuration_from_entry_data(data),
         actuator_subentry_ids=actuator_ids,
+        circuit_subentry_ids=circuit_ids,
         zone_subentry_ids=zone_ids,
         source_subentry_ids=source_ids,
     )

@@ -793,19 +793,79 @@
   "issues": {
     "missing_sensor_binding": {
       "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. Restore the entity or open Hydronicus configuration, select the current sensor, and save the configuration."
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_sensor_binding_fixable": {
+      "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. Select Submit to open the configuration of {object_type} {object_name}, choose the current sensor, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid sensor is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     },
     "missing_feedback_binding": {
       "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Restore the feedback entity or open Hydronicus configuration, select the current feedback entity, and save the configuration."
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the feedback entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_feedback_binding_fixable": {
+      "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Select Submit to open the configuration of {object_type} {object_name}, choose the current feedback entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid feedback entity is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     },
     "missing_actuator_binding": {
       "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Restore the actuator or open Hydronicus configuration, select the current actuator, and save the configuration."
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the actuator: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_actuator_binding_fixable": {
+      "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Select Submit to open the configuration of {object_type} {object_name}, choose the current actuator, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid actuator is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     },
     "missing_thermostat_binding": {
       "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
-      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Restore the climate entity or open Hydronicus configuration, select the current thermostat, and save the configuration."
+      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the climate entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_thermostat_binding_fixable": {
+      "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
+            "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Select Submit to open the configuration of {object_type} {object_name}, choose the current climate entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid climate entity is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     }
   },
   "exceptions": {

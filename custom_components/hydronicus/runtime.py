@@ -100,6 +100,7 @@ class HydronicRuntime:
     dry_run: bool
     plant: CompiledPlant
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
+    circuit_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     diagnostics_include_actuator_details: bool = False
     source_subentry_ids: Mapping[str, str] = field(default_factory=dict)
@@ -158,6 +159,7 @@ class HydronicRuntime:
             dry_run=bool(entry.data.get(CONF_DRY_RUN, True)),
             plant=plant,
             actuator_subentry_ids=effective.actuator_subentry_ids,
+            circuit_subentry_ids=effective.circuit_subentry_ids,
             zone_subentry_ids=effective.zone_subentry_ids,
             diagnostics_include_actuator_details=bool(
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
