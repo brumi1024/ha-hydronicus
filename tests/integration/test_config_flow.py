@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import voluptuous_serialize
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import translation
+from probatio import to_field_list
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
@@ -44,9 +44,7 @@ def _schema_fields(result) -> set[str]:
     """Return the field names exposed by a Home Assistant form schema."""
     return {
         str(field["name"])
-        for field in voluptuous_serialize.convert(
-            result["data_schema"], custom_serializer=cv.custom_serializer
-        )
+        for field in to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
     }
 
 
@@ -264,7 +262,7 @@ async def test_initial_zone_schema_serializes_for_home_assistant_ui(hass) -> Non
     )
 
     assert result["step_id"] == "zone"
-    voluptuous_serialize.convert(result["data_schema"], custom_serializer=cv.custom_serializer)
+    to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
 
 
 async def test_initial_circuit_rejects_duplicate_actuator_entity(hass) -> None:

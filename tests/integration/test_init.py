@@ -186,7 +186,9 @@ async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     registry = dr.async_get(hass)
-    assert registry.async_get_device({(DOMAIN, "00000000-0000-4000-8000-000000000001")})
+    assert registry.async_get_device_by_identifier(
+        (DOMAIN, "00000000-0000-4000-8000-000000000001"), entry.entry_id
+    )
     climate_entity_id = "climate.hydronic_plant_test_zone"
     assert hass.states.get(climate_entity_id) is not None
     assert hass.states.get("sensor.hydronic_plant_test_zone_aggregate_temperature").state == "18.0"

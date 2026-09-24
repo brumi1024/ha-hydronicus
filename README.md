@@ -67,7 +67,7 @@ Use a disposable or staging Home Assistant instance for initial evaluation.
 7. After the integration starts, open **Settings > Dashboards > Resources** and add `/hydronicus/hydronicus-plant-card.js` as a **JavaScript Module**.
 8. Add the card from the Lovelace editor and select one configured Plant.
 
-The minimum Home Assistant version declared by this repository is `2026.8.0`.
+The minimum Home Assistant version declared by this repository is `2026.9.0`.
 The integration is not currently part of the HACS default repository list, so the custom-repository step is required.
 
 ## First simulated Plant
