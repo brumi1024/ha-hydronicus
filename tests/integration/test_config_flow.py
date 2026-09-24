@@ -433,6 +433,51 @@ async def test_initial_zone_error_keeps_the_form_and_submitted_values(hass) -> N
     assert result["step_id"] == "circuit"
 
 
+async def test_initial_hydronicus_zone_rejects_empty_temperature_sensors(hass) -> None:
+    """An empty sensor list, as a lazily loaded picker can submit, stays on Zone details."""
+    result = await _start_initial_zone(hass)
+    zone = {
+        CONF_NAME: "Z",
+        CONF_TEMPERATURE_SENSORS: [],
+        CONF_TEMPERATURE_AGGREGATION: "median",
+        "heating_start_delta": 0.3,
+        "heating_stop_delta": 0.1,
+        "minimum_active_duration_seconds": 0,
+        "minimum_idle_duration_seconds": 0,
+    }
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input=zone)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "zone_details"
+    assert result["errors"] == {CONF_TEMPERATURE_SENSORS: "temperature_sensors_required"}
+    assert form_value(result, CONF_NAME) == "Z"
+    assert form_value(result, CONF_TEMPERATURE_SENSORS) == []
+    assert form_value(result, CONF_TEMPERATURE_AGGREGATION) == "median"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={**zone, CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"]},
+    )
+    assert result["step_id"] == "circuit"
+
+
+async def test_initial_external_zone_accepts_empty_temperature_sensors(hass) -> None:
+    """An external climate entity supplies temperature, so zone sensors stay optional."""
+    result = await _start_initial_zone(hass, THERMOSTAT_KIND_EXTERNAL_CLIMATE)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Office",
+            CONF_TEMPERATURE_SENSORS: [],
+            "external_climate_entity": "climate.office",
+        },
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "circuit"
+    assert not result["errors"]
+
+
 async def test_initial_forms_use_typed_selectors(hass) -> None:
     """Names, numbers, sensors, and choices use selectors the frontend renders natively."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})

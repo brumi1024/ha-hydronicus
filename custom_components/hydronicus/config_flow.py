@@ -561,6 +561,11 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
 
         errors: dict[str, str] = {}
         if user_input is not None:
+            if not user_input.get(CONF_ZONE_IDS):
+                errors[CONF_ZONE_IDS] = "zones_required"
+            if not user_input.get(CONF_VALVE_IDS):
+                errors[CONF_VALVE_IDS] = "valves_required"
+        if user_input is not None and not errors:
             circuit_id = str(uuid4())
             data = _circuit_data(user_input, circuit_id)
             if error := _circuit_validation_error(entry, data):
@@ -602,6 +607,11 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         options = self._options()
         errors: dict[str, str] = {}
         if user_input is not None:
+            if not user_input.get(CONF_ZONE_IDS):
+                errors[CONF_ZONE_IDS] = "zones_required"
+            if not user_input.get(CONF_VALVE_IDS):
+                errors[CONF_VALVE_IDS] = "valves_required"
+        if user_input is not None and not errors:
             data = _circuit_data(
                 user_input,
                 defaults["id"],
@@ -1238,9 +1248,9 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         kind: str,
         *,
         reconfigure: bool,
-        error: str,
+        errors: dict[str, str],
     ) -> config_entries.SubentryFlowResult:
-        """Re-show the Zone details form with the submitted values and an error."""
+        """Re-show the Zone details form with the submitted values and errors."""
         self._selected_thermostat_kind = kind
         self._zone_reconfigure = reconfigure
         defaults = (
@@ -1252,7 +1262,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         return self.async_show_form(
             step_id="details",
             data_schema=_with_submitted_values(self, schema, user_input),
-            errors={"base": error},
+            errors=errors,
         )
 
     async def async_step_user(
@@ -1325,6 +1335,15 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         reconfigure: bool,
     ) -> config_entries.SubentryFlowResult:
         """Validate one complete thermostat-specific Zone form."""
+        # vol.Required accepts an empty list, which a lazily loaded frontend picker
+        # can submit, so required selections are checked before normalization.
+        errors: dict[str, str] = {}
+        if kind == THERMOSTAT_KIND_HYDRONICUS and not user_input.get(CONF_TEMPERATURE_SENSORS):
+            errors[CONF_TEMPERATURE_SENSORS] = "temperature_sensors_required"
+        if not user_input.get(CONF_CIRCUIT_IDS):
+            errors[CONF_CIRCUIT_IDS] = "circuits_required"
+        if errors:
+            return self._details_form(user_input, kind, reconfigure=reconfigure, errors=errors)
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry() if reconfigure else None
         defaults = subentry_draft(entry, subentry) if subentry is not None else None
@@ -1340,7 +1359,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
         ):
             return self._details_form(
-                user_input, kind, reconfigure=reconfigure, error="thermostat_loop"
+                user_input, kind, reconfigure=reconfigure, errors={"base": "thermostat_loop"}
             )
         if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
             self._zone_draft = data
@@ -1352,7 +1371,10 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             CONF_TEMPERATURE_SENSOR_METADATA not in user_input
         ):
             return self._details_form(
-                user_input, kind, reconfigure=reconfigure, error="sensor_metadata_required"
+                user_input,
+                kind,
+                reconfigure=reconfigure,
+                errors={"base": "sensor_metadata_required"},
             )
         error = _zone_validation_error(
             entry,
@@ -1360,7 +1382,9 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             excluded_subentry_id=subentry.subentry_id if subentry is not None else None,
         )
         if error:
-            return self._details_form(user_input, kind, reconfigure=reconfigure, error=error)
+            return self._details_form(
+                user_input, kind, reconfigure=reconfigure, errors={"base": error}
+            )
         self._zone_draft = data
         self._zone_reconfigure = reconfigure
         return await self._finish_zone()
@@ -1533,7 +1557,9 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             return self.async_abort(reason="no_circuits")
 
         errors: dict[str, str] = {}
-        if user_input is not None:
+        if user_input is not None and not user_input.get(CONF_CIRCUIT_IDS):
+            errors[CONF_CIRCUIT_IDS] = "circuits_required"
+        if user_input is not None and not errors:
             actuator_id = str(uuid4())
             data = _valve_actuator_data(user_input, actuator_id)
             if error := _actuator_validation_error(entry, data):
@@ -1576,7 +1602,9 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         defaults = subentry_draft(entry, subentry)
         circuit_options = self._circuit_options()
         errors: dict[str, str] = {}
-        if user_input is not None:
+        if user_input is not None and not user_input.get(CONF_CIRCUIT_IDS):
+            errors[CONF_CIRCUIT_IDS] = "circuits_required"
+        if user_input is not None and not errors:
             data = _valve_actuator_data(user_input, defaults["id"])
             if error := _actuator_validation_error(
                 entry,
@@ -2027,7 +2055,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         user_input: Mapping[str, Any] | None,
         kind: str,
         *,
-        error: str | None = None,
+        errors: dict[str, str] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """Show the first Zone's details form, re-filled after a rejected submit."""
         self._selected_thermostat_kind = kind
@@ -2035,7 +2063,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         return self.async_show_form(
             step_id="zone_details",
             data_schema=_with_submitted_values(self, schema, user_input),
-            errors={"base": error} if error else None,
+            errors=errors,
         )
 
     async def _async_process_initial_zone(
@@ -2043,12 +2071,19 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     ) -> config_entries.ConfigFlowResult:
         """Normalize the first thermostat-specific Zone without adding a route yet."""
         name = str(user_input.get(CONF_NAME, "")).strip()
+        errors: dict[str, str] = {}
         if not name:
-            return self._zone_details_form(user_input, kind, error="name_required")
+            errors["base"] = "name_required"
+        # vol.Required accepts an empty list, which a lazily loaded frontend picker
+        # can submit, so the required sensor selection is checked explicitly.
+        if kind == THERMOSTAT_KIND_HYDRONICUS and not user_input.get(CONF_TEMPERATURE_SENSORS):
+            errors[CONF_TEMPERATURE_SENSORS] = "temperature_sensors_required"
+        if errors:
+            return self._zone_details_form(user_input, kind, errors=errors)
         if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and _external_thermostat_is_hydronicus_owned(
             self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
         ):
-            return self._zone_details_form(user_input, kind, error="thermostat_loop")
+            return self._zone_details_form(user_input, kind, errors={"base": "thermostat_loop"})
         draft = _zone_data(
             {
                 **user_input,
@@ -2068,7 +2103,9 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         if _requires_sensor_metadata_path(draft) and (
             CONF_TEMPERATURE_SENSOR_METADATA not in user_input
         ):
-            return self._zone_details_form(user_input, kind, error="sensor_metadata_required")
+            return self._zone_details_form(
+                user_input, kind, errors={"base": "sensor_metadata_required"}
+            )
         self._draft[CONF_TOPOLOGY] = {CONF_ZONES: [draft]}
         return await self.async_step_circuit()
 

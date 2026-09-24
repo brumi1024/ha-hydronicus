@@ -206,7 +206,8 @@
       "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit Dry run again after the shutdown finishes.",
       "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
       "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation.",
-      "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus."
+      "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
+      "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls."
     },
     "abort": {
       "already_configured": "This plant is already configured.",
@@ -300,6 +301,7 @@
       "error": {
         "name_required": "An actuator name is required.",
         "invalid_actuator": "The actuator cannot be attached to this topology.",
+        "circuits_required": "Select at least one circuit.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
         "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes."
       },
@@ -406,6 +408,8 @@
       "error": {
         "name_required": "A circuit name is required.",
         "invalid_circuit": "The circuit cannot be added to this topology.",
+        "zones_required": "Select at least one zone.",
+        "valves_required": "Select at least one valve.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
         "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes."
       },
@@ -536,6 +540,8 @@
       "error": {
         "name_required": "A zone name is required.",
         "invalid_zone": "The zone cannot be added to this topology.",
+        "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls.",
+        "circuits_required": "Select at least one circuit.",
         "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
         "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
         "confirm_required": "Confirm that you understand these warnings before saving.",

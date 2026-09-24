@@ -653,3 +653,47 @@ async def test_cooling_section_is_prefilled_filtered_and_flattened(hass) -> None
 
     assert result["reason"] == "reconfigure_successful"
     assert subentry_draft(entry, subentry) == created
+
+
+async def test_add_and_reconfigure_reject_empty_zone_and_valve_selections(hass) -> None:
+    """Empty zone and valve lists stay on the form with field errors and no mutation."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    loop = {
+        CONF_NAME: "Ceiling loop",
+        CONF_ZONE_IDS: [LIVING_ZONE_ID],
+        CONF_VALVE_IDS: [VALVE_ID],
+        CONF_PUMP_ID: PUMP_ID,
+    }
+    empty = {**loop, CONF_ZONE_IDS: [], CONF_VALVE_IDS: []}
+    expected_errors = {CONF_ZONE_IDS: "zones_required", CONF_VALVE_IDS: "valves_required"}
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], empty)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == expected_errors
+    assert form_value(result, CONF_NAME) == "Ceiling loop"
+    assert form_value(result, CONF_PUMP_ID) == PUMP_ID
+    assert not entry.subentries
+
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], loop)
+    await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    stored_draft = subentry_draft(entry, subentry)
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], empty)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+    assert result["errors"] == expected_errors
+    assert form_value(result, CONF_ZONE_IDS) == []
+    assert subentry_draft(entry, subentry) == stored_draft
