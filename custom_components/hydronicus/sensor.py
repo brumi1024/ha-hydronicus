@@ -5,10 +5,9 @@ from __future__ import annotations
 from typing import Any, cast
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import (
@@ -16,10 +15,45 @@ from .const import (
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
+from .core.model import PlantMode, SourceSelectionPhase
 from .entity_device import plant_device_info, topology_device_info
 from .runtime import HydronicRuntime
 
+# Entities render one atomic runtime evaluation and never poll or call out.
+PARALLEL_UPDATES = 0
+
 _MAX_STATE_LENGTH = 255
+
+# Raw enum states are part of the entity contract and never change; only their
+# display is translated through the entity section of strings.json.
+PLANT_MODE_OPTIONS = [mode.value for mode in PlantMode]
+CONTROLLER_STATUS_OPTIONS = [
+    "stopped",
+    "safe_shutdown",
+    "initializing",
+    "blocked",
+    *PLANT_MODE_OPTIONS,
+]
+RECONCILIATION_STATUS_OPTIONS = ["not_started", "changed", "unchanged"]
+SOURCE_CHANGEOVER_OPTIONS = [phase.value for phase in SourceSelectionPhase]
+
+# Prose, per-evaluation lists, deadlines, and countdowns change on almost every
+# evaluation, so recording them would bloat history without adding value.
+VOLATILE_ATTRIBUTES = frozenset(
+    {
+        "operations",
+        "logic_summary",
+        "warnings",
+        "explanation",
+        "aggregation_explanation",
+        "deadline",
+        "changeover_deadline",
+        "dwell_remaining_seconds",
+        "interlocks",
+        "execution_failure",
+        "stale_feedback",
+    }
+)
 
 
 class _HydronicSensor(SensorEntity):
@@ -27,6 +61,7 @@ class _HydronicSensor(SensorEntity):
 
     _attr_has_entity_name = True
     _attr_should_poll = False
+    _unrecorded_attributes = VOLATILE_ATTRIBUTES
     _listen_for_runtime_updates = True
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
@@ -48,15 +83,16 @@ class _HydronicSensor(SensorEntity):
 class ControllerStatusSensor(_HydronicSensor):
     """Expose one low-cardinality plant status for Recorder and dashboards."""
 
+    _attr_translation_key = "controller_status"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:state-machine"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = CONTROLLER_STATUS_OPTIONS
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the status to one plant runtime."""
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_controller_status"
-        self._attr_name = "Controller status"
 
     @property
     def native_value(self) -> str:
@@ -76,15 +112,16 @@ class ControllerStatusSensor(_HydronicSensor):
 class ReconciliationStatusSensor(_HydronicSensor):
     """Expose bounded reconciliation status without high-cardinality attributes."""
 
+    _attr_translation_key = "reconciliation_status"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:sync-circle"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = RECONCILIATION_STATUS_OPTIONS
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind reconciliation telemetry to one plant runtime."""
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_reconciliation_status"
-        self._attr_name = "Reconciliation status"
 
     @property
     def native_value(self) -> str:
@@ -104,8 +141,8 @@ class ReconciliationStatusSensor(_HydronicSensor):
 class TopologyPreviewSensor(_HydronicSensor):
     """Expose the compiled plant graph in a persistent diagnostic entity."""
 
+    _attr_translation_key = "topology_preview"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:graph-outline"
     _listen_for_runtime_updates = False
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
@@ -113,7 +150,6 @@ class TopologyPreviewSensor(_HydronicSensor):
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_topology_preview"
-        self._attr_name = "Topology preview"
 
     @property
     def native_value(self) -> str:
@@ -148,13 +184,14 @@ class TopologyPreviewSensor(_HydronicSensor):
 class ZoneExplanationSensor(_HydronicSensor):
     """Expose the last controller explanation for a comfort zone."""
 
+    _attr_translation_key = "zone_explanation"
+
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind a diagnostic entity to one zone."""
         super().__init__(entry)
         self._zone_id = zone_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_explanation"
-        self._attr_name = "Explanation"
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
@@ -173,9 +210,12 @@ class ZoneExplanationSensor(_HydronicSensor):
 class ZoneAggregateTemperatureSensor(_HydronicSensor):
     """Expose the temperature aggregate used by the controller."""
 
+    _attr_translation_key = "zone_aggregate_temperature"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    # Unit conversion leaves float noise such as 18.000000000000004.
+    _attr_suggested_display_precision = 1
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the aggregate to one comfort zone."""
@@ -183,7 +223,6 @@ class ZoneAggregateTemperatureSensor(_HydronicSensor):
         self._zone_id = zone_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_aggregate_temperature"
-        self._attr_name = "Aggregate temperature"
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
@@ -200,7 +239,7 @@ class ZoneAggregateTemperatureSensor(_HydronicSensor):
 class ZoneBlockedReasonSensor(_HydronicSensor):
     """Expose the structured sensor-health reason for one zone."""
 
-    _attr_icon = "mdi:alert-circle-outline"
+    _attr_translation_key = "zone_blocked_reason"
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the blocked reason to one comfort zone."""
@@ -208,7 +247,6 @@ class ZoneBlockedReasonSensor(_HydronicSensor):
         self._zone_id = zone_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_blocked_reason"
-        self._attr_name = "Blocked reason"
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
@@ -226,14 +264,13 @@ class ZoneBlockedReasonSensor(_HydronicSensor):
 class RecommendedSourceSensor(_HydronicSensor):
     """Expose the current deterministic shadow source recommendation."""
 
-    _attr_icon = "mdi:fire-circle"
+    _attr_translation_key = "recommended_source"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the plant-level recommendation to the current runtime."""
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_recommended_source"
-        self._attr_name = "Recommended source"
 
     @property
     def native_value(self) -> str:
@@ -258,14 +295,13 @@ class RecommendedSourceSensor(_HydronicSensor):
 class SourceRecommendationExplanationSensor(_HydronicSensor):
     """Expose the explanation for the source recommendation."""
 
-    _attr_icon = "mdi:text-box-check-outline"
+    _attr_translation_key = "source_recommendation"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the explanation to the current runtime."""
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_source_recommendation"
-        self._attr_name = "Source recommendation"
 
     @property
     def native_value(self) -> str:
@@ -290,13 +326,12 @@ class SourceRecommendationExplanationSensor(_HydronicSensor):
 class ActiveSourceSensor(_HydronicSensor):
     """Expose the source owning the latest guarded heating demand."""
 
-    _attr_icon = "mdi:heat-pump"
+    _attr_translation_key = "active_source"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_active_source"
-        self._attr_name = "Active source"
 
     @property
     def native_value(self) -> str:
@@ -319,13 +354,14 @@ class ActiveSourceSensor(_HydronicSensor):
 class SourceChangeoverSensor(_HydronicSensor):
     """Expose the deterministic source selection phase and guard."""
 
-    _attr_icon = "mdi:swap-horizontal-circle"
+    _attr_translation_key = "source_changeover"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = SOURCE_CHANGEOVER_OPTIONS
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_source_changeover"
-        self._attr_name = "Source changeover"
 
     @property
     def native_value(self) -> str:
@@ -350,14 +386,15 @@ class SourceChangeoverSensor(_HydronicSensor):
 class SourceDwellSensor(_HydronicSensor):
     """Expose remaining source minimum dwell time from the atomic evaluation."""
 
-    _attr_icon = "mdi:timer-lock-outline"
-    _attr_native_unit_of_measurement = "s"
+    _attr_translation_key = "source_dwell"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_source_dwell"
-        self._attr_name = "Source dwell"
 
     @property
     def native_value(self) -> float:
@@ -368,14 +405,13 @@ class SourceDwellSensor(_HydronicSensor):
 class SourceBlockedReasonSensor(_HydronicSensor):
     """Expose a bounded source-specific block explanation."""
 
-    _attr_icon = "mdi:source-branch-alert"
+    _attr_translation_key = "source_blocked_reason"
 
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
         super().__init__(entry)
         self._source_id = source_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{source_id}_blocked_reason"
-        self._attr_name = "Blocked reason"
         self._attr_device_info = topology_device_info(runtime, "source", source_id, name)
 
     @property
@@ -400,7 +436,7 @@ class SourceBlockedReasonSensor(_HydronicSensor):
 class ZoneCoolingBlockedReasonSensor(_HydronicSensor):
     """Expose the cooling interlock explanation for one comfort zone."""
 
-    _attr_icon = "mdi:water-alert-outline"
+    _attr_translation_key = "zone_cooling_blocked_reason"
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the cooling explanation to one comfort zone."""
@@ -408,7 +444,6 @@ class ZoneCoolingBlockedReasonSensor(_HydronicSensor):
         self._zone_id = zone_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_cooling_blocked_reason"
-        self._attr_name = "Cooling blocked reason"
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
@@ -426,9 +461,12 @@ class ZoneCoolingBlockedReasonSensor(_HydronicSensor):
 class ZoneDewPointSensor(_HydronicSensor):
     """Expose the calculated zone dew point used by cooling safety."""
 
+    _attr_translation_key = "zone_cooling_dew_point"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    # Unit conversion leaves float noise such as 18.000000000000004.
+    _attr_suggested_display_precision = 1
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the dew-point diagnostic to one zone."""
@@ -436,7 +474,6 @@ class ZoneDewPointSensor(_HydronicSensor):
         self._zone_id = zone_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_dew_point"
-        self._attr_name = "Cooling dew point"
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
 
     @property
@@ -453,9 +490,14 @@ class ZoneDewPointSensor(_HydronicSensor):
 class ZoneCondensationMarginSensor(_HydronicSensor):
     """Expose the lowest configured reference margin for a zone."""
 
-    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_translation_key = "zone_cooling_condensation_margin"
+    # A margin is a difference between two temperatures, so unit conversion
+    # must scale it without the absolute-scale offset.
+    _attr_device_class = SensorDeviceClass.TEMPERATURE_DELTA
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    # Unit conversion leaves float noise such as 18.000000000000004.
+    _attr_suggested_display_precision = 1
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the condensation margin diagnostic to one zone."""
@@ -463,8 +505,21 @@ class ZoneCondensationMarginSensor(_HydronicSensor):
         self._zone_id = zone_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_condensation_margin"
-        self._attr_name = "Cooling condensation margin"
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
+
+    @property
+    def suggested_unit_of_measurement(self) -> str | None:
+        """Suggest the unit system's temperature unit for a newly registered margin.
+
+        Home Assistant converts absolute temperatures to the unit system on its own,
+        but has no unit-system rule for temperature deltas. The registry stores this
+        suggestion once, the first time it sees the entity. An entity registered
+        before the delta class keeps its stored unit, because the sensor platform
+        pins the previously registered unit when the device class changes.
+        """
+        if self.hass is None:
+            return None
+        return self.hass.config.units.temperature_unit
 
     @property
     def native_value(self) -> float | None:
@@ -480,7 +535,8 @@ class ZoneCondensationMarginSensor(_HydronicSensor):
 class ActuatorFeedbackReasonSensor(_HydronicSensor):
     """Expose the structured feedback or manual-intervention explanation."""
 
-    _attr_icon = "mdi:information-outline"
+    _attr_translation_key = "actuator_feedback_reason"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
         """Bind one diagnostic state to an actuator."""
@@ -488,7 +544,6 @@ class ActuatorFeedbackReasonSensor(_HydronicSensor):
         self._actuator_id = actuator_id
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_{actuator_id}_feedback_reason"
-        self._attr_name = "Feedback reason"
         kind = "valve" if actuator_id in runtime.plant.valves else "pump"
         self._attr_device_info = topology_device_info(runtime, kind, actuator_id, name)
 
@@ -552,14 +607,15 @@ def _zone_diagnostic_attributes(runtime: Any, zone_id: str) -> dict[str, object]
 class PlantModeSensor(_HydronicSensor):
     """Expose the mode currently permitted to use shared equipment."""
 
-    _attr_icon = "mdi:state-machine"
+    _attr_translation_key = "operating_mode"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = PLANT_MODE_OPTIONS
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the active mode to the plant runtime."""
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_operating_mode"
-        self._attr_name = "Operating mode"
 
     @property
     def native_value(self) -> str:
@@ -590,14 +646,13 @@ class PlantModeSensor(_HydronicSensor):
 class ModeChangeoverExplanationSensor(_HydronicSensor):
     """Explain why a requested mode is active, idle, or locked."""
 
-    _attr_icon = "mdi:text-box-outline"
+    _attr_translation_key = "mode_changeover_explanation"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the explanation to the plant runtime."""
         super().__init__(entry)
         runtime = self._runtime
         self._attr_unique_id = f"{runtime.plant_id}_mode_changeover_explanation"
-        self._attr_name = "Mode changeover explanation"
 
     @property
     def native_value(self) -> str:
@@ -626,7 +681,9 @@ class ModeChangeoverExplanationSensor(_HydronicSensor):
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: HydronicConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add read-only explanations for all configured zones."""
     runtime = entry.runtime_data

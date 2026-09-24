@@ -356,6 +356,154 @@
       }
     }
   },
+  "entity": {
+    "binary_sensor": {
+      "dry_run": {
+        "name": "Dry run"
+      },
+      "mode_changeover_lockout": {
+        "name": "Mode changeover lockout"
+      },
+      "zone_demand": {
+        "name": "Demand"
+      },
+      "zone_blocked": {
+        "name": "Blocked"
+      },
+      "zone_cooling_demand": {
+        "name": "Cooling demand"
+      },
+      "zone_cooling_blocked": {
+        "name": "Cooling blocked"
+      },
+      "source_demand": {
+        "name": "Demand"
+      },
+      "source_available": {
+        "name": "Available"
+      },
+      "source_active": {
+        "name": "Active"
+      },
+      "source_blocked": {
+        "name": "Blocked"
+      },
+      "valve_requested": {
+        "name": "Requested"
+      },
+      "pump_requested": {
+        "name": "Requested"
+      },
+      "actuator_mismatch": {
+        "name": "Mismatch"
+      },
+      "actuator_blocked": {
+        "name": "Blocked"
+      }
+    },
+    "button": {
+      "safe_shutdown": {
+        "name": "Safe shutdown"
+      }
+    },
+    "select": {
+      "requested_mode": {
+        "name": "Requested mode",
+        "state": {
+          "auto": "Auto",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      }
+    },
+    "sensor": {
+      "controller_status": {
+        "name": "Controller status",
+        "state": {
+          "stopped": "Stopped",
+          "safe_shutdown": "Safe shutdown",
+          "initializing": "Initializing",
+          "blocked": "Blocked",
+          "auto": "Auto",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      },
+      "reconciliation_status": {
+        "name": "Reconciliation status",
+        "state": {
+          "not_started": "Not started",
+          "changed": "Changed",
+          "unchanged": "Unchanged"
+        }
+      },
+      "topology_preview": {
+        "name": "Topology preview"
+      },
+      "operating_mode": {
+        "name": "Operating mode",
+        "state": {
+          "auto": "Auto",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      },
+      "mode_changeover_explanation": {
+        "name": "Mode changeover explanation"
+      },
+      "active_source": {
+        "name": "Active source"
+      },
+      "source_changeover": {
+        "name": "Source changeover",
+        "state": {
+          "idle": "Idle",
+          "waiting_for_hydraulics": "Waiting for hydraulics",
+          "minimum_dwell": "Minimum dwell",
+          "releasing": "Releasing",
+          "breaking": "Breaking",
+          "selecting": "Selecting",
+          "active": "Active"
+        }
+      },
+      "source_dwell": {
+        "name": "Source dwell"
+      },
+      "recommended_source": {
+        "name": "Recommended source"
+      },
+      "source_recommendation": {
+        "name": "Source recommendation"
+      },
+      "source_blocked_reason": {
+        "name": "Blocked reason"
+      },
+      "zone_explanation": {
+        "name": "Explanation"
+      },
+      "zone_aggregate_temperature": {
+        "name": "Aggregate temperature"
+      },
+      "zone_blocked_reason": {
+        "name": "Blocked reason"
+      },
+      "zone_cooling_blocked_reason": {
+        "name": "Cooling blocked reason"
+      },
+      "zone_cooling_dew_point": {
+        "name": "Cooling dew point"
+      },
+      "zone_cooling_condensation_margin": {
+        "name": "Cooling condensation margin"
+      },
+      "actuator_feedback_reason": {
+        "name": "Feedback reason"
+      }
+    }
+  },
   "issues": {
     "missing_sensor_binding": {
       "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
