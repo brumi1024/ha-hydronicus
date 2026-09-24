@@ -14,13 +14,13 @@ from hydronicus_core.model import (
     ExternalHvacAction,
     HydronicusThermostatConfig,
     HydronicusThermostatState,
+    NumericObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
     PumpRuntime,
     PumpState,
     RuntimeState,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     ThermostatHvacMode,
     Valve,
@@ -104,20 +104,18 @@ def _snapshot(
     """Create a timestamped synthetic snapshot for one scenario step."""
     return PlantSnapshot(
         temperatures={
-            "sensor.zone": TemperatureObservation(temperature, NOW),
+            "sensor.zone": NumericObservation(temperature, NOW),
             **(
-                {"sensor.humidity": TemperatureObservation(humidity, NOW)}
+                {"sensor.humidity": NumericObservation(humidity, NOW)}
                 if humidity is not None
                 else {}
             ),
         },
         supply_temperatures=(
-            {"sensor.supply": TemperatureObservation(supply, NOW)} if supply is not None else {}
+            {"sensor.supply": NumericObservation(supply, NOW)} if supply is not None else {}
         ),
         humidities=(
-            {"sensor.humidity": TemperatureObservation(humidity, NOW)}
-            if humidity is not None
-            else {}
+            {"sensor.humidity": NumericObservation(humidity, NOW)} if humidity is not None else {}
         ),
         thermostats={"zone": thermostat},
     )
@@ -295,7 +293,7 @@ def test_mixed_thermostats_share_one_pump_without_dual_zone_demand() -> None:
     result = evaluate(
         plant,
         PlantSnapshot(
-            temperatures={"sensor.internal": TemperatureObservation(18.0, NOW)},
+            temperatures={"sensor.internal": NumericObservation(18.0, NOW)},
             thermostats={
                 "internal": HydronicusThermostatState(hvac_mode=ThermostatHvacMode.HEAT),
                 "external": ExternalClimateThermostatState(

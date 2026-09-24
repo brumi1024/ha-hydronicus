@@ -21,6 +21,7 @@ from hydronicus_core.model import (
     InterlockStatus,
     ModeChangeoverPhase,
     ModeConflict,
+    NumericObservation,
     PlantConfiguration,
     PlantMode,
     PlantSnapshot,
@@ -30,7 +31,6 @@ from hydronicus_core.model import (
     RuntimeState,
     Source,
     TemperatureAggregation,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
@@ -76,7 +76,7 @@ def _plant() -> PlantConfiguration:
 
 
 def _snapshot(temperature: float) -> PlantSnapshot:
-    return PlantSnapshot({"temperature.living": TemperatureObservation(temperature, NOW)})
+    return PlantSnapshot({"temperature.living": NumericObservation(temperature, NOW)})
 
 
 @pytest.mark.parametrize(
@@ -104,9 +104,9 @@ def test_zone_temperature_aggregation_is_deterministic(aggregation, expected) ->
     )
     snapshot = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(18.0, NOW),
-            "temperature.living_backup": TemperatureObservation(22.0, NOW),
-            "temperature.living_window": TemperatureObservation(20.0, NOW),
+            "temperature.living": NumericObservation(18.0, NOW),
+            "temperature.living_backup": NumericObservation(22.0, NOW),
+            "temperature.living_window": NumericObservation(20.0, NOW),
         }
     )
 
@@ -118,8 +118,8 @@ def test_zone_temperature_aggregation_defaults_to_mean() -> None:
     zone = Zone("living", "Living", 21.0, _metadata("temperature.living", "temperature.backup"))
     snapshot = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(18.0, NOW),
-            "temperature.backup": TemperatureObservation(22.0, NOW),
+            "temperature.living": NumericObservation(18.0, NOW),
+            "temperature.backup": NumericObservation(22.0, NOW),
         }
     )
 
@@ -145,8 +145,8 @@ def test_designated_reference_aggregation_is_calibrated_and_order_independent() 
     )
     snapshot = PlantSnapshot(
         {
-            "temperature.reference": TemperatureObservation(20.0, NOW),
-            "temperature.window": TemperatureObservation(12.0, NOW),
+            "temperature.reference": NumericObservation(20.0, NOW),
+            "temperature.window": NumericObservation(12.0, NOW),
         }
     )
 
@@ -188,15 +188,46 @@ def test_calibrated_aggregation_applies_offsets_before_every_policy(
     )
     snapshot = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(17.0, NOW),
-            "temperature.backup": TemperatureObservation(23.0, NOW),
-            "temperature.window": TemperatureObservation(20.0, NOW),
+            "temperature.living": NumericObservation(17.0, NOW),
+            "temperature.backup": NumericObservation(23.0, NOW),
+            "temperature.window": NumericObservation(20.0, NOW),
         }
     )
 
     result = aggregate_temperature(zone, snapshot, now=NOW)
 
     assert result.value == expected
+
+
+def test_adapter_invalid_reason_explains_an_unusable_observation() -> None:
+    """The adapter's reason replaces the generic non-finite label in explanations."""
+    zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata("temperature.required"),
+            TemperatureSensorMetadata("temperature.optional", required=False),
+            TemperatureSensorMetadata("temperature.nan", required=False),
+        ),
+    )
+    snapshot = PlantSnapshot(
+        {
+            "temperature.required": NumericObservation(None, NOW, "implausible value -273.15 °C"),
+            "temperature.optional": NumericObservation(None, NOW, "unsupported unit 'W'"),
+            "temperature.nan": NumericObservation(math.nan, NOW),
+        }
+    )
+
+    result = aggregate_temperature(zone, snapshot, now=NOW)
+
+    assert result.value is None
+    assert result.explanation == (
+        "Blocked: required temperature sensors are unusable: "
+        "temperature.required (implausible value -273.15 °C)"
+        " Excluded optional sensors: temperature.nan (non-finite), "
+        "temperature.optional (unsupported unit 'W')."
+    )
 
 
 def test_optional_sensor_is_excluded_and_required_sensor_remains_usable() -> None:
@@ -214,8 +245,8 @@ def test_optional_sensor_is_excluded_and_required_sensor_remains_usable() -> Non
         zone,
         PlantSnapshot(
             {
-                "temperature.required": TemperatureObservation(19.0, NOW),
-                "temperature.optional": TemperatureObservation(None, NOW),
+                "temperature.required": NumericObservation(19.0, NOW),
+                "temperature.optional": NumericObservation(None, NOW),
             }
         ),
         now=NOW,
@@ -241,7 +272,7 @@ def test_stale_required_sensor_blocks_immediately() -> None:
     result = aggregate_temperature(
         zone,
         PlantSnapshot(
-            {"temperature.required": TemperatureObservation(19.0, NOW - timedelta(seconds=31))}
+            {"temperature.required": NumericObservation(19.0, NOW - timedelta(seconds=31))}
         ),
         now=NOW,
     )
@@ -274,14 +305,12 @@ def test_aggregation_reports_missing_and_invalid_timestamp_health() -> None:
     )
     no_timestamp = aggregate_temperature(
         required_zone,
-        PlantSnapshot({"temperature.required": TemperatureObservation(19.0, None)}),
+        PlantSnapshot({"temperature.required": NumericObservation(19.0, None)}),
         now=NOW,
     )
     invalid_timestamp = aggregate_temperature(
         required_zone,
-        PlantSnapshot(
-            {"temperature.required": TemperatureObservation(19.0, NOW.replace(tzinfo=None))}
-        ),
+        PlantSnapshot({"temperature.required": NumericObservation(19.0, NOW.replace(tzinfo=None))}),
         now=NOW,
     )
     assert no_timestamp.blocking_required_sensor_ids == ("temperature.required",)
@@ -302,7 +331,7 @@ def test_aggregation_rejects_non_finite_calibration_result_and_bad_weight() -> N
     )
     overflow = aggregate_temperature(
         overflow_zone,
-        PlantSnapshot({"temperature.required": TemperatureObservation(1e308, NOW)}),
+        PlantSnapshot({"temperature.required": NumericObservation(1e308, NOW)}),
         now=NOW,
     )
     weighted_zone = Zone(
@@ -314,7 +343,7 @@ def test_aggregation_rejects_non_finite_calibration_result_and_bad_weight() -> N
     )
     weighted = aggregate_temperature(
         weighted_zone,
-        PlantSnapshot({"temperature.weight": TemperatureObservation(19.0, NOW)}),
+        PlantSnapshot({"temperature.weight": NumericObservation(19.0, NOW)}),
         now=NOW,
     )
 
@@ -340,7 +369,7 @@ def test_optional_designated_reference_does_not_fallback_to_another_policy() -> 
     )
     result = aggregate_temperature(
         zone,
-        PlantSnapshot({"temperature.backup": TemperatureObservation(19.0, NOW)}),
+        PlantSnapshot({"temperature.backup": NumericObservation(19.0, NOW)}),
         now=NOW,
     )
 
@@ -375,7 +404,7 @@ def _timed_plant(
 
 
 def _timed_snapshot(value: float, observed_at: datetime) -> PlantSnapshot:
-    return PlantSnapshot({"temperature.living": TemperatureObservation(value, observed_at)})
+    return PlantSnapshot({"temperature.living": NumericObservation(value, observed_at)})
 
 
 def test_required_sensor_block_overrides_minimum_active_duration() -> None:
@@ -487,8 +516,8 @@ def test_controller_uses_zone_aggregation_policy_for_demand() -> None:
         plant,
         PlantSnapshot(
             {
-                "temperature.living": TemperatureObservation(18.0, NOW),
-                "temperature.window": TemperatureObservation(20.0, NOW),
+                "temperature.living": NumericObservation(18.0, NOW),
+                "temperature.window": NumericObservation(20.0, NOW),
             }
         ),
         RuntimeState(),
@@ -566,9 +595,9 @@ def _cooling_snapshot(
 ) -> PlantSnapshot:
     """Build a fresh synthetic cooling snapshot."""
     return PlantSnapshot(
-        temperatures={"temperature.living": TemperatureObservation(temperature, observed_at)},
-        humidities={"humidity.living": TemperatureObservation(humidity, observed_at)},
-        supply_temperatures={"temperature.supply": TemperatureObservation(supply, observed_at)},
+        temperatures={"temperature.living": NumericObservation(temperature, observed_at)},
+        humidities={"humidity.living": NumericObservation(humidity, observed_at)},
+        supply_temperatures={"temperature.supply": NumericObservation(supply, observed_at)},
     )
 
 
@@ -635,11 +664,11 @@ def _mixed_mode_snapshot() -> PlantSnapshot:
     """Return safe observations that request both heating and cooling."""
     return PlantSnapshot(
         temperatures={
-            "temperature.heating": TemperatureObservation(19.0, NOW),
-            "temperature.cooling": TemperatureObservation(25.0, NOW),
+            "temperature.heating": NumericObservation(19.0, NOW),
+            "temperature.cooling": NumericObservation(25.0, NOW),
         },
-        humidities={"humidity.cooling": TemperatureObservation(50.0, NOW)},
-        supply_temperatures={"temperature.cooling_supply": TemperatureObservation(18.0, NOW)},
+        humidities={"humidity.cooling": NumericObservation(50.0, NOW)},
+        supply_temperatures={"temperature.cooling_supply": NumericObservation(18.0, NOW)},
     )
 
 
@@ -710,6 +739,12 @@ def test_dew_point_and_condensation_margin_are_deterministic() -> None:
     assert dew_point == pytest.approx(13.8516, abs=0.001)
     assert condensation_margin(18.0, dew_point) == pytest.approx(4.1484, abs=0.001)
     assert dew_point_celsius(25.0, 0.0) is None
+
+
+@pytest.mark.parametrize("temperature", [-243.12, -243.13, -300.0, -1e308])
+def test_dew_point_is_undefined_at_or_below_the_magnus_pole(temperature: float) -> None:
+    """The Magnus approximation has a pole at -243.12 °C and no meaning below it."""
+    assert dew_point_celsius(temperature, 50.0) is None
     assert condensation_margin(18.0, float("nan")) is None
 
 
@@ -803,10 +838,10 @@ def test_humidity_aggregation_excludes_optional_and_applies_calibration() -> Non
     result = aggregate_humidity(
         zone,
         PlantSnapshot(
-            temperatures={"temperature.living": TemperatureObservation(25.0, NOW)},
+            temperatures={"temperature.living": NumericObservation(25.0, NOW)},
             humidities={
-                "humidity.primary": TemperatureObservation(49.0, NOW),
-                "humidity.backup": TemperatureObservation(float("inf"), NOW),
+                "humidity.primary": NumericObservation(49.0, NOW),
+                "humidity.backup": NumericObservation(float("inf"), NOW),
             },
         ),
         now=NOW,
@@ -824,16 +859,16 @@ def test_invalid_humidity_and_surface_reference_are_fail_closed() -> None:
     invalid_humidity = PlantSnapshot(
         temperatures=invalid_humidity.temperatures,
         humidities=invalid_humidity.humidities,
-        surface_temperatures={"temperature.surface": TemperatureObservation(18.0, NOW)},
+        surface_temperatures={"temperature.surface": NumericObservation(18.0, NOW)},
     )
     invalid = evaluate(plant, invalid_humidity, RuntimeState(), NOW)
     stale_surface = evaluate(
         plant,
         PlantSnapshot(
-            temperatures={"temperature.living": TemperatureObservation(25.0, NOW)},
-            humidities={"humidity.living": TemperatureObservation(50.0, NOW)},
+            temperatures={"temperature.living": NumericObservation(25.0, NOW)},
+            humidities={"humidity.living": NumericObservation(50.0, NOW)},
             surface_temperatures={
-                "temperature.surface": TemperatureObservation(18.0, NOW - timedelta(seconds=1801))
+                "temperature.surface": NumericObservation(18.0, NOW - timedelta(seconds=1801))
             },
         ),
         RuntimeState(),
@@ -972,14 +1007,14 @@ def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None
     )
     cool_both = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(20.0, NOW),
-            "temperature.office": TemperatureObservation(20.0, NOW),
+            "temperature.living": NumericObservation(20.0, NOW),
+            "temperature.office": NumericObservation(20.0, NOW),
         }
     )
     only_office = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(22.0, NOW),
-            "temperature.office": TemperatureObservation(20.0, NOW),
+            "temperature.living": NumericObservation(22.0, NOW),
+            "temperature.office": NumericObservation(20.0, NOW),
         }
     )
     opening = evaluate(plant, cool_both, RuntimeState(), NOW)
@@ -1028,20 +1063,20 @@ def test_shared_valve_and_pump_remain_active_until_last_consumer_releases() -> N
     )
     both_request = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(20.0, NOW),
-            "temperature.office": TemperatureObservation(20.0, NOW),
+            "temperature.living": NumericObservation(20.0, NOW),
+            "temperature.office": NumericObservation(20.0, NOW),
         }
     )
     only_office = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(22.0, NOW),
-            "temperature.office": TemperatureObservation(20.0, NOW),
+            "temperature.living": NumericObservation(22.0, NOW),
+            "temperature.office": NumericObservation(20.0, NOW),
         }
     )
     neither_requests = PlantSnapshot(
         {
-            "temperature.living": TemperatureObservation(22.0, NOW),
-            "temperature.office": TemperatureObservation(22.0, NOW),
+            "temperature.living": NumericObservation(22.0, NOW),
+            "temperature.office": NumericObservation(22.0, NOW),
         }
     )
 
@@ -1149,8 +1184,8 @@ def test_zone_demand_blocks_when_a_sensor_exceeds_default_maximum_age() -> None:
     )
     snapshot = PlantSnapshot(
         {
-            "temperature.living_wall": TemperatureObservation(19.0, NOW - timedelta(hours=12)),
-            "temperature.living_window": TemperatureObservation(21.0, NOW),
+            "temperature.living_wall": NumericObservation(19.0, NOW - timedelta(hours=12)),
+            "temperature.living_window": NumericObservation(21.0, NOW),
         }
     )
 
@@ -1187,8 +1222,8 @@ def test_zone_blocks_when_any_required_temperature_sensor_is_unusable(
     )
     snapshot = PlantSnapshot(
         {
-            "temperature.living_wall": TemperatureObservation(19.0, NOW),
-            "temperature.living_window": TemperatureObservation(unusable_value, NOW),
+            "temperature.living_wall": NumericObservation(19.0, NOW),
+            "temperature.living_window": NumericObservation(unusable_value, NOW),
         }
     )
 
@@ -1274,9 +1309,9 @@ def _changeover_plant():
 
 def _changeover_snapshot(now: datetime, temperature: float) -> PlantSnapshot:
     return PlantSnapshot(
-        temperatures={"sensor.zone": TemperatureObservation(temperature, now)},
-        humidities={"sensor.humidity": TemperatureObservation(50.0, now)},
-        supply_temperatures={"sensor.supply": TemperatureObservation(18.0, now)},
+        temperatures={"sensor.zone": NumericObservation(temperature, now)},
+        humidities={"sensor.humidity": NumericObservation(50.0, now)},
+        supply_temperatures={"sensor.supply": NumericObservation(18.0, now)},
     )
 
 

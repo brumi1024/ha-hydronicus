@@ -29,6 +29,16 @@ const defaultScheduler: Scheduler = {
   clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
+/** Backend statuses and error codes that end a stream, mapped to the card state they show. */
+const TERMINAL_KINDS: Readonly<Record<string, "not_found" | "unauthorized">> = {
+  plant_not_found: "not_found",
+  unauthorized: "unauthorized",
+};
+
+function terminalKind(code: string | undefined): "not_found" | "unauthorized" | undefined {
+  return code !== undefined && Object.hasOwn(TERMINAL_KINDS, code) ? TERMINAL_KINDS[code] : undefined;
+}
+
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
 }
@@ -133,19 +143,18 @@ export class PlantStream {
       this.host.onSnapshot(event.snapshot);
       return;
     }
-    if (event.status === "unavailable") this.setStatus({ kind: "unavailable" });
-    else if (event.status === "unauthorized") this.stop({ kind: "unauthorized" });
-    else if (event.status === "plant_not_found") this.stop({ kind: "not_found" });
+    if (event.status === "unavailable") {
+      this.setStatus({ kind: "unavailable" });
+      return;
+    }
+    const kind = terminalKind(event.status);
+    if (kind) this.stop({ kind });
   }
 
   private handleError(error: unknown): void {
-    const code = errorCode(error);
-    if (code === "plant_not_found") {
-      this.stop({ kind: "not_found" });
-      return;
-    }
-    if (code === "unauthorized") {
-      this.stop({ kind: "unauthorized" });
+    const kind = terminalKind(errorCode(error));
+    if (kind) {
+      this.stop({ kind });
       return;
     }
     const delayMs = Math.min(RETRY_BASE_MS * 2 ** this.attempt, RETRY_MAX_MS);

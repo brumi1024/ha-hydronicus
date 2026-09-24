@@ -38,6 +38,10 @@ function boundaryClass(mode: string): string {
   return mode.replaceAll("_", "-");
 }
 
+function retryText(delayMs: number): string {
+  return `Retrying in ${Math.round(delayMs / 1000)} s.`;
+}
+
 export class HydronicusPlantCard extends LitElement {
   static properties = {
     preview: { type: Boolean },
@@ -256,7 +260,7 @@ export class HydronicusPlantCard extends LitElement {
         case "unavailable":
           return this._renderState("Plant unavailable", "The Hydronicus Plant is unavailable while it loads or after it was unloaded. The card reconnects automatically.", "status");
         case "retrying":
-          return this._renderState("Connection needs attention", stream.message, "alert", `Retrying in ${Math.round(stream.delayMs / 1000)} s.`);
+          return this._renderState("Connection needs attention", stream.message, "alert", retryText(stream.delayMs));
         default:
           return this._renderLoading(stream.kind === "reconnecting");
       }
@@ -299,7 +303,7 @@ export class HydronicusPlantCard extends LitElement {
       return html`<p class="notice" role="status" dir="auto">Reconnecting to Home Assistant… The values below may be out of date.</p>`;
     }
     if (stream.kind === "retrying") {
-      return html`<p class="notice" role="status" dir="auto">${stream.message} Retrying in ${Math.round(stream.delayMs / 1000)} s. The values below may be out of date.</p>`;
+      return html`<p class="notice" role="status" dir="auto">${stream.message} ${retryText(stream.delayMs)} The values below may be out of date.</p>`;
     }
     return nothing;
   }

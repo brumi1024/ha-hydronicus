@@ -26,6 +26,10 @@ from custom_components.hydronicus.core.model import (
 )
 from custom_components.hydronicus.core.topology import compile_topology
 from custom_components.hydronicus.runtime import (
+    AIR_TEMPERATURE_RANGE,
+    RELATIVE_HUMIDITY_RANGE,
+    WATER_TEMPERATURE_RANGE,
+    PlausibleRange,
     _numeric_observation,
     celsius_from_unit,
     relative_humidity_from_unit,
@@ -80,6 +84,26 @@ def test_humidity_is_usable_only_in_percent_or_without_a_unit(value: float, unit
     """Relative humidity accepts only percent or no unit."""
     expected = value if unit in {"", PERCENTAGE} else None
     assert relative_humidity_from_unit(value, unit) == expected
+
+
+@given(
+    band=st.sampled_from((AIR_TEMPERATURE_RANGE, WATER_TEMPERATURE_RANGE, RELATIVE_HUMIDITY_RANGE)),
+    value=st.floats(min_value=-1000.0, max_value=1000.0, allow_nan=False),
+)
+def test_only_readings_inside_the_plausible_band_are_usable(
+    band: PlausibleRange, value: float
+) -> None:
+    """A finite reading outside its band carries no value and explains why."""
+    observation = _numeric_observation(
+        _state("sensor.reading", value, None), celsius_from_unit, band
+    )
+
+    if band.minimum <= value <= band.maximum:
+        assert observation.value == value
+        assert observation.invalid_reason is None
+    else:
+        assert observation.value is None
+        assert observation.invalid_reason == f"implausible value {value:.2f} {band.unit}"
 
 
 @st.composite
@@ -139,6 +163,7 @@ def test_generated_topologies_demand_only_from_usable_celsius_readings(
                     f"sensor.zone_{index}", _reported(celsius, unit if supported else None), unit
                 ),
                 celsius_from_unit,
+                AIR_TEMPERATURE_RANGE,
             )
             for index, (celsius, unit, supported) in enumerate(cases)
         }

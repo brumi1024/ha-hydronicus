@@ -66,6 +66,15 @@ Any other unit, including a misspelled one such as `C` or `degC`, makes the obse
 This is deliberate: Hydronicus fails closed rather than guessing what an unknown unit means.
 Fix the unit on the source entity, for example in the template sensor definition, and the Zone recovers on the next state change.
 A value without a unit is assumed to be Celsius, so a unit-less sensor that reports Fahrenheit produces a wrong temperature rather than a blocked Zone; add the unit to such a sensor.
+The blocked-reason sensor names the cause, for example `sensor.living_temperature (unsupported unit 'degC')`.
+
+### A sensor is reported as an implausible value
+
+The blocked-reason sensor shows `implausible value` with the reading converted to Celsius, or to percent for humidity.
+The reading has a supported unit but lies outside the [plausible range](configuration.md#plausible-observation-ranges) for its observation type.
+Typical causes are a disconnected probe that reports a fault value such as -127 °C, a template that reports 0 K when its source is unavailable, and a sensor whose unit does not match its value, such as a Celsius value labelled `K`.
+Hydronicus fails closed for such a reading: a required sensor blocks the Zone, a Circuit reference blocks cooling, and a Source temperature disqualifies the Source.
+Fix the sensor or its unit at the source, and the observation recovers on the next state change.
 
 ### The temperature differs from the value Home Assistant shows
 

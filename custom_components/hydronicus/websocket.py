@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_READ
@@ -22,6 +23,9 @@ from homeassistant.util.hass_dict import HassKey
 
 from .const import CONF_PLANT_ID, DOMAIN
 from .presentation import PRESENTATION_SCHEMA_VERSION, build_plant_summary
+
+if TYPE_CHECKING:
+    from .runtime import HydronicRuntime
 
 WS_LIST_PLANTS = "hydronicus/list_plants"
 WS_SUBSCRIBE_PLANT = "hydronicus/subscribe_plant"
@@ -52,7 +56,7 @@ class PlantSubscriptions:
         return len(self._subscriptions)
 
     @callback
-    def bind_plant(self, plant_id: str, runtime: Any) -> None:
+    def bind_plant(self, plant_id: str, runtime: HydronicRuntime) -> None:
         """Bind every stream of a Plant to its runtime and publish a snapshot."""
         for subscription in self.for_plant(plant_id):
             if subscription.runtime is not runtime:
@@ -85,10 +89,10 @@ class PlantSubscription:
     connection: websocket_api.ActiveConnection
     msg_id: int
     plant_id: str
-    runtime: Any = None
-    _remove_runtime_listener: Any = field(default=None, repr=False)
+    runtime: HydronicRuntime | None = None
+    _remove_runtime_listener: Callable[[], None] | None = field(default=None, repr=False)
 
-    def bind(self, runtime: Any | None) -> None:
+    def bind(self, runtime: HydronicRuntime | None) -> None:
         """Follow one runtime, or none while the Plant is not loaded."""
         self.unbind()
         self.runtime = runtime
@@ -271,7 +275,7 @@ async def ws_subscribe_plant(
     subscription.send_snapshot(snapshot)
 
 
-def register_runtime(hass: HomeAssistant, runtime: Any) -> None:
+def register_runtime(hass: HomeAssistant, runtime: HydronicRuntime) -> None:
     """Bind a Plant's streams to its runtime as soon as setup has started it.
 
     The config entry state signal binds them as well once the entry is
@@ -292,9 +296,9 @@ def _entry_plant_id(entry: ConfigEntry) -> str:
     return str(entry.data.get(CONF_PLANT_ID, entry.entry_id))
 
 
-def _loaded_runtimes(hass: HomeAssistant) -> dict[str, Any]:
+def _loaded_runtimes(hass: HomeAssistant) -> dict[str, HydronicRuntime]:
     """Map Plant UUIDs to the runtimes of loaded config entries."""
-    runtimes: dict[str, Any] = {}
+    runtimes: dict[str, HydronicRuntime] = {}
     for entry in hass.config_entries.async_loaded_entries(DOMAIN):
         runtime = getattr(entry, "runtime_data", None)
         if runtime is not None:

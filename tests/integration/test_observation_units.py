@@ -29,6 +29,7 @@ EXTERNAL_CLIMATE = "climate.units_external_room"
 CLIMATE_ENTITY = "climate.unit_plant_units_zone"
 DEMAND_ENTITY = "binary_sensor.unit_plant_units_zone_demand"
 BLOCKED_ENTITY = "binary_sensor.unit_plant_units_zone_blocked"
+BLOCKED_REASON_ENTITY = "sensor.unit_plant_units_zone_blocked_reason"
 
 
 def _entry(*, external: bool = False) -> MockConfigEntry:
@@ -154,6 +155,79 @@ async def test_unsupported_zone_temperature_unit_fails_closed(hass, unit: str) -
     assert hass.states.get(DEMAND_ENTITY).state == "off"
     assert runtime.last_execution is not None
     assert runtime.last_execution.executed == ()
+    assert hass.states.get(BLOCKED_REASON_ENTITY).state == (
+        "Blocked: required temperature sensors are unusable: "
+        f"{ZONE_SENSOR} (unsupported unit {unit!r})"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "unit", "celsius"),
+    [
+        ("0", UnitOfTemperature.KELVIN, "-273.15"),
+        ("30.03", UnitOfTemperature.KELVIN, "-243.12"),
+        ("-127", UnitOfTemperature.CELSIUS, "-127.00"),
+        ("-50.1", UnitOfTemperature.CELSIUS, "-50.10"),
+        ("100.1", UnitOfTemperature.CELSIUS, "100.10"),
+        ("250", UnitOfTemperature.FAHRENHEIT, "121.11"),
+    ],
+)
+async def test_implausible_zone_temperature_fails_closed(
+    hass, value: str, unit: str, celsius: str
+) -> None:
+    """A reading in a valid unit but outside the air band never drives demand."""
+    _set(hass, ZONE_SENSOR, value, unit)
+    entry = _entry()
+
+    await _setup_heating(hass, entry)
+
+    runtime = entry.runtime_data
+    assert runtime.snapshot.temperatures[ZONE_SENSOR].value is None
+    assert runtime.zone_is_blocked(ZONE_ID)
+    assert hass.states.get(DEMAND_ENTITY).state == "off"
+    assert hass.states.get(BLOCKED_REASON_ENTITY).state == (
+        "Blocked: required temperature sensors are unusable: "
+        f"{ZONE_SENSOR} (implausible value {celsius} °C)"
+    )
+
+
+@pytest.mark.parametrize("value", ["-50.0", "100.0"])
+async def test_zone_temperature_at_the_band_edges_is_usable(hass, value: str) -> None:
+    """The air band is inclusive, so its edges are still plausible readings."""
+    _set(hass, ZONE_SENSOR, value, UnitOfTemperature.CELSIUS)
+    entry = _entry()
+
+    await _setup_heating(hass, entry)
+
+    assert entry.runtime_data.snapshot.temperatures[ZONE_SENSOR].value == float(value)
+    assert hass.states.get(BLOCKED_ENTITY).state == "off"
+
+
+async def test_water_temperatures_use_a_wider_band_than_surface_temperatures(hass) -> None:
+    """Supply and source water may read up to 150 °C; a surface above 100 °C is implausible."""
+    _set(hass, ZONE_SENSOR, "20.0", UnitOfTemperature.CELSIUS)
+    _set(hass, SUPPLY_SENSOR, "120.0", UnitOfTemperature.CELSIUS)
+    _set(hass, SURFACE_SENSOR, "120.0", UnitOfTemperature.CELSIUS)
+    _set(hass, SOURCE_SENSOR, "150.0", UnitOfTemperature.CELSIUS)
+    entry = _entry()
+
+    await _setup_heating(hass, entry)
+
+    snapshot = entry.runtime_data.snapshot
+    assert snapshot.supply_temperatures[SUPPLY_SENSOR].value == 120.0
+    assert snapshot.source_temperatures[SOURCE_ID].value == 150.0
+    surface = snapshot.surface_temperatures[SURFACE_SENSOR]
+    assert surface.value is None
+    assert surface.invalid_reason == "implausible value 120.00 °C"
+
+    _set(hass, SUPPLY_SENSOR, "0", UnitOfTemperature.KELVIN)
+    _set(hass, SOURCE_SENSOR, "150.1", UnitOfTemperature.CELSIUS)
+    await hass.async_block_till_done()
+
+    snapshot = entry.runtime_data.snapshot
+    assert snapshot.supply_temperatures[SUPPLY_SENSOR].value is None
+    assert snapshot.source_temperatures[SOURCE_ID].value is None
+    assert snapshot.source_temperatures[SOURCE_ID].invalid_reason == ("implausible value 150.10 °C")
 
 
 async def test_zone_recovers_when_a_unit_becomes_supported(hass) -> None:
@@ -219,6 +293,30 @@ async def test_humidity_accepts_only_percent_or_no_unit(
     await _setup_heating(hass, entry)
 
     assert entry.runtime_data.snapshot.humidities[HUMIDITY_SENSOR].value == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected", "reason"),
+    [
+        ("0", 0.0, None),
+        ("100", 100.0, None),
+        ("100.5", None, "implausible value 100.50 %"),
+        ("-1", None, "implausible value -1.00 %"),
+    ],
+)
+async def test_humidity_outside_zero_to_one_hundred_percent_is_implausible(
+    hass, value: str, expected: float | None, reason: str | None
+) -> None:
+    """Relative humidity is usable only from 0 to 100 percent."""
+    _set(hass, ZONE_SENSOR, "20.0", UnitOfTemperature.CELSIUS)
+    _set(hass, HUMIDITY_SENSOR, value, PERCENTAGE)
+    entry = _entry()
+
+    await _setup_heating(hass, entry)
+
+    observation = entry.runtime_data.snapshot.humidities[HUMIDITY_SENSOR]
+    assert observation.value == expected
+    assert observation.invalid_reason == reason
 
 
 async def test_external_climate_temperatures_are_converted_from_the_system_unit(hass) -> None:

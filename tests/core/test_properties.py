@@ -9,6 +9,7 @@ from hydronicus_core.model import (
     ActuatorAction,
     Circuit,
     DeliveryRoute,
+    NumericObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
@@ -18,7 +19,6 @@ from hydronicus_core.model import (
     SafeShutdownPhase,
     Source,
     TemperatureAggregation,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
@@ -86,7 +86,7 @@ def _shared_pump_plant(
 def _snapshot(temperatures: tuple[float, ...]) -> PlantSnapshot:
     return PlantSnapshot(
         {
-            f"sensor.zone_{index}": TemperatureObservation(temperature, NOW)
+            f"sensor.zone_{index}": NumericObservation(temperature, NOW)
             for index, temperature in enumerate(temperatures)
         }
     )
@@ -318,7 +318,7 @@ def test_generated_sensor_metadata_order_produces_identical_evaluation(
     )
     snapshot = PlantSnapshot(
         {
-            sensor.entity_id: TemperatureObservation(values[index], NOW)
+            sensor.entity_id: NumericObservation(values[index], NOW)
             for index, sensor in enumerate(metadata)
         }
     )
@@ -365,7 +365,7 @@ def test_blocked_required_sensor_never_produces_zone_demand(
     )
     snapshot = PlantSnapshot(
         {
-            sensor_id: TemperatureObservation(None if index == bad_index else 19.0, NOW)
+            sensor_id: NumericObservation(None if index == bad_index else 19.0, NOW)
             for index, sensor_id in enumerate(sensor_ids)
         }
     )
@@ -449,11 +449,11 @@ def test_generated_shared_equipment_conflicts_never_share_mode_consumers(
     )
     snapshot = PlantSnapshot(
         temperatures={
-            "sensor.heating": TemperatureObservation(19.0, NOW),
-            "sensor.cooling": TemperatureObservation(25.0, NOW),
+            "sensor.heating": NumericObservation(19.0, NOW),
+            "sensor.cooling": NumericObservation(25.0, NOW),
         },
-        humidities={"sensor.humidity": TemperatureObservation(50.0, NOW)},
-        supply_temperatures={"sensor.supply": TemperatureObservation(18.0, NOW)},
+        humidities={"sensor.humidity": NumericObservation(50.0, NOW)},
+        supply_temperatures={"sensor.supply": NumericObservation(18.0, NOW)},
     )
 
     result = evaluate(plant, snapshot, RuntimeState(), NOW)

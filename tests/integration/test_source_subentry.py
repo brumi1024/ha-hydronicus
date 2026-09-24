@@ -289,6 +289,48 @@ async def test_source_form_selectors_and_persisted_types(hass) -> None:
     assert type(subentry_draft(entry, subentry)[CONF_SOURCE_PRIORITY]) is int
 
 
+@pytest.mark.parametrize("priority", ["nan", "inf", "-inf", 1.7])
+async def test_source_priority_rejects_non_finite_and_fractional_values(hass, priority) -> None:
+    """A priority that is not a whole finite number fails schema validation cleanly."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    with pytest.raises(InvalidData) as raised:
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            {"name": "Boiler", CONF_SOURCE_PRIORITY: priority},
+        )
+
+    assert CONF_SOURCE_PRIORITY in raised.value.schema_errors
+    assert not entry.subentries
+
+
+async def test_source_priority_accepts_a_whole_float_and_stores_an_int(hass) -> None:
+    """The number selector's float for a whole priority is persisted as an int."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Boiler", CONF_SOURCE_PRIORITY: 3.0},
+    )
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    created = subentry_draft(entry, next(iter(entry.subentries.values())))
+    assert created[CONF_SOURCE_PRIORITY] == 3
+    assert type(created[CONF_SOURCE_PRIORITY]) is int
+
+
 async def test_buffer_without_temperature_entity_is_explained(hass) -> None:
     """A buffer source without a temperature entity gets a field error on that picker."""
     entry = _entry()

@@ -78,6 +78,23 @@ A sensor without a unit is assumed to report Celsius, so give a unit-less templa
 An unusable observation takes the same path as an unavailable or non-numeric one, so a required sensor blocks its Zone and the controller fails closed.
 An existing external climate entity reports its current and target temperatures in the Home Assistant unit system, and Hydronicus converts them to Celsius as well.
 Hydronicus-owned sensors, diagnostics, and the Plant card data carry Celsius values, and Home Assistant converts the entity values for display.
+
+### Plausible observation ranges
+
+After unit conversion, each reading must also fall inside a physically plausible range.
+A reading outside its range is unusable and takes the same fail-closed path as an unsupported unit.
+The ranges are inclusive and fixed; they catch sensor faults, not comfort or safety limits.
+
+| Observation | Plausible range | Why |
+| --- | --- | --- |
+| Zone temperature | -50 to 100 °C | Room air, from unheated spaces to saunas. |
+| Circuit surface temperature | -50 to 100 °C | Heated or cooled floors, walls, and ceilings stay within room-air limits. |
+| Circuit supply temperature | -50 to 150 °C | Pressurized boilers and district heating can supply water above 100 °C. |
+| Source temperature | -50 to 150 °C | Buffer and boiler water follows the same limits as supply water. |
+| Zone humidity | 0 to 100 % | Relative humidity cannot leave this range. |
+
+The ranges reject common fault readings, such as 0 K (-273.15 °C) from a misconfigured template or -127 °C from a disconnected one-wire probe.
+The blocked reason names the rejected value, for example `implausible value -273.15 °C`.
 - **Weighted mean** applies the positive weights configured through detailed sensor editing.
 
 Designated-reference and weighted-mean policies become available after completing the detailed sensor editor because they depend on per-sensor metadata.
@@ -167,6 +184,7 @@ Before accepting a simulated Plant, check all of the following:
 
 - Every temperature sensor is numeric and available.
 - Every temperature sensor reports `°C`, `°F`, `K`, or a Celsius value without a unit.
+- Every reading falls inside its [plausible range](#plausible-observation-ranges).
 - Every selected sensor belongs to the intended test configuration.
 - Each Zone has at least one selected Circuit.
 - Each Circuit has a valid valve path and pump.

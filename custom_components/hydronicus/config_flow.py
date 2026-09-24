@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -331,6 +332,23 @@ def _number(
 def _positive(number: selector.NumberSelector) -> vol.All:
     """Keep the exclusive zero bound that a number selector cannot express."""
     return vol.All(number, vol.Range(min=0, min_included=False))
+
+
+def _whole_number(value: float) -> int:
+    """Return a finite whole number as an int, or raise ValueError.
+
+    The number selector returns a float and accepts NaN and infinity, so a
+    plain int() would raise or silently truncate a fractional value.
+    """
+    if not math.isfinite(value) or not float(value).is_integer():
+        raise ValueError("expected a whole number")
+    return int(value)
+
+
+def _whole_number_selector(*, minimum: float) -> vol.All:
+    """Return a box number selector that only admits finite whole numbers."""
+    # Coerce turns the ValueError into a schema error and still serializes cleanly.
+    return vol.All(_number(step=1, minimum=minimum), vol.Coerce(_whole_number))
 
 
 def _seconds_selector() -> selector.NumberSelector:
@@ -1933,7 +1951,7 @@ def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any
         "id": source_id,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_SOURCE_TYPE: str(user_input.get(CONF_SOURCE_TYPE, SOURCE_KIND_EXTERNAL)),
-        # The number selector returns a float; the priority has always been stored as int.
+        # The schema admits only whole numbers; the priority has always been stored as int.
         CONF_SOURCE_PRIORITY: int(user_input.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY)),
         CONF_SOURCE_AVAILABILITY_ENTITY: user_input.get(CONF_SOURCE_AVAILABILITY_ENTITY),
         CONF_SOURCE_DEMAND_ENTITY: user_input.get(CONF_SOURCE_DEMAND_ENTITY),
@@ -1967,7 +1985,7 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
             vol.Required(
                 CONF_SOURCE_PRIORITY,
                 default=defaults.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY),
-            ): _number(step=1, minimum=0),
+            ): _whole_number_selector(minimum=0),
             # vol.Maybe keeps accepting an explicit None, which clears a binding.
             _optional_entity(CONF_SOURCE_AVAILABILITY_ENTITY, defaults): vol.Maybe(
                 selector.EntitySelector(

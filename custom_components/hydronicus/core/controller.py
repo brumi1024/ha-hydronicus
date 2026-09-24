@@ -30,6 +30,7 @@ from .model import (
     InterlockStatus,
     ModeChangeoverPhase,
     ModeConflict,
+    NumericObservation,
     PlantMode,
     PlantSnapshot,
     PumpRuntime,
@@ -47,7 +48,6 @@ from .model import (
     SourceSelectionPhase,
     SourceSelectionRuntime,
     TemperatureAggregation,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     ThermostatHvacMode,
     ValveRuntime,
@@ -75,7 +75,7 @@ def _elapsed(now: datetime, changed_at: datetime | None) -> timedelta:
 
 
 def _observation_is_usable(
-    observation: TemperatureObservation | None,
+    observation: NumericObservation | None,
     *,
     max_age_seconds: float,
     now: datetime,
@@ -84,7 +84,7 @@ def _observation_is_usable(
     if observation is None:
         return False, "missing"
     if observation.value is None or not isfinite(observation.value):
-        return False, "non-finite"
+        return False, observation.invalid_reason or "non-finite"
     if observation.observed_at is None:
         return False, "missing timestamp"
     try:
@@ -98,7 +98,7 @@ def _observation_is_usable(
 
 def _aggregate_observations(
     metadata: tuple[TemperatureSensorMetadata, ...],
-    observations: Mapping[str, TemperatureObservation],
+    observations: Mapping[str, NumericObservation],
     *,
     aggregation: TemperatureAggregation,
     measurement: str,
@@ -235,6 +235,9 @@ def dew_point_celsius(temperature_celsius: float, relative_humidity: float) -> f
     if not isfinite(temperature_celsius) or not isfinite(relative_humidity):
         return None
     if relative_humidity <= 0 or relative_humidity > 100:
+        return None
+    # The approximation has a pole at -B and is meaningless at or below it.
+    if temperature_celsius <= -_DEW_POINT_B:
         return None
     gamma = log(relative_humidity / 100.0) + (
         _DEW_POINT_A * temperature_celsius / (_DEW_POINT_B + temperature_celsius)

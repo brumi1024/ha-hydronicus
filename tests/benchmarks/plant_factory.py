@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from custom_components.hydronicus.core.model import PlantSnapshot, TemperatureObservation
+from custom_components.hydronicus.core.model import NumericObservation, PlantSnapshot
 
 BENCHMARK_FIXTURE = (
     Path(__file__).parents[1] / "fixtures" / "benchmarks" / "large-synthetic-plant.json"
@@ -233,24 +233,20 @@ def synthetic_entity_ids(value: object) -> set[str]:
 def build_synthetic_snapshot(entry_data: dict[str, Any], now: datetime) -> PlantSnapshot:
     """Build complete synthetic observations for a pure controller evaluation."""
     topology = entry_data["topology"]
-    temperatures: dict[str, TemperatureObservation] = {}
-    humidities: dict[str, TemperatureObservation] = {}
-    supply_temperatures: dict[str, TemperatureObservation] = {}
-    surface_temperatures: dict[str, TemperatureObservation] = {}
+    temperatures: dict[str, NumericObservation] = {}
+    humidities: dict[str, NumericObservation] = {}
+    supply_temperatures: dict[str, NumericObservation] = {}
+    surface_temperatures: dict[str, NumericObservation] = {}
     for zone in topology["zones"]:
         for sensor in zone["temperature_sensor_metadata"]:
-            temperatures[sensor["entity_id"]] = TemperatureObservation(23.0, now)
+            temperatures[sensor["entity_id"]] = NumericObservation(23.0, now)
         for sensor in zone["humidity_sensor_metadata"]:
-            humidities[sensor["entity_id"]] = TemperatureObservation(45.0, now)
+            humidities[sensor["entity_id"]] = NumericObservation(45.0, now)
     for circuit in topology["circuits"]:
-        supply_temperatures[circuit["supply_temperature_sensor"]] = TemperatureObservation(
-            18.0, now
-        )
-        surface_temperatures[circuit["surface_temperature_sensor"]] = TemperatureObservation(
-            21.0, now
-        )
+        supply_temperatures[circuit["supply_temperature_sensor"]] = NumericObservation(18.0, now)
+        surface_temperatures[circuit["surface_temperature_sensor"]] = NumericObservation(21.0, now)
     source_temperatures = {
-        source["id"]: TemperatureObservation(32.0, now)
+        source["id"]: NumericObservation(32.0, now)
         for source in topology["sources"]
         if "temperature_entity" in source
     }

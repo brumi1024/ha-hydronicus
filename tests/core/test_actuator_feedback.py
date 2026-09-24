@@ -18,6 +18,7 @@ from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     FeedbackObservation,
+    NumericObservation,
     PlantConfiguration,
     PlantMode,
     PlantSnapshot,
@@ -27,7 +28,6 @@ from hydronicus_core.model import (
     RuntimeState,
     SafeShutdownPhase,
     Source,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
@@ -102,7 +102,7 @@ def _snapshot(
 ) -> PlantSnapshot:
     """Build a fresh synthetic snapshot at a controlled time."""
     return PlantSnapshot(
-        temperatures={"sensor.zone": TemperatureObservation(18.0, observed_at)},
+        temperatures={"sensor.zone": NumericObservation(18.0, observed_at)},
         actuator_feedback=actuator_feedback or {},
     )
 
@@ -268,7 +268,7 @@ def test_missing_timestamp_and_manual_valve_mismatch_are_explained() -> None:
     mismatch = evaluate(
         plant,
         PlantSnapshot(
-            temperatures={"sensor.zone": TemperatureObservation(22.0, NOW)},
+            temperatures={"sensor.zone": NumericObservation(22.0, NOW)},
             actuator_feedback={
                 "valve": ActuatorFeedback(
                     position=FeedbackObservation("open", NOW),
@@ -296,7 +296,7 @@ def test_healthy_independent_pump_feedback_is_not_a_block() -> None:
     result = evaluate(
         plant,
         PlantSnapshot(
-            temperatures={"sensor.zone": TemperatureObservation(22.0, NOW)},
+            temperatures={"sensor.zone": NumericObservation(22.0, NOW)},
             actuator_feedback={
                 "valve": ActuatorFeedback(position=FeedbackObservation("closed", NOW)),
                 "pump": ActuatorFeedback(
@@ -390,8 +390,8 @@ def test_faulted_pump_blocks_only_its_dependent_circuit() -> None:
     )
     snapshot = PlantSnapshot(
         temperatures={
-            "sensor.one": TemperatureObservation(18.0, NOW),
-            "sensor.two": TemperatureObservation(18.0, NOW),
+            "sensor.one": NumericObservation(18.0, NOW),
+            "sensor.two": NumericObservation(18.0, NOW),
         },
         actuator_feedback={
             "pump-one": ActuatorFeedback(fault=FeedbackObservation(True, NOW)),

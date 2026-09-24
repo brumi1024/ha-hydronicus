@@ -56,6 +56,7 @@ The Hydronicus thermostat is the only thermostat kind that Hydronicus publishes.
 It starts at 21.0 °C and off when no valid restored state exists.
 
 Its target, preset, and HVAC mode are runtime state restored through the Home Assistant entity lifecycle.
+The exact Celsius target is stored beside the displayed one, so a display in whole degrees Fahrenheit does not shift the target across restarts.
 
 An external thermostat is represented by one existing climate entity and is never controlled by Hydronicus.
 

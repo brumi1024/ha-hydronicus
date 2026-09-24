@@ -381,7 +381,10 @@ async def test_turn_on_restores_the_mode_persisted_before_a_restart(hass, actuat
     await _climate_action(hass, "turn_on")
     assert hass.states.get(CLIMATE).state == "cool"
     entity = hass.data[DATA_INSTANCES]["climate"].get_entity(CLIMATE)
-    assert entity.extra_restore_state_data.as_dict() == {"last_active_hvac_mode": "cool"}
+    assert entity.extra_restore_state_data.as_dict() == {
+        "last_active_hvac_mode": "cool",
+        "target_temperature_celsius": 23.0,
+    }
     assert actuator_calls == []
 
 
@@ -393,6 +396,48 @@ async def test_restored_setpoint_is_converted_from_the_display_unit(hass, actuat
 
     assert entry.runtime_data.zone_target_temperatures[ZONE_ID] == pytest.approx(21.11, abs=0.01)
     assert hass.states.get(CLIMATE).attributes["temperature"] == pytest.approx(70.0, abs=0.1)
+    assert actuator_calls == []
+
+
+async def test_fahrenheit_display_does_not_drift_the_persisted_setpoint(
+    hass, actuator_calls
+) -> None:
+    """A 20.5 degC target shows as whole degF but is persisted and restored in Celsius."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    entry = await _setup(hass)
+    await entry.runtime_data.async_set_zone_target_temperature(ZONE_ID, 20.5, hass=hass)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(CLIMATE)
+    assert state.attributes["temperature"] == 69
+    entity = hass.data[DATA_INSTANCES]["climate"].get_entity(CLIMATE)
+    extra = entity.extra_restore_state_data.as_dict()
+    assert extra["target_temperature_celsius"] == 20.5
+    assert actuator_calls == []
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    mock_restore_cache_with_extra_data(hass, [(state, extra)])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.zone_target_temperatures[ZONE_ID] == 20.5
+    assert actuator_calls == []
+
+
+@pytest.mark.parametrize("stored", [None, "warm", float("nan"), 99.0, True])
+async def test_unusable_persisted_setpoint_falls_back_to_the_display_attribute(
+    hass, actuator_calls, stored
+) -> None:
+    """Older or corrupt restore data falls back to converting the displayed setpoint."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    mock_restore_cache_with_extra_data(
+        hass,
+        [(State(CLIMATE, "heat", {"temperature": 70.0}), {"target_temperature_celsius": stored})],
+    )
+    entry = await _setup(hass)
+
+    assert entry.runtime_data.zone_target_temperatures[ZONE_ID] == pytest.approx(21.11, abs=0.01)
     assert actuator_calls == []
 
 

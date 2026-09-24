@@ -65,6 +65,7 @@ from .core.model import (
     HydronicusThermostatConfig,
     HydronicusThermostatState,
     ModeChangeoverPhase,
+    NumericObservation,
     PlantMode,
     PlantSnapshot,
     PumpRuntime,
@@ -72,10 +73,10 @@ from .core.model import (
     RuntimeState,
     SafeShutdownPhase,
     SourceRecommendation,
-    TemperatureObservation,
     ThermostatHvacMode,
     ValveRuntime,
     ValveState,
+    Zone,
     ZoneDecision,
     ZoneDecisionStatus,
 )
@@ -198,6 +199,20 @@ class HydronicRuntime:
             translation_placeholders={"plant": self.name},
         )
 
+    def _require_started(self, hass: HomeAssistant | None) -> HomeAssistant:
+        """Return the Home Assistant instance, or raise if the runtime is not started."""
+        active_hass = hass or self._hass
+        if active_hass is None or self._entry is None:
+            raise self._not_started_error()
+        return active_hass
+
+    def _require_internal_zone(self, zone_id: str) -> Zone:
+        """Return a Zone with a Hydronicus-owned thermostat, or raise a validation error."""
+        zone = self.plant.zones.get(zone_id)
+        if zone is None or not isinstance(zone.thermostat, HydronicusThermostatConfig):
+            raise self._unknown_zone_error(zone_id)
+        return zone
+
     def _unknown_zone_error(self, zone_id: str) -> ServiceValidationError:
         """Describe a request for a Zone without a Hydronicus-owned thermostat."""
         return ServiceValidationError(
@@ -300,9 +315,8 @@ class HydronicRuntime:
                 translation_key="unsupported_plant_mode",
                 translation_placeholders={"mode": str(mode)},
             ) from error
-        active_hass = hass or self._hass
-        if active_hass is None or self._entry is None:
-            raise self._not_started_error()
+        active_hass = self._require_started(hass)
+        assert self._entry is not None
         async with self._operation_lock:
             data = dict(self._entry.data)
             data[CONF_REQUESTED_MODE] = requested.value
@@ -438,13 +452,8 @@ class HydronicRuntime:
     ) -> None:
         """Persist and immediately apply a zone setpoint in the runtime."""
         temperature = _validate_target_temperature(temperature)
-        if zone_id not in self.plant.zones or not isinstance(
-            self.plant.zones[zone_id].thermostat, HydronicusThermostatConfig
-        ):
-            raise self._unknown_zone_error(zone_id)
-        active_hass = hass or self._hass
-        if active_hass is None or self._entry is None:
-            raise self._not_started_error()
+        self._require_internal_zone(zone_id)
+        active_hass = self._require_started(hass)
 
         async with self._operation_lock:
             self.zone_target_temperatures[zone_id] = temperature
@@ -455,12 +464,8 @@ class HydronicRuntime:
         self, zone_id: str, preset_mode: str, *, hass: HomeAssistant | None = None
     ) -> None:
         """Persist a configured preset and immediately apply its target in the runtime."""
-        if zone_id not in self.plant.zones or not isinstance(
-            self.plant.zones[zone_id].thermostat, HydronicusThermostatConfig
-        ):
-            raise self._unknown_zone_error(zone_id)
+        zone = self._require_internal_zone(zone_id)
         normalized = str(preset_mode).lower()
-        zone = self.plant.zones[zone_id]
         if normalized == "none":
             target = self.zone_target_temperatures[zone_id]
         else:
@@ -479,9 +484,7 @@ class HydronicRuntime:
                     translation_placeholders={"preset_mode": normalized, "zone": zone.name},
                 ) from error
 
-        active_hass = hass or self._hass
-        if active_hass is None or self._entry is None:
-            raise self._not_started_error()
+        active_hass = self._require_started(hass)
         async with self._operation_lock:
             self.zone_target_temperatures[zone_id] = target
             self.zone_preset_modes[zone_id] = normalized
@@ -495,9 +498,7 @@ class HydronicRuntime:
         hass: HomeAssistant | None = None,
     ) -> None:
         """Update one internal thermostat mode without changing the Plant constraint."""
-        zone = self.plant.zones.get(zone_id)
-        if zone is None or not isinstance(zone.thermostat, HydronicusThermostatConfig):
-            raise self._unknown_zone_error(zone_id)
+        self._require_internal_zone(zone_id)
         try:
             mode = ThermostatHvacMode(hvac_mode)
         except ValueError as error:
@@ -506,9 +507,7 @@ class HydronicRuntime:
                 translation_key="unsupported_hvac_mode",
                 translation_placeholders={"hvac_mode": str(hvac_mode)},
             ) from error
-        active_hass = hass or self._hass
-        if active_hass is None:
-            raise self._not_started_error()
+        active_hass = self._require_started(hass)
         async with self._operation_lock:
             self.zone_hvac_modes[zone_id] = mode
             await self._async_refresh_locked(active_hass)
@@ -655,9 +654,7 @@ class HydronicRuntime:
         force_dry_run: bool | None = None,
     ) -> SafeShutdownReport:
         """Release source demand, observe overrun, then stop pumps and valves."""
-        active_hass = hass or self._hass
-        if active_hass is None:
-            raise self._not_started_error()
+        active_hass = self._require_started(hass)
         effective_now = now or self._now()
         async with self._operation_lock:
             return await self._async_safe_shutdown_locked(
@@ -1400,14 +1397,18 @@ class HydronicRuntime:
         self._reconcile_actuator_runtime()
 
     @staticmethod
-    def _temperature_observation(hass: HomeAssistant, entity_id: str) -> TemperatureObservation:
+    def _temperature_observation(
+        hass: HomeAssistant, entity_id: str, plausible: PlausibleRange
+    ) -> NumericObservation:
         """Read one temperature observation in Celsius with its Home Assistant timestamp."""
-        return _numeric_observation(hass.states.get(entity_id), celsius_from_unit)
+        return _numeric_observation(hass.states.get(entity_id), celsius_from_unit, plausible)
 
     @staticmethod
-    def _humidity_observation(hass: HomeAssistant, entity_id: str) -> TemperatureObservation:
+    def _humidity_observation(hass: HomeAssistant, entity_id: str) -> NumericObservation:
         """Read one relative humidity observation in percent with its timestamp."""
-        return _numeric_observation(hass.states.get(entity_id), relative_humidity_from_unit)
+        return _numeric_observation(
+            hass.states.get(entity_id), relative_humidity_from_unit, RELATIVE_HUMIDITY_RANGE
+        )
 
     @staticmethod
     def _feedback_observation(
@@ -1432,13 +1433,7 @@ class HydronicRuntime:
 
     def _build_snapshot(self, hass: HomeAssistant) -> PlantSnapshot:
         """Build one immutable controller snapshot from current HA state."""
-        temperature_observations = {
-            sensor_id: self._temperature_observation(hass, sensor_id)
-            for sensor_id in dict.fromkeys(
-                (*self._temperature_sensor_ids(), *self._reference_sensor_ids())
-            )
-        }
-        source_temperatures: dict[str, TemperatureObservation] = {}
+        source_temperatures: dict[str, NumericObservation] = {}
         source_availability: dict[str, bool] = {}
         source_selector_states: dict[str, str | None] = {}
         source_demand_states: dict[str, bool] = {}
@@ -1447,6 +1442,7 @@ class HydronicRuntime:
                 source_temperatures[source.id] = self._temperature_observation(
                     hass,
                     source.temperature_entity_id,
+                    WATER_TEMPERATURE_RANGE,
                 )
             if source.availability_entity_id is not None:
                 source_availability[source.id] = _state_is_available(
@@ -1513,17 +1509,20 @@ class HydronicRuntime:
                 )
         return PlantSnapshot(
             temperatures={
-                sensor_id: temperature_observations[sensor_id] for sensor_id in temperature_ids
+                sensor_id: self._temperature_observation(hass, sensor_id, AIR_TEMPERATURE_RANGE)
+                for sensor_id in temperature_ids
             },
             thermostats=thermostat_states,
             humidities={
                 sensor_id: self._humidity_observation(hass, sensor_id) for sensor_id in humidity_ids
             },
             supply_temperatures={
-                sensor_id: temperature_observations[sensor_id] for sensor_id in supply_ids
+                sensor_id: self._temperature_observation(hass, sensor_id, WATER_TEMPERATURE_RANGE)
+                for sensor_id in supply_ids
             },
             surface_temperatures={
-                sensor_id: temperature_observations[sensor_id] for sensor_id in surface_ids
+                sensor_id: self._temperature_observation(hass, sensor_id, AIR_TEMPERATURE_RANGE)
+                for sensor_id in surface_ids
             },
             source_temperatures=source_temperatures,
             source_availability=source_availability,
@@ -1874,23 +1873,60 @@ def relative_humidity_from_unit(value: float, unit: object) -> float | None:
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class PlausibleRange:
+    """An inclusive band of physically plausible readings after unit normalization."""
+
+    minimum: float
+    maximum: float
+    unit: str
+
+    def contains(self, value: float) -> bool:
+        """Return whether a normalized reading lies inside the band."""
+        return self.minimum <= value <= self.maximum
+
+
+# Room air and heated or cooled surfaces. The band is wide enough for unheated
+# spaces and saunas, and rejects sensor fault values such as 0 K or -127 °C.
+AIR_TEMPERATURE_RANGE = PlausibleRange(-50.0, 100.0, UnitOfTemperature.CELSIUS)
+# Supply water and source or buffer water. Pressurized boilers and district
+# heating can run above 100 °C, so the upper bound is wider than for air.
+WATER_TEMPERATURE_RANGE = PlausibleRange(-50.0, 150.0, UnitOfTemperature.CELSIUS)
+RELATIVE_HUMIDITY_RANGE = PlausibleRange(0.0, 100.0, PERCENTAGE)
+
+
 def _numeric_observation(
     state: State | None,
     normalize: Callable[[float, object], float | None],
-) -> TemperatureObservation:
-    """Read one numeric observation, normalized by its unit, with its timestamp."""
+    plausible: PlausibleRange,
+) -> NumericObservation:
+    """Read one numeric observation, normalized by its unit, with its timestamp.
+
+    A reading in an unsupported unit, or a finite reading outside the plausible
+    band, carries no value and says why, so the controller fails closed and
+    explains the real cause. Non-finite readings pass through unchanged and the
+    controller reports them as non-finite.
+    """
     if state is None:
-        return TemperatureObservation(value=None, observed_at=None)
+        return NumericObservation(value=None, observed_at=None)
+    observed_at = state.last_reported or state.last_updated
     try:
-        value: float | None = float(state.state)
+        value = float(state.state)
     except TypeError, ValueError:
-        value = None
-    if value is not None:
-        value = normalize(value, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT))
-    return TemperatureObservation(
-        value=value,
-        observed_at=state.last_reported or state.last_updated,
-    )
+        return NumericObservation(value=None, observed_at=observed_at)
+    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+    normalized = normalize(value, unit)
+    if normalized is None:
+        return NumericObservation(
+            value=None, observed_at=observed_at, invalid_reason=f"unsupported unit {unit!r}"
+        )
+    if isfinite(normalized) and not plausible.contains(normalized):
+        return NumericObservation(
+            value=None,
+            observed_at=observed_at,
+            invalid_reason=f"implausible value {normalized:.2f} {plausible.unit}",
+        )
+    return NumericObservation(value=normalized, observed_at=observed_at)
 
 
 def _finite_state_attribute(state: Any, key: str) -> float | None:

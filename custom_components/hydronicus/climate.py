@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any, cast
 
 from homeassistant.components.climate import (
@@ -37,6 +38,9 @@ from .runtime import HydronicRuntime
 PARALLEL_UPDATES = 0
 
 _LAST_ACTIVE_HVAC_MODE = "last_active_hvac_mode"
+# The display unit may round the setpoint (whole degrees Fahrenheit), so the exact
+# Celsius target is persisted beside it and preferred on restore.
+_TARGET_TEMPERATURE_CELSIUS = "target_temperature_celsius"
 _BASE_FEATURES = (
     ClimateEntityFeature.TARGET_TEMPERATURE
     | ClimateEntityFeature.TURN_ON
@@ -94,23 +98,27 @@ class ZoneClimate(ClimateEntity, RestoreEntity):
         target = zone.thermostat.initial_target_temperature
         preset = zone.thermostat.initial_preset
         mode = ThermostatHvacMode.OFF
+        extra: dict[str, Any] = {}
         if (extra_data := await self.async_get_last_extra_data()) is not None:
-            self._remember_active_mode(extra_data.as_dict().get(_LAST_ACTIVE_HVAC_MODE))
+            extra = extra_data.as_dict()
+            self._remember_active_mode(extra.get(_LAST_ACTIVE_HVAC_MODE))
         last_state = await self.async_get_last_state()
         if last_state is not None:
             target = DEFAULT_TARGET_TEMPERATURE
             preset = PRESET_NONE
-            try:
-                # Climate state attributes are written in the display unit.
-                restored_target = TemperatureConverter.convert(
-                    float(last_state.attributes.get(ATTR_TEMPERATURE)),
-                    self.hass.config.units.temperature_unit,
-                    UnitOfTemperature.CELSIUS,
-                )
-                if MIN_ZONE_TARGET_TEMPERATURE <= restored_target <= MAX_ZONE_TARGET_TEMPERATURE:
-                    target = restored_target
-            except TypeError, ValueError:
-                pass
+            restored_target = _usable_target(extra.get(_TARGET_TEMPERATURE_CELSIUS))
+            if restored_target is None:
+                # Data from older versions only has the attribute in the display unit.
+                with suppress(TypeError, ValueError):
+                    restored_target = _usable_target(
+                        TemperatureConverter.convert(
+                            float(last_state.attributes.get(ATTR_TEMPERATURE)),
+                            self.hass.config.units.temperature_unit,
+                            UnitOfTemperature.CELSIUS,
+                        )
+                    )
+            if restored_target is not None:
+                target = restored_target
             restored_preset = str(last_state.attributes.get("preset_mode", PRESET_NONE)).lower()
             if restored_preset == PRESET_NONE or restored_preset in self._configured_preset_modes:
                 preset = restored_preset
@@ -147,8 +155,15 @@ class ZoneClimate(ClimateEntity, RestoreEntity):
 
     @property
     def extra_restore_state_data(self) -> ExtraStoredData:
-        """Persist the mode turn_on restores beside the restored zone mode."""
-        return RestoredExtraData({_LAST_ACTIVE_HVAC_MODE: self._last_active_hvac_mode.value})
+        """Persist the mode turn_on restores and the exact Celsius setpoint."""
+        return RestoredExtraData(
+            {
+                _LAST_ACTIVE_HVAC_MODE: self._last_active_hvac_mode.value,
+                _TARGET_TEMPERATURE_CELSIUS: self._runtime.zone_target_temperatures.get(
+                    self._zone_id
+                ),
+            }
+        )
 
     @property
     def current_humidity(self) -> float | None:
@@ -261,3 +276,12 @@ async def async_setup_entry(
     async_add_entities(parent_entities)
     for subentry_id, entities in subentry_entities.items():
         async_add_entities(entities, config_subentry_id=subentry_id)
+
+
+def _usable_target(value: object) -> float | None:
+    """Return a restored Celsius setpoint inside the thermostat range, or None."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if not MIN_ZONE_TARGET_TEMPERATURE <= value <= MAX_ZONE_TARGET_TEMPERATURE:
+        return None
+    return float(value)
