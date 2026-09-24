@@ -2,6 +2,7 @@ export type Density = "comfortable" | "compact";
 
 export interface PlantCardConfig {
   type: "custom:hydronicus-plant-card";
+  /** The Plant UUID; an empty string means the card still needs a Plant. */
   plant: string;
   density?: Density;
 }
@@ -9,10 +10,10 @@ export interface PlantCardConfig {
 export interface PlantSummary {
   id: string;
   name: string;
-  status: string;
-  health: string;
-  requested_mode: string;
-  active_mode: string;
+  status?: string;
+  health?: string;
+  requested_mode?: string;
+  active_mode?: string;
 }
 
 export interface Alert {
@@ -23,6 +24,7 @@ export interface Alert {
   message: string;
 }
 
+/** Every temperature in a snapshot is in degrees Celsius. */
 export interface ZoneSnapshot {
   id: string;
   name: string;
@@ -49,6 +51,7 @@ export interface ZoneSnapshot {
     demand: boolean;
     status: string | null;
     dew_point: number | null;
+    /** A temperature difference in kelvin (equal to a Celsius delta). */
     condensation_margin: number | null;
     blocked: boolean;
     reason: string | null;
@@ -85,13 +88,13 @@ export interface PlantSnapshot {
   controls: { requested_mode: string | null; safe_shutdown: string | null };
   zones: ZoneSnapshot[];
   topology: {
-    routes: Array<{ id: string; zone_id: string; circuit_id: string; enabled: boolean }>;
+    routes: Array<{ id: string; zone_id: string; circuit_id: string; enabled?: boolean }>;
     circuits: Array<{
       id: string;
       name: string;
       valve_ids: string[];
       pump_id: string;
-      cooling_enabled: boolean;
+      cooling_enabled?: boolean;
       route_ids: string[];
     }>;
     coupling_groups: Array<{
@@ -144,17 +147,66 @@ export interface PlantSnapshot {
   safe_shutdown: { active: boolean; phase: string; message: string };
 }
 
-export interface HomeAssistantConnection {
-  sendMessagePromise<T extends Record<string, unknown> = Record<string, unknown>>(
-    message: Record<string, unknown>,
-  ): Promise<T>;
-  subscribeMessage(
-    callback: (message: { snapshot?: unknown }) => void,
-    message: Record<string, unknown>,
-  ): Promise<() => void>;
+/** One event on the `hydronicus/subscribe_plant` stream. */
+export interface PlantStreamEvent {
+  snapshot?: unknown;
+  status?: "unavailable" | "unauthorized" | "plant_not_found";
+  plant_id?: string;
 }
 
+export type UnsubscribeFunc = () => Promise<void> | void;
+
+/** The subset of home-assistant-js-websocket's Connection that the card uses. */
+export interface HomeAssistantConnection {
+  sendMessagePromise<T>(message: Record<string, unknown>): Promise<T>;
+  subscribeMessage(
+    callback: (message: PlantStreamEvent) => void,
+    message: Record<string, unknown>,
+    options?: { resubscribe?: boolean },
+  ): Promise<UnsubscribeFunc>;
+  addEventListener?(type: "ready" | "disconnected", listener: () => void): void;
+  removeEventListener?(type: "ready" | "disconnected", listener: () => void): void;
+}
+
+export type CallService = (
+  domain: string,
+  service: string,
+  data: Record<string, unknown>,
+) => Promise<unknown>;
+
+export interface FrontendLocale {
+  language: string;
+  number_format?: string;
+}
+
+export interface UnitSystem {
+  temperature?: string;
+}
+
+/** The subset of the frontend `hass` object that the card falls back to. */
 export interface HomeAssistantLike {
   connection: HomeAssistantConnection;
-  callService(domain: string, service: string, data: Record<string, unknown>): Promise<void>;
+  callService: CallService;
+  config?: { unit_system?: UnitSystem };
+  language?: string;
+  locale?: FrontendLocale;
+}
+
+/** Values of the Home Assistant frontend context groups the card consumes. */
+export interface HassConnectionContextValue {
+  connection: HomeAssistantConnection;
+  connected?: boolean;
+}
+
+export interface HassApiContextValue {
+  callService: CallService;
+}
+
+export interface HassConfigContextValue {
+  config: { unit_system?: UnitSystem };
+}
+
+export interface HassInternationalizationContextValue {
+  language: string;
+  locale: FrontendLocale;
 }

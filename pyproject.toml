@@ -19,6 +19,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = [
+  "home-assistant-frontend==20260826.7",
   "hypothesis>=6.135,<7",
   "mypy>=1.16,<2",
   "pre-commit>=4.2,<5",

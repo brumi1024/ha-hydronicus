@@ -1,3 +1,4 @@
+import { CELSIUS, steppedTarget, type TemperatureUnit } from "./format";
 import type { PlantSnapshot, ZoneSnapshot } from "./types";
 
 export const PRESENTATION_SCHEMA_VERSION = 2;
@@ -73,6 +74,10 @@ export function isFlowingState(state: string): boolean {
   return FLOWING_STATES.has(state.toLowerCase());
 }
 
+/**
+ * Build a target change. `temperature` is in the user's unit system, because
+ * Home Assistant converts `climate.set_temperature` from that unit.
+ */
 export function actionForTarget(zone: ZoneSnapshot, temperature: number): ActionCall | null {
   if (zone.thermostat.kind !== "hydronicus" || !zone.thermostat.control_entity_id) return null;
   return {
@@ -123,10 +128,11 @@ export function phaseLabel(phase: string): string {
   return phase.replaceAll("_", " ");
 }
 
-export function adjustTarget(zone: ZoneSnapshot, delta: number): number | null {
+/**
+ * The next target one step up or down, in the user's unit system, from the
+ * Celsius target in the snapshot.
+ */
+export function adjustTarget(zone: ZoneSnapshot, direction: 1 | -1, unit: TemperatureUnit = CELSIUS): number | null {
   if (zone.thermostat.target_temperature === null) return null;
-  return Math.min(
-    35,
-    Math.max(5, Number((zone.thermostat.target_temperature + delta).toFixed(1))),
-  );
+  return steppedTarget(zone.thermostat.target_temperature, direction, unit);
 }

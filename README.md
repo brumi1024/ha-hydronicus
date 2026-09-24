@@ -64,8 +64,9 @@ Use a disposable or staging Home Assistant instance for initial evaluation.
 4. Install **Hydronicus** from HACS.
 5. Restart Home Assistant.
 6. Open **Settings > Devices & services**, select **Add integration**, and search for **Hydronicus**.
-7. After the integration starts, open **Settings > Dashboards > Resources** and add `/hydronicus/hydronicus-plant-card.js` as a **JavaScript Module**.
-8. Add the card from the Lovelace editor and select one configured Plant.
+7. Add the **Hydronicus Plant** card from the Lovelace card picker; the card loads automatically, and it prefills the first Plant you can read.
+
+If you added `/hydronicus/hydronicus-plant-card.js` as a dashboard resource for an earlier release, remove it as described in [the Lovelace guide](docs/lovelace.md#remove-the-old-manual-resource).
 
 The minimum Home Assistant version declared by this repository is `2026.9.0`.
 The integration is not currently part of the HACS default repository list, so the custom-repository step is required.
