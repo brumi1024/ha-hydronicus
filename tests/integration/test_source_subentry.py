@@ -22,6 +22,7 @@ from custom_components.hydronicus.const import (
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import subentry_draft
+from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -238,3 +239,49 @@ async def test_synthetic_selector_stays_shadow_only_while_recommendation_runs(ha
         operation.entity_id != "select.synthetic_source"
         for operation in runtime.last_execution.executed
     )
+
+
+async def test_source_form_selectors_and_persisted_types(hass) -> None:
+    """The source form uses typed selectors while priority stays a stored integer."""
+    hass.states.async_set("sensor.living_temperature", "19.0")
+    hass.states.async_set("binary_sensor.buffer_available", "on")
+    hass.states.async_set("sensor.buffer_temperature", "45.0")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    source_type = fields[CONF_SOURCE_TYPE]["selector"]["select"]
+    assert source_type["translation_key"] == CONF_SOURCE_TYPE
+    assert source_type["options"] == ["external", "temperature_qualified_buffer"]
+    assert fields[CONF_SOURCE_TEMPERATURE_ENTITY]["selector"]["entity"]["device_class"] == [
+        "temperature"
+    ]
+    assert fields[CONF_SOURCE_PRIORITY]["selector"]["number"]["step"] == 1.0
+    assert fields[CONF_SOURCE_MINIMUM_TEMPERATURE]["selector"]["number"]["unit_of_measurement"] == (
+        "°C"
+    )
+
+    result = await _add_buffer_source(hass, entry)
+    await hass.async_block_till_done()
+    subentry = next(iter(entry.subentries.values()))
+    created = subentry_draft(entry, subentry)
+    assert created[CONF_SOURCE_PRIORITY] == 1
+    assert type(created[CONF_SOURCE_PRIORITY]) is int
+    assert type(created[CONF_SOURCE_MINIMUM_TEMPERATURE]) is float
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    assert form_value(result, CONF_SOURCE_TEMPERATURE_ENTITY) == "sensor.buffer_temperature"
+    assert form_value(result, CONF_SOURCE_DEMAND_ENTITY) == "switch.synthetic_source"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=frontend_submission(result)
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry_draft(entry, subentry) == created
+    assert type(subentry_draft(entry, subentry)[CONF_SOURCE_PRIORITY]) is int

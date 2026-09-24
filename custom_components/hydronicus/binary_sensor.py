@@ -326,6 +326,9 @@ class SourceBlockedBinarySensor(HydronicShadowEntity):
         return {"reason": getattr(diagnostic, "reason", None)}
 
 
+_REQUESTED_TRANSLATION_KEYS = {"valve": "valve_requested", "pump": "pump_requested"}
+
+
 class ActuatorRequestedBinarySensor(HydronicShadowEntity):
     """Whether a valve or pump is virtually requested by the controller."""
 
@@ -336,7 +339,7 @@ class ActuatorRequestedBinarySensor(HydronicShadowEntity):
         self._actuator_id = actuator_id
         self._kind = kind
         self._attr_unique_id = f"{self._runtime.plant_id}_{kind}_{actuator_id}_requested"
-        self._attr_translation_key = f"{kind}_requested"
+        self._attr_translation_key = _REQUESTED_TRANSLATION_KEYS[kind]
         self._attr_device_info = topology_device_info(
             self._runtime, kind, actuator_id, actuator_name
         )

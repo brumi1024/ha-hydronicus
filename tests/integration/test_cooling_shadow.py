@@ -367,9 +367,11 @@ async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
             "pump_entity": "switch.cooling_pump",
             "valve_opening_time_seconds": 0.0,
             "pump_overrun_seconds": 120.0,
-            CONF_COOLING_ENABLED: True,
-            CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply",
-            CONF_CONDENSATION_MARGIN: 2.0,
+            "cooling": {
+                CONF_COOLING_ENABLED: True,
+                CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply",
+                CONF_CONDENSATION_MARGIN: 2.0,
+            },
         },
     )
     assert result["type"] == FlowResultType.FORM

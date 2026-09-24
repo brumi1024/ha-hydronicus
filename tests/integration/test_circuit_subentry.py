@@ -20,6 +20,7 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_CIRCUIT,
 )
 from custom_components.hydronicus.entry_configuration import subentry_draft
+from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 LIVING_ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -364,8 +365,10 @@ async def test_reconfigure_cooling_circuit_preserves_mode_and_route_uuids(hass) 
             CONF_ZONE_IDS: [LIVING_ZONE_ID, OFFICE_ZONE_ID],
             CONF_VALVE_IDS: [VALVE_ID],
             CONF_PUMP_ID: PUMP_ID,
-            CONF_COOLING_ENABLED: True,
-            CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+            "cooling": {
+                CONF_COOLING_ENABLED: True,
+                CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+            },
         },
     )
     await hass.async_block_till_done()
@@ -388,8 +391,10 @@ async def test_reconfigure_cooling_circuit_preserves_mode_and_route_uuids(hass) 
             CONF_ZONE_IDS: [OFFICE_ZONE_ID],
             CONF_VALVE_IDS: [VALVE_ID],
             CONF_PUMP_ID: PUMP_ID,
-            CONF_COOLING_ENABLED: True,
-            CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+            "cooling": {
+                CONF_COOLING_ENABLED: True,
+                CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+            },
         },
     )
     await hass.async_block_till_done()
@@ -586,3 +591,65 @@ async def test_reload_reconstructs_persisted_circuit_subentry(hass) -> None:
     assert {
         route.id for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id
     } == route_ids
+
+
+async def test_cooling_section_is_prefilled_filtered_and_flattened(hass) -> None:
+    """The collapsed cooling section round-trips stored values in the flat circuit shape."""
+    entry = _cooling_plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    assert fields["cooling"]["expanded"] is False
+    assert CONF_COOLING_ENABLED not in fields
+    for sensor in ("supply_temperature_sensor", "surface_temperature_sensor"):
+        assert fields[f"cooling.{sensor}"]["selector"]["entity"]["device_class"] == ["temperature"]
+    assert fields["cooling.condensation_margin"]["selector"]["number"]["unit_of_measurement"] == (
+        "°C"
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Cooling loop",
+            CONF_ZONE_IDS: [LIVING_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+            "cooling": {
+                CONF_COOLING_ENABLED: True,
+                CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+                "condensation_margin": 3,
+                "supply_temperature_max_age_seconds": 900,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+    )
+    created = subentry_draft(entry, subentry)
+    assert created[CONF_COOLING_ENABLED] is True
+    assert created["condensation_margin"] == 3.0
+    assert type(created["condensation_margin"]) is float
+    assert created["supply_temperature_max_age_seconds"] == 900.0
+    assert "cooling" not in created
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    assert form_value(result, "cooling.cooling_enabled") is True
+    assert form_value(result, "cooling.supply_temperature_sensor") == (
+        "sensor.synthetic_cooling_supply"
+    )
+    assert form_value(result, "cooling.condensation_margin") == 3.0
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=frontend_submission(result)
+    )
+    await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry_draft(entry, subentry) == created

@@ -21,6 +21,7 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_ZONE,
 )
 from custom_components.hydronicus.entry_configuration import subentry_draft
+from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 BASE_ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -726,3 +727,136 @@ async def test_dynamic_zone_can_share_parent_circuit_demand(hass) -> None:
     assert entry.runtime_data.evaluation.control_plan.valve_consumers == {
         VALVE_ID: frozenset({CIRCUIT_ID})
     }
+
+
+async def _open_zone_details(hass, entry):
+    """Open the Zone details form for a Hydronicus-owned thermostat."""
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ZONE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"thermostat_kind": "hydronicus"}
+    )
+
+
+async def test_details_error_reshows_the_filled_form(hass) -> None:
+    """A rejected Zone details form keeps its fields and can be corrected and saved."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _open_zone_details(hass, entry)
+    office = {
+        CONF_NAME: "   ",
+        CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
+        CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        "cooling": {"cooling_start_delta": 0.7, "cooling_stop_delta": 0.2},
+    }
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], office)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "details"
+    assert result["errors"] == {"base": "name_required"}
+    assert form_value(result, CONF_TEMPERATURE_SENSORS) == ["sensor.office_temperature"]
+    assert form_value(result, CONF_CIRCUIT_IDS) == [CIRCUIT_ID]
+    assert form_value(result, "cooling.cooling_start_delta") == 0.7
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**office, CONF_NAME: "Office"}
+    )
+    result = await _confirm_warning_review(hass, result)
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert [item.title for item in entry.subentries.values()] == ["Office"]
+
+
+async def test_zone_cooling_section_is_flattened_and_prefilled(hass) -> None:
+    """Cooling hysteresis lives in a collapsed section but persists in the flat thermostat."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _open_zone_details(hass, entry)
+    fields = form_fields(result)
+    assert fields["cooling"]["expanded"] is False
+    assert "cooling_start_delta" not in fields
+    assert "text" in fields[CONF_NAME]["selector"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_NAME: "Office",
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+            "heating_stop_delta": 0,
+            "cooling": {"cooling_start_delta": 0.7, "cooling_stop_delta": 0.2},
+        },
+    )
+    result = await _confirm_warning_review(hass, result)
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    created = subentry_draft(entry, subentry)
+    assert created["thermostat"]["cooling_start_delta"] == 0.7
+    assert created["thermostat"]["cooling_stop_delta"] == 0.2
+    assert type(created["thermostat"]["heating_stop_delta"]) is float
+    assert "cooling" not in created["thermostat"]
+    assert "cooling" not in created
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"thermostat_kind": "hydronicus"}
+    )
+    assert result["step_id"] == "details"
+    assert form_value(result, "cooling.cooling_start_delta") == 0.7
+    assert form_value(result, "cooling.cooling_stop_delta") == 0.2
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], frontend_submission(result)
+    )
+    result = await _confirm_warning_review(hass, result)
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry_draft(entry, subentry) == created
+
+
+async def test_reconfigure_keeps_sensors_without_the_filtered_device_class(hass) -> None:
+    """Device-class filters only narrow the picker; existing bindings survive reconfigure."""
+    hass.states.async_set("sensor.plain_temperature", "20.5")
+    hass.states.async_set("sensor.plain_humidity", "45")
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _open_zone_details(hass, entry)
+    fields = form_fields(result)
+    assert fields[CONF_TEMPERATURE_SENSORS]["selector"]["entity"]["device_class"] == ["temperature"]
+    assert fields["humidity_sensors"]["selector"]["entity"]["device_class"] == ["humidity"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_NAME: "Office",
+            CONF_TEMPERATURE_SENSORS: ["sensor.plain_temperature"],
+            "humidity_sensors": ["sensor.plain_humidity"],
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        },
+    )
+    result = await _confirm_warning_review(hass, result)
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    created = subentry_draft(entry, subentry)
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"thermostat_kind": "hydronicus"}
+    )
+    assert form_value(result, CONF_TEMPERATURE_SENSORS) == ["sensor.plain_temperature"]
+    assert form_value(result, "humidity_sensors") == ["sensor.plain_humidity"]
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], frontend_submission(result)
+    )
+    result = await _confirm_warning_review(hass, result)
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry_draft(entry, subentry) == created
+    assert [record["entity_id"] for record in created[CONF_TEMPERATURE_SENSOR_METADATA]] == [
+        "sensor.plain_temperature"
+    ]

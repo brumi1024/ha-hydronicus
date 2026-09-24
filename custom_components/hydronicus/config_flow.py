@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final, Literal
 from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as entity_registry_helper
 from homeassistant.helpers import selector
 
@@ -149,6 +152,102 @@ class CircuitOptions:
     pumps: list[selector.SelectOptionDict]
 
 
+SECTION_FEEDBACK: Final = "feedback"
+SECTION_COOLING: Final = "cooling"
+_FORM_SECTIONS: Final = (SECTION_FEEDBACK, SECTION_COOLING)
+_DEFAULT_FEEDBACK_MAX_AGE: Final = 1800.0
+
+
+def _flatten_sections(user_input: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge collapsible form sections back into the flat persisted field layout."""
+    flat = {key: value for key, value in user_input.items() if key not in _FORM_SECTIONS}
+    for section_key in _FORM_SECTIONS:
+        nested = user_input.get(section_key)
+        if isinstance(nested, Mapping):
+            flat.update(nested)
+    return flat
+
+
+def _collapsed_section(fields: Mapping[Any, Any]) -> section:
+    """Wrap optional fields in a collapsed form section."""
+    return section(vol.Schema(dict(fields)), {"collapsed": True})
+
+
+def _number(
+    *,
+    step: float | Literal["any"],
+    unit: str | None = None,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> selector.NumberSelector:
+    """Build a box-mode number selector that returns a float."""
+    config = selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, step=step)
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    if minimum is not None:
+        config["min"] = minimum
+    if maximum is not None:
+        config["max"] = maximum
+    return selector.NumberSelector(config)
+
+
+def _positive(number: selector.NumberSelector) -> vol.All:
+    """Keep the exclusive zero bound that a number selector cannot express."""
+    return vol.All(number, vol.Range(min=0, min_included=False))
+
+
+def _seconds_selector() -> selector.NumberSelector:
+    """Return a non-negative duration in seconds."""
+    return _number(step=1, unit=UnitOfTime.SECONDS, minimum=0)
+
+
+def _max_age_selector() -> vol.All:
+    """Return a strictly positive freshness limit in seconds."""
+    return _positive(_number(step=1, unit=UnitOfTime.SECONDS, minimum=0))
+
+
+def _temperature_delta_selector() -> selector.NumberSelector:
+    """Return a non-negative temperature difference in degrees Celsius."""
+    return _number(step=0.1, unit=UnitOfTemperature.CELSIUS, minimum=0)
+
+
+def _name_selector() -> selector.TextSelector:
+    """Return the free-text name selector."""
+    return selector.TextSelector()
+
+
+def _sensor_selector(
+    device_class: SensorDeviceClass | None = None, *, multiple: bool = False
+) -> selector.EntitySelector:
+    """Return a sensor picker, optionally filtered by device class."""
+    config = selector.EntitySelectorConfig(domain="sensor", multiple=multiple)
+    if device_class is not None:
+        config["device_class"] = device_class
+    return selector.EntitySelector(config)
+
+
+def _optional_entity(key: str, defaults: Mapping[str, Any]) -> vol.Optional:
+    """Build an optional entity field that suggests a stored entity ID.
+
+    A suggested value, unlike a default, lets the user clear the binding.
+    """
+    value = defaults.get(key)
+    if isinstance(value, str) and value:
+        return vol.Optional(key, description={"suggested_value": value})
+    return vol.Optional(key)
+
+
+def _with_submitted_values(
+    flow: config_entries.ConfigFlow | config_entries.ConfigSubentryFlow,
+    schema: vol.Schema,
+    user_input: Mapping[str, Any] | None,
+) -> vol.Schema:
+    """Re-show a rejected form with the values the user just submitted."""
+    if user_input is None:
+        return schema
+    return flow.add_suggested_values_to_schema(schema, user_input)
+
+
 def _subentry_handle(draft: Mapping[str, Any]) -> dict[str, str]:
     """Store only the stable pointer needed for UI and entity ownership."""
     return {"id": str(draft["id"])}
@@ -208,6 +307,7 @@ def _circuit_data(
     existing_routes: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one circuit and preserve route UUIDs for retained zones."""
+    user_input = _flatten_sections(user_input)
     zone_ids = list(user_input[CONF_ZONE_IDS])
     cooling_enabled = user_input.get(CONF_COOLING_ENABLED, False)
     if not isinstance(cooling_enabled, bool):
@@ -249,6 +349,33 @@ def _topology_select(
     )
 
 
+def _cooling_reference_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
+    """Return the circuit cooling fields shared by initial and subentry forms."""
+    return {
+        vol.Optional(
+            CONF_COOLING_ENABLED, default=defaults.get(CONF_COOLING_ENABLED, False)
+        ): selector.BooleanSelector(),
+        _optional_entity(CONF_SUPPLY_TEMPERATURE_SENSOR, defaults): _sensor_selector(
+            SensorDeviceClass.TEMPERATURE
+        ),
+        _optional_entity(CONF_SURFACE_TEMPERATURE_SENSOR, defaults): _sensor_selector(
+            SensorDeviceClass.TEMPERATURE
+        ),
+        vol.Optional(
+            CONF_CONDENSATION_MARGIN,
+            default=defaults.get(CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN),
+        ): _temperature_delta_selector(),
+        vol.Optional(
+            CONF_SUPPLY_TEMPERATURE_MAX_AGE,
+            default=defaults.get(CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
+        ): _max_age_selector(),
+        vol.Optional(
+            CONF_SURFACE_TEMPERATURE_MAX_AGE,
+            default=defaults.get(CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
+        ): _max_age_selector(),
+    }
+
+
 def _circuit_schema(
     options: CircuitOptions,
     *,
@@ -258,7 +385,9 @@ def _circuit_schema(
     defaults = defaults or {}
     return vol.Schema(
         {
-            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): str,
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): _name_selector(),
             vol.Required(
                 CONF_ZONE_IDS, default=defaults.get(CONF_ZONE_IDS, vol.UNDEFINED)
             ): _topology_select(options.zones, multiple=True),
@@ -268,37 +397,7 @@ def _circuit_schema(
             vol.Required(
                 CONF_PUMP_ID, default=defaults.get(CONF_PUMP_ID, vol.UNDEFINED)
             ): _topology_select(options.pumps, multiple=False),
-            vol.Optional(
-                CONF_COOLING_ENABLED, default=defaults.get(CONF_COOLING_ENABLED, False)
-            ): selector.BooleanSelector(),
-            (
-                vol.Optional(
-                    CONF_SUPPLY_TEMPERATURE_SENSOR,
-                    default=defaults[CONF_SUPPLY_TEMPERATURE_SENSOR],
-                )
-                if isinstance(defaults.get(CONF_SUPPLY_TEMPERATURE_SENSOR), str)
-                else vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-            (
-                vol.Optional(
-                    CONF_SURFACE_TEMPERATURE_SENSOR,
-                    default=defaults[CONF_SURFACE_TEMPERATURE_SENSOR],
-                )
-                if isinstance(defaults.get(CONF_SURFACE_TEMPERATURE_SENSOR), str)
-                else vol.Optional(CONF_SURFACE_TEMPERATURE_SENSOR)
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-            vol.Optional(
-                CONF_CONDENSATION_MARGIN,
-                default=defaults.get(CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_SUPPLY_TEMPERATURE_MAX_AGE,
-                default=defaults.get(CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
-            vol.Optional(
-                CONF_SURFACE_TEMPERATURE_MAX_AGE,
-                default=defaults.get(CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            vol.Optional(SECTION_COOLING): _collapsed_section(_cooling_reference_fields(defaults)),
         }
     )
 
@@ -476,25 +575,20 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
-                if not await _async_persist_subentry_graph(
+                if await _async_persist_subentry_graph(
                     self,
                     entry,
                     SUBENTRY_TYPE_CIRCUIT,
                     data,
                 ):
-                    errors["base"] = "dry_run_shutdown_in_progress"
-                    return self.async_show_form(
-                        step_id="user",
-                        data_schema=_circuit_schema(options, defaults=user_input),
-                        errors=errors,
+                    return self.async_create_entry(
+                        title=data[CONF_NAME], data=_subentry_handle(data), unique_id=circuit_id
                     )
-                return self.async_create_entry(
-                    title=data[CONF_NAME], data=_subentry_handle(data), unique_id=circuit_id
-                )
+                errors["base"] = "dry_run_shutdown_in_progress"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_circuit_schema(options),
+            data_schema=_with_submitted_values(self, _circuit_schema(options), user_input),
             errors=errors,
         )
 
@@ -530,31 +624,25 @@ class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
-                if not await _async_persist_subentry_graph(
+                if await _async_persist_subentry_graph(
                     self,
                     entry,
                     SUBENTRY_TYPE_CIRCUIT,
                     data,
                     excluded_subentry_id=subentry.subentry_id,
                 ):
-                    errors["base"] = "dry_run_shutdown_in_progress"
-                    return self.async_show_form(
-                        step_id="reconfigure",
-                        data_schema=_circuit_schema(options, defaults=defaults),
-                        errors=errors,
+                    return self.async_update_and_abort(
+                        entry,
+                        subentry,
+                        title=data[CONF_NAME],
+                        data=_subentry_handle(data),
                     )
-                return self.async_update_and_abort(
-                    entry,
-                    subentry,
-                    title=data[CONF_NAME],
-                    data=_subentry_handle(data),
-                )
+                errors["base"] = "dry_run_shutdown_in_progress"
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_circuit_schema(
-                options,
-                defaults=defaults,
+            data_schema=_with_submitted_values(
+                self, _circuit_schema(options, defaults=defaults), user_input
             ),
             errors=errors,
         )
@@ -624,6 +712,7 @@ def _zone_data(
     existing_humidity_metadata: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one zone and preserve route UUIDs for retained circuits."""
+    user_input = _flatten_sections(user_input)
     circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
     sensor_ids = [str(sensor_id) for sensor_id in user_input.get(CONF_TEMPERATURE_SENSORS, [])]
     raw_metadata = user_input.get(CONF_TEMPERATURE_SENSOR_METADATA)
@@ -760,7 +849,7 @@ def _sensor_metadata_schema(
             vol.Required(
                 CONF_SENSOR_ENTITY,
                 default=defaults.get("entity_id", sensor_id),
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            ): _sensor_selector(SensorDeviceClass.TEMPERATURE),
             vol.Required(
                 CONF_REQUIRED,
                 default=defaults.get(CONF_REQUIRED, True),
@@ -768,15 +857,15 @@ def _sensor_metadata_schema(
             vol.Required(
                 CONF_WEIGHT,
                 default=defaults.get(CONF_WEIGHT, DEFAULT_SENSOR_WEIGHT),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            ): _positive(_number(step="any", minimum=0)),
             vol.Required(
                 CONF_CALIBRATION_OFFSET,
                 default=defaults.get(CONF_CALIBRATION_OFFSET, 0.0),
-            ): vol.Coerce(float),
+            ): _number(step="any", unit=UnitOfTemperature.CELSIUS),
             vol.Required(
                 CONF_MAX_AGE,
                 default=defaults.get(CONF_MAX_AGE, DEFAULT_SENSOR_MAX_AGE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            ): _max_age_selector(),
             vol.Required(
                 CONF_DESIGNATED_REFERENCE,
                 default=defaults.get(CONF_DESIGNATED_REFERENCE, False),
@@ -809,12 +898,11 @@ def _preset_targets_schema(defaults: Mapping[str, Any] | None = None) -> dict[An
             name,
             **({"default": targets[name]} if name in targets else {}),
         )
-        fields[key] = vol.All(
-            vol.Coerce(float),
-            vol.Range(
-                min=MIN_ZONE_TARGET_TEMPERATURE,
-                max=MAX_ZONE_TARGET_TEMPERATURE,
-            ),
+        fields[key] = _number(
+            step=0.1,
+            unit=UnitOfTemperature.CELSIUS,
+            minimum=MIN_ZONE_TARGET_TEMPERATURE,
+            maximum=MAX_ZONE_TARGET_TEMPERATURE,
         )
     return fields
 
@@ -826,28 +914,32 @@ def _zone_advanced_fields(defaults: Mapping[str, Any] | None = None) -> dict[Any
         vol.Required(
             CONF_HEATING_START_DELTA,
             default=defaults.get(CONF_HEATING_START_DELTA, DEFAULT_HEATING_START_DELTA),
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        ): _temperature_delta_selector(),
         vol.Required(
             CONF_HEATING_STOP_DELTA,
             default=defaults.get(CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA),
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-        vol.Required(
-            CONF_COOLING_START_DELTA,
-            default=defaults.get(CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA),
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-        vol.Required(
-            CONF_COOLING_STOP_DELTA,
-            default=defaults.get(CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA),
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        ): _temperature_delta_selector(),
         vol.Required(
             CONF_MINIMUM_ACTIVE_DURATION,
             default=defaults.get(CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION),
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        ): _seconds_selector(),
         vol.Required(
             CONF_MINIMUM_IDLE_DURATION,
             default=defaults.get(CONF_MINIMUM_IDLE_DURATION, DEFAULT_MINIMUM_IDLE_DURATION),
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        ): _seconds_selector(),
         **_preset_targets_schema(defaults),
+        vol.Optional(SECTION_COOLING): _collapsed_section(
+            {
+                vol.Required(
+                    CONF_COOLING_START_DELTA,
+                    default=defaults.get(CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA),
+                ): _temperature_delta_selector(),
+                vol.Required(
+                    CONF_COOLING_STOP_DELTA,
+                    default=defaults.get(CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA),
+                ): _temperature_delta_selector(),
+            }
+        ),
     }
 
 
@@ -892,14 +984,6 @@ def _temperature_aggregation_selector(
     *, include_metadata_policies: bool = False
 ) -> selector.SelectSelector:
     """Build a policy selector with weighted mean gated by metadata editing."""
-    labels = {
-        TemperatureAggregation.MEAN.value: "Mean",
-        TemperatureAggregation.MEDIAN.value: "Median",
-        TemperatureAggregation.MINIMUM.value: "Heating-oriented minimum",
-        TemperatureAggregation.MAXIMUM.value: "Cooling-oriented maximum",
-        TemperatureAggregation.DESIGNATED_REFERENCE.value: "Designated reference",
-        TemperatureAggregation.WEIGHTED_MEAN.value: "Weighted mean",
-    }
     user_selectable = [
         TemperatureAggregation.MEAN,
         TemperatureAggregation.MEDIAN,
@@ -912,11 +996,21 @@ def _temperature_aggregation_selector(
         )
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=policy.value, label=labels[policy.value])
-                for policy in user_selectable
-            ]
+            options=[policy.value for policy in user_selectable],
+            translation_key=CONF_TEMPERATURE_AGGREGATION,
         )
+    )
+
+
+def _sensor_policy_schema(zone_draft: Mapping[str, Any]) -> vol.Schema:
+    """Build the aggregation form offered after sensor metadata editing."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_TEMPERATURE_AGGREGATION,
+                default=_zone_temperature_aggregation_default(zone_draft),
+            ): _temperature_aggregation_selector(include_metadata_policies=True),
+        }
     )
 
 
@@ -933,15 +1027,15 @@ def _zone_schema(
     if not isinstance(thermostat_defaults, Mapping):
         thermostat_defaults = {}
     schema: dict[Any, Any] = {
-        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): str,
+        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): _name_selector(),
         (vol.Required if thermostat_kind == THERMOSTAT_KIND_HYDRONICUS else vol.Optional)(
             CONF_TEMPERATURE_SENSORS,
             default=_zone_temperature_sensor_defaults(defaults),
-        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+        ): _sensor_selector(SensorDeviceClass.TEMPERATURE, multiple=True),
         vol.Optional(
             CONF_HUMIDITY_SENSORS,
             default=_zone_humidity_sensor_defaults(defaults),
-        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+        ): _sensor_selector(SensorDeviceClass.HUMIDITY, multiple=True),
         vol.Required(
             CONF_TEMPERATURE_AGGREGATION,
             default=_zone_temperature_aggregation_default(defaults),
@@ -978,16 +1072,9 @@ def _thermostat_kind_schema(default: str = THERMOSTAT_KIND_HYDRONICUS) -> vol.Sc
         {
             vol.Optional(CONF_THERMOSTAT_KIND, default=default): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=[
-                        selector.SelectOptionDict(
-                            value=THERMOSTAT_KIND_HYDRONICUS,
-                            label="Hydronicus digital thermostat",
-                        ),
-                        selector.SelectOptionDict(
-                            value=THERMOSTAT_KIND_EXTERNAL_CLIMATE,
-                            label="Existing Home Assistant climate entity",
-                        ),
-                    ]
+                    options=[THERMOSTAT_KIND_HYDRONICUS, THERMOSTAT_KIND_EXTERNAL_CLIMATE],
+                    mode=selector.SelectSelectorMode.LIST,
+                    translation_key=CONF_THERMOSTAT_KIND,
                 )
             )
         },
@@ -1059,14 +1146,14 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             self._zone_draft,
             excluded_subentry_id=excluded_subentry_id,
         ):
-            return self.async_show_form(step_id="sensor_policy", errors={"base": error})
+            return self._sensor_policy_form(error)
         compiled = _effective_topology_compile(
             entry,
             proposed_zones=(self._zone_draft,),
             excluded_subentry_id=excluded_subentry_id,
         )
         if compiled is None:
-            return self.async_show_form(step_id="sensor_policy", errors={"base": "invalid_zone"})
+            return self._sensor_policy_form("invalid_zone")
         if compiled.warnings:
             self._zone_compiled = compiled
             return await self.async_step_review()
@@ -1079,10 +1166,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 self._zone_draft,
                 excluded_subentry_id=subentry.subentry_id,
             ):
-                return self.async_show_form(
-                    step_id="sensor_policy",
-                    errors={"base": "dry_run_shutdown_in_progress"},
-                )
+                return self._sensor_policy_form("dry_run_shutdown_in_progress")
             return self.async_update_and_abort(
                 entry,
                 subentry,
@@ -1095,10 +1179,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             SUBENTRY_TYPE_ZONE,
             self._zone_draft,
         ):
-            return self.async_show_form(
-                step_id="sensor_policy",
-                errors={"base": "dry_run_shutdown_in_progress"},
-            )
+            return self._sensor_policy_form("dry_run_shutdown_in_progress")
         return self.async_create_entry(
             title=self._zone_draft[CONF_NAME],
             data=_subentry_handle(self._zone_draft),
@@ -1141,16 +1222,37 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 CONF_TEMPERATURE_AGGREGATION
             ]
             return await self._finish_zone()
+        return self._sensor_policy_form()
+
+    def _sensor_policy_form(self, error: str | None = None) -> config_entries.SubentryFlowResult:
+        """Show the aggregation policy form, optionally with a retryable error."""
         return self.async_show_form(
             step_id="sensor_policy",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_TEMPERATURE_AGGREGATION,
-                        default=self._zone_draft[CONF_TEMPERATURE_AGGREGATION],
-                    ): _temperature_aggregation_selector(include_metadata_policies=True),
-                }
-            ),
+            data_schema=_sensor_policy_schema(self._zone_draft),
+            errors={"base": error} if error else None,
+        )
+
+    def _details_form(
+        self,
+        user_input: Mapping[str, Any],
+        kind: str,
+        *,
+        reconfigure: bool,
+        error: str,
+    ) -> config_entries.SubentryFlowResult:
+        """Re-show the Zone details form with the submitted values and an error."""
+        self._selected_thermostat_kind = kind
+        self._zone_reconfigure = reconfigure
+        defaults = (
+            subentry_draft(self._get_entry(), self._get_reconfigure_subentry())
+            if reconfigure
+            else None
+        )
+        schema = _zone_schema(self._circuit_options(), defaults, thermostat_kind=kind)
+        return self.async_show_form(
+            step_id="details",
+            data_schema=_with_submitted_values(self, schema, user_input),
+            errors={"base": error},
         )
 
     async def async_step_user(
@@ -1237,7 +1339,9 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and _external_thermostat_is_hydronicus_owned(
             self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
         ):
-            return self.async_show_form(step_id="details", errors={"base": "thermostat_loop"})
+            return self._details_form(
+                user_input, kind, reconfigure=reconfigure, error="thermostat_loop"
+            )
         if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
             self._zone_draft = data
             self._metadata_records = []
@@ -1247,8 +1351,8 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         if _requires_sensor_metadata_path(data) and (
             CONF_TEMPERATURE_SENSOR_METADATA not in user_input
         ):
-            return self.async_show_form(
-                step_id="details", errors={"base": "sensor_metadata_required"}
+            return self._details_form(
+                user_input, kind, reconfigure=reconfigure, error="sensor_metadata_required"
             )
         error = _zone_validation_error(
             entry,
@@ -1256,7 +1360,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             excluded_subentry_id=subentry.subentry_id if subentry is not None else None,
         )
         if error:
-            return self.async_show_form(step_id="details", errors={"base": error})
+            return self._details_form(user_input, kind, reconfigure=reconfigure, error=error)
         self._zone_draft = data
         self._zone_reconfigure = reconfigure
         return await self._finish_zone()
@@ -1320,6 +1424,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
 
 def _valve_actuator_data(user_input: Mapping[str, Any], actuator_id: str) -> dict[str, Any]:
     """Normalize one valve actuator payload for persistent subentry storage."""
+    user_input = _flatten_sections(user_input)
     data = {
         "id": actuator_id,
         CONF_ACTUATOR_KIND: ACTUATOR_KIND_VALVE,
@@ -1327,12 +1432,28 @@ def _valve_actuator_data(user_input: Mapping[str, Any], actuator_id: str) -> dic
         CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
         CONF_OPENING_TIME: user_input[CONF_OPENING_TIME],
         CONF_POSITION_FEEDBACK_ENTITY: user_input.get(CONF_POSITION_FEEDBACK_ENTITY),
-        CONF_POSITION_FEEDBACK_MAX_AGE: user_input.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0),
+        CONF_POSITION_FEEDBACK_MAX_AGE: user_input.get(
+            CONF_POSITION_FEEDBACK_MAX_AGE, _DEFAULT_FEEDBACK_MAX_AGE
+        ),
         CONF_CIRCUIT_IDS: user_input[CONF_CIRCUIT_IDS],
     }
     if user_input.get(CONF_VALVE_READINESS_ENTITY):
         data[CONF_VALVE_READINESS_ENTITY] = user_input[CONF_VALVE_READINESS_ENTITY]
     return data
+
+
+def _valve_feedback_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
+    """Return optional valve feedback fields shared by initial and actuator forms."""
+    return {
+        _optional_entity(CONF_VALVE_READINESS_ENTITY, defaults): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
+        ),
+        _optional_entity(CONF_POSITION_FEEDBACK_ENTITY, defaults): _sensor_selector(),
+        vol.Optional(
+            CONF_POSITION_FEEDBACK_MAX_AGE,
+            default=defaults.get(CONF_POSITION_FEEDBACK_MAX_AGE, _DEFAULT_FEEDBACK_MAX_AGE),
+        ): _max_age_selector(),
+    }
 
 
 def _valve_actuator_schema(
@@ -1343,27 +1464,16 @@ def _valve_actuator_schema(
     defaults = defaults or {}
     return vol.Schema(
         {
-            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): str,
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): _name_selector(),
             vol.Required(
                 CONF_ENTITY_ID, default=defaults.get(CONF_ENTITY_ID, vol.UNDEFINED)
             ): selector.EntitySelector(selector.EntitySelectorConfig(domain=["switch", "valve"])),
             vol.Required(
                 CONF_OPENING_TIME,
                 default=defaults.get(CONF_OPENING_TIME, DEFAULT_VALVE_OPENING_TIME),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_VALVE_READINESS_ENTITY,
-                default=defaults.get(CONF_VALVE_READINESS_ENTITY, vol.UNDEFINED),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
-            ),
-            vol.Optional(
-                CONF_POSITION_FEEDBACK_ENTITY,
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-            vol.Optional(
-                CONF_POSITION_FEEDBACK_MAX_AGE,
-                default=defaults.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            ): _seconds_selector(),
             vol.Required(
                 CONF_CIRCUIT_IDS,
                 default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
@@ -1373,6 +1483,7 @@ def _valve_actuator_schema(
                     multiple=True,
                 )
             ),
+            vol.Optional(SECTION_FEEDBACK): _collapsed_section(_valve_feedback_fields(defaults)),
         }
     )
 
@@ -1437,25 +1548,22 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
-                if not await _async_persist_subentry_graph(
+                if await _async_persist_subentry_graph(
                     self,
                     entry,
                     SUBENTRY_TYPE_ACTUATOR,
                     data,
                 ):
-                    errors["base"] = "dry_run_shutdown_in_progress"
-                    return self.async_show_form(
-                        step_id="user",
-                        data_schema=_valve_actuator_schema(circuit_options, user_input),
-                        errors=errors,
+                    return self.async_create_entry(
+                        title=data[CONF_NAME], data=_subentry_handle(data), unique_id=actuator_id
                     )
-                return self.async_create_entry(
-                    title=data[CONF_NAME], data=_subentry_handle(data), unique_id=actuator_id
-                )
+                errors["base"] = "dry_run_shutdown_in_progress"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_valve_actuator_schema(circuit_options),
+            data_schema=_with_submitted_values(
+                self, _valve_actuator_schema(circuit_options), user_input
+            ),
             errors=errors,
         )
 
@@ -1487,29 +1595,26 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 if compiled is not None and compiled.warnings:
                     self._draft_compiled = compiled
                     return await self.async_step_review()
-                if not await _async_persist_subentry_graph(
+                if await _async_persist_subentry_graph(
                     self,
                     entry,
                     SUBENTRY_TYPE_ACTUATOR,
                     data,
                     excluded_subentry_id=subentry.subentry_id,
                 ):
-                    errors["base"] = "dry_run_shutdown_in_progress"
-                    return self.async_show_form(
-                        step_id="reconfigure",
-                        data_schema=_valve_actuator_schema(circuit_options, defaults),
-                        errors=errors,
+                    return self.async_update_and_abort(
+                        entry,
+                        subentry,
+                        title=data[CONF_NAME],
+                        data=_subentry_handle(data),
                     )
-                return self.async_update_and_abort(
-                    entry,
-                    subentry,
-                    title=data[CONF_NAME],
-                    data=_subentry_handle(data),
-                )
+                errors["base"] = "dry_run_shutdown_in_progress"
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_valve_actuator_schema(circuit_options, defaults),
+            data_schema=_with_submitted_values(
+                self, _valve_actuator_schema(circuit_options, defaults), user_input
+            ),
             errors=errors,
         )
 
@@ -1570,12 +1675,55 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         )
 
 
+def _initial_circuit_schema() -> vol.Schema:
+    """Build the first circuit form, including its first valve and pump."""
+    no_defaults: Mapping[str, Any] = {}
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME): _name_selector(),
+            vol.Required(CONF_VALVE_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["switch", "valve"])
+            ),
+            vol.Required(CONF_PUMP_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="switch")
+            ),
+            vol.Required(
+                CONF_VALVE_OPENING_TIME, default=DEFAULT_VALVE_OPENING_TIME
+            ): _seconds_selector(),
+            vol.Required(CONF_PUMP_OVERRUN, default=DEFAULT_PUMP_OVERRUN): _seconds_selector(),
+            vol.Optional(SECTION_FEEDBACK): _collapsed_section(
+                {
+                    **_valve_feedback_fields(no_defaults),
+                    vol.Optional(CONF_POWER_FEEDBACK_ENTITY): _sensor_selector(),
+                    vol.Optional(
+                        CONF_POWER_FEEDBACK_MAX_AGE, default=_DEFAULT_FEEDBACK_MAX_AGE
+                    ): _max_age_selector(),
+                    vol.Optional(CONF_FLOW_FEEDBACK_ENTITY): _sensor_selector(),
+                    vol.Optional(
+                        CONF_FLOW_FEEDBACK_MAX_AGE, default=_DEFAULT_FEEDBACK_MAX_AGE
+                    ): _max_age_selector(),
+                    vol.Optional(CONF_FAULT_FEEDBACK_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
+                    ),
+                    vol.Optional(
+                        CONF_FAULT_FEEDBACK_MAX_AGE, default=_DEFAULT_FEEDBACK_MAX_AGE
+                    ): _max_age_selector(),
+                }
+            ),
+            vol.Optional(SECTION_COOLING): _collapsed_section(
+                _cooling_reference_fields(no_defaults)
+            ),
+        }
+    )
+
+
 def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any]:
     """Normalize one source subentry into stable persisted configuration."""
     return {
         "id": source_id,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_SOURCE_TYPE: str(user_input.get(CONF_SOURCE_TYPE, SOURCE_KIND_EXTERNAL)),
+        # The number selector returns a float; the priority has always been stored as int.
         CONF_SOURCE_PRIORITY: int(user_input.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY)),
         CONF_SOURCE_AVAILABILITY_ENTITY: user_input.get(CONF_SOURCE_AVAILABILITY_ENTITY),
         CONF_SOURCE_DEMAND_ENTITY: user_input.get(CONF_SOURCE_DEMAND_ENTITY),
@@ -1593,61 +1741,49 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
     return vol.Schema(
         {
-            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): str,
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): _name_selector(),
             vol.Required(
                 CONF_SOURCE_TYPE,
                 default=defaults.get(CONF_SOURCE_TYPE, SOURCE_KIND_EXTERNAL),
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=[
-                        selector.SelectOptionDict(
-                            value=SOURCE_KIND_EXTERNAL, label="External source"
-                        ),
-                        selector.SelectOptionDict(
-                            value=SOURCE_KIND_BUFFER,
-                            label="Temperature-qualified buffer",
-                        ),
-                    ]
+                    options=[SOURCE_KIND_EXTERNAL, SOURCE_KIND_BUFFER],
+                    mode=selector.SelectSelectorMode.LIST,
+                    translation_key=CONF_SOURCE_TYPE,
                 )
             ),
             vol.Required(
                 CONF_SOURCE_PRIORITY,
                 default=defaults.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY),
-            ): vol.All(vol.Coerce(int), vol.Range(min=0)),
-            vol.Optional(
-                CONF_SOURCE_AVAILABILITY_ENTITY,
-                default=defaults.get(CONF_SOURCE_AVAILABILITY_ENTITY),
-            ): vol.Maybe(
+            ): _number(step=1, minimum=0),
+            # vol.Maybe keeps accepting an explicit None, which clears a binding.
+            _optional_entity(CONF_SOURCE_AVAILABILITY_ENTITY, defaults): vol.Maybe(
                 selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         domain=["binary_sensor", "input_boolean", "sensor"]
                     )
                 )
             ),
-            vol.Optional(
-                CONF_SOURCE_TEMPERATURE_ENTITY,
-                default=defaults.get(CONF_SOURCE_TEMPERATURE_ENTITY),
-            ): vol.Maybe(
-                selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            _optional_entity(CONF_SOURCE_TEMPERATURE_ENTITY, defaults): vol.Maybe(
+                _sensor_selector(SensorDeviceClass.TEMPERATURE)
             ),
-            vol.Optional(
-                CONF_SOURCE_DEMAND_ENTITY,
-                default=defaults.get(CONF_SOURCE_DEMAND_ENTITY),
-            ): vol.Maybe(
-                selector.EntitySelector(selector.EntitySelectorConfig(domain=["switch", "valve"])),
+            _optional_entity(CONF_SOURCE_DEMAND_ENTITY, defaults): vol.Maybe(
+                selector.EntitySelector(selector.EntitySelectorConfig(domain=["switch", "valve"]))
             ),
             vol.Required(
                 CONF_SOURCE_MINIMUM_TEMPERATURE,
                 default=defaults.get(CONF_SOURCE_MINIMUM_TEMPERATURE, 0.0),
-            ): vol.Coerce(float),
+            ): _number(step=0.1, unit=UnitOfTemperature.CELSIUS),
             vol.Required(
                 CONF_SOURCE_MAXIMUM_AGE,
                 default=defaults.get(CONF_SOURCE_MAXIMUM_AGE, DEFAULT_SOURCE_MAXIMUM_AGE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            ): _max_age_selector(),
             vol.Required(
                 CONF_SOURCE_HYSTERESIS,
                 default=defaults.get(CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            ): _temperature_delta_selector(),
         }
     )
 
@@ -1685,24 +1821,19 @@ class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             if error := _source_validation_error(entry, data):
                 errors["base"] = error
             else:
-                if not await _async_persist_subentry_graph(
+                if await _async_persist_subentry_graph(
                     self,
                     entry,
                     SUBENTRY_TYPE_SOURCE,
                     data,
                 ):
-                    errors["base"] = "dry_run_shutdown_in_progress"
-                    return self.async_show_form(
-                        step_id="user",
-                        data_schema=_source_schema(user_input),
-                        errors=errors,
+                    return self.async_create_entry(
+                        title=data[CONF_NAME], data=_subentry_handle(data), unique_id=source_id
                     )
-                return self.async_create_entry(
-                    title=data[CONF_NAME], data=_subentry_handle(data), unique_id=source_id
-                )
+                errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
             step_id="user",
-            data_schema=_source_schema(),
+            data_schema=_with_submitted_values(self, _source_schema(), user_input),
             errors=errors,
         )
 
@@ -1723,28 +1854,23 @@ class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             ):
                 errors["base"] = error
             else:
-                if not await _async_persist_subentry_graph(
+                if await _async_persist_subentry_graph(
                     self,
                     entry,
                     SUBENTRY_TYPE_SOURCE,
                     data,
                     excluded_subentry_id=subentry.subentry_id,
                 ):
-                    errors["base"] = "dry_run_shutdown_in_progress"
-                    return self.async_show_form(
-                        step_id="reconfigure",
-                        data_schema=_source_schema(defaults),
-                        errors=errors,
+                    return self.async_update_and_abort(
+                        entry,
+                        subentry,
+                        title=data[CONF_NAME],
+                        data=_subentry_handle(data),
                     )
-                return self.async_update_and_abort(
-                    entry,
-                    subentry,
-                    title=data[CONF_NAME],
-                    data=_subentry_handle(data),
-                )
+                errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_source_schema(defaults),
+            data_schema=_with_submitted_values(self, _source_schema(defaults), user_input),
             errors=errors,
         )
 
@@ -1778,7 +1904,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial setup step."""
         errors: dict[str, str] = {}
 
@@ -1796,15 +1922,19 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default=DEFAULT_PLANT_NAME): str,
+                vol.Required(CONF_NAME, default=DEFAULT_PLANT_NAME): _name_selector(),
                 vol.Optional(CONF_DRY_RUN, default=True): selector.BooleanSelector(),
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_with_submitted_values(self, schema, user_input),
+            errors=errors,
+        )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Change the Plant Dry run setting through Home Assistant reconfiguration."""
         entry = self._get_reconfigure_entry()
         current_dry_run = bool(entry.data.get(CONF_DRY_RUN, True))
@@ -1821,7 +1951,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
     async def async_step_dry_run_confirmation(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Confirm the exact heating outputs before leaving Dry run."""
         entry = self._get_reconfigure_entry()
         if user_input is not None:
@@ -1841,7 +1971,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
     async def _async_apply_dry_run(
         self, entry: config_entries.ConfigEntry, dry_run: bool
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Apply Dry run, completing any active heating shutdown first."""
         runtime = getattr(entry, "runtime_data", None)
         if runtime is not None:
@@ -1871,7 +2001,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
     async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Choose the first Zone's thermostat owner."""
         if user_input is None:
             return self.async_show_form(step_id="zone", data_schema=_thermostat_kind_schema())
@@ -1883,33 +2013,42 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
     async def async_step_zone_details(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Collect only fields owned by the selected initial thermostat kind."""
         if user_input is not None:
             return await self._async_process_initial_zone(
                 {**user_input, CONF_THERMOSTAT_KIND: self._selected_thermostat_kind},
                 self._selected_thermostat_kind,
             )
+        return self._zone_details_form(None, self._selected_thermostat_kind)
+
+    def _zone_details_form(
+        self,
+        user_input: Mapping[str, Any] | None,
+        kind: str,
+        *,
+        error: str | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Show the first Zone's details form, re-filled after a rejected submit."""
+        self._selected_thermostat_kind = kind
+        schema = _zone_schema([], thermostat_kind=kind, include_circuits=False)
         return self.async_show_form(
             step_id="zone_details",
-            data_schema=_zone_schema(
-                [],
-                thermostat_kind=self._selected_thermostat_kind,
-                include_circuits=False,
-            ),
+            data_schema=_with_submitted_values(self, schema, user_input),
+            errors={"base": error} if error else None,
         )
 
     async def _async_process_initial_zone(
         self, user_input: Mapping[str, Any], kind: str
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Normalize the first thermostat-specific Zone without adding a route yet."""
         name = str(user_input.get(CONF_NAME, "")).strip()
         if not name:
-            return self.async_show_form(step_id="zone_details", errors={"base": "name_required"})
+            return self._zone_details_form(user_input, kind, error="name_required")
         if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and _external_thermostat_is_hydronicus_owned(
             self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
         ):
-            return self.async_show_form(step_id="zone_details", errors={"base": "thermostat_loop"})
+            return self._zone_details_form(user_input, kind, error="thermostat_loop")
         draft = _zone_data(
             {
                 **user_input,
@@ -1929,15 +2068,13 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         if _requires_sensor_metadata_path(draft) and (
             CONF_TEMPERATURE_SENSOR_METADATA not in user_input
         ):
-            return self.async_show_form(
-                step_id="zone_details", errors={"base": "sensor_metadata_required"}
-            )
+            return self._zone_details_form(user_input, kind, error="sensor_metadata_required")
         self._draft[CONF_TOPOLOGY] = {CONF_ZONES: [draft]}
         return await self.async_step_circuit()
 
     async def async_step_sensor_metadata(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Edit initial sensor metadata through typed one-sensor forms."""
         sensor_ids = _zone_temperature_sensor_defaults(self._zone_draft)
         if user_input is not None:
@@ -1964,7 +2101,7 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
 
     async def async_step_sensor_policy(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Choose designated-reference or weighted aggregation after metadata editing."""
         if user_input is not None:
             self._zone_draft[CONF_TEMPERATURE_AGGREGATION] = user_input[
@@ -1974,26 +2111,20 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
             return await self.async_step_circuit()
         return self.async_show_form(
             step_id="sensor_policy",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_TEMPERATURE_AGGREGATION,
-                        default=self._zone_draft[CONF_TEMPERATURE_AGGREGATION],
-                    ): _temperature_aggregation_selector(include_metadata_policies=True),
-                }
-            ),
+            data_schema=_sensor_policy_schema(self._zone_draft),
         )
 
     async def async_step_circuit(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Collect the first hydraulic circuit and its Dry run equipment path."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            name = str(user_input[CONF_NAME]).strip()
+            fields = _flatten_sections(user_input)
+            name = str(fields[CONF_NAME]).strip()
             if not name:
                 errors["base"] = "name_required"
-            elif user_input[CONF_VALVE_ENTITY] == user_input[CONF_PUMP_ENTITY]:
+            elif fields[CONF_VALVE_ENTITY] == fields[CONF_PUMP_ENTITY]:
                 errors["base"] = "duplicate_actuator_entity"
             else:
                 circuit_id = str(uuid4())
@@ -2003,37 +2134,35 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                 valve_data = {
                     "id": valve_id,
                     CONF_NAME: f"{name} valve",
-                    CONF_ENTITY_ID: user_input[CONF_VALVE_ENTITY],
-                    CONF_OPENING_TIME: user_input[CONF_VALVE_OPENING_TIME],
+                    CONF_ENTITY_ID: fields[CONF_VALVE_ENTITY],
+                    CONF_OPENING_TIME: fields[CONF_VALVE_OPENING_TIME],
                 }
-                if user_input.get(CONF_VALVE_READINESS_ENTITY):
-                    valve_data[CONF_VALVE_READINESS_ENTITY] = user_input[
-                        CONF_VALVE_READINESS_ENTITY
-                    ]
-                valve_data[CONF_POSITION_FEEDBACK_ENTITY] = user_input.get(
+                if fields.get(CONF_VALVE_READINESS_ENTITY):
+                    valve_data[CONF_VALVE_READINESS_ENTITY] = fields[CONF_VALVE_READINESS_ENTITY]
+                valve_data[CONF_POSITION_FEEDBACK_ENTITY] = fields.get(
                     CONF_POSITION_FEEDBACK_ENTITY
                 )
-                valve_data[CONF_POSITION_FEEDBACK_MAX_AGE] = user_input.get(
-                    CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0
+                valve_data[CONF_POSITION_FEEDBACK_MAX_AGE] = fields.get(
+                    CONF_POSITION_FEEDBACK_MAX_AGE, _DEFAULT_FEEDBACK_MAX_AGE
                 )
                 self._draft[CONF_TOPOLOGY][CONF_VALVES] = [valve_data]
                 self._draft[CONF_TOPOLOGY][CONF_PUMPS] = [
                     {
                         "id": pump_id,
                         CONF_NAME: f"{name} pump",
-                        CONF_ENTITY_ID: user_input[CONF_PUMP_ENTITY],
-                        CONF_OVERRUN: user_input[CONF_PUMP_OVERRUN],
-                        CONF_POWER_FEEDBACK_ENTITY: user_input.get(CONF_POWER_FEEDBACK_ENTITY),
-                        CONF_POWER_FEEDBACK_MAX_AGE: user_input.get(
-                            CONF_POWER_FEEDBACK_MAX_AGE, 1800.0
+                        CONF_ENTITY_ID: fields[CONF_PUMP_ENTITY],
+                        CONF_OVERRUN: fields[CONF_PUMP_OVERRUN],
+                        CONF_POWER_FEEDBACK_ENTITY: fields.get(CONF_POWER_FEEDBACK_ENTITY),
+                        CONF_POWER_FEEDBACK_MAX_AGE: fields.get(
+                            CONF_POWER_FEEDBACK_MAX_AGE, _DEFAULT_FEEDBACK_MAX_AGE
                         ),
-                        CONF_FLOW_FEEDBACK_ENTITY: user_input.get(CONF_FLOW_FEEDBACK_ENTITY),
-                        CONF_FLOW_FEEDBACK_MAX_AGE: user_input.get(
-                            CONF_FLOW_FEEDBACK_MAX_AGE, 1800.0
+                        CONF_FLOW_FEEDBACK_ENTITY: fields.get(CONF_FLOW_FEEDBACK_ENTITY),
+                        CONF_FLOW_FEEDBACK_MAX_AGE: fields.get(
+                            CONF_FLOW_FEEDBACK_MAX_AGE, _DEFAULT_FEEDBACK_MAX_AGE
                         ),
-                        CONF_FAULT_FEEDBACK_ENTITY: user_input.get(CONF_FAULT_FEEDBACK_ENTITY),
-                        CONF_FAULT_FEEDBACK_MAX_AGE: user_input.get(
-                            CONF_FAULT_FEEDBACK_MAX_AGE, 1800.0
+                        CONF_FAULT_FEEDBACK_ENTITY: fields.get(CONF_FAULT_FEEDBACK_ENTITY),
+                        CONF_FAULT_FEEDBACK_MAX_AGE: fields.get(
+                            CONF_FAULT_FEEDBACK_MAX_AGE, _DEFAULT_FEEDBACK_MAX_AGE
                         ),
                     }
                 ]
@@ -2043,20 +2172,18 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                         CONF_NAME: name,
                         CONF_VALVE_IDS: [valve_id],
                         "pump_id": pump_id,
-                        CONF_COOLING_ENABLED: bool(user_input.get(CONF_COOLING_ENABLED, False)),
-                        CONF_SUPPLY_TEMPERATURE_SENSOR: user_input.get(
-                            CONF_SUPPLY_TEMPERATURE_SENSOR
-                        ),
-                        CONF_SURFACE_TEMPERATURE_SENSOR: user_input.get(
+                        CONF_COOLING_ENABLED: bool(fields.get(CONF_COOLING_ENABLED, False)),
+                        CONF_SUPPLY_TEMPERATURE_SENSOR: fields.get(CONF_SUPPLY_TEMPERATURE_SENSOR),
+                        CONF_SURFACE_TEMPERATURE_SENSOR: fields.get(
                             CONF_SURFACE_TEMPERATURE_SENSOR
                         ),
-                        CONF_CONDENSATION_MARGIN: user_input.get(
+                        CONF_CONDENSATION_MARGIN: fields.get(
                             CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN
                         ),
-                        CONF_SUPPLY_TEMPERATURE_MAX_AGE: user_input.get(
+                        CONF_SUPPLY_TEMPERATURE_MAX_AGE: fields.get(
                             CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
                         ),
-                        CONF_SURFACE_TEMPERATURE_MAX_AGE: user_input.get(
+                        CONF_SURFACE_TEMPERATURE_MAX_AGE: fields.get(
                             CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
                         ),
                     }
@@ -2067,72 +2194,13 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                 return await self.async_step_review()
         return self.async_show_form(
             step_id="circuit",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_NAME): str,
-                    vol.Required(CONF_VALVE_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["switch", "valve"])
-                    ),
-                    vol.Required(CONF_PUMP_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="switch")
-                    ),
-                    vol.Required(
-                        CONF_VALVE_OPENING_TIME, default=DEFAULT_VALVE_OPENING_TIME
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-                    vol.Optional(CONF_VALVE_READINESS_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
-                    ),
-                    vol.Required(CONF_PUMP_OVERRUN, default=DEFAULT_PUMP_OVERRUN): vol.All(
-                        vol.Coerce(float), vol.Range(min=0)
-                    ),
-                    vol.Optional(CONF_POSITION_FEEDBACK_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(CONF_POSITION_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
-                        vol.Coerce(float), vol.Range(min=0, min_included=False)
-                    ),
-                    vol.Optional(CONF_POWER_FEEDBACK_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(CONF_POWER_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
-                        vol.Coerce(float), vol.Range(min=0, min_included=False)
-                    ),
-                    vol.Optional(CONF_FLOW_FEEDBACK_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(CONF_FLOW_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
-                        vol.Coerce(float), vol.Range(min=0, min_included=False)
-                    ),
-                    vol.Optional(CONF_FAULT_FEEDBACK_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
-                    ),
-                    vol.Optional(CONF_FAULT_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
-                        vol.Coerce(float), vol.Range(min=0, min_included=False)
-                    ),
-                    vol.Optional(CONF_COOLING_ENABLED, default=False): selector.BooleanSelector(),
-                    vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(CONF_SURFACE_TEMPERATURE_SENSOR): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(
-                        CONF_CONDENSATION_MARGIN, default=DEFAULT_CONDENSATION_MARGIN
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-                    vol.Optional(
-                        CONF_SUPPLY_TEMPERATURE_MAX_AGE, default=DEFAULT_REFERENCE_MAX_AGE
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
-                    vol.Optional(
-                        CONF_SURFACE_TEMPERATURE_MAX_AGE, default=DEFAULT_REFERENCE_MAX_AGE
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
-                }
-            ),
+            data_schema=_with_submitted_values(self, _initial_circuit_schema(), user_input),
             errors=errors,
         )
 
     async def async_step_review(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Validate the initial topology before storing it in a config entry."""
         topology = self._draft[CONF_TOPOLOGY]
         try:

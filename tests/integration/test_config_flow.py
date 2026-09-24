@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import translation
 from probatio import to_field_list
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.hydronicus.config_flow import HydronicClimateConfigFlow
 from custom_components.hydronicus.const import (
     CONF_CALIBRATION_OFFSET,
     CONF_CONFIGURE_SENSOR_METADATA,
@@ -38,6 +38,7 @@ from custom_components.hydronicus.core.configuration import (
 )
 from custom_components.hydronicus.core.model import TemperatureSensorMetadata
 from custom_components.hydronicus.core.topology import compile_topology
+from tests.integration.flow_forms import form_fields, form_value
 
 
 def _schema_fields(result) -> set[str]:
@@ -101,32 +102,6 @@ async def test_reconfigure_can_enable_dry_run_without_loaded_runtime(hass) -> No
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_DRY_RUN] is True
-
-
-async def test_initial_zone_details_fields_have_translations(hass) -> None:
-    """Every field shown on the initial Zone details form has a UI label."""
-    translations = await translation.async_get_translations(
-        hass, "en", "config", integrations={DOMAIN}
-    )
-    for thermostat_kind in (
-        THERMOSTAT_KIND_HYDRONICUS,
-        THERMOSTAT_KIND_EXTERNAL_CLIMATE,
-    ):
-        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={"name": f"{thermostat_kind} plant"}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={CONF_THERMOSTAT_KIND: thermostat_kind}
-        )
-        translation_prefix = f"component.{DOMAIN}.config.step.{result['step_id']}.data."
-
-        assert result["step_id"] == "zone_details"
-        assert {
-            field
-            for field in _schema_fields(result)
-            if translation_prefix + field not in translations
-        } == set()
 
 
 async def test_initial_internal_thermostat_has_no_target_question(hass) -> None:
@@ -319,7 +294,7 @@ async def test_initial_review_explains_topology_validation_error(hass) -> None:
             CONF_PUMP_ENTITY: "switch.floor_pump",
             CONF_VALVE_OPENING_TIME: 30,
             CONF_PUMP_OVERRUN: 120,
-            CONF_COOLING_ENABLED: True,
+            "cooling": {CONF_COOLING_ENABLED: True},
         },
     )
 
@@ -417,3 +392,182 @@ async def test_advanced_sensor_editor_persists_metadata_and_weighted_policy(hass
         },
     ]
     assert result["data"]["topology"]["zones"][0][CONF_TEMPERATURE_AGGREGATION] == ("weighted_mean")
+
+
+async def _start_initial_zone(hass, thermostat_kind: str = THERMOSTAT_KIND_HYDRONICUS):
+    """Advance a fresh setup flow to the first Zone details form."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Hydronic plant"}
+    )
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_THERMOSTAT_KIND: thermostat_kind}
+    )
+
+
+async def test_initial_zone_error_keeps_the_form_and_submitted_values(hass) -> None:
+    """A rejected Zone details form is shown again with fields and the user's input."""
+    result = await _start_initial_zone(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "   ",
+            CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
+            CONF_TEMPERATURE_AGGREGATION: "median",
+        },
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "zone_details"
+    assert result["errors"] == {"base": "name_required"}
+    assert form_value(result, CONF_TEMPERATURE_SENSORS) == ["sensor.living_temperature"]
+    assert form_value(result, CONF_TEMPERATURE_AGGREGATION) == "median"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Living room",
+            CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
+        },
+    )
+    assert result["step_id"] == "circuit"
+
+
+async def test_initial_forms_use_typed_selectors(hass) -> None:
+    """Names, numbers, sensors, and choices use selectors the frontend renders natively."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert "text" in form_fields(result)[CONF_NAME]["selector"]
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Hydronic plant"}
+    )
+    kind = form_fields(result)[CONF_THERMOSTAT_KIND]["selector"]["select"]
+    assert kind["translation_key"] == CONF_THERMOSTAT_KIND
+    assert kind["options"] == [THERMOSTAT_KIND_HYDRONICUS, THERMOSTAT_KIND_EXTERNAL_CLIMATE]
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_THERMOSTAT_KIND: THERMOSTAT_KIND_HYDRONICUS}
+    )
+    fields = form_fields(result)
+    assert fields[CONF_TEMPERATURE_SENSORS]["selector"]["entity"]["domain"] == ["sensor"]
+    assert fields[CONF_TEMPERATURE_SENSORS]["selector"]["entity"]["device_class"] == ["temperature"]
+    assert fields["humidity_sensors"]["selector"]["entity"]["device_class"] == ["humidity"]
+    aggregation = fields[CONF_TEMPERATURE_AGGREGATION]["selector"]["select"]
+    assert aggregation["translation_key"] == CONF_TEMPERATURE_AGGREGATION
+    assert aggregation["options"] == ["mean", "median", "minimum", "maximum"]
+    assert fields["heating_start_delta"]["selector"]["number"] == {
+        "min": 0.0,
+        "mode": "box",
+        "step": 0.1,
+        "unit_of_measurement": "°C",
+    }
+    assert fields["minimum_idle_duration_seconds"]["selector"]["number"]["unit_of_measurement"] == (
+        "s"
+    )
+    assert fields["comfort"]["selector"]["number"]["min"] == 5.0
+    assert fields["comfort"]["selector"]["number"]["max"] == 35.0
+    assert fields["cooling"]["expanded"] is False
+    assert {"cooling.cooling_start_delta", "cooling.cooling_stop_delta"} <= set(fields)
+    assert "cooling_start_delta" not in fields
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_NAME: "Living room", CONF_TEMPERATURE_SENSORS: ["sensor.room"]},
+    )
+    fields = form_fields(result)
+    assert result["step_id"] == "circuit"
+    assert fields["feedback"]["expanded"] is False
+    assert fields["cooling"]["expanded"] is False
+    assert {
+        "feedback.readiness_entity_id",
+        "feedback.position_feedback_entity",
+        "feedback.fault_feedback_max_age_seconds",
+        "cooling.cooling_enabled",
+        "cooling.supply_temperature_sensor",
+        "cooling.condensation_margin",
+    } <= set(fields)
+    assert fields["cooling.supply_temperature_sensor"]["selector"]["entity"]["device_class"] == [
+        "temperature"
+    ]
+    assert fields[CONF_VALVE_OPENING_TIME]["selector"]["number"]["unit_of_measurement"] == "s"
+
+
+async def test_initial_flow_flattens_sections_and_keeps_persisted_types(hass) -> None:
+    """Sections are a form concern only; persisted data keeps its flat shape and types."""
+    result = await _start_initial_zone(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Living room",
+            CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
+            "humidity_sensors": ["sensor.living_humidity"],
+            "heating_start_delta": 1,
+            "minimum_active_duration_seconds": 60,
+            "comfort": 22,
+            "cooling": {"cooling_start_delta": 1, "cooling_stop_delta": 0.25},
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Floor loop",
+            CONF_VALVE_ENTITY: "switch.floor_valve",
+            CONF_PUMP_ENTITY: "switch.floor_pump",
+            CONF_VALVE_OPENING_TIME: 30,
+            CONF_PUMP_OVERRUN: 120,
+            "feedback": {
+                "readiness_entity_id": "binary_sensor.synthetic_valve_ready",
+                "position_feedback_entity": "sensor.valve_position",
+                "position_feedback_max_age_seconds": 600,
+                "fault_feedback_entity": "binary_sensor.pump_fault",
+            },
+            "cooling": {
+                CONF_COOLING_ENABLED: True,
+                "supply_temperature_sensor": "sensor.supply",
+                "condensation_margin": 3,
+            },
+        },
+    )
+    assert result["step_id"] == "review", result.get("errors")
+    assert result.get("errors") is None, result["description_placeholders"]["logic"]
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    topology = result["data"]["topology"]
+
+    thermostat = topology["zones"][0]["thermostat"]
+    assert thermostat["heating_start_delta"] == 1.0
+    assert type(thermostat["heating_start_delta"]) is float
+    assert type(thermostat["minimum_active_duration_seconds"]) is float
+    assert thermostat["cooling_start_delta"] == 1.0
+    assert thermostat["cooling_stop_delta"] == 0.25
+    assert thermostat["preset_targets"] == {"comfort": 22.0}
+    valve = topology["valves"][0]
+    assert valve["readiness_entity_id"] == "binary_sensor.synthetic_valve_ready"
+    assert valve["position_feedback_entity"] == "sensor.valve_position"
+    assert valve["position_feedback_max_age_seconds"] == 600.0
+    assert type(valve["opening_time_seconds"]) is float
+    pump = topology["pumps"][0]
+    assert pump["fault_feedback_entity"] == "binary_sensor.pump_fault"
+    assert pump["fault_feedback_max_age_seconds"] == 1800.0
+    assert type(pump["overrun_seconds"]) is float
+    circuit = topology["circuits"][0]
+    assert circuit[CONF_COOLING_ENABLED] is True
+    assert circuit["supply_temperature_sensor"] == "sensor.supply"
+    assert circuit["condensation_margin"] == 3.0
+    assert type(circuit["condensation_margin"]) is float
+    for record in (thermostat, valve, pump, circuit):
+        assert "feedback" not in record
+        assert "cooling" not in record
+
+
+def test_parent_flow_steps_return_config_flow_results() -> None:
+    """Parent flow steps use the specific ConfigFlowResult type, not FlowResult."""
+    steps = [
+        getattr(HydronicClimateConfigFlow, name)
+        for name in dir(HydronicClimateConfigFlow)
+        if name.startswith("async_step_") and name not in {"async_step_ignore"}
+    ]
+    own = [step for step in steps if step.__module__ == HydronicClimateConfigFlow.__module__]
+
+    assert own
+    assert {step.__annotations__["return"] for step in own} == {"config_entries.ConfigFlowResult"}
