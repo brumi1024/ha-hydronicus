@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from probatio import to_field_list
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -285,3 +287,51 @@ async def test_source_form_selectors_and_persisted_types(hass) -> None:
     assert result["reason"] == "reconfigure_successful"
     assert subentry_draft(entry, subentry) == created
     assert type(subentry_draft(entry, subentry)[CONF_SOURCE_PRIORITY]) is int
+
+
+async def test_buffer_without_temperature_entity_is_explained(hass) -> None:
+    """A buffer source without a temperature entity gets a field error on that picker."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Buffer", CONF_SOURCE_TYPE: "temperature_qualified_buffer"},
+    )
+
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_SOURCE_TEMPERATURE_ENTITY: "buffer_temperature_required"}
+    assert not entry.subentries
+
+
+async def test_source_pickers_hide_and_reject_hydronicus_entities(hass) -> None:
+    """Availability and temperature pickers hide Hydronicus entities, and submit rejects one."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    registry = er.async_get(hass)
+    own = {item.entity_id for item in er.async_entries_for_config_entry(registry, entry.entry_id)}
+    assert "binary_sensor.hydronic_plant_dry_run" in own
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    for field in (CONF_SOURCE_AVAILABILITY_ENTITY, CONF_SOURCE_TEMPERATURE_ENTITY):
+        assert own <= set(fields[field]["selector"]["entity"]["exclude_entities"]), field
+
+    # The first form has no stored value, so the hidden entity also fails schema validation.
+    with pytest.raises(InvalidData):
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            {
+                "name": "Boiler",
+                CONF_SOURCE_AVAILABILITY_ENTITY: "binary_sensor.hydronic_plant_dry_run",
+            },
+        )

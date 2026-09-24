@@ -271,7 +271,7 @@ async def test_add_rejects_duplicate_binding_without_mutating_entry(hass) -> Non
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "invalid_actuator"}
+    assert result["errors"] == {CONF_ENTITY_ID: "actuator_entity_in_use"}
     assert not entry.subentries
     assert entry.runtime_data is initial_runtime
 
@@ -316,7 +316,7 @@ async def test_reconfigure_rejects_duplicate_binding_without_mutating_entry(hass
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "reconfigure"
-    assert result["errors"] == {"base": "invalid_actuator"}
+    assert result["errors"] == {CONF_ENTITY_ID: "actuator_entity_in_use"}
     assert dict(subentry.data) == original_data
     assert entry.runtime_data is runtime_after_add
     assert hass.states.get(entity_id) is not None

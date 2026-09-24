@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from homeassistant import config_entries
 from homeassistant.components.repairs import DOMAIN as REPAIRS_DOMAIN
 from homeassistant.data_entry_flow import FlowResultType
@@ -455,3 +458,33 @@ async def test_circuit_subentry_sensor_repair_opens_circuit_reconfigure_flow(has
     assert subentry_flow["handler"] == (entry.entry_id, SUBENTRY_TYPE_CIRCUIT)
     assert subentry_flow["context"]["subentry_id"] == subentry.subentry_id
     assert subentry_flow["step_id"] == "reconfigure"
+
+
+def test_binding_repair_titles_fit_on_one_header_line() -> None:
+    """Repair titles stay short enough not to wrap in the Home Assistant dialog header.
+
+    The object type and binding details belong in the description, which stays actionable.
+    """
+    strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
+    issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
+    placeholders = {
+        "object_type": "valve",
+        "object_name": "Living valve",
+        "binding_label": "valve readiness feedback",
+    }
+    binding_keys = [key for key in issues if key.startswith("missing_")]
+    assert len(binding_keys) == 8
+    for key in binding_keys:
+        issue = issues[key]
+        titles = [issue["title"]]
+        if "fix_flow" in issue:
+            confirm = issue["fix_flow"]["step"]["confirm"]
+            titles.append(confirm["title"])
+            description = confirm["description"]
+        else:
+            description = issue["description"]
+        for title in titles:
+            assert "{object_name}" in title, key
+            assert len(title.format(**placeholders)) <= 36, (key, title)
+        assert "{object_type} {object_name}" in description, key
+        assert "{binding_label}" in description or "thermostat" in key, key

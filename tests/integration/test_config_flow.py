@@ -37,7 +37,7 @@ from custom_components.hydronicus.core.configuration import (
     plant_configuration_from_entry_data,
 )
 from custom_components.hydronicus.core.model import TemperatureSensorMetadata
-from custom_components.hydronicus.core.topology import compile_topology
+from custom_components.hydronicus.core.topology import TopologyValidationError, compile_topology
 from tests.integration.flow_forms import form_fields, form_value
 
 
@@ -271,8 +271,26 @@ async def test_initial_circuit_rejects_duplicate_actuator_entity(hass) -> None:
     assert result["errors"] == {"base": "duplicate_actuator_entity"}
 
 
-async def test_initial_review_explains_topology_validation_error(hass) -> None:
-    """The review should expose the compiler reason for other invalid topology."""
+async def test_initial_review_explains_topology_validation_error(hass, monkeypatch) -> None:
+    """The review should expose the compiler reason for any otherwise unexplained rejection."""
+
+    def reject(configuration):
+        raise TopologyValidationError("Synthetic compiler reason.")
+
+    monkeypatch.setattr("custom_components.hydronicus.config_flow.compile_topology", reject)
+    result = await _start_first_circuit(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=_FIRST_CIRCUIT
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "review"
+    assert result["errors"] == {"base": "invalid_topology"}
+    assert "Synthetic compiler reason." in result["description_placeholders"]["logic"]
+
+
+async def test_initial_sensor_policy_explains_designated_reference_count(hass) -> None:
+    """Two designated references are rejected on the policy form instead of at the review."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={"name": "Hydronic plant"}
@@ -281,30 +299,79 @@ async def test_initial_review_explains_topology_validation_error(hass) -> None:
         result["flow_id"],
         user_input={
             "name": "Living room",
-            CONF_TARGET_TEMPERATURE: 21.5,
-            CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
-            CONF_TEMPERATURE_AGGREGATION: "median",
+            CONF_TEMPERATURE_SENSORS: ["sensor.living_a", "sensor.living_b"],
+            CONF_CONFIGURE_SENSOR_METADATA: True,
         },
     )
+    for sensor_id in ("sensor.living_a", "sensor.living_b"):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CONF_SENSOR_ENTITY: sensor_id, CONF_DESIGNATED_REFERENCE: True},
+        )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_TEMPERATURE_AGGREGATION: "mean"}
+    )
+
+    assert result["step_id"] == "sensor_policy"
+    assert result["errors"] == {"base": "designated_reference_count"}
+
+
+_FIRST_CIRCUIT = {
+    "name": "Floor loop",
+    CONF_VALVE_ENTITY: "switch.floor_valve",
+    CONF_PUMP_ENTITY: "switch.floor_pump",
+    CONF_VALVE_OPENING_TIME: 30,
+    CONF_PUMP_OVERRUN: 120,
+}
+
+
+async def _start_first_circuit(hass):
+    """Advance a fresh setup flow past a zone without humidity sensors."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Hydronic plant"}
+    )
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"name": "Living room", CONF_TEMPERATURE_SENSORS: ["sensor.living"]},
+    )
+
+
+async def test_initial_circuit_explains_missing_cooling_reference(hass) -> None:
+    """Cooling without a reference is rejected on the circuit form, where it can be fixed."""
+    result = await _start_first_circuit(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={**_FIRST_CIRCUIT, "cooling": {CONF_COOLING_ENABLED: True}},
+    )
+
+    assert result["step_id"] == "circuit"
+    assert result["errors"] == {"base": "cooling_reference_required"}
+    assert form_value(result, "cooling.cooling_enabled") is True
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=_FIRST_CIRCUIT
+    )
+    assert result["step_id"] == "review"
+    assert not result["errors"]
+
+
+async def test_initial_circuit_explains_missing_zone_humidity_for_cooling(hass) -> None:
+    """Cooling for a first zone without humidity sensors is explained on the circuit form."""
+    result = await _start_first_circuit(hass)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
-            "name": "Floor loop",
-            CONF_VALVE_ENTITY: "switch.floor_valve",
-            CONF_PUMP_ENTITY: "switch.floor_pump",
-            CONF_VALVE_OPENING_TIME: 30,
-            CONF_PUMP_OVERRUN: 120,
-            "cooling": {CONF_COOLING_ENABLED: True},
+            **_FIRST_CIRCUIT,
+            "cooling": {
+                CONF_COOLING_ENABLED: True,
+                "supply_temperature_sensor": "sensor.floor_supply",
+            },
         },
     )
 
-    assert result["type"] == FlowResultType.FORM
-    assert result["step_id"] == "review"
-    assert result["errors"] == {"base": "invalid_topology"}
-    assert (
-        "requires a supply or surface temperature reference"
-        in result["description_placeholders"]["logic"]
-    )
+    assert result["step_id"] == "circuit"
+    assert result["errors"] == {"base": "cooling_requires_zone_observations"}
 
 
 async def test_advanced_sensor_editor_persists_metadata_and_weighted_policy(hass) -> None:

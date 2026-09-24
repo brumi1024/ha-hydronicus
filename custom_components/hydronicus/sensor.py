@@ -390,6 +390,7 @@ class SourceDwellSensor(_HydronicSensor):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.DURATION
     _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_display_precision = 0
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         super().__init__(entry)

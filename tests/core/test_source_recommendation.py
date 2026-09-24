@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from hydronicus_core.configuration import (
+    BufferTemperatureRequiredError,
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
@@ -160,6 +161,27 @@ def test_rejects_invalid_stored_source_configuration() -> None:
                 },
             }
         )
+
+
+def test_stored_buffer_without_temperature_names_the_source() -> None:
+    """Flows explain a buffer without a temperature entity from the structured error."""
+    with pytest.raises(BufferTemperatureRequiredError, match="requires a temperature") as error:
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": STORED_PLANT_ID,
+                "topology": {
+                    "sources": [
+                        {
+                            "id": STORED_BUFFER_ID,
+                            "name": "Buffer",
+                            "source_type": "temperature_qualified_buffer",
+                        }
+                    ]
+                },
+            }
+        )
+    assert error.value.source_id == STORED_BUFFER_ID
+    assert isinstance(error.value, StoredTopologyError)
 
 
 @pytest.mark.parametrize(

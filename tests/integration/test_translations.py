@@ -227,7 +227,16 @@ class _Resolver:
     def _bindings(function: ast.AST, name: str) -> Iterator[ast.expr | None]:
         for child in ast.walk(function):
             if isinstance(child, ast.Assign):
-                if any(isinstance(t, ast.Name) and t.id == name for t in child.targets):
+                # errors[field] = "key" also adds a value to a mapping bound to the name.
+                if any(
+                    (isinstance(t, ast.Name) and t.id == name)
+                    or (
+                        isinstance(t, ast.Subscript)
+                        and isinstance(t.value, ast.Name)
+                        and t.value.id == name
+                    )
+                    for t in child.targets
+                ):
                     yield child.value
             elif isinstance(child, ast.AnnAssign | ast.NamedExpr):
                 target = child.target
@@ -400,6 +409,16 @@ def _discover() -> _Discovery:
                             paths.add((f"step.{step}", node))
                     if (errors := _keyword(node, "errors")) is not None:
                         for error in keys(module, errors):
+                            paths.add((f"error.{error}", node))
+                    # errors.update(helper(...)) merges the errors a helper returns.
+                    if (
+                        name == "update"
+                        and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "errors"
+                        and node.args
+                    ):
+                        for error in keys(module, node.args[0]):
                             paths.add((f"error.{error}", node))
                     if name == "async_abort" and (reason := _keyword(node, "reason")):
                         for abort in keys(module, reason):
@@ -823,8 +842,13 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
         SUBENTRY_TYPE_ZONE,
         zone,
         [
-            {"thermostat_kind": "external_climate"},
-            {**office, "external_climate_entity": "climate.hydronic_plant_living_room"},
+            # The picker hides Hydronicus climates, so the loop is submitted with the
+            # thermostat kind, which the backend still rejects.
+            {
+                "thermostat_kind": "external_climate",
+                **office,
+                "external_climate_entity": "climate.hydronic_plant_living_room",
+            },
             {**office, "external_climate_entity": "climate.office"},
             confirm,
         ],

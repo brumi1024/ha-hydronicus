@@ -207,7 +207,11 @@
       "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
       "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation.",
       "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
-      "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls."
+      "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls.",
+      "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+      "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
+      "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in the zone this circuit serves. Turn cooling off, or restart setup and add a humidity sensor to the zone.",
+      "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed."
     },
     "abort": {
       "already_configured": "This plant is already configured.",
@@ -303,7 +307,9 @@
         "invalid_actuator": "The actuator cannot be attached to this topology.",
         "circuits_required": "Select at least one circuit.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes."
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity."
       },
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding an actuator.",
@@ -411,7 +417,10 @@
         "zones_required": "Select at least one zone.",
         "valves_required": "Select at least one valve.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes."
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
+        "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every zone this circuit serves. Add them to those zones first, or turn cooling off."
       },
       "abort": {
         "incomplete_plant": "The plant needs at least one zone, valve, and pump before adding a circuit.",
@@ -545,7 +554,11 @@
         "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
         "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes."
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "humidity_required_for_cooling": "Circuits with cooling need at least one humidity sensor in each zone they serve.",
+        "temperature_required_for_cooling": "Circuits with cooling need at least one temperature sensor in each zone they serve, even when an existing thermostat owns the zone.",
+        "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed."
       },
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding a zone.",
@@ -616,7 +629,9 @@
       "error": {
         "name_required": "A source name is required.",
         "invalid_source": "The source configuration is not valid.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes."
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "buffer_temperature_required": "A temperature-qualified buffer needs a temperature entity."
       },
       "abort": {
         "already_configured": "This object is already configured.",
@@ -798,15 +813,15 @@
   },
   "issues": {
     "missing_sensor_binding": {
-      "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
+      "title": "Missing sensor for {object_name}",
       "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_sensor_binding_fixable": {
-      "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
+      "title": "Missing sensor for {object_name}",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
+            "title": "Missing sensor for {object_name}",
             "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. Select Submit to open the configuration of {object_type} {object_name}, choose the current sensor, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
           }
         },
@@ -817,15 +832,15 @@
       }
     },
     "missing_feedback_binding": {
-      "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
+      "title": "Missing feedback for {object_name}",
       "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the feedback entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_feedback_binding_fixable": {
-      "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
+      "title": "Missing feedback for {object_name}",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
+            "title": "Missing feedback for {object_name}",
             "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Select Submit to open the configuration of {object_type} {object_name}, choose the current feedback entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
           }
         },
@@ -836,15 +851,15 @@
       }
     },
     "missing_actuator_binding": {
-      "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
+      "title": "Missing actuator for {object_name}",
       "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the actuator: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_actuator_binding_fixable": {
-      "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
+      "title": "Missing actuator for {object_name}",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
+            "title": "Missing actuator for {object_name}",
             "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Select Submit to open the configuration of {object_type} {object_name}, choose the current actuator, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
           }
         },
@@ -855,15 +870,15 @@
       }
     },
     "missing_thermostat_binding": {
-      "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
+      "title": "Missing thermostat for {object_name}",
       "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the climate entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_thermostat_binding_fixable": {
-      "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
+      "title": "Missing thermostat for {object_name}",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
+            "title": "Missing thermostat for {object_name}",
             "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Select Submit to open the configuration of {object_type} {object_name}, choose the current climate entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
           }
         },

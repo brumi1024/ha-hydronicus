@@ -545,6 +545,13 @@ async def test_temperature_sensors_suggest_one_decimal(hass) -> None:
         assert options["suggested_display_precision"] == 1, entity_id
 
 
+async def test_source_dwell_suggests_whole_seconds(hass) -> None:
+    """The dwell countdown displays whole seconds instead of "0.00 s"."""
+    await _setup(hass)
+    options = er.async_get(hass).async_get("sensor.hydronic_plant_source_dwell").options
+    assert options["sensor"]["suggested_display_precision"] == 0
+
+
 ENUM_SENSORS = {
     "sensor.hydronic_plant_operating_mode": "operating_mode",
     "sensor.hydronic_plant_controller_status": "controller_status",

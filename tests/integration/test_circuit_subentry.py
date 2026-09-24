@@ -7,6 +7,7 @@ from uuid import UUID
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
@@ -697,3 +698,69 @@ async def test_add_and_reconfigure_reject_empty_zone_and_valve_selections(hass) 
     assert result["errors"] == expected_errors
     assert form_value(result, CONF_ZONE_IDS) == []
     assert subentry_draft(entry, subentry) == stored_draft
+
+
+async def _submit_cooling_loop(hass, entry, cooling: dict[str, object]):
+    """Submit one new circuit with the given cooling section."""
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_NAME: "Cooling loop",
+            CONF_ZONE_IDS: [LIVING_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+            "cooling": cooling,
+        },
+    )
+
+
+async def test_cooling_without_reference_is_explained(hass) -> None:
+    """Cooling without a supply or surface reference names the missing reference."""
+    entry = _cooling_plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _submit_cooling_loop(hass, entry, {CONF_COOLING_ENABLED: True})
+
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cooling_reference_required"}
+    assert not entry.subentries
+
+
+async def test_cooling_for_zones_without_humidity_is_explained(hass) -> None:
+    """Cooling a zone that has no humidity sensor names the missing zone observation."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _submit_cooling_loop(
+        hass,
+        entry,
+        {CONF_COOLING_ENABLED: True, CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply"},
+    )
+
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cooling_requires_zone_observations"}
+    assert not entry.subentries
+
+
+async def test_cooling_reference_pickers_hide_hydronicus_entities(hass) -> None:
+    """Pickers inside the collapsed cooling section also hide Hydronicus entities."""
+    entry = _cooling_plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    registry = er.async_get(hass)
+    own = {item.entity_id for item in er.async_entries_for_config_entry(registry, entry.entry_id)}
+    assert "sensor.hydronic_plant_living_room_aggregate_temperature" in own
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    for field in ("cooling.supply_temperature_sensor", "cooling.surface_temperature_sensor"):
+        assert own <= set(fields[field]["selector"]["entity"]["exclude_entities"]), field
