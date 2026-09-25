@@ -26,6 +26,7 @@ from ..const import (
     CONF_DESIGNATED_REFERENCE,
     CONF_ENTITY_ID,
     CONF_EXTERNAL_CLIMATE_ENTITY,
+    CONF_HUMIDITY_SENSORS,
     CONF_MAX_AGE,
     CONF_NAME,
     CONF_OPENING_TIME,
@@ -51,8 +52,15 @@ from ..const import (
     THERMOSTAT_KIND_EXTERNAL_CLIMATE,
     THERMOSTAT_KIND_HYDRONICUS,
 )
+from ..core.configuration import DesignatedReferenceError
+from ..core.topology import (
+    CoolingObservationError,
+    CoolingReferenceError,
+    DuplicateActuatorBindingError,
+)
 from ..entry_configuration import EffectivePlant, RoomDraft
 from .common import (
+    SECTION_COOLING,
     is_hydronicus_owned,
     name_selector,
     own_entity_errors,
@@ -119,7 +127,7 @@ def room_form_schema(
 def room_form_defaults(draft: RoomDraft) -> dict[str, Any]:
     """Return the room basics form values of a stored room."""
     thermostat = draft.zone.get(CONF_THERMOSTAT, {})
-    private_loops = {_canonical(circuit["id"]) for circuit in draft.circuits}
+    private_loops = {canonical_id(circuit["id"]) for circuit in draft.circuits}
     defaults: dict[str, Any] = {
         CONF_NAME: draft.zone.get(CONF_NAME, ""),
         CONF_TEMPERATURE_SENSORS: sensor_entity_ids(
@@ -127,9 +135,9 @@ def room_form_defaults(draft: RoomDraft) -> dict[str, Any]:
         ),
         # A room routes only to its own loops and to Plant-owned loops.
         CONF_SHARED_LOOPS: [
-            _canonical(route["circuit_id"])
+            canonical_id(route["circuit_id"])
             for route in draft.routes
-            if _canonical(route["circuit_id"]) not in private_loops
+            if canonical_id(route["circuit_id"]) not in private_loops
         ],
     }
     if isinstance(thermostat, Mapping) and thermostat.get("kind") == (
@@ -206,16 +214,16 @@ def room_draft_from_form(
         zone = _updated_zone(existing.zone, name, sensors, external)
         circuits = deepcopy(existing.circuits)
         valves = deepcopy(existing.valves)
-        private = {_canonical(circuit["id"]) for circuit in circuits}
+        private = {canonical_id(circuit["id"]) for circuit in circuits}
         kept_routes = [
             deepcopy(route)
             for route in existing.routes
-            if _canonical(route["circuit_id"]) in private
+            if canonical_id(route["circuit_id"]) in private
         ]
         previous_shared = {
-            _canonical(route["circuit_id"]): route
+            canonical_id(route["circuit_id"]): route
             for route in existing.routes
-            if _canonical(route["circuit_id"]) not in private
+            if canonical_id(route["circuit_id"]) not in private
         }
     zone_id = str(zone["id"])
     routes = kept_routes
@@ -231,7 +239,7 @@ def room_draft_from_form(
         valves.extend(loop_valves)
         routes.insert(0, new_route(zone_id, circuit["id"]))
     for loop_id in dict.fromkeys(str(value) for value in user_input.get(CONF_SHARED_LOOPS) or ()):
-        previous = previous_shared.get(_canonical(loop_id))
+        previous = previous_shared.get(canonical_id(loop_id))
         routes.append(deepcopy(previous) if previous is not None else new_route(zone_id, loop_id))
     return RoomDraft(zone=zone, circuits=circuits, valves=valves, routes=routes)
 
@@ -387,16 +395,45 @@ def _updated_zone(
 def _pump_id(user_input: Mapping[str, Any], plant: EffectivePlant) -> str | None:
     """Return the chosen pump, or the Plant's only pump, which is implied."""
     pump_ids = {pump.id for pump in plant.configuration.pumps}
-    if (chosen := user_input.get(CONF_PUMP)) and _canonical(str(chosen)) in pump_ids:
-        return _canonical(str(chosen))
+    if (chosen := user_input.get(CONF_PUMP)) and canonical_id(str(chosen)) in pump_ids:
+        return canonical_id(str(chosen))
     if len(pump_ids) == 1:
         return next(iter(pump_ids))
     return None
 
 
-def _canonical(object_id: Any) -> str:
+def canonical_id(object_id: Any) -> str:
     """Return a stored id in the canonical UUID form the core decoder uses."""
     try:
         return str(UUID(str(object_id)))
     except ValueError:
         return str(object_id)
+
+
+def graph_errors(
+    error: Exception, draft: RoomDraft, fields: frozenset[str]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Map a rejected room edit to the field of the shown form that can fix it.
+
+    A field error for a field the form does not show is reported on the form.
+    """
+    zone_id = canonical_id(draft.zone["id"])
+    circuit_ids = {canonical_id(circuit["id"]) for circuit in draft.circuits}
+    valve_entities = {str(valve.get(CONF_ENTITY_ID)) for valve in draft.valves}
+
+    def on(field: str, key: str) -> tuple[dict[str, str], dict[str, str]]:
+        return {field if field in fields else "base": key}, {}
+
+    if isinstance(error, DuplicateActuatorBindingError) and valve_entities & set(error.entity_ids):
+        return on(CONF_VALVES, "actuator_entity_in_use")
+    if isinstance(error, CoolingReferenceError) and error.circuit_id in circuit_ids:
+        return {"base": "cooling_reference_required"}, {}
+    if isinstance(error, CoolingObservationError) and error.zone_id == zone_id:
+        if SECTION_COOLING in fields and error.circuit_id in circuit_ids:
+            return {"base": "cooling_requires_zone_observations"}, {}
+        if error.observation == "humidity":
+            return on(CONF_HUMIDITY_SENSORS, "humidity_required_for_cooling")
+        return on(CONF_TEMPERATURE_SENSORS, "temperature_required_for_cooling")
+    if isinstance(error, DesignatedReferenceError) and error.zone_id == zone_id:
+        return {"base": "designated_reference_count"}, {}
+    return {"base": "invalid_room"}, {"error": str(error)}

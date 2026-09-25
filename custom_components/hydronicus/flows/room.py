@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -42,7 +42,6 @@ from ..const import (
     CONF_SURFACE_TEMPERATURE_SENSOR,
     CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSOR_METADATA,
-    CONF_TEMPERATURE_SENSORS,
     CONF_THERMOSTAT,
     CONF_VALVE_IDS,
     CONF_VALVE_OPENING_TIME,
@@ -52,12 +51,6 @@ from ..const import (
     DEFAULT_REFERENCE_MAX_AGE,
     DEFAULT_VALVE_OPENING_TIME,
     THERMOSTAT_KIND_HYDRONICUS,
-)
-from ..core.configuration import DesignatedReferenceError
-from ..core.topology import (
-    CoolingObservationError,
-    CoolingReferenceError,
-    DuplicateActuatorBindingError,
 )
 from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
@@ -92,6 +85,8 @@ from .common import (
 )
 from .room_form import (
     CONF_PUMP,
+    canonical_id,
+    graph_errors,
     new_route,
     new_valves,
     pump_options,
@@ -135,13 +130,6 @@ _LOOP_COOLING_FIELDS = (
 )
 
 
-def _canonical(object_id: Any) -> str:
-    try:
-        return str(UUID(str(object_id)))
-    except ValueError:
-        return str(object_id)
-
-
 def _picked(schema: vol.Schema, keys: frozenset[str]) -> vol.Schema:
     """Keep only the named fields of a schema."""
     return vol.Schema({key: value for key, value in schema.schema.items() if str(key) in keys})
@@ -150,35 +138,6 @@ def _picked(schema: vol.Schema, keys: frozenset[str]) -> vol.Schema:
 def _is_hydronicus_thermostat(zone: Mapping[str, Any]) -> bool:
     thermostat = zone.get(CONF_THERMOSTAT)
     return isinstance(thermostat, Mapping) and thermostat.get("kind") == THERMOSTAT_KIND_HYDRONICUS
-
-
-def graph_errors(
-    error: Exception, draft: RoomDraft, fields: frozenset[str]
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Map a rejected room edit to the field of the shown form that can fix it.
-
-    A field error for a field the form does not show is reported on the form.
-    """
-    zone_id = _canonical(draft.zone["id"])
-    circuit_ids = {_canonical(circuit["id"]) for circuit in draft.circuits}
-    valve_entities = {str(valve.get(CONF_ENTITY_ID)) for valve in draft.valves}
-
-    def on(field: str, key: str) -> tuple[dict[str, str], dict[str, str]]:
-        return {field if field in fields else "base": key}, {}
-
-    if isinstance(error, DuplicateActuatorBindingError) and valve_entities & set(error.entity_ids):
-        return on(CONF_VALVES, "actuator_entity_in_use")
-    if isinstance(error, CoolingReferenceError) and error.circuit_id in circuit_ids:
-        return {"base": "cooling_reference_required"}, {}
-    if isinstance(error, CoolingObservationError) and error.zone_id == zone_id:
-        if SECTION_COOLING in fields and error.circuit_id in circuit_ids:
-            return {"base": "cooling_requires_zone_observations"}, {}
-        if error.observation == "humidity":
-            return on(CONF_HUMIDITY_SENSORS, "humidity_required_for_cooling")
-        return on(CONF_TEMPERATURE_SENSORS, "temperature_required_for_cooling")
-    if isinstance(error, DesignatedReferenceError) and error.zone_id == zone_id:
-        return {"base": "designated_reference_count"}, {}
-    return {"base": "invalid_room"}, {"error": str(error)}
 
 
 class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentryFlow):
@@ -537,7 +496,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         """Choose which private loop of the room to edit."""
         room = self._room()
         if user_input is not None:
-            self._loop_id = _canonical(user_input[CONF_LOOP])
+            self._loop_id = canonical_id(user_input[CONF_LOOP])
             return await self.async_step_loop()
         options = [
             selector.SelectOptionDict(value=str(circuit["id"]), label=str(circuit[CONF_NAME]))
@@ -553,19 +512,19 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     def _loop_schema(self, room: RoomDraft, plant: EffectivePlant) -> vol.Schema:
         """Build the loop form, prefilled from the loop being edited."""
         circuit = next(
-            (c for c in room.circuits if _canonical(c["id"]) == self._loop_id),
+            (c for c in room.circuits if canonical_id(c["id"]) == self._loop_id),
             None,
         )
-        private_valves = {_canonical(valve["id"]): valve for valve in room.valves}
+        private_valves = {canonical_id(valve["id"]): valve for valve in room.valves}
         defaults: dict[str, Any] = {}
         if circuit is not None:
-            valve_ids = [_canonical(valve_id) for valve_id in circuit[CONF_VALVE_IDS]]
+            valve_ids = [canonical_id(valve_id) for valve_id in circuit[CONF_VALVE_IDS]]
             loop_valves = [private_valves[vid] for vid in valve_ids if vid in private_valves]
             defaults = {
                 CONF_NAME: circuit[CONF_NAME],
                 CONF_VALVES: [str(valve[CONF_ENTITY_ID]) for valve in loop_valves],
                 CONF_SHARED_VALVES: [vid for vid in valve_ids if vid not in private_valves],
-                CONF_PUMP: _canonical(circuit[CONF_PUMP_ID]),
+                CONF_PUMP: canonical_id(circuit[CONF_PUMP_ID]),
                 CONF_VALVE_OPENING_TIME: (
                     loop_valves[0].get(CONF_OPENING_TIME, DEFAULT_VALVE_OPENING_TIME)
                     if loop_valves
@@ -630,8 +589,8 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         circuits = deepcopy(room.circuits)
         routes = deepcopy(room.routes)
         if fields.get(CONF_REMOVE_LOOP):
-            circuits = [c for c in circuits if _canonical(c["id"]) != self._loop_id]
-            routes = [r for r in routes if _canonical(r["circuit_id"]) != self._loop_id]
+            circuits = [c for c in circuits if canonical_id(c["id"]) != self._loop_id]
+            routes = [r for r in routes if canonical_id(r["circuit_id"]) != self._loop_id]
             return self._with_used_valves(room, circuits, routes, []), []
         name = str(fields[CONF_NAME]).strip()
         opening_time = fields.get(CONF_VALVE_OPENING_TIME, DEFAULT_VALVE_OPENING_TIME)
@@ -648,7 +607,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         for valve in loop_valves:
             valve[CONF_OPENING_TIME] = opening_time
         private_ids = [str(valve["id"]) for valve in loop_valves]
-        existing = next((c for c in circuits if _canonical(c["id"]) == self._loop_id), None)
+        existing = next((c for c in circuits if canonical_id(c["id"]) == self._loop_id), None)
         circuit = deepcopy(existing) if existing is not None else {"id": str(uuid4())}
         circuit.update(
             {
@@ -667,7 +626,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         else:
             circuits = [circuit if c is existing else c for c in circuits]
         draft = self._with_used_valves(room, circuits, routes, loop_valves)
-        return draft, [_canonical(valve_id) for valve_id in private_ids]
+        return draft, [canonical_id(valve_id) for valve_id in private_ids]
 
     @staticmethod
     def _with_used_valves(
@@ -677,15 +636,15 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         loop_valves: Sequence[dict[str, Any]],
     ) -> RoomDraft:
         """Keep the room valves its loops still use, updated by the edited loop."""
-        edited = {_canonical(valve["id"]): valve for valve in loop_valves}
+        edited = {canonical_id(valve["id"]): valve for valve in loop_valves}
         candidates = [
-            edited.pop(_canonical(valve["id"]), valve) for valve in deepcopy(room.valves)
+            edited.pop(canonical_id(valve["id"]), valve) for valve in deepcopy(room.valves)
         ] + list(edited.values())
-        used = {_canonical(valve_id) for c in circuits for valve_id in c[CONF_VALVE_IDS]}
+        used = {canonical_id(valve_id) for c in circuits for valve_id in c[CONF_VALVE_IDS]}
         return RoomDraft(
             zone=deepcopy(room.zone),
             circuits=circuits,
-            valves=[valve for valve in candidates if _canonical(valve["id"]) in used],
+            valves=[valve for valve in candidates if canonical_id(valve["id"]) in used],
             routes=routes,
         )
 
@@ -750,7 +709,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
         """Set the feedback entities of each private valve of the loop."""
-        valves = {_canonical(valve["id"]): valve for valve in self._loop_draft.valves}
+        valves = {canonical_id(valve["id"]): valve for valve in self._loop_draft.valves}
         valve = valves[self._loop_valve_ids[self._valve_index]]
         errors: dict[str, str] = {}
         if user_input is not None:

@@ -95,8 +95,6 @@ from ..core.model import (
 )
 from ..core.ownership import OwnershipError
 from ..core.topology import (
-    CoolingObservationError,
-    CoolingReferenceError,
     TopologyValidationError,
 )
 from ..entry_configuration import (
@@ -486,15 +484,6 @@ def effective_topology_error(
     return None
 
 
-def circuit_cooling_error(error: Exception, circuit_id: str) -> str | None:
-    """Explain a rejected cooling setting of one circuit, if that caused the rejection."""
-    if isinstance(error, CoolingReferenceError) and error.circuit_id == circuit_id:
-        return "cooling_reference_required"
-    if isinstance(error, CoolingObservationError) and error.circuit_id == circuit_id:
-        return "cooling_requires_zone_observations"
-    return None
-
-
 def warning_text(compiled: Any, sharing: Sequence[str] = ()) -> str:
     """Render compiler warnings, then outputs shared with other Plants, for a review form."""
     messages = [warning.message for warning in getattr(compiled, "warnings", ())]
@@ -879,22 +868,6 @@ def zone_schema(
     else:
         schema.update(_zone_advanced_fields(thermostat_defaults or defaults))
     return vol.Schema(schema)
-
-
-def thermostat_kind_schema(default: str = THERMOSTAT_KIND_HYDRONICUS) -> vol.Schema:
-    """Build the first Zone step while accepting legacy test inputs as extras."""
-    return vol.Schema(
-        {
-            vol.Optional(CONF_THERMOSTAT_KIND, default=default): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[THERMOSTAT_KIND_HYDRONICUS, THERMOSTAT_KIND_EXTERNAL_CLIMATE],
-                    mode=selector.SelectSelectorMode.LIST,
-                    translation_key=CONF_THERMOSTAT_KIND,
-                )
-            )
-        },
-        extra=vol.ALLOW_EXTRA,
-    )
 
 
 def requires_sensor_metadata_path(data: Mapping[str, Any]) -> bool:

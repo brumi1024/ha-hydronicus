@@ -550,12 +550,6 @@
     }
   },
   "selector": {
-    "thermostat_kind": {
-      "options": {
-        "hydronicus": "Hydronicus digital thermostat",
-        "external_climate": "Existing Home Assistant climate entity"
-      }
-    },
     "temperature_aggregation": {
       "options": {
         "mean": "Mean",

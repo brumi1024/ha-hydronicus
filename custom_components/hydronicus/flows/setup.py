@@ -51,8 +51,7 @@ from .common import (
     warning_text,
     with_submitted_values,
 )
-from .room import graph_errors
-from .room_form import room_draft_from_form, room_form_errors, room_form_schema
+from .room_form import graph_errors, room_draft_from_form, room_form_errors, room_form_schema
 
 CONF_ADD_ANOTHER: Final = "add_another"
 CONF_CONFIRM: Final = "confirm"
