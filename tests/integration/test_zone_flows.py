@@ -74,9 +74,14 @@ async def test_add_a_zone_through_its_subentry(hass: HomeAssistant) -> None:
     assert data == {
         "slug": "guest_room",
         "areas": ["guest_room"],
-        "loops": {
-            "radiator": {"valves": ["switch.guest_valve"], "pump": "floor", "modes": ["heat"]}
-        },
+        "loops": [
+            {
+                "slug": "radiator",
+                "valves": ["switch.guest_valve"],
+                "pump": "floor",
+                "modes": ["heat"],
+            }
+        ],
     }
     assert hass.states.get("climate.guest_room") is not None
     assert entry.options["armed_outputs"] == [FLOOR_PUMP], "adding a zone never changes arming"
@@ -172,8 +177,9 @@ zones:
         "thermostat": {
             "digital": {"target": 19, "presets": {"eco": 16, "away": 12}, "heat_start_delta": 0.5}
         },
-        "loops": {
-            "radiator": {
+        "loops": [
+            {
+                "slug": "radiator",
                 "valves": [
                     {
                         "entity": "switch.study_valve",
@@ -184,7 +190,7 @@ zones:
                 "pump": "pump",
                 "modes": ["heat"],
             }
-        },
+        ],
     }
 
 

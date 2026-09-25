@@ -2,8 +2,10 @@
 
 The config entry's data is the plant file without ``zones``, and each ``zone``
 subentry holds one zone's mapping plus its slug, which is also the subentry's
-unique ID (contract K1). ``core.plant_file`` owns the schema; this module only
-moves it in and out of Home Assistant's config entry objects.
+unique ID (contract K1). Pumps and loops are stored as lists of objects with
+their slugs, because Home Assistant sorts the keys it stores. ``core.plant_file``
+owns the schema; this module only moves it in and out of Home Assistant's config
+entry objects.
 
 Home Assistant cannot veto the removal of a subentry, so Plant-level references
 to a removed zone, in a pump's ``min_flow_loops`` and a plant loop's
@@ -27,7 +29,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import OPTION_ARMED_OUTPUTS, OPTION_CONTROL, SUBENTRY_TYPE_ZONE
 from .core.model import LoopRef, Plant
-from .core.plant_file import from_storage, to_storage
+from .core.plant_file import PlantFileError, from_storage, plant_file_from_storage, to_storage
 
 _SLUG = "slug"
 
@@ -55,14 +57,22 @@ def zone_subentry_ids(entry: ConfigEntry) -> dict[str, str]:
 
 
 def stored_document(entry: ConfigEntry) -> dict[str, Any]:
-    """Return the plant file a config entry stores, valid or not, as plain data to edit."""
-    document = deepcopy(dict(entry.data))
-    zones = {
-        slug: {key: deepcopy(value) for key, value in data.items() if key != _SLUG}
-        for slug, data in zone_data(entry).items()
-    }
-    if zones:
-        document["zones"] = zones
+    """Return the plant file a config entry stores, valid or not, as plain data to edit.
+
+    Data without the storage's shape, which only editing ``.storage`` by hand
+    makes, is returned as it is stored, for reading the Plant to report.
+    """
+    zones = zone_data(entry)
+    try:
+        document = deepcopy(plant_file_from_storage(entry.data, zones))
+    except PlantFileError:
+        document = deepcopy(dict(entry.data))
+        document["zones"] = {
+            slug: {key: deepcopy(value) for key, value in data.items() if key != _SLUG}
+            for slug, data in zones.items()
+        }
+    if not document["zones"]:
+        del document["zones"]
     return document
 
 
@@ -172,8 +182,8 @@ def pruned_entry_data(entry: ConfigEntry) -> dict[str, Any] | None:
     data = deepcopy(dict(entry.data))
     changed = False
     pumps = data.get("pumps")
-    if isinstance(pumps, dict):
-        for pump in pumps.values():
+    if isinstance(pumps, list):
+        for pump in pumps:
             refs = pump.get("min_flow_loops") if isinstance(pump, dict) else None
             if not isinstance(refs, list):
                 continue
@@ -182,8 +192,8 @@ def pruned_entry_data(entry: ConfigEntry) -> dict[str, Any] | None:
                 pump["min_flow_loops"] = kept
                 changed = True
     loops = data.get("loops")
-    if isinstance(loops, dict):
-        for loop in loops.values():
+    if isinstance(loops, list):
+        for loop in loops:
             runs = loop.get("runs") if isinstance(loop, dict) else None
             if not isinstance(runs, dict) or not isinstance(
                 members := runs.get("with_zones"), list

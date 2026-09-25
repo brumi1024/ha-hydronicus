@@ -267,7 +267,12 @@ async def test_replace_from_a_plant_file_shows_a_summary_then_updates_zones_by_s
     assert set(zones) == {"basement", "living_area", "study"}
     assert zone_subentry_id(entry, "basement") == basement, "kept, not recreated"
     assert zone_subentry_id(entry, "living_area") == living
-    assert zones["living_area"][1]["loops"]["floor"]["valves"] == ["switch.living_area_floor_valve"]
+    assert zones["living_area"][1]["loops"][1] == {
+        "slug": "floor",
+        "valves": ["switch.living_area_floor_valve"],
+        "pump": "floor",
+        "modes": ["heat"],
+    }
     assert data["mode_dwell"] == 7200
     replaced, expected = entry.runtime_data.plant, read_plant_file(replacement)
     assert {zone.slug: zone for zone in replaced.zones} == {

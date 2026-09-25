@@ -96,5 +96,6 @@ An output entity has exactly one role in one Plant: a valve of one Loop, a Pump 
 A Plant file is the YAML document that describes one whole Plant, and it uses the same schema as storage.
 
 The config entry's data holds everything except `zones`, and each Zone subentry's data holds that Zone's mapping plus its slug.
+Storage lists Pumps and Loops as objects that carry their slugs, so their order survives Home Assistant sorting stored keys.
 
 Importing an exported Plant file rebuilds the Plant with the same Plant ID, object slugs, and entity IDs.

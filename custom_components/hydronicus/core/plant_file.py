@@ -8,7 +8,9 @@ its ID, and therefore its entity IDs.
 
 Storage is the same document split in two: the config entry's data holds
 everything except ``zones``, and each zone subentry's data holds that zone's
-mapping plus its slug. ``to_storage`` and ``from_storage`` convert between them.
+mapping plus its slug. Home Assistant stores both with sorted keys, so storage
+lists pumps and loops as objects that carry their slugs, which keeps their order.
+``to_storage`` and ``from_storage`` convert between them.
 
 The canonical export writes every structural and timing key and omits optional
 keys at their defaults: names, sensors, and settings a user left out. Lists and
@@ -1039,17 +1041,41 @@ def _named(name: str | None) -> dict[str, Any]:
 # Storage
 
 
+# The mappings keyed by slugs whose order the user chose. Home Assistant stores a
+# config entry with sorted keys, so storage lists their objects, each with its slug.
+_LISTED_KEYS: Final = ("pumps", "loops")
+
+
 def to_storage(plant: Plant) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """Split a Plant into its config entry data and its zone subentry data by slug."""
+    """Split a Plant into its config entry data and its zone subentry data by slug.
+
+    Pumps, plant loops, and each zone's loops are stored as lists of objects
+    that carry their slug, as zone subentries do, so their order survives Home
+    Assistant sorting the keys of what it stores.
+    """
     entry_data = export_plant(plant)
     zones: dict[str, dict[str, Any]] = entry_data.pop("zones", {})
-    return entry_data, {slug: {_SLUG_KEY: slug, **zone} for slug, zone in zones.items()}
+    return _listed(entry_data), {
+        slug: {_SLUG_KEY: slug, **_listed(zone)} for slug, zone in zones.items()
+    }
 
 
-def from_storage(entry_data: Mapping[str, Any], zones: Mapping[str, Mapping[str, Any]]) -> Plant:
-    """Return the validated Plant stored as config entry data and zone subentry data.
+def _listed(document: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: [{_SLUG_KEY: slug, **item} for slug, item in value.items()]
+        if key in _LISTED_KEYS
+        else value
+        for key, value in document.items()
+    }
 
-    ``zones`` maps each zone subentry's slug, its unique ID, to its data.
+
+def plant_file_from_storage(
+    entry_data: Mapping[str, Any], zones: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Return the plant file stored as config entry data and zone subentry data, unvalidated.
+
+    ``zones`` maps each zone subentry's slug, its unique ID, to its data. Raise
+    ``PlantFileError`` when the stored data does not have the storage's shape.
     """
     if "zones" in entry_data:
         raise PlantFileError("zones", "Zones are stored in their subentries, not the entry data.")
@@ -1065,8 +1091,39 @@ def from_storage(entry_data: Mapping[str, Any], zones: Mapping[str, Mapping[str,
                 _join(path, _SLUG_KEY),
                 f"The subentry of zone {slug} holds the slug {data.get(_SLUG_KEY)!r}.",
             )
-        documents[slug] = {key: value for key, value in data.items() if key != _SLUG_KEY}
-    return parse_plant({**entry_data, "zones": documents})
+        documents[slug] = _unlisted(
+            {key: value for key, value in data.items() if key != _SLUG_KEY}, path
+        )
+    return {**_unlisted(entry_data, ""), "zones": documents}
+
+
+def _unlisted(data: Mapping[str, Any], path: str) -> dict[str, Any]:
+    """Return stored data with each list of objects as a mapping by slug, in list order."""
+    document = dict(data)
+    for key in _LISTED_KEYS:
+        if key not in document:
+            continue
+        key_path = _join(path, key)
+        if not isinstance(document[key], list):
+            raise PlantFileError(key_path, "Expected a list.")
+        table: dict[str, Any] = {}
+        for item, item_path in _items(document[key], key_path):
+            slug = item.get(_SLUG_KEY) if isinstance(item, Mapping) else None
+            if not isinstance(slug, str):
+                raise PlantFileError(_join(item_path, _SLUG_KEY), "A stored object keeps its slug.")
+            if slug in table:
+                raise PlantFileError(_join(key_path, slug), f"Slug {slug} is stored twice.")
+            table[slug] = {name: value for name, value in item.items() if name != _SLUG_KEY}
+        document[key] = table
+    return document
+
+
+def from_storage(entry_data: Mapping[str, Any], zones: Mapping[str, Mapping[str, Any]]) -> Plant:
+    """Return the validated Plant stored as config entry data and zone subentry data.
+
+    ``zones`` maps each zone subentry's slug, its unique ID, to its data.
+    """
+    return parse_plant(plant_file_from_storage(entry_data, zones))
 
 
 # YAML

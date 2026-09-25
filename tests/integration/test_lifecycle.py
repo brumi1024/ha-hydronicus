@@ -7,6 +7,7 @@ cycle a pump (invariant 8, defect 7).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -15,14 +16,15 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.json import json_bytes
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus import runtime as runtime_module
 from custom_components.hydronicus.const import DOMAIN, OPTION_ARMED_OUTPUTS
 from custom_components.hydronicus.core.model import Mode
-from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.core.plant_file import read_plant_file, write_plant_file
 from custom_components.hydronicus.core.step import DigitalThermostatState, State
-from custom_components.hydronicus.storage import new_entry
+from custom_components.hydronicus.storage import new_entry, stored_document
 from tests.integration.helpers import (
     BASEMENT_CEILING,
     FLOOR_PUMP,
@@ -185,8 +187,8 @@ async def test_removing_a_zone_prunes_references_to_it_and_keeps_the_plant_runni
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.data["pumps"]["heat_pump"]["min_flow_loops"] == ["living_area.ceiling"]
-    assert entry.data["loops"]["hall"]["runs"] == {"with_zones": ["living_area"]}
+    assert stored_document(entry)["pumps"]["heat_pump"]["min_flow_loops"] == ["living_area.ceiling"]
+    assert stored_document(entry)["loops"]["hall"]["runs"] == {"with_zones": ["living_area"]}
     assert BASEMENT_CEILING not in entry.options[OPTION_ARMED_OUTPUTS]
     assert entry.runtime_data.plant.zones[0].slug == "bedroom_area"
     assert not any(e.startswith("climate.basement") for e in plant_entities(hass, entry).values())
@@ -220,6 +222,52 @@ async def test_exporting_and_importing_a_plant_reproduces_its_entity_ids(
     again = await async_import(hass, str(response["yaml"]))
 
     assert plant_entities(hass, again) == before
+
+
+async def test_a_plant_keeps_the_order_of_its_pumps_and_loops_across_a_restart(
+    hass: HomeAssistant,
+) -> None:
+    """Home Assistant stores config entries with sorted keys, which must not reorder the Plant.
+
+    The entry is written as Home Assistant's config entry store writes it, then
+    set up again from what was written, as a restart would.
+    """
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    exported = write_plant_file(entry.runtime_data.plant)
+    assert [pump.slug for pump in entry.runtime_data.plant.pumps] == [
+        "heat_pump",
+        "floor",
+        "towel_dryer",
+    ]
+    stored_entry = json.loads(json_bytes(entry.as_storage_fragment))
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    restarted = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id=stored_entry["entry_id"],
+        title=stored_entry["title"],
+        data=stored_entry["data"],
+        options=stored_entry["options"],
+        subentries_data=stored_entry["subentries"],
+        unique_id=stored_entry["unique_id"],
+        version=stored_entry["version"],
+        minor_version=stored_entry["minor_version"],
+    )
+    restarted.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(restarted.entry_id)
+    await hass.async_block_till_done()
+
+    assert write_plant_file(restarted.runtime_data.plant) == exported
+    flow = hass.config_entries.flow
+    result = await flow.async_init(
+        DOMAIN, context={"source": "reconfigure", "entry_id": restarted.entry_id}
+    )
+    result = await flow.async_configure(result["flow_id"], {"next_step_id": "pump_pick"})
+    picker = next(v for k, v in result["data_schema"].schema.items() if str(k) == "pump")
+    options = picker.serialize()["selector"]["select"]["options"]
+    assert [option["value"] for option in options][:3] == ["heat_pump", "floor", "towel_dryer"]
 
 
 async def test_a_stored_plant_matches_the_plant_file_split(hass: HomeAssistant) -> None:

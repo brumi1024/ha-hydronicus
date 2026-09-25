@@ -42,6 +42,7 @@ HYPOTHESIS_SIM_PROFILE=sim-dev make test-sim
 
 Config entry version 5.0 is the supported persisted contract.
 The entry's data is the format 2 plant file without `zones`, and each zone is a `zone` subentry whose data is that zone's mapping plus its `slug`; the subentry's unique ID is the slug and its title is the zone's name.
+Home Assistant stores a config entry with sorted keys, so `pumps`, `loops`, and each zone's `loops` are stored as lists of objects that carry their `slug`, which keeps the order the owner chose.
 The entry's options hold `armed_outputs`, the confirmed output entity IDs, and `control`, the **Control equipment** state.
 The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, and the last valid Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
 
@@ -53,7 +54,7 @@ Do not add schema aliases or migration paths without a concrete persisted predec
 `custom_components/hydronicus/core/` is the pure core: it has no Home Assistant imports, keeps at least 90 percent test coverage, and the simulator loads it without Home Assistant.
 
 - `core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs, and the desired state that `step()` returns.
-- `core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into entry data and zone subentry data, `from_storage` joins them again, and `describe_path` puts a problem's path in words.
+- `core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into entry data and zone subentry data with its slug-keyed objects listed in order, `from_storage` joins them again, and `describe_path` puts a problem's path in words.
 - `core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
 - `core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
 - `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.

@@ -36,7 +36,7 @@ from ..core.model import (
     RunKind,
     title_from_slug,
 )
-from ..core.plant_file import PLANT_FILE_FORMAT, to_storage
+from ..core.plant_file import PLANT_FILE_FORMAT, export_plant
 
 type Document = dict[str, Any]
 
@@ -468,10 +468,9 @@ def change_summary(
     It names the zones added, removed, and changed, the outputs added and
     removed, and which Plant settings change, not each field.
     """
-    data, new_zones = to_storage(plant)
-    old_zones = {
-        slug: {"slug": slug, **zone} for slug, zone in zones(old).items() if isinstance(zone, dict)
-    }
+    data = export_plant(plant)
+    new_zones = zones(data)
+    old_zones = {slug: zone for slug, zone in zones(old).items() if isinstance(zone, dict)}
     lines: list[str] = []
 
     def names(slugs: Iterable[str], table: Mapping[str, Any]) -> str:

@@ -877,17 +877,86 @@ def test_storage_splits_the_plant_into_entry_data_and_zone_subentries() -> None:
     assert entry_data["id"] == PLANT_ID
     assert list(zones) == ["basement", "bedroom_area", "living_area"]
     assert zones["living_area"]["slug"] == "living_area"
-    assert list(zones["living_area"]["loops"]) == ["ceiling", "floor"]
+    assert [loop["slug"] for loop in zones["living_area"]["loops"]] == ["ceiling", "floor"]
     assert json.loads(json.dumps([entry_data, zones])) == [entry_data, zones]
     assert from_storage(entry_data, zones) == plant
 
 
-def test_storage_is_the_plant_file_split_at_zones() -> None:
+def test_storage_is_the_plant_file_split_at_zones_with_objects_listed() -> None:
     document = export_plant(reference_plant())
     entry_data, zones = to_storage(reference_plant())
 
-    assert {**entry_data, "zones": document["zones"]} == document
-    assert {slug: {"slug": slug, **data} for slug, data in document["zones"].items()} == zones
+    def listed(table: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"slug": slug, **item} for slug, item in table.items()]
+
+    assert entry_data == {
+        **{key: value for key, value in document.items() if key != "zones"},
+        "pumps": listed(document["pumps"]),
+        "loops": listed(document["loops"]),
+    }
+    assert zones == {
+        slug: {"slug": slug, **data, "loops": listed(data["loops"])}
+        for slug, data in document["zones"].items()
+    }
+
+
+# Pumps, plant loops, and a zone's loops in an order that sorting the keys changes.
+UNSORTED = """\
+hydronicus: 2
+id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+name: Home
+mode_dwell: 3600
+pumps:
+  radiators:
+    switch: switch.radiator_pump
+    overrun: 180
+  floor:
+    switch: switch.floor_pump
+    overrun: 180
+loops:
+  towel_dryer:
+    pump: radiators
+    runs: {with_zones: [study]}
+    modes: [heat]
+  garage:
+    valves: [switch.garage_valve]
+    pump: floor
+    runs: {with_zones: [study]}
+    modes: [heat]
+zones:
+  study:
+    temperature: [sensor.study]
+    loops:
+      radiator:
+        valves: [switch.study_radiator_valve]
+        pump: radiators
+        modes: [heat]
+      floor:
+        valves: [switch.study_floor_valve]
+        pump: floor
+        modes: [heat]
+  attic:
+    temperature: [sensor.attic]
+"""
+
+
+def test_storage_keeps_the_order_of_pumps_and_loops_through_sorted_keys() -> None:
+    """Home Assistant stores config entries with sorted keys; the order must survive.
+
+    ``ConfigEntry.as_storage_fragment`` writes the entry, its data and its
+    subentries' data, with ``json_bytes_sorted``, while the subentries stay a
+    list in their own order.
+    """
+    plant = read_plant_file(UNSORTED)
+    assert write_plant_file(plant) == UNSORTED
+    entry_data, zones = to_storage(plant)
+
+    stored_data = json.loads(json.dumps(entry_data, sort_keys=True))
+    stored_zones = {
+        slug: json.loads(json.dumps(data, sort_keys=True)) for slug, data in zones.items()
+    }
+
+    assert write_plant_file(from_storage(stored_data, stored_zones)) == UNSORTED
 
 
 def test_storage_rejects_inconsistent_data() -> None:
@@ -909,6 +978,20 @@ def test_storage_rejects_inconsistent_data() -> None:
     with pytest.raises(PlantFileError) as caught:
         from_storage(without_id, zones)
     assert caught.value.path == "id"
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage({**entry_data, "pumps": {"floor": {"switch": "switch.floor"}}}, zones)
+    assert (caught.value.path, caught.value.message) == ("pumps", "Expected a list.")
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage({**entry_data, "pumps": [{"switch": "switch.floor"}]}, zones)
+    assert caught.value.path == "pumps.0.slug"
+
+    living = zones["living_area"]
+    twice = {**living, "loops": [living["loops"][0], living["loops"][0]]}
+    with pytest.raises(PlantFileError) as caught:
+        from_storage(entry_data, {**zones, "living_area": twice})
+    assert caught.value.path == "zones.living_area.loops.ceiling"
 
 
 def test_removing_a_zone_subentry_leaves_the_rest_of_the_plant() -> None:

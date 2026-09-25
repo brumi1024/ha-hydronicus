@@ -289,6 +289,7 @@ The area lists are illustrative; the maintainer chooses them during setup.
 - A zone's extra sensors are `temperature: [...]` and `humidity: [...]`, each an entity ID or `{entity, required, max_age}`, and `aggregation` is `mean`, `min`, or `max`.
 - Unknown keys are errors with a path such as `zones.living_area.loops.floor.pump`.
 - The config entry's data holds everything except `zones`, and each zone subentry's data holds that zone's mapping plus its slug; the subentry title is the zone name and its unique ID is the slug.
+  Home Assistant stores config entries with sorted keys, so storage lists `pumps`, `loops`, and each zone's `loops` as objects that carry their slug, which keeps their order.
 
 ### K2 Core types
 

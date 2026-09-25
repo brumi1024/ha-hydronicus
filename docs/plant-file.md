@@ -420,6 +420,7 @@ See [the entities](entities.md) for every entity a Plant publishes.
 The plant file is also the storage schema.
 The Plant's config entry holds everything except `zones`, and edits of it go through the Plant's **Reconfigure**.
 Each zone is a `zone` subentry of the Plant: it holds that zone's mapping plus its slug, its title is the zone's name, and its unique ID is the slug.
+Storage lists pumps and loops as objects that carry their slug, because Home Assistant sorts the keys it stores; an export writes them back in the order you gave them.
 A zone references only the Plant's pumps and source, so removing a zone removes exactly its own loops and valves.
 
 ## The exported form
