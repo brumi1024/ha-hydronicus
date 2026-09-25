@@ -115,6 +115,33 @@ def _validate_feedback_binding(
         )
 
 
+def _validate_zone_areas(zone: Zone) -> None:
+    """Validate the Home Assistant areas a zone declares."""
+    zone_id = zone.id
+    area_ids = tuple(area.area_id for area in zone.areas)
+    if not all(isinstance(area_id, str) and area_id for area_id in area_ids):
+        raise TopologyValidationError(f"Zone {zone_id} areas must be non-empty area ids.")
+    if duplicates := _duplicates(area_ids):
+        raise TopologyValidationError(
+            f"Zone {zone_id} areas must not contain duplicates: "
+            + ", ".join(sorted(duplicates))
+            + "."
+        )
+    for area in zone.areas:
+        if not isinstance(area.required, bool) or not isinstance(area.designated_reference, bool):
+            raise TopologyValidationError(
+                f"Zone {zone_id} area {area.area_id} settings must be boolean."
+            )
+        if not _finite_positive(area.weight):
+            raise TopologyValidationError(
+                f"Zone {zone_id} area {area.area_id} weight must be positive and finite."
+            )
+        if not _finite_positive(area.max_age_seconds):
+            raise TopologyValidationError(
+                f"Zone {zone_id} area {area.area_id} maximum age must be positive and finite."
+            )
+
+
 def _validate_zone(zone: Zone) -> None:
     """Validate all pure controller inputs owned by one comfort zone."""
     # The object is a Zone at the call site.  Keeping validation here based on
@@ -138,9 +165,9 @@ def _validate_zone(zone: Zone) -> None:
                 f"Zone {zone_id} target temperature must be between "
                 f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
             )
-        if not zone.temperature_sensors:
+        if not zone.temperature_sensors and not zone.areas:
             raise TopologyValidationError(
-                f"Zone {zone_id} requires at least one temperature sensor."
+                f"Zone {zone_id} requires at least one temperature sensor or area."
             )
     elif isinstance(zone.thermostat, ExternalClimateThermostatConfig):
         if not (
@@ -242,6 +269,7 @@ def _validate_zone(zone: Zone) -> None:
                 f"Zone {zone_id} humidity sensor {sensor.entity_id} maximum age must be positive."
             )
 
+    _validate_zone_areas(zone)
     reference_ids = tuple(
         sorted(sensor.entity_id for sensor in metadata if sensor.designated_reference)
     )
@@ -251,7 +279,14 @@ def _validate_zone(zone: Zone) -> None:
             + ", ".join(reference_ids)
             + "."
         )
-    if zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE and len(reference_ids) != 1:
+    # A designated area that resolves no sensor leaves no designated record, and
+    # the aggregation then blocks the zone instead of the Plant failing to load.
+    designated_area = any(area.designated_reference for area in zone.areas)
+    if (
+        zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE
+        and len(reference_ids) != 1
+        and not designated_area
+    ):
         raise TopologyValidationError(
             f"Zone {zone_id} designated reference aggregation requires exactly one "
             "designated reference sensor."
@@ -496,9 +531,11 @@ def _validate_relationships(
             if route.enabled and route.circuit_id == circuit.id
         }
         for zone_id in sorted(served_zone_ids):
-            if not zones[zone_id].temperature_sensor_metadata:
+            # An area counts as both sources; what it resolves to is checked at runtime.
+            zone = zones[zone_id]
+            if not zone.temperature_sensor_metadata and not zone.areas:
                 raise CoolingObservationError(circuit.id, zone_id, "temperature")
-            if not zones[zone_id].humidity_sensor_metadata:
+            if not zone.humidity_sensor_metadata and not zone.areas:
                 raise CoolingObservationError(circuit.id, zone_id, "humidity")
 
     # A zone must be able to request heat. Equipment that no enabled route

@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import selector
 
+from ..areas import area_review_warnings, area_warnings_to_confirm
 from ..const import (
     CONF_CIRCUITS,
     CONF_DRY_RUN,
@@ -761,7 +762,12 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
         except GRAPH_EDIT_ERRORS:
             # An unreadable stored graph can still be replaced by a plant file.
             before = None
-        self._review_blocking = bool(sharing) or bool(warnings_to_confirm(compiled, before))
+        areas = area_review_warnings(self.hass, data)
+        self._review_blocking = (
+            bool(sharing)
+            or bool(warnings_to_confirm(compiled, before))
+            or bool(area_warnings_to_confirm(areas, area_review_warnings(self.hass, entry.data)))
+        )
         self._reviewed = _signature(entry.data)
         blocking = self._review_blocking
         return self.async_show_form(
@@ -771,7 +777,10 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
             description_placeholders={
                 "changes": _plant_changes(entry.data, data),
                 "logic": "\n".join(f"- {line}" for line in compiled.logic_summary) or "- None",
-                "warnings": warning_text(compiled, sharing) or "- None",
+                "warnings": warning_text(
+                    compiled, (*(warning.message for warning in areas), *sharing)
+                )
+                or "- None",
             },
         )
 

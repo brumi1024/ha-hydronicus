@@ -261,6 +261,20 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                     not sensor.required for sensor in zone.sensor_metadata
                 ),
                 "humidity_sensor_count": len(zone.humidity_sensor_metadata),
+                "area_count": len(zone.areas),
+                "area_temperature_sensor_count": sum(
+                    sensor.area_id is not None for sensor in zone.sensor_metadata
+                ),
+                "area_humidity_sensor_count": sum(
+                    sensor.area_id is not None for sensor in zone.humidity_sensor_metadata
+                ),
+                "missing_area_count": sum(
+                    area.area_id in runtime.area_resolution.missing_area_ids for area in zone.areas
+                ),
+                "self_provided_area_sensor_count": sum(
+                    len(runtime.area_resolution.self_provided.get(area.area_id, ()))
+                    for area in zone.areas
+                ),
                 "configured_presets": sorted(zone.preset_targets),
                 "minimum_active_duration_configured": zone.minimum_active_duration_seconds > 0,
                 "minimum_idle_duration_configured": zone.minimum_idle_duration_seconds > 0,

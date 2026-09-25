@@ -892,6 +892,46 @@
         }
       }
     },
+    "missing_area_sensor_binding": {
+      "title": "Missing area sensor for {object_name}",
+      "description": "In Plant {plant}, zone {object_name} follows the sensors of area {area}, and the {binding} that the area names is missing or renamed. Renaming an entity does not update the area, so open the settings of area {area}, choose the current sensor, and save. The repair clears automatically as soon as the sensor is available again."
+    },
+    "zone_area_missing": {
+      "title": "Zone {zone} covers a missing area",
+      "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Remove the area from the zone, or create an area with this ID again. The repair clears automatically once the zone no longer covers a missing area.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Zone {zone} covers a missing area",
+            "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Select Submit to edit {owner} and remove the area. Creating an area with this ID again also works; the repair clears automatically once the zone no longer covers a missing area."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "{owner} is open for editing. The repair clears after the zone is saved without the missing area.",
+          "subentry_not_found": "The zone that covered this area no longer exists. If another zone still covers a missing area, a new repair appears."
+        }
+      }
+    },
+    "zone_without_temperature_source": {
+      "title": "Zone {zone} has no temperature sensor",
+      "description": "In Plant {plant}, zone {zone} covers {areas}, but none of these areas names a temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Choose a temperature sensor in the settings of one of these areas, or add a temperature sensor to the zone. The repair clears automatically once the zone has a temperature sensor.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Zone {zone} has no temperature sensor",
+            "description": "In Plant {plant}, zone {zone} covers {areas}, but none of these areas names a temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Select Submit to edit {owner} and add a temperature sensor or another area. Choosing a temperature sensor in the settings of one of these areas also works; the repair clears automatically once the zone has a temperature sensor."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "{owner} is open for editing. The repair clears once the zone has a temperature sensor.",
+          "subentry_not_found": "The zone no longer exists. If another zone has no temperature sensor, a new repair appears."
+        }
+      }
+    },
+    "zone_area_self_feed": {
+      "title": "Area {area} names a Hydronicus sensor",
+      "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
+    },
     "output_conflict": {
       "title": "{plant} is held in Dry run",
       "description": "{plant} is set to run outside Dry run, but {other_plant} is already out of Dry run and controls {entities}. Two live Plants would fight over these entities, so Hydronicus holds {plant} in Dry run because {other_plant} is using the same outputs, and sends no commands from it. Its Dry run setting and confirmed outputs are kept. {plant} resumes automatically when the conflict is gone, for example when {other_plant} enters Dry run, is unloaded, or is removed. To end the conflict for good, bind different entities in one of the Plants, remove one of the Plants, or turn on Dry run for one of them."

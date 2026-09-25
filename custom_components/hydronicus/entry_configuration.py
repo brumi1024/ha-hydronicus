@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -39,7 +40,7 @@ from .const import (
     SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
-from .core.model import CompiledPlant, PlantConfiguration
+from .core.model import AreaSensors, CompiledPlant, PlantConfiguration
 from .core.ownership import OwnershipError, PlantOwnership, validate_ownership, without_zone
 from .core.topology import TopologyValidationError, compile_topology
 
@@ -126,8 +127,18 @@ class EquipmentInUseError(ValueError):
         super().__init__("The equipment is used by " + ", ".join(users) + ".")
 
 
-def runtime_configuration_fingerprint(entry: Any) -> str:
-    """Hash only fields that require rebuilding the compiled HA runtime."""
+_NO_AREA_SENSORS: Mapping[str, AreaSensors] = MappingProxyType({})
+
+
+def runtime_configuration_fingerprint(
+    entry: Any, area_resolution: Mapping[str, Any] | None = None
+) -> str:
+    """Hash only fields that require rebuilding the compiled HA runtime.
+
+    ``area_resolution`` is the JSON-serializable resolution of the covered
+    areas, so a changed area sensor rebuilds the runtime and an unrelated area
+    change does not.
+    """
     handles = []
     for subentry in sorted(
         getattr(entry, "subentries", {}).values(), key=lambda item: item.subentry_id
@@ -150,6 +161,7 @@ def runtime_configuration_fingerprint(entry: Any) -> str:
         CONF_SUBENTRY_OBJECTS: subentry_objects(entry.data),
         CONF_ZONE_OBJECTS: zone_objects(entry.data),
         "subentries": handles,
+        "areas": area_resolution or {},
     }
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -284,9 +296,15 @@ def _all_handles(topology: Mapping[str, Any]) -> dict[str, str]:
     return handles
 
 
-def _validated(data: Mapping[str, Any]) -> tuple[PlantConfiguration, PlantOwnership, CompiledPlant]:
-    """Decode, check ownership and zone handles, and compile one stored graph."""
-    configuration = plant_configuration_from_entry_data(data)
+def _validated(
+    data: Mapping[str, Any], area_sensors: Mapping[str, AreaSensors] = _NO_AREA_SENSORS
+) -> tuple[PlantConfiguration, PlantOwnership, CompiledPlant]:
+    """Decode, check ownership and zone handles, and compile one stored graph.
+
+    Structural rules count an area as a sensor, so what ``area_sensors``
+    resolves never decides whether a graph is valid.
+    """
+    configuration = plant_configuration_from_entry_data(data, area_sensors=area_sensors)
     ownership = plant_ownership(data)
     validate_ownership(configuration, ownership)
     handles = subentry_objects(data)
@@ -338,9 +356,11 @@ def _present_handles(entry: Any, handles: Mapping[str, str]) -> dict[str, str]:
     return present
 
 
-def effective_plant_from_data(data: Mapping[str, Any]) -> EffectivePlant:
+def effective_plant_from_data(
+    data: Mapping[str, Any], *, area_sensors: Mapping[str, AreaSensors] = _NO_AREA_SENSORS
+) -> EffectivePlant:
     """Validate and compile stored data that has no subentries yet."""
-    configuration, ownership, compiled = _validated(data)
+    configuration, ownership, compiled = _validated(data, area_sensors)
     return EffectivePlant(
         configuration=configuration,
         ownership=ownership,
@@ -349,9 +369,14 @@ def effective_plant_from_data(data: Mapping[str, Any]) -> EffectivePlant:
     )
 
 
-def effective_plant(entry: Any) -> EffectivePlant:
-    """Validate and compile the graph of an entry, with the subentry owning each object."""
-    plant = effective_plant_from_data(entry.data)
+def effective_plant(
+    entry: Any, *, area_sensors: Mapping[str, AreaSensors] = _NO_AREA_SENSORS
+) -> EffectivePlant:
+    """Validate and compile the graph of an entry, with the subentry owning each object.
+
+    Zones follow the sensors that ``area_sensors`` resolves for their areas.
+    """
+    plant = effective_plant_from_data(entry.data, area_sensors=area_sensors)
     handles = subentry_objects(entry.data)
     present = _present_handles(entry, handles)
     if orphaned := sorted(set(handles) - set(present)):

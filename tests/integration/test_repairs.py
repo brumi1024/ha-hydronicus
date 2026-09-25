@@ -568,7 +568,7 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
         "owner": "Living room",
     }
     binding_keys = [key for key in issues if key.startswith("missing_")]
-    assert len(binding_keys) == 10
+    assert len(binding_keys) == 11
     for key in binding_keys:
         issue = issues[key]
         titles = [issue["title"]]

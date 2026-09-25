@@ -1,0 +1,464 @@
+"""Zones follow the sensors that their Home Assistant areas name."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from copy import deepcopy
+from typing import Any
+
+import pytest
+from homeassistant.components.repairs import DOMAIN as REPAIRS_DOMAIN
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+
+from custom_components.hydronicus.areas import resolve_area_sensors
+from custom_components.hydronicus.const import DOMAIN
+from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
+from tests.integration.flow_forms import form_fields
+from tests.integration.plant_fixtures import (
+    manifold_topology,
+    manifold_zones,
+    plant_data,
+    plant_entry,
+    subentry_id_for,
+)
+
+GROUND, UPSTAIRS = manifold_zones(("Ground floor", "Upstairs"))
+
+
+def _temperature(hass, entity_id: str, value: float) -> None:
+    hass.states.async_set(
+        entity_id, str(value), {"device_class": "temperature", "unit_of_measurement": "°C"}
+    )
+
+
+def _humidity(hass, entity_id: str, value: float) -> None:
+    hass.states.async_set(
+        entity_id, str(value), {"device_class": "humidity", "unit_of_measurement": "%"}
+    )
+
+
+def _area(hass, name: str, *, temperature: str | None = None, humidity: str | None = None):
+    return ar.async_get(hass).async_create(
+        name, temperature_entity_id=temperature, humidity_entity_id=humidity
+    )
+
+
+def _topology(ground_areas: list[Any], *, ground_sensors: bool = False) -> dict[str, Any]:
+    """Return two zones where Ground floor covers areas and Upstairs has its own sensor."""
+    topology = manifold_topology(("Ground floor", "Upstairs"))
+    ground = topology["zones"][0]
+    ground["areas"] = [
+        area if isinstance(area, Mapping) else {"area_id": area} for area in ground_areas
+    ]
+    if not ground_sensors:
+        del ground["temperature_sensor_metadata"]
+    return topology
+
+
+async def _loaded(hass, topology: Mapping[str, Any], *, dry_run: bool = True) -> MockConfigEntry:
+    entry = plant_entry(plant_data(topology, dry_run=dry_run))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    return entry
+
+
+_AREA_ISSUES = frozenset(
+    {
+        "zone_area_missing",
+        "zone_without_temperature_source",
+        "zone_area_self_feed",
+        "missing_area_sensor_binding",
+    }
+)
+
+
+def _area_issues(hass) -> dict[str, ir.IssueEntry]:
+    return {
+        issue.translation_key: issue
+        for (domain, _issue_id), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue.translation_key in _AREA_ISSUES
+    }
+
+
+def _combined_temperature(hass, zone_id: str):
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, f"00000000-0000-4000-8000-000000000001_{zone_id}_aggregate_temperature"
+    )
+    assert entity_id is not None
+    return hass.states.get(entity_id)
+
+
+@pytest.fixture
+def home(hass):
+    """Kitchen and hall with both sensors, and a study without any."""
+    _temperature(hass, "sensor.kitchen_temperature", 20.0)
+    _humidity(hass, "sensor.kitchen_humidity", 45.0)
+    _temperature(hass, "sensor.hall_temperature", 22.0)
+    _humidity(hass, "sensor.hall_humidity", 50.0)
+    _temperature(hass, "sensor.spare_temperature", 18.0)
+    _temperature(hass, UPSTAIRS.temperature_sensor, 21.0)
+    return {
+        "kitchen": _area(
+            hass,
+            "Kitchen",
+            temperature="sensor.kitchen_temperature",
+            humidity="sensor.kitchen_humidity",
+        ),
+        "hall": _area(
+            hass, "Hall", temperature="sensor.hall_temperature", humidity="sensor.hall_humidity"
+        ),
+        "study": _area(hass, "Study"),
+    }
+
+
+async def test_a_zone_follows_the_sensors_of_its_areas(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["kitchen", {"area_id": "hall", "weight": 3.0}]))
+
+    zone = entry.runtime_data.plant.zones[GROUND.zone_id]
+    assert zone.temperature_sensors == ("sensor.kitchen_temperature", "sensor.hall_temperature")
+    assert zone.humidity_sensors == ("sensor.kitchen_humidity", "sensor.hall_humidity")
+    assert entry.runtime_data.zone_current_temperature(GROUND.zone_id) == pytest.approx(21.0)
+
+    state = _combined_temperature(hass, GROUND.zone_id)
+    assert float(state.state) == pytest.approx(21.0)
+    assert state.attributes["areas"] == [
+        {
+            "area_id": "kitchen",
+            "temperature_entity_id": "sensor.kitchen_temperature",
+            "humidity_entity_id": "sensor.kitchen_humidity",
+        },
+        {
+            "area_id": "hall",
+            "temperature_entity_id": "sensor.hall_temperature",
+            "humidity_entity_id": "sensor.hall_humidity",
+        },
+    ]
+    assert sorted(state.attributes["usable_sensor_ids"]) == [
+        "sensor.hall_temperature",
+        "sensor.kitchen_temperature",
+    ]
+    # A zone without areas keeps its attributes as they were.
+    assert "areas" not in _combined_temperature(hass, UPSTAIRS.zone_id).attributes
+    assert not _area_issues(hass)
+
+
+async def test_changing_a_covered_area_sensor_reloads_the_plant(hass, home) -> None:
+    calls = async_mock_service(hass, "switch", "turn_on") + async_mock_service(
+        hass, "switch", "turn_off"
+    )
+    entry = await _loaded(hass, _topology(["kitchen"]))
+    runtime = entry.runtime_data
+
+    ar.async_get(hass).async_update("kitchen", temperature_entity_id="sensor.spare_temperature")
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data is not runtime
+    zone = entry.runtime_data.plant.zones[GROUND.zone_id]
+    assert zone.temperature_sensors == ("sensor.spare_temperature",)
+    assert entry.runtime_data.zone_current_temperature(GROUND.zone_id) == 18.0
+    # A Dry run Plant stays silent across the reload.
+    assert calls == []
+
+
+async def test_a_live_plant_stays_live_across_an_area_reload(hass, home) -> None:
+    for entity_id in (GROUND.valve_entity, UPSTAIRS.valve_entity, "switch.manifold_pump"):
+        hass.states.async_set(entity_id, "off")
+    entry = await _loaded(hass, _topology(["kitchen"]), dry_run=False)
+    assert entry.runtime_data.dry_run is False
+    runtime = entry.runtime_data
+
+    ar.async_get(hass).async_update("kitchen", temperature_entity_id="sensor.spare_temperature")
+    await hass.async_block_till_done()
+
+    # An area change edits no output, so the output authorization still holds.
+    assert entry.runtime_data is not runtime
+    assert entry.runtime_data.dry_run is False
+    assert entry.data["dry_run"] is False
+
+
+async def test_changes_that_do_not_reach_the_followed_sensors_do_not_reload(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["kitchen"]))
+    runtime = entry.runtime_data
+    registry = ar.async_get(hass)
+
+    registry.async_update("kitchen", name="Cooking")  # renamed, same sensors
+    registry.async_update("hall", temperature_entity_id="sensor.spare_temperature")  # not covered
+    _area(hass, "Garage")
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data is runtime
+
+
+async def test_several_area_changes_coalesce_into_one_reload(hass, home, monkeypatch) -> None:
+    entry = await _loaded(hass, _topology(["kitchen", "hall"]))
+    reloads: list[str] = []
+    reload = hass.config_entries.async_reload
+
+    async def counted(entry_id: str) -> bool:
+        reloads.append(entry_id)
+        return await reload(entry_id)
+
+    monkeypatch.setattr(hass.config_entries, "async_reload", counted)
+    registry = ar.async_get(hass)
+    registry.async_update("kitchen", temperature_entity_id="sensor.spare_temperature")
+    registry.async_update("hall", temperature_entity_id=None)
+    registry.async_update("kitchen", humidity_entity_id=None)
+    await hass.async_block_till_done()
+
+    assert reloads == [entry.entry_id]
+    zone = entry.runtime_data.plant.zones[GROUND.zone_id]
+    assert zone.temperature_sensors == ("sensor.spare_temperature",)
+    assert zone.humidity_sensors == ("sensor.hall_humidity",)
+
+
+async def test_a_removed_area_raises_a_repair_and_the_plant_keeps_loading(hass, home) -> None:
+    await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    entry = await _loaded(hass, _topology(["kitchen", "hall"]))
+
+    ar.async_get(hass).async_delete("kitchen")
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.plant.zones[GROUND.zone_id].temperature_sensors == (
+        "sensor.hall_temperature",
+    )
+    issue = _area_issues(hass)["zone_area_missing"]
+    assert issue.is_fixable is True
+    assert issue.translation_placeholders["zone"] == "Ground floor"
+    assert issue.translation_placeholders["area"] == "kitchen"
+    assert issue.data["subentry_id"] == subentry_id_for(GROUND.zone_id)
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    zones = diagnostics["compiled_topology"]["relationships"]["zones"]
+    ground = next(zone for zone in zones if zone["area_count"])
+    assert (ground["area_count"], ground["missing_area_count"]) == (2, 1)
+    assert ground["area_temperature_sensor_count"] == 1
+
+    # The fix flow opens the zone.
+    manager = hass.data[REPAIRS_DOMAIN]["flow_manager"]
+    flow = await manager.async_init(DOMAIN, data={"issue_id": _issue_id(hass, "zone_area_missing")})
+    assert flow["step_id"] == "confirm"
+    flow = await manager.async_configure(flow["flow_id"], {})
+    assert flow["type"] == FlowResultType.ABORT
+    assert flow["reason"] == "reconfigure_subentry"
+    assert flow["next_flow"][1] in {
+        progress["flow_id"] for progress in hass.config_entries.subentries.async_progress()
+    }
+
+    # An area created again with the same ID resolves the problem.
+    _area(hass, "Kitchen", temperature="sensor.kitchen_temperature")
+    await hass.async_block_till_done()
+    assert "zone_area_missing" not in _area_issues(hass)
+    assert "sensor.kitchen_temperature" in (
+        entry.runtime_data.plant.zones[GROUND.zone_id].temperature_sensors
+    )
+
+
+def _issue_id(hass, translation_key: str) -> str:
+    return next(
+        issue_id
+        for (domain, issue_id), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue.translation_key == translation_key
+    )
+
+
+async def test_a_zone_whose_areas_name_no_temperature_sensor_is_blocked(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["study"]))
+
+    runtime = entry.runtime_data
+    assert runtime.zone_is_blocked(GROUND.zone_id)
+    assert runtime.zone_blocked_reason(GROUND.zone_id) == (
+        "Blocked: no usable temperature sensors remain."
+    )
+    issue = _area_issues(hass)["zone_without_temperature_source"]
+    assert issue.translation_placeholders["areas"] == "Study"
+    assert issue.is_fixable is True
+
+    ar.async_get(hass).async_update("study", temperature_entity_id="sensor.spare_temperature")
+    await hass.async_block_till_done()
+
+    assert "zone_without_temperature_source" not in _area_issues(hass)
+    assert not entry.runtime_data.zone_is_blocked(GROUND.zone_id)
+
+
+async def test_an_area_that_names_a_hydronicus_sensor_is_ignored(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["study"]))
+    upstairs = _combined_temperature(hass, UPSTAIRS.zone_id)
+
+    # The study names the combined temperature of another zone.
+    ar.async_get(hass).async_update("study", temperature_entity_id=upstairs.entity_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.plant.zones[GROUND.zone_id].temperature_sensors == ()
+    assert entry.runtime_data.area_resolution.self_provided == {"study": (upstairs.entity_id,)}
+    issues = _area_issues(hass)
+    self_feed = issues["zone_area_self_feed"]
+    assert self_feed.is_fixable is False
+    assert self_feed.translation_placeholders["entity_ids"] == upstairs.entity_id
+    assert self_feed.translation_placeholders["area"] == "Study"
+    assert "zone_without_temperature_source" in issues
+
+    ar.async_get(hass).async_update("study", temperature_entity_id="sensor.spare_temperature")
+    await hass.async_block_till_done()
+    assert not {"zone_area_self_feed", "zone_without_temperature_source"} & set(_area_issues(hass))
+
+
+async def test_home_assistant_does_not_follow_a_sensor_rename_into_the_area(hass, home) -> None:
+    """Renaming a named sensor leaves the area naming the old ID, which a repair reports."""
+    registry = er.async_get(hass)
+    den = registry.async_get_or_create("sensor", "test", "den", suggested_object_id="den")
+    _temperature(hass, den.entity_id, 20.0)
+    _area(hass, "Den", temperature=den.entity_id)
+    entry = await _loaded(hass, _topology(["den", "hall"]))
+    runtime = entry.runtime_data
+
+    registry.async_update_entity(den.entity_id, new_entity_id="sensor.den_air")
+    hass.states.async_remove(den.entity_id)
+    _temperature(hass, "sensor.den_air", 20.0)
+    await hass.async_block_till_done()
+
+    assert ar.async_get(hass).async_get_area("den").temperature_entity_id == den.entity_id
+    # Nothing the Plant follows changed, so it did not reload.
+    assert entry.runtime_data is runtime
+    issue = _area_issues(hass)["missing_area_sensor_binding"]
+    assert issue.is_fixable is False
+    assert issue.translation_placeholders["area"] == "Den"
+    assert issue.translation_placeholders["object_name"] == "Ground floor"
+    # The den sensor is optional, so the hall keeps the zone heating.
+    assert not runtime.zone_is_blocked(GROUND.zone_id)
+
+
+async def test_resolution_reads_missing_areas_and_absent_sensors(hass, home) -> None:
+    resolution = resolve_area_sensors(hass, ["study", "attic", "kitchen", "study"])
+
+    assert resolution.missing_area_ids == ("attic",)
+    assert list(resolution.area_sensors) == ["study", "kitchen"]
+    assert resolution.area_sensors["study"].temperature_entity_id is None
+    assert resolution.named_entity_ids() == {
+        "sensor.kitchen_temperature",
+        "sensor.kitchen_humidity",
+    }
+    assert resolution.name("attic") == "attic"
+    assert resolution.name("kitchen") == "Kitchen"
+
+
+# The plant file review
+
+
+_DOCUMENT: dict[str, Any] = {
+    "hydronicus": 1,
+    "name": "Home",
+    "pumps": {"ground_pump": "switch.ground_pump", "upstairs_pump": "switch.upstairs_pump"},
+    "zones": {
+        "ground_floor": {
+            "areas": ["kitchen", "study"],
+            "loops": {"ground_loop": {"valves": ["switch.ground_valve"], "pump": "ground_pump"}},
+        },
+        "upstairs": {
+            "areas": ["study"],
+            "loops": {
+                "upstairs_loop": {"valves": ["switch.upstairs_valve"], "pump": "upstairs_pump"}
+            },
+        },
+    },
+}
+
+
+async def _import(hass, document: Mapping[str, Any]) -> dict[str, Any]:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "import_plant"}
+    )
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"document": deepcopy(dict(document))}
+    )
+
+
+async def test_the_import_review_lists_area_warnings_without_confirmation(hass, home) -> None:
+    result = await _import(hass, _DOCUMENT)
+
+    assert result["step_id"] == "import_review"
+    warnings = result["description_placeholders"]["warnings"]
+    assert "Area Study of zone Ground floor has no temperature sensor" in warnings
+    assert "Area Study is covered by zones Ground floor and Upstairs" in warnings
+    assert form_fields(result) == {}
+
+
+async def test_the_import_review_confirms_a_missing_area(hass, home) -> None:
+    document = deepcopy(_DOCUMENT)
+    document["zones"]["upstairs"]["areas"] = ["attic"]
+
+    result = await _import(hass, document)
+
+    assert (
+        "Zone Upstairs covers area attic, which does not exist"
+        in (result["description_placeholders"]["warnings"])
+    )
+    assert "confirm" in form_fields(result)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"confirm": True})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+
+
+async def test_the_import_review_confirms_a_cooled_area_without_humidity(hass, home) -> None:
+    document = deepcopy(_DOCUMENT)
+    document["zones"]["upstairs"]["areas"] = ["hall"]
+    document["zones"]["ground_floor"]["loops"]["ground_loop"] |= {
+        "cooling_enabled": True,
+        "supply_temperature_sensor": "sensor.supply",
+    }
+
+    result = await _import(hass, document)
+
+    warnings = result["description_placeholders"]["warnings"]
+    assert "Area Study of zone Ground floor has no humidity sensor" in warnings
+    assert "Area Kitchen" not in warnings
+    assert "confirm" in form_fields(result)
+
+
+async def test_the_plant_file_review_confirms_only_new_missing_areas(hass, home) -> None:
+    topology = _topology(["attic"])
+    entry = await _loaded(hass, topology)
+
+    async def review(document: Mapping[str, Any]) -> dict[str, Any]:
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "edit_plant"}
+        )
+        return await hass.config_entries.options.async_configure(
+            result["flow_id"], {"document": document}
+        )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "export_plant"}
+    )
+    exported = _exported_document(result)
+    ground = next(zone for zone in exported["zones"].values() if zone["id"] == GROUND.zone_id)
+
+    ground["name"] = "Downstairs"  # the attic was already missing
+    result = await review(exported)
+    assert result["step_id"] == "edit_plant_review"
+    assert "covers area attic" in result["description_placeholders"]["warnings"]
+    assert "confirm" not in form_fields(result)
+
+    ground["areas"] = ["attic", "cellar"]
+    result = await review(exported)
+    assert "confirm" in form_fields(result)
+
+
+def _exported_document(result: Mapping[str, Any]) -> dict[str, Any]:
+    import yaml
+
+    text = result["description_placeholders"]["document"]
+    return yaml.safe_load(text.removeprefix("```yaml\n").removesuffix("```"))

@@ -7,6 +7,15 @@ from collections.abc import Collection
 from .model import BindingCategory, CompiledPlant, EntityBinding, ExternalClimateThermostatConfig
 
 
+def _zone_sensor_key_and_label(
+    measurement: str, index: int, area_id: str | None
+) -> tuple[str, str]:
+    """Key an area's sensor by its area, so the key stays put as other areas resolve."""
+    if area_id is None:
+        return f"{measurement}_sensor_{index}", f"{measurement} sensor"
+    return f"area_{measurement}_sensor_{area_id}", f"area {measurement} sensor"
+
+
 def configured_entity_bindings(plant: CompiledPlant) -> tuple[EntityBinding, ...]:
     """Return every configured entity reference in stable topology order."""
     if plant.entity_bindings:
@@ -45,12 +54,12 @@ def configured_entity_bindings(plant: CompiledPlant) -> tuple[EntityBinding, ...
                     "zone",
                     zone.id,
                     zone.name,
-                    f"temperature_sensor_{index}",
-                    "temperature sensor",
+                    *_zone_sensor_key_and_label("temperature", index, sensor.area_id),
                     sensor.entity_id,
                     zone_circuit_ids,
                     (zone.id,),
                     required=sensor.required,
+                    area_id=sensor.area_id,
                 )
             )
         for index, sensor in enumerate(zone.humidity_sensor_metadata):
@@ -60,12 +69,12 @@ def configured_entity_bindings(plant: CompiledPlant) -> tuple[EntityBinding, ...
                     "zone",
                     zone.id,
                     zone.name,
-                    f"humidity_sensor_{index}",
-                    "humidity sensor",
+                    *_zone_sensor_key_and_label("humidity", index, sensor.area_id),
                     sensor.entity_id,
                     zone_circuit_ids,
                     (zone.id,),
                     required=sensor.required,
+                    area_id=sensor.area_id,
                 )
             )
 

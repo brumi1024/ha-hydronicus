@@ -2183,9 +2183,12 @@ def _evaluate_heating_zones(
         zone = plant.zones[zone_id]
         previous = _zone_runtime(runtime, zone.id)
         thermostat_state = _thermostat_state(zone, snapshot)
+        # A Hydronicus thermostat whose areas resolve no sensor aggregates nothing,
+        # which blocks the zone.
         aggregation = (
             aggregate_temperature(zone, snapshot, now=now)
             if zone.temperature_sensor_metadata
+            or not isinstance(zone.thermostat, ExternalClimateThermostatConfig)
             else AggregationResult(
                 value=None,
                 explanation=(

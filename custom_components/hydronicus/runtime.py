@@ -23,6 +23,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util.unit_conversion import TemperatureConverter
 
+from .areas import AreaResolution, zone_area_problems
 from .const import (
     ACTUATOR_COMMAND_TIMEOUT_SECONDS,
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
@@ -93,7 +94,7 @@ from .output_ownership import (
     live_output_conflict,
 )
 from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
-from .repairs import async_sync_repairs
+from .repairs import async_sync_area_repairs, async_sync_repairs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,6 +115,8 @@ class HydronicRuntime:
     # Entity platform domain -> unique IDs that platform provided in this setup.
     provided_entities: dict[str, frozenset[str]] = field(default_factory=dict)
     configuration_fingerprint: str = ""
+    # What the covered areas named when this runtime was built; a change reloads the Plant.
+    area_resolution: AreaResolution = field(default_factory=AreaResolution)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
@@ -161,14 +164,20 @@ class HydronicRuntime:
 
     @classmethod
     def from_entry(
-        cls, entry: Any, *, output_hold: OutputConflict | None = None
+        cls,
+        entry: Any,
+        *,
+        output_hold: OutputConflict | None = None,
+        area_resolution: AreaResolution | None = None,
     ) -> HydronicRuntime:
         """Construct safe runtime data from a config entry.
 
         A runtime built with ``output_hold`` is in Dry run from construction,
         whatever the stored setting says, so it can never send a command.
+        Zones follow the sensors that ``area_resolution`` resolves for their areas.
         """
-        effective = effective_plant(entry)
+        areas = area_resolution if area_resolution is not None else AreaResolution()
+        effective = effective_plant(entry, area_sensors=areas.area_sensors)
         plant = effective.compiled
         return cls(
             plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
@@ -181,7 +190,8 @@ class HydronicRuntime:
             diagnostics_include_actuator_details=bool(
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
             ),
-            configuration_fingerprint=runtime_configuration_fingerprint(entry),
+            configuration_fingerprint=runtime_configuration_fingerprint(entry, areas.fingerprint()),
+            area_resolution=areas,
             runtime_state=RuntimeState(
                 requested_mode=_stored_requested_mode(entry),
             ),
@@ -391,6 +401,14 @@ class HydronicRuntime:
             self._remove_stop_listener()
             self._remove_stop_listener = None
         self._hass = hass
+        # The resolution is fixed for this runtime; a change reloads the Plant.
+        async_sync_area_repairs(
+            hass,
+            self.plant_id,
+            zone_area_problems(self.plant, self.area_resolution),
+            plant_name=self.name,
+            areas=self.area_resolution,
+        )
         self.executor.observe_entities(self._actuator_states(hass))
         self._reconcile_actuator_runtime()
         self._remove_state_listener = async_track_state_change_event(
@@ -415,6 +433,9 @@ class HydronicRuntime:
         self._initializing = False
         if self._hass is not None:
             async_sync_repairs(self._hass, self.plant_id, (), plant_name=self.name)
+            async_sync_area_repairs(
+                self._hass, self.plant_id, (), plant_name=self.name, areas=self.area_resolution
+            )
         async with self._operation_lock:
             if self._remove_state_listener is not None:
                 with suppress(ValueError):
@@ -571,6 +592,27 @@ class HydronicRuntime:
             return None
         aggregation = self.zone_aggregation(zone_id)
         return aggregation.value if aggregation is not None else None
+
+    def zone_area_sensors(self, zone_id: str) -> list[dict[str, str | None]]:
+        """Return the sensors each area of a zone resolves to, in the zone's area order."""
+        zone = self.plant.zones.get(zone_id)
+        if zone is None:
+            return []
+        resolved = self.area_resolution.area_sensors
+        return [
+            {
+                "area_id": area.area_id,
+                "temperature_entity_id": (
+                    resolved[area.area_id].temperature_entity_id
+                    if area.area_id in resolved
+                    else None
+                ),
+                "humidity_entity_id": (
+                    resolved[area.area_id].humidity_entity_id if area.area_id in resolved else None
+                ),
+            }
+            for area in zone.areas
+        ]
 
     def zone_aggregation(self, zone_id: str) -> AggregationResult | None:
         """Return the structured aggregate for a zone from the last evaluation."""

@@ -234,8 +234,11 @@ class ZoneAggregateTemperatureSensor(_HydronicSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Expose sensor-health details without requiring prose parsing."""
-        return _zone_diagnostic_attributes(self._runtime, self._zone_id)
+        """Expose sensor-health details, and the sensors each covered area resolves to."""
+        attributes = _zone_diagnostic_attributes(self._runtime, self._zone_id)
+        if areas := self._runtime.zone_area_sensors(self._zone_id):
+            attributes["areas"] = areas
+        return attributes
 
 
 class ZoneBlockedReasonSensor(_HydronicSensor):

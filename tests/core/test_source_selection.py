@@ -668,3 +668,65 @@ def test_source_selector_configuration_defaults_to_synthetic_execution() -> None
     assert configuration.source_selector.break_interval_seconds == 12.0
     assert configuration.source_selector.minimum_dwell_seconds == 45.0
     assert configuration.source_selector.shadow_only is True
+
+
+def test_source_demand_selection_waits_until_the_target_demand_is_observed() -> None:
+    """Without selector feedback, selection holds until the target's demand reads on."""
+    plant = compile_topology(replace(_configuration(), source_selector=None))
+    selecting = RuntimeState(
+        source_selection=SourceSelectionRuntime(
+            phase=SourceSelectionPhase.SELECTING,
+            target_source_id="boiler",
+            transition_started_at=NOW,
+        ),
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW, True)},
+        pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
+    )
+
+    waiting = evaluate(
+        plant,
+        _snapshot(
+            NOW + timedelta(seconds=1),
+            buffer_available=False,
+            source_demand_states={"buffer": False, "boiler": False},
+        ),
+        selecting,
+        NOW + timedelta(seconds=1),
+    )
+
+    assert waiting.next_runtime.source_selection == selecting.source_selection
+    assert not any(
+        command.actuator_id.startswith("source:") for command in waiting.control_plan.commands
+    )
+
+
+def test_selecting_a_source_without_a_demand_output_issues_no_command() -> None:
+    """A source that has neither a bound selector nor a demand output is selected silently."""
+    configuration = _configuration()
+    boiler = replace(configuration.sources[1], demand_entity_id=None)
+    plant = compile_topology(
+        replace(configuration, sources=(configuration.sources[0], boiler), source_selector=None)
+    )
+    breaking = RuntimeState(
+        source_selection=SourceSelectionRuntime(
+            phase=SourceSelectionPhase.BREAKING,
+            target_source_id="boiler",
+            transition_started_at=NOW - timedelta(seconds=20),
+            released_source_id="buffer",
+        ),
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW, True)},
+        pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
+    )
+
+    selected = evaluate(
+        plant,
+        _snapshot(NOW, buffer_available=False, source_demand_states={"buffer": False}),
+        breaking,
+        NOW,
+    )
+
+    assert selected.next_runtime.source_selection.phase is SourceSelectionPhase.SELECTING
+    assert selected.next_runtime.source_selection.target_source_id == "boiler"
+    assert not any(
+        command.actuator_id.startswith("source:") for command in selected.control_plan.commands
+    )

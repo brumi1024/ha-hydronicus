@@ -825,3 +825,18 @@ def test_rejects_unsupported_sensor_representations(unsupported_fields) -> None:
                 },
             }
         )
+
+
+def test_rejects_a_loop_without_valves() -> None:
+    """A stored loop must name at least one valve."""
+    with pytest.raises(StoredTopologyError, match="'valve_ids' must be a non-empty list of ids"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": PLANT_ID,
+                "topology": {
+                    "circuits": [
+                        {"id": CIRCUIT_ID, "name": "Loop", "valve_ids": [], "pump_id": PUMP_ID}
+                    ]
+                },
+            }
+        )

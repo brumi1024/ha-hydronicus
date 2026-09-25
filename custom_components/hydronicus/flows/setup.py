@@ -16,6 +16,7 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.helpers import selector
 
+from ..areas import area_review_warnings, area_warnings_to_confirm
 from ..const import (
     CONF_ENTITY_ID,
     CONF_NAME,
@@ -149,7 +150,12 @@ class SetupSteps(ConfigFlowBase):
         sharing = other_plant_sharing_warnings(
             self.hass, None, sorted(exclusive_output_entity_ids(self._data))
         )
-        blocking = bool(sharing) or bool(warnings_to_confirm(compiled, None))
+        areas = area_review_warnings(self.hass, self._data)
+        blocking = (
+            bool(sharing)
+            or bool(warnings_to_confirm(compiled, None))
+            or bool(area_warnings_to_confirm(areas))
+        )
         errors: dict[str, str] = {}
         if user_input is not None:
             if not blocking or user_input.get(CONF_CONFIRM, False):
@@ -163,7 +169,10 @@ class SetupSteps(ConfigFlowBase):
                 **placeholders,
                 "zones": _zone_lines(self._data),
                 "logic": _logic_lines(compiled),
-                "warnings": warning_text(compiled, sharing) or "- None",
+                "warnings": warning_text(
+                    compiled, (*(warning.message for warning in areas), *sharing)
+                )
+                or "- None",
             },
         )
 

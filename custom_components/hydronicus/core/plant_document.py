@@ -131,8 +131,17 @@ _THERMOSTAT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = {
     ),
     "external_climate": ("kind", "entity_id"),
 }
+# Area settings in canonical order, with the defaults an export leaves out.
+_AREA_SETTINGS: Final[Mapping[str, object]] = {
+    "required": False,
+    "designated_reference": False,
+    "weight": 1.0,
+    "max_age_seconds": 1800.0,
+}
+_AREA_KEYS: Final = frozenset({"area", *_AREA_SETTINGS})
 _ZONE_FIELDS: Final = (
     "thermostat",
+    "areas",
     "temperature_sensor_metadata",
     "humidity_sensor_metadata",
     "temperature_aggregation",
@@ -169,6 +178,7 @@ _ZONE_KEYS: Final = frozenset(
         "id",
         "name",
         "thermostat",
+        "areas",
         "temperature_sensors",
         "humidity_sensors",
         "temperature_aggregation",
@@ -554,6 +564,8 @@ class _Importer:
                 raise _unknown_key(path, key)
             if key == "thermostat":
                 fields["thermostat"] = self._thermostat(value, key_path)
+            elif key == "areas":
+                fields["areas"] = self._areas(value, key_path)
             elif key == "temperature_sensors":
                 fields["temperature_sensor_metadata"] = self._sensors(value, key_path)
             elif key == "humidity_sensors":
@@ -568,12 +580,15 @@ class _Importer:
                     self._loop(loop_slug, loop, loop_path, slug)
             elif key == "shared_loops":
                 self._shared_loops(slug, value, key_path)
-        if fields["thermostat"]["kind"] == "hydronicus" and not fields.get(
-            "temperature_sensor_metadata"
+        if (
+            fields["thermostat"]["kind"] == "hydronicus"
+            and not fields.get("temperature_sensor_metadata")
+            and not fields.get("areas")
         ):
             raise PlantDocumentError(
                 _join(path, "temperature_sensors"),
-                "A zone with a Hydronicus thermostat needs at least one temperature sensor.",
+                "A zone with a Hydronicus thermostat needs at least one temperature sensor "
+                "or area.",
             )
         if not any(
             route["zone_id"] == declared.object_id and route.get("enabled", True)
@@ -629,6 +644,32 @@ class _Importer:
                 records.append({key: deepcopy(item[key]) for key in _SENSOR_FIELDS if key in item})
             else:
                 raise PlantDocumentError(item_path, "Expected an entity ID or a sensor mapping.")
+        return records
+
+    def _areas(self, value: object, path: str) -> list[dict[str, Any]]:
+        """Read areas, each an area ID or a mapping of ``area`` and its settings."""
+        if not isinstance(value, list):
+            raise PlantDocumentError(path, "Expected a list of areas.")
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(value):
+            item_path = _join(path, index)
+            if isinstance(item, str) and item.strip():
+                area_id, settings = item, {}
+            elif isinstance(item, Mapping):
+                for key in item:
+                    if key not in _AREA_KEYS:
+                        raise _unknown_key(item_path, key)
+                area_id = item.get("area")
+                if not isinstance(area_id, str) or not area_id.strip():
+                    raise PlantDocumentError(_join(item_path, "area"), "An area needs an area ID.")
+                settings = {key: deepcopy(item[key]) for key in _AREA_SETTINGS if key in item}
+            else:
+                raise PlantDocumentError(item_path, "Expected an area ID or an area mapping.")
+            if area_id in seen:
+                raise PlantDocumentError(item_path, f"Area {area_id!r} is listed twice.")
+            seen.add(area_id)
+            records.append({"area_id": area_id, **settings})
         return records
 
     def _shared_loops(self, zone: str, value: object, path: str) -> None:
@@ -827,6 +868,18 @@ def _long_form(
     }
 
 
+def _area_entry(area: Mapping[str, Any]) -> str | dict[str, Any]:
+    """Write an area as its bare ID when every setting is the default."""
+    entry: dict[str, Any] = {"area": area["area_id"]}
+    entry.update(_ordered(area, tuple(_AREA_SETTINGS), skip=("area_id",)))
+    if all(
+        key == "area" or (key in _AREA_SETTINGS and value == _AREA_SETTINGS[key])
+        for key, value in entry.items()
+    ):
+        return str(area["area_id"])
+    return entry
+
+
 def _route_options(route: Mapping[str, Any]) -> dict[str, Any]:
     options: dict[str, Any] = {"route_id": route["id"]}
     if route.get("enabled", True) is False:
@@ -883,6 +936,8 @@ def export_plant_document(
             "name": zone["name"],
             "thermostat": _ordered(thermostat, _THERMOSTAT_FIELDS[thermostat["kind"]]),
         }
+        if "areas" in zone:
+            result["areas"] = [_area_entry(area) for area in zone["areas"]]
         for stored_key, file_key in _SENSOR_COLLECTIONS:
             if stored_key in zone:
                 result[file_key] = [_ordered(sensor, _SENSOR_FIELDS) for sensor in zone[stored_key]]

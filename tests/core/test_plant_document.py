@@ -1148,6 +1148,130 @@ def test_export_keeps_unknown_stored_keys_so_import_rejects_them() -> None:
     assert _error_path(document) == "pumps.pump.legacy"
 
 
+# Areas
+
+
+_K5_EXAMPLE: dict[str, Any] = {
+    "hydronicus": 1,
+    "name": "Home",
+    "pumps": {"pump": "switch.manifold_pump"},
+    "zones": {
+        "ground_floor": {
+            "areas": [
+                "living_room",
+                {"area": "kitchen", "weight": 0.5},
+                {"area": "dining_room", "designated_reference": True},
+            ],
+            "temperature_aggregation": "designated_reference",
+            "loops": {
+                "ground_floor_loop": {"valves": ["switch.ground_floor_valve"], "pump": "pump"}
+            },
+        }
+    },
+}
+
+
+def test_areas_import_as_stored_area_records() -> None:
+    imported = import_plant_document(copy.deepcopy(_K5_EXAMPLE), plant_id=PLANT_ID)
+
+    (zone,) = imported.topology["zones"]
+    assert zone["areas"] == [
+        {"area_id": "living_room"},
+        {"area_id": "kitchen", "weight": 0.5},
+        {"area_id": "dining_room", "designated_reference": True},
+    ]
+    assert "temperature_sensor_metadata" not in zone
+    assert [area.area_id for area in imported.compiled.zones[zone["id"]].areas] == [
+        "living_room",
+        "kitchen",
+        "dining_room",
+    ]
+
+
+def test_areas_export_bare_when_every_setting_is_the_default() -> None:
+    imported = import_plant_document(copy.deepcopy(_K5_EXAMPLE), plant_id=PLANT_ID)
+    topology = copy.deepcopy(imported.topology)
+    topology["zones"][0]["areas"].append(
+        {
+            "area_id": "hall",
+            "required": False,
+            "designated_reference": False,
+            "weight": 1,
+            "max_age_seconds": 1800,
+        }
+    )
+    topology["zones"][0]["areas"].append(
+        {"max_age_seconds": 600, "required": True, "area_id": "study"}
+    )
+
+    document = export_plant_document(
+        name="Home", plant_id=PLANT_ID, topology=topology, ownership=imported.ownership
+    )
+
+    assert document["zones"]["ground_floor"]["areas"] == [
+        "living_room",
+        {"area": "kitchen", "weight": 0.5},
+        {"area": "dining_room", "designated_reference": True},
+        "hall",
+        {"area": "study", "required": True, "max_age_seconds": 600},
+    ]
+    assert list(document["zones"]["ground_floor"])[:4] == ["id", "name", "thermostat", "areas"]
+    # The shorter file still decodes to the same zone.
+    again = import_plant_document(document, plant_id=OTHER_PLANT_ID)
+    stored = plant_configuration_from_entry_data({"plant_id": PLANT_ID, "topology": topology})
+    assert again.compiled.zones[topology["zones"][0]["id"]].areas == stored.zones[0].areas
+
+
+def test_the_area_example_round_trips() -> None:
+    imported = import_plant_document(copy.deepcopy(_K5_EXAMPLE), plant_id=PLANT_ID)
+    canonical = _reexport(imported)
+
+    again = import_plant_document(copy.deepcopy(canonical), plant_id=OTHER_PLANT_ID)
+
+    assert again.topology == imported.topology
+    assert _reexport(again) == canonical
+
+
+def test_an_area_is_a_cooling_source_of_its_zone() -> None:
+    document = copy.deepcopy(_K5_EXAMPLE)
+    document["zones"]["ground_floor"]["loops"]["ground_floor_loop"] |= {
+        "cooling_enabled": True,
+        "supply_temperature_sensor": "sensor.supply",
+    }
+
+    import_plant_document(document, plant_id=PLANT_ID)
+
+
+def test_a_hydronicus_zone_needs_a_temperature_sensor_or_an_area() -> None:
+    document = _minimal()
+    del document["zones"]["bedroom"]["temperature_sensors"]
+
+    with pytest.raises(PlantDocumentError, match="temperature sensor or area") as caught:
+        import_plant_document(document, plant_id=PLANT_ID)
+    assert caught.value.path == "zones.bedroom.temperature_sensors"
+    assert _error_path(_minimal(temperature_sensors=[], areas=[])) == (
+        "zones.bedroom.temperature_sensors"
+    )
+
+
+@pytest.mark.parametrize(
+    ("areas", "path"),
+    [
+        ("kitchen", "zones.bedroom.areas"),
+        ([3], "zones.bedroom.areas.0"),
+        ([" "], "zones.bedroom.areas.0"),
+        ([{"weight": 2}], "zones.bedroom.areas.0.area"),
+        ([{"area": ""}], "zones.bedroom.areas.0.area"),
+        ([{"area": "kitchen", "area_id": "kitchen"}], "zones.bedroom.areas.0.area_id"),
+        ([{"area": "kitchen", "entity_id": "sensor.t"}], "zones.bedroom.areas.0.entity_id"),
+        (["kitchen", {"area": "kitchen"}], "zones.bedroom.areas.1"),
+        ([{"area": "kitchen", "weight": 0}], "zones.bedroom"),
+    ],
+)
+def test_malformed_areas_name_their_path(areas: Any, path: str) -> None:
+    assert _error_path(_minimal(areas=areas)) == path
+
+
 # Properties
 
 

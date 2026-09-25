@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import device_registry as dr
 
+from .areas import async_track_area_changes, covered_area_ids, entry_area_resolution
 from .const import (
     CONF_DRY_RUN,
     CONFIG_ENTRY_MINOR_VERSION,
@@ -78,7 +79,10 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
     runtime = getattr(entry, "runtime_data", None)
     if (
         runtime is not None
-        and runtime.configuration_fingerprint == runtime_configuration_fingerprint(entry)
+        and runtime.configuration_fingerprint
+        == runtime_configuration_fingerprint(
+            entry, entry_area_resolution(hass, entry).fingerprint()
+        )
     ):
         return
     key = (id(hass), entry.entry_id)
@@ -188,14 +192,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
             ", ".join(hold.entity_ids),
             hold.other_entry_id,
         )
+    areas = entry_area_resolution(hass, entry)
     try:
-        runtime = HydronicRuntime.from_entry(entry, output_hold=hold)
+        runtime = HydronicRuntime.from_entry(entry, output_hold=hold, area_resolution=areas)
     except GRAPH_EDIT_ERRORS as error:
         raise _stored_graph_error(entry, error) from error
     entry.runtime_data = runtime
     if hold is not None:
         async_create_output_conflict_issue(hass, entry, hold)
-    remove_update_listener = entry.add_update_listener(_async_reload_entry)
+    update_listener = entry.add_update_listener(_async_reload_entry)
+
+    def _area_changed() -> None:
+        # Reloads only when the change reaches the sensors the Plant follows.
+        hass.async_create_task(
+            _async_reload_entry(hass, entry), f"Follow area changes of Plant {entry.entry_id}"
+        )
+
+    area_listener = async_track_area_changes(
+        hass, covered_area_ids(entry.data), areas, _area_changed
+    )
+
+    def remove_update_listener() -> None:
+        update_listener()
+        area_listener()
+
     registered = False
     forwarded = False
     try:
