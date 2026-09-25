@@ -162,6 +162,8 @@ async def test_a_pump_that_a_loop_uses_cannot_be_removed(hass: HomeAssistant) ->
     result = await async_reconfigure(hass, entry)
     result = await async_choose(flow, result, "pump_pick")
     result = await async_submit(flow, result, {"pump": "floor"})
+    fields = [str(key) for key in result["data_schema"].schema]
+    assert "min_flow_loops" not in fields, "only a pump the source drives holds loops open"
 
     result = await async_submit(
         flow, result, {"name": "Floor", "switch": FLOOR_PUMP, "overrun": 180, "remove": True}

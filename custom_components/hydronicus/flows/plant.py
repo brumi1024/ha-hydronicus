@@ -256,8 +256,13 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_pump(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Add a pump, or edit or remove one when reconfiguring."""
         slug = self._editing
-        loops = docs.loop_refs(self._document, slug) if self._reconfiguring and slug else {}
         values = docs.pump_values(self._document, slug) if user_input is None else user_input
+        # Only a pump the source drives holds loops open; the form offers them once
+        # the pump has no switch.
+        driven = not values.get("switch")
+        loops = (
+            docs.loop_refs(self._document, slug) if self._reconfiguring and slug and driven else {}
+        )
         schema = forms.pump_schema(
             self.hass,
             values,
