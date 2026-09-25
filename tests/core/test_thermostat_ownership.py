@@ -17,11 +17,11 @@ from custom_components.hydronicus.core.model import (
     ExternalHvacAction,
     HydronicusThermostatConfig,
     HydronicusThermostatState,
+    NumericObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
     RuntimeState,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     ThermostatHvacMode,
     Valve,
@@ -80,12 +80,10 @@ def _external_snapshot(
     cooling_safety: bool = False,
 ) -> PlantSnapshot:
     return PlantSnapshot(
-        temperatures=({"sensor.zone": TemperatureObservation(25.0, NOW)} if cooling_safety else {}),
-        humidities=(
-            {"sensor.humidity": TemperatureObservation(50.0, NOW)} if cooling_safety else {}
-        ),
+        temperatures=({"sensor.zone": NumericObservation(25.0, NOW)} if cooling_safety else {}),
+        humidities=({"sensor.humidity": NumericObservation(50.0, NOW)} if cooling_safety else {}),
         supply_temperatures=(
-            {"sensor.supply": TemperatureObservation(18.0, NOW)} if cooling_safety else {}
+            {"sensor.supply": NumericObservation(18.0, NOW)} if cooling_safety else {}
         ),
         thermostats={
             "zone": ExternalClimateThermostatState(
@@ -102,7 +100,7 @@ def test_internal_off_mode_never_requests_demand() -> None:
     """The digital thermostat owns off independently from the Plant mode."""
     plant = _plant(external=False)
     snapshot = PlantSnapshot(
-        temperatures={"sensor.zone": TemperatureObservation(10.0, NOW)},
+        temperatures={"sensor.zone": NumericObservation(10.0, NOW)},
         thermostats={"zone": HydronicusThermostatState(21.0, "none", ThermostatHvacMode.OFF)},
     )
 

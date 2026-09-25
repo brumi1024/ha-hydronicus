@@ -15,11 +15,11 @@ from custom_components.hydronicus.core.entity_bindings import (
 from custom_components.hydronicus.core.model import (
     Circuit,
     DeliveryRoute,
+    NumericObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
     RuntimeState,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     Zone,
@@ -122,8 +122,8 @@ def test_unresolved_actuator_blocks_only_its_circuit() -> None:
         plant,
         PlantSnapshot(
             temperatures={
-                "sensor.zone_a": TemperatureObservation(18.0, NOW),
-                "sensor.zone_b": TemperatureObservation(18.0, NOW),
+                "sensor.zone_a": NumericObservation(18.0, NOW),
+                "sensor.zone_b": NumericObservation(18.0, NOW),
             },
             unavailable_entity_ids=frozenset({"switch.valve_a"}),
         ),
@@ -148,8 +148,8 @@ def test_any_unresolved_primary_path_fails_closed(missing_entity: str) -> None:
         _plant(),
         PlantSnapshot(
             temperatures={
-                "sensor.zone_a": TemperatureObservation(18.0, NOW),
-                "sensor.zone_b": TemperatureObservation(18.0, NOW),
+                "sensor.zone_a": NumericObservation(18.0, NOW),
+                "sensor.zone_b": NumericObservation(18.0, NOW),
             },
             unavailable_entity_ids=frozenset({missing_entity}),
         ),

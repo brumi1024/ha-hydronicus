@@ -37,6 +37,10 @@ The Hydronicus thermostat path expects one or more `sensor` entities.
 The external thermostat path expects one existing `climate` entity.
 The first Circuit form expects a `switch` or `valve` entity for the valve and a `switch` entity for the pump.
 Confirm that the synthetic entities have the expected domain and are visible in Home Assistant.
+Temperature pickers list only sensors with the `temperature` device class, and humidity pickers list only sensors with the `humidity` device class.
+Give a template or helper sensor the matching `device_class` if it is missing from the list.
+Pickers never offer entities that Hydronicus itself creates, because binding a Hydronicus sensor back into a Zone would create a feedback loop.
+An entity chosen before this filtering existed stays selected when you reconfigure the object.
 
 ### The review reports an invalid topology
 
@@ -54,9 +58,33 @@ An unusable optional sensor is excluded from aggregation and appears in the aggr
 If no usable sensor remains, the Zone blocks even when every configured observation is optional.
 
 Check the sensor state in **Developer tools > States**.
-Use a numeric Celsius value for the simulated sensor.
+Use a numeric value with a supported unit for the simulated sensor.
 Check the observation's configured required status, maximum age, and calibration offset before changing the topology.
 Do not paste private device attributes into a public report.
+
+### A sensor with a valid number is still unusable
+
+Check the sensor's `unit_of_measurement` attribute in **Developer tools > States**.
+A temperature observation must report `°C`, `°F`, `K`, or no unit, and a humidity observation must report `%` or no unit.
+Any other unit, including a misspelled one such as `C` or `degC`, makes the observation unusable, so a required sensor blocks the Zone and demand is released.
+This is deliberate: Hydronicus fails closed rather than guessing what an unknown unit means.
+Fix the unit on the source entity, for example in the template sensor definition, and the Zone recovers on the next state change.
+A value without a unit is assumed to be Celsius, so a unit-less sensor that reports Fahrenheit produces a wrong temperature rather than a blocked Zone; add the unit to such a sensor.
+The blocked-reason sensor names the cause, for example `sensor.living_temperature (unsupported unit 'degC')`.
+
+### A sensor is reported as an implausible value
+
+The blocked-reason sensor shows `implausible value` with the reading converted to Celsius, or to percent for humidity.
+The reading has a supported unit but lies outside the [plausible range](configuration.md#plausible-observation-ranges) for its observation type.
+Typical causes are a disconnected probe that reports a fault value such as -127 °C, a template that reports 0 K when its source is unavailable, and a sensor whose unit does not match its value, such as a Celsius value labelled `K`.
+Hydronicus fails closed for such a reading: a required sensor blocks the Zone, a Circuit reference blocks cooling, and a Source temperature disqualifies the Source.
+Fix the sensor or its unit at the source, and the observation recovers on the next state change.
+
+### The temperature differs from the value Home Assistant shows
+
+Hydronicus converts `°F` and `K` observations to Celsius before evaluation, and its own entities store Celsius.
+Home Assistant displays those entities in the configured unit system, so a converted value can look different from the source sensor while describing the same temperature.
+Compare the values after converting them to one unit before changing a target or calibration offset.
 
 ### A battery sensor appears stale
 
@@ -162,6 +190,8 @@ Use the [diagnostic bug-report template](../.github/ISSUE_TEMPLATE/diagnostic-bu
 ### The integration reload fails
 
 Keep the Plant in Dry run.
+If the integration card reports that the stored configuration cannot be loaded safely, the stored Plant graph could not be decoded or compiled, and Hydronicus did not start a runtime for it.
+The message names the first problem it found.
 Check for an invalid or partially edited subentry and restore the last known-good configuration from a Home Assistant backup if necessary.
 Then restart or reload the integration and confirm that the topology preview returns.
 
@@ -175,6 +205,26 @@ Physical equipment must still have its own independent controls and manual recov
 This is expected.
 Every topology or physical binding change invalidates the prior output fingerprint and returns the Plant to Dry run.
 Review the complete graph and the exact valve, pump, and direct source-demand output list before authorizing active heating again.
+
+### A Plant is held in Dry run because of shared outputs
+
+One actuator entity belongs to one live Plant.
+When two Plants bind the same valve, pump, or source-demand entity and both are set to run outside Dry run, the first one to claim its outputs during setup runs live.
+The other one is held in Dry run before it sends any command.
+Its Dry run binary sensor is on, with the `held_by_output_conflict` attribute set to true and `held_by_plant` naming the live Plant.
+A repair says that the Plant is held in Dry run because the other Plant is using the same outputs.
+Hydronicus keeps the held Plant's Dry run setting and confirmed outputs, and resumes it automatically when the conflict is gone.
+That happens when the live Plant enters Dry run, is unloaded, is removed, or fails to set up; the held Plant then reloads through its normal startup and the repair clears.
+Reloading the live Plant does not hand its outputs over.
+To end the conflict for good, bind different entities in one of the Plants, remove one of the Plants, or turn on Dry run for one of them.
+
+### Turning Dry run off reports another Plant or changed outputs
+
+If the confirmation reports that another Plant controls some of the same entities, that Plant is live and owns them.
+This also applies to a Plant that is held in Dry run: its reconfigure form shows Dry run on, and turning it off is refused until the conflict is gone.
+Resolve the overlap as described above before trying again.
+If the confirmation reports that the outputs changed since the form was shown, the Plant configuration was edited while the form was open.
+Review the updated output list that the form now shows, and confirm again only if it is what you expect.
 
 ### A deleted object still appears in the topology preview
 

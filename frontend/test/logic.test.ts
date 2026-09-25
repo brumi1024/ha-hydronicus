@@ -69,9 +69,17 @@ describe("Hydronicus presentation logic", () => {
   });
 
   it("keeps target controls bounded and step-based", () => {
-    expect(adjustTarget(zone, 0.5)).toBe(21.5);
-    expect(adjustTarget({ ...zone, thermostat: { ...zone.thermostat, target_temperature: 35 } }, 0.5)).toBe(35);
-    expect(adjustTarget({ ...zone, thermostat: { ...zone.thermostat, target_temperature: 5 } }, -0.5)).toBe(5);
+    expect(adjustTarget(zone, 1)).toBe(21.5);
+    expect(adjustTarget(zone, -1)).toBe(20.5);
+    expect(adjustTarget({ ...zone, thermostat: { ...zone.thermostat, target_temperature: 35 } }, 1)).toBe(35);
+    expect(adjustTarget({ ...zone, thermostat: { ...zone.thermostat, target_temperature: 5 } }, -1)).toBe(5);
+  });
+
+  it("steps targets in the user's unit system and snaps to the step grid", () => {
+    expect(adjustTarget(zone, 1, "°F")).toBe(70);
+    expect(adjustTarget(zone, -1, "°F")).toBe(69);
+    expect(adjustTarget({ ...zone, thermostat: { ...zone.thermostat, target_temperature: 35 } }, 1, "°F")).toBe(95);
+    expect(adjustTarget({ ...zone, thermostat: { ...zone.thermostat, target_temperature: 21.3 } }, 1, "°C")).toBe(21.5);
   });
 
   it("does not create target or preset actions for an external thermostat", () => {
@@ -91,7 +99,7 @@ describe("Hydronicus presentation logic", () => {
 
     expect(actionForTarget(external, 21.5)).toBeNull();
     expect(actionForPreset(external, "eco")).toBeNull();
-    expect(adjustTarget(external, 0.5)).toBeNull();
+    expect(adjustTarget(external, 1)).toBeNull();
   });
 
   it("preserves a readable blocked external state with nullable diagnostics", () => {

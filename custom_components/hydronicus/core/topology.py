@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from math import isfinite
+from typing import Literal
 
 from .entity_bindings import configured_entity_bindings
 from .model import (
@@ -30,6 +31,43 @@ from .model import (
 
 class TopologyValidationError(ValueError):
     """Raised when a topology cannot safely be evaluated."""
+
+
+# The subclasses below carry the identifiers of common, user-correctable
+# failures so adapters can explain them next to the right form field without
+# parsing messages.
+
+
+class CoolingReferenceError(TopologyValidationError):
+    """A cooling circuit has neither a supply nor a surface temperature reference."""
+
+    def __init__(self, circuit_id: str) -> None:
+        self.circuit_id = circuit_id
+        super().__init__(
+            f"Cooling circuit {circuit_id} requires a supply or surface temperature reference."
+        )
+
+
+class CoolingObservationError(TopologyValidationError):
+    """A cooling circuit serves a zone without the observations cooling needs."""
+
+    def __init__(
+        self, circuit_id: str, zone_id: str, observation: Literal["temperature", "humidity"]
+    ) -> None:
+        self.circuit_id = circuit_id
+        self.zone_id = zone_id
+        self.observation = observation
+        super().__init__(
+            f"Cooling circuit {circuit_id} requires {observation} observations for zone {zone_id}."
+        )
+
+
+class DuplicateActuatorBindingError(TopologyValidationError):
+    """Several actuators are bound to the same Home Assistant entity."""
+
+    def __init__(self, entity_ids: tuple[str, ...]) -> None:
+        self.entity_ids = entity_ids
+        super().__init__(f"Duplicate actuator entity bindings: {', '.join(entity_ids)}.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,9 +412,7 @@ def _validate_relationships(
     ):
         raise TopologyValidationError("Every actuator requires a non-empty entity binding.")
     if duplicates := _duplicates(actuator_entity_ids):
-        raise TopologyValidationError(
-            f"Duplicate actuator entity bindings: {', '.join(sorted(duplicates))}."
-        )
+        raise DuplicateActuatorBindingError(tuple(sorted(duplicates)))
     source_demand_entity_ids = [
         source.demand_entity_id
         for source in configuration.sources
@@ -404,9 +440,7 @@ def _validate_relationships(
         if circuit.cooling_enabled and not (
             circuit.supply_temperature_sensor or circuit.surface_temperature_sensor
         ):
-            raise TopologyValidationError(
-                f"Cooling circuit {circuit.id} requires a supply or surface temperature reference."
-            )
+            raise CoolingReferenceError(circuit.id)
         for reference_name, reference in (
             ("supply", circuit.supply_temperature_sensor),
             ("surface", circuit.surface_temperature_sensor),
@@ -468,15 +502,9 @@ def _validate_relationships(
         }
         for zone_id in sorted(served_zone_ids):
             if not zones[zone_id].temperature_sensor_metadata:
-                raise TopologyValidationError(
-                    f"Cooling circuit {circuit.id} requires temperature observations for "
-                    f"zone {zone_id}."
-                )
+                raise CoolingObservationError(circuit.id, zone_id, "temperature")
             if not zones[zone_id].humidity_sensor_metadata:
-                raise TopologyValidationError(
-                    f"Cooling circuit {circuit.id} requires humidity observations for "
-                    f"zone {zone_id}."
-                )
+                raise CoolingObservationError(circuit.id, zone_id, "humidity")
 
     orphaned_zones = sorted(set(zones) - referenced_zones)
     orphaned_valves = sorted(set(valves) - referenced_valves)

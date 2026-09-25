@@ -7,6 +7,10 @@
         "data": {
           "name": "Plant name",
           "dry_run": "Dry run"
+        },
+        "data_description": {
+          "name": "Shown as the integration entry title and used as the device name prefix.",
+          "dry_run": "When on, Hydronicus calculates the full plan but sends no commands to any actuator."
         }
       },
       "reconfigure": {
@@ -14,6 +18,9 @@
         "description": "Dry run calculates the real heating plan without service calls. Turn it off only after reviewing the configured heating outputs.",
         "data": {
           "dry_run": "Dry run"
+        },
+        "data_description": {
+          "dry_run": "When on, Hydronicus calculates the full plan but sends no commands to any actuator."
         }
       },
       "dry_run_confirmation": {
@@ -21,6 +28,9 @@
         "description": "Hydronicus will be allowed to control only these exact heating outputs when the plan permits them:\n{outputs}",
         "data": {
           "dry_run_confirmation": "I understand these heating outputs may be controlled"
+        },
+        "data_description": {
+          "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
         }
       },
       "zone": {
@@ -28,6 +38,9 @@
         "description": "Choose exactly one thermostat owner. Hydronicus can create the digital thermostat, or an existing Home Assistant climate entity can own demand. An external thermostat must not independently command actuators also configured in Hydronicus.",
         "data": {
           "thermostat_kind": "Thermostat owner"
+        },
+        "data_description": {
+          "thermostat_kind": "Choose whether Hydronicus creates its own thermostat or reads demand from an existing climate entity."
         }
       },
       "zone_details": {
@@ -38,37 +51,74 @@
           "external_climate_entity": "Existing climate thermostat",
           "temperature_sensors": "Temperature sensors",
           "humidity_sensors": "Humidity sensors",
-          "humidity_sensor_metadata": "Humidity sensor metadata",
           "temperature_aggregation": "Temperature aggregation",
           "configure_sensor_metadata": "Edit sensor metadata",
           "heating_start_delta": "Heating start hysteresis",
           "heating_stop_delta": "Heating stop hysteresis",
-          "cooling_start_delta": "Cooling start hysteresis",
-          "cooling_stop_delta": "Cooling stop hysteresis",
-          "minimum_active_duration_seconds": "Minimum active duration (seconds)",
-          "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
+          "minimum_active_duration_seconds": "Minimum active duration",
+          "minimum_idle_duration_seconds": "Minimum idle duration",
           "comfort": "Comfort preset target",
           "eco": "Eco preset target",
           "away": "Away preset target"
+        },
+        "data_description": {
+          "name": "Shown as the name of the zone thermostat and its entities.",
+          "external_climate_entity": "The climate entity that owns demand for this zone. Hydronicus only reads it and never commands it.",
+          "temperature_sensors": "Room temperature sensors combined into the zone temperature.",
+          "humidity_sensors": "Optional room humidity sensors, used for the dew point when cooling.",
+          "temperature_aggregation": "How readings from several temperature sensors are combined into one zone temperature.",
+          "configure_sensor_metadata": "Opens one extra form per temperature sensor to set its weight, calibration offset, and freshness limit.",
+          "heating_start_delta": "Heating starts when the zone temperature falls this far below the target.",
+          "heating_stop_delta": "Heating stops when the zone temperature rises this far above the target.",
+          "minimum_active_duration_seconds": "Once demand starts, it is held for at least this long. Use 0 to disable.",
+          "minimum_idle_duration_seconds": "Once demand stops, it stays off for at least this long. Use 0 to disable.",
+          "comfort": "Optional target temperature for the comfort preset.",
+          "eco": "Optional target temperature for the eco preset.",
+          "away": "Optional target temperature for the away preset."
+        },
+        "sections": {
+          "cooling": {
+            "name": "Cooling",
+            "description": "Hysteresis used when the zone is in cooling mode.",
+            "data": {
+              "cooling_start_delta": "Cooling start hysteresis",
+              "cooling_stop_delta": "Cooling stop hysteresis"
+            },
+            "data_description": {
+              "cooling_start_delta": "Cooling starts when the zone temperature rises this far above the target.",
+              "cooling_stop_delta": "Cooling stops when the zone temperature falls this far below the target."
+            }
+          }
         }
       },
       "sensor_metadata": {
         "title": "Edit temperature sensor",
-        "description": "Configure this sensor explicitly. A required sensor blocks the zone when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
+        "description": "Configure {sensor} explicitly. A required sensor blocks the zone when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
         "data": {
           "sensor_entity": "Temperature sensor",
           "required": "Required sensor",
           "weight": "Aggregation weight",
-          "calibration_offset": "Calibration offset (degrees Celsius)",
-          "max_age_seconds": "Maximum age (seconds)",
+          "calibration_offset": "Calibration offset",
+          "max_age_seconds": "Maximum age",
           "designated_reference": "Designated reference sensor"
+        },
+        "data_description": {
+          "sensor_entity": "The sensor these settings apply to.",
+          "required": "A required sensor that is stale or unavailable blocks the zone. An optional one is left out of the aggregate instead.",
+          "weight": "Relative weight of this sensor in the weighted mean.",
+          "calibration_offset": "Added to every reading from this sensor before aggregation.",
+          "max_age_seconds": "A reading older than this is treated as stale.",
+          "designated_reference": "Used alone when the zone aggregation is set to designated reference."
         }
       },
       "sensor_policy": {
         "title": "Choose sensor aggregation",
-        "description": "All selected sensors have editable metadata.",
+        "description": "All selected sensors have editable metadata, so every aggregation policy is available.",
         "data": {
           "temperature_aggregation": "Temperature aggregation"
+        },
+        "data_description": {
+          "temperature_aggregation": "How readings from several temperature sensors are combined into one zone temperature."
         }
       },
       "circuit": {
@@ -78,38 +128,97 @@
           "name": "Circuit name",
           "valve_entity": "Valve entity",
           "pump_entity": "Pump entity",
-          "valve_opening_time_seconds": "Valve opening time (seconds)",
-          "readiness_entity_id": "Valve readiness feedback (optional)",
-          "pump_overrun_seconds": "Pump overrun (seconds)",
-          "position_feedback_entity": "Valve position feedback",
-          "position_feedback_max_age_seconds": "Valve position feedback maximum age (seconds)",
-          "power_feedback_entity": "Pump power feedback",
-          "power_feedback_max_age_seconds": "Pump power feedback maximum age (seconds)",
-          "flow_feedback_entity": "Pump flow feedback",
-          "flow_feedback_max_age_seconds": "Pump flow feedback maximum age (seconds)",
-          "fault_feedback_entity": "Pump fault feedback",
-          "fault_feedback_max_age_seconds": "Pump fault feedback maximum age (seconds)",
-          "cooling_enabled": "Cooling enabled",
-          "supply_temperature_sensor": "Supply temperature reference",
-          "surface_temperature_sensor": "Surface temperature reference",
-          "condensation_margin": "Condensation margin (degrees Celsius)",
-          "supply_temperature_max_age_seconds": "Supply reference maximum age (seconds)",
-          "surface_temperature_max_age_seconds": "Surface reference maximum age (seconds)"
+          "valve_opening_time_seconds": "Valve opening time",
+          "pump_overrun_seconds": "Pump overrun"
+        },
+        "data_description": {
+          "name": "Also used to name the first valve and pump.",
+          "valve_entity": "The switch or valve that opens this circuit.",
+          "pump_entity": "The switch that runs the circulation pump for this circuit.",
+          "valve_opening_time_seconds": "How long the valve needs to open before the pump may start.",
+          "pump_overrun_seconds": "How long the pump keeps running after the last valve closes."
+        },
+        "sections": {
+          "feedback": {
+            "name": "Feedback",
+            "description": "Optional entities that confirm what the valve and pump are doing.",
+            "data": {
+              "readiness_entity_id": "Valve readiness feedback",
+              "position_feedback_entity": "Valve position feedback",
+              "position_feedback_max_age_seconds": "Valve position feedback maximum age",
+              "power_feedback_entity": "Pump power feedback",
+              "power_feedback_max_age_seconds": "Pump power feedback maximum age",
+              "flow_feedback_entity": "Pump flow feedback",
+              "flow_feedback_max_age_seconds": "Pump flow feedback maximum age",
+              "fault_feedback_entity": "Pump fault feedback",
+              "fault_feedback_max_age_seconds": "Pump fault feedback maximum age"
+            },
+            "data_description": {
+              "readiness_entity_id": "Optional entity that reports the valve is fully open. When set, the pump waits for it.",
+              "position_feedback_entity": "Optional sensor that reports the measured valve position.",
+              "position_feedback_max_age_seconds": "Position feedback older than this is treated as stale.",
+              "power_feedback_entity": "Optional sensor that reports the pump power draw.",
+              "power_feedback_max_age_seconds": "Power feedback older than this is treated as stale.",
+              "flow_feedback_entity": "Optional sensor that reports the measured flow.",
+              "flow_feedback_max_age_seconds": "Flow feedback older than this is treated as stale.",
+              "fault_feedback_entity": "Optional binary sensor or sensor that reports a pump fault.",
+              "fault_feedback_max_age_seconds": "Fault feedback older than this is treated as stale."
+            }
+          },
+          "cooling": {
+            "name": "Cooling",
+            "description": "Enable cooling and configure condensation protection for this circuit.",
+            "data": {
+              "cooling_enabled": "Cooling enabled",
+              "supply_temperature_sensor": "Supply temperature reference",
+              "surface_temperature_sensor": "Surface temperature reference",
+              "condensation_margin": "Condensation margin",
+              "supply_temperature_max_age_seconds": "Supply reference maximum age",
+              "surface_temperature_max_age_seconds": "Surface reference maximum age"
+            },
+            "data_description": {
+              "cooling_enabled": "Allow this circuit to deliver cooling. Cooling requires a supply or surface temperature reference.",
+              "supply_temperature_sensor": "Sensor for the circuit supply water temperature, used for condensation protection.",
+              "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection.",
+              "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point.",
+              "supply_temperature_max_age_seconds": "A supply temperature reading older than this is treated as stale.",
+              "surface_temperature_max_age_seconds": "A surface temperature reading older than this is treated as stale."
+            }
+          }
         }
       },
       "review": {
         "title": "Review Dry run topology",
-        "description": "Zone {zone} will request circuit {circuit}. Dry run calculates the plan without service calls.\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}"
+        "description": "Zone {zone} will request circuit {circuit}. Dry run calculates the plan without service calls.\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nOutputs:\n{outputs}",
+        "data": {
+          "dry_run_confirmation": "I understand these heating outputs may be controlled"
+        },
+        "data_description": {
+          "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
+        }
       }
     },
     "error": {
-      "name_required": "A plant name is required.",
+      "name_required": "A name is required.",
       "duplicate_actuator_entity": "The valve and pump must use different Home Assistant entities.",
       "invalid_topology": "The initial topology is not valid.",
       "dry_run_confirmation_required": "Confirm that the configured heating outputs may be controlled.",
       "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit Dry run again after the shutdown finishes.",
       "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
-      "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation."
+      "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation.",
+      "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
+      "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls.",
+      "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+      "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
+      "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in the zone this circuit serves. Turn cooling off, or restart setup and add a humidity sensor to the zone.",
+      "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
+      "outputs_changed": "The outputs changed since this form was shown. Review the updated list and confirm again.",
+      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live plant. Turn on Dry run for {other_plant}, or bind different entities in this plant, then try again."
+    },
+    "abort": {
+      "already_configured": "This plant is already configured.",
+      "already_in_progress": "A setup flow for this plant is already in progress.",
+      "reconfigure_successful": "The plant configuration was updated."
     }
   },
   "config_subentries": {
@@ -122,28 +231,66 @@
       "step": {
         "user": {
           "title": "Add a valve actuator",
-          "description": "Attach a shadow-mode valve to one or more existing circuits.",
+          "description": "Attach a valve to one or more existing circuits. It is controlled according to the Plant Dry run setting.",
           "data": {
             "name": "Actuator name",
             "entity_id": "Valve entity",
-            "opening_time_seconds": "Opening time (seconds)",
-            "readiness_entity_id": "Valve readiness feedback (optional)",
-            "position_feedback_entity": "Valve position feedback",
-            "position_feedback_max_age_seconds": "Valve position feedback maximum age (seconds)",
+            "opening_time_seconds": "Opening time",
             "circuit_ids": "Circuits"
+          },
+          "data_description": {
+            "name": "Shown as the name of this valve.",
+            "entity_id": "The switch or valve that Hydronicus opens and closes.",
+            "opening_time_seconds": "How long the valve needs to open before the pump may start.",
+            "circuit_ids": "Circuits that need this valve open to deliver heat."
+          },
+          "sections": {
+            "feedback": {
+              "name": "Feedback",
+              "description": "Optional entities that confirm what the valve is doing.",
+              "data": {
+                "readiness_entity_id": "Valve readiness feedback",
+                "position_feedback_entity": "Valve position feedback",
+                "position_feedback_max_age_seconds": "Valve position feedback maximum age"
+              },
+              "data_description": {
+                "readiness_entity_id": "Optional entity that reports the valve is fully open. When set, the pump waits for it.",
+                "position_feedback_entity": "Optional sensor that reports the measured valve position.",
+                "position_feedback_max_age_seconds": "Position feedback older than this is treated as stale."
+              }
+            }
           }
         },
         "reconfigure": {
           "title": "Update valve actuator",
-          "description": "Change the valve binding, opening time, or attached circuits.",
+          "description": "Change the valve binding, opening time, feedback, or attached circuits.",
           "data": {
             "name": "Actuator name",
             "entity_id": "Valve entity",
-            "opening_time_seconds": "Opening time (seconds)",
-            "readiness_entity_id": "Valve readiness feedback (optional)",
-            "position_feedback_entity": "Valve position feedback",
-            "position_feedback_max_age_seconds": "Valve position feedback maximum age (seconds)",
+            "opening_time_seconds": "Opening time",
             "circuit_ids": "Circuits"
+          },
+          "data_description": {
+            "name": "Shown as the name of this valve.",
+            "entity_id": "The switch or valve that Hydronicus opens and closes.",
+            "opening_time_seconds": "How long the valve needs to open before the pump may start.",
+            "circuit_ids": "Circuits that need this valve open to deliver heat."
+          },
+          "sections": {
+            "feedback": {
+              "name": "Feedback",
+              "description": "Optional entities that confirm what the valve is doing.",
+              "data": {
+                "readiness_entity_id": "Valve readiness feedback",
+                "position_feedback_entity": "Valve position feedback",
+                "position_feedback_max_age_seconds": "Valve position feedback maximum age"
+              },
+              "data_description": {
+                "readiness_entity_id": "Optional entity that reports the valve is fully open. When set, the pump waits for it.",
+                "position_feedback_entity": "Optional sensor that reports the measured valve position.",
+                "position_feedback_max_age_seconds": "Position feedback older than this is treated as stale."
+              }
+            }
           }
         },
         "review": {
@@ -151,16 +298,25 @@
           "description": "Review these non-fatal topology warnings before saving:\n{warnings}",
           "data": {
             "confirm": "I understand these warnings"
+          },
+          "data_description": {
+            "confirm": "Required to save a topology that has the warnings listed above."
           }
         }
       },
       "error": {
         "name_required": "An actuator name is required.",
         "invalid_actuator": "The actuator cannot be attached to this topology.",
-        "confirm_required": "Confirm that you understand these warnings before saving."
+        "circuits_required": "Select at least one circuit.",
+        "confirm_required": "Confirm that you understand these warnings before saving.",
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity."
       },
       "abort": {
-        "no_circuits": "Add a hydraulic circuit before adding an actuator."
+        "no_circuits": "Add a hydraulic circuit before adding an actuator.",
+        "already_configured": "This object is already configured.",
+        "reconfigure_successful": "The configuration was updated."
       }
     },
     "circuit": {
@@ -177,29 +333,73 @@
             "name": "Circuit name",
             "zone_ids": "Zones",
             "valve_ids": "Required valves",
-            "pump_id": "Pump",
-            "cooling_enabled": "Cooling enabled",
-            "supply_temperature_sensor": "Supply temperature reference",
-            "surface_temperature_sensor": "Surface temperature reference",
-            "condensation_margin": "Condensation margin (degrees Celsius)",
-            "supply_temperature_max_age_seconds": "Supply reference maximum age (seconds)",
-            "surface_temperature_max_age_seconds": "Surface reference maximum age (seconds)"
+            "pump_id": "Pump"
+          },
+          "data_description": {
+            "name": "Shown as the name of this circuit.",
+            "zone_ids": "Comfort zones served by this circuit.",
+            "valve_ids": "Every selected valve must open before the pump may run.",
+            "pump_id": "The pump that circulates water through this circuit."
+          },
+          "sections": {
+            "cooling": {
+              "name": "Cooling",
+              "description": "Enable cooling and configure condensation protection for this circuit.",
+              "data": {
+                "cooling_enabled": "Cooling enabled",
+                "supply_temperature_sensor": "Supply temperature reference",
+                "surface_temperature_sensor": "Surface temperature reference",
+                "condensation_margin": "Condensation margin",
+                "supply_temperature_max_age_seconds": "Supply reference maximum age",
+                "surface_temperature_max_age_seconds": "Surface reference maximum age"
+              },
+              "data_description": {
+                "cooling_enabled": "Allow this circuit to deliver cooling. Cooling requires a supply or surface temperature reference.",
+                "supply_temperature_sensor": "Sensor for the circuit supply water temperature, used for condensation protection.",
+                "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection.",
+                "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point.",
+                "supply_temperature_max_age_seconds": "A supply temperature reading older than this is treated as stale.",
+                "surface_temperature_max_age_seconds": "A surface temperature reading older than this is treated as stale."
+              }
+            }
           }
         },
         "reconfigure": {
           "title": "Update hydraulic circuit",
-          "description": "Change the circuit name, equipment path, or served zones.",
+          "description": "Change the circuit name, equipment path, cooling, or served zones.",
           "data": {
             "name": "Circuit name",
             "zone_ids": "Zones",
             "valve_ids": "Required valves",
-            "pump_id": "Pump",
-            "cooling_enabled": "Cooling enabled",
-            "supply_temperature_sensor": "Supply temperature reference",
-            "surface_temperature_sensor": "Surface temperature reference",
-            "condensation_margin": "Condensation margin (degrees Celsius)",
-            "supply_temperature_max_age_seconds": "Supply reference maximum age (seconds)",
-            "surface_temperature_max_age_seconds": "Surface reference maximum age (seconds)"
+            "pump_id": "Pump"
+          },
+          "data_description": {
+            "name": "Shown as the name of this circuit.",
+            "zone_ids": "Comfort zones served by this circuit.",
+            "valve_ids": "Every selected valve must open before the pump may run.",
+            "pump_id": "The pump that circulates water through this circuit."
+          },
+          "sections": {
+            "cooling": {
+              "name": "Cooling",
+              "description": "Enable cooling and configure condensation protection for this circuit.",
+              "data": {
+                "cooling_enabled": "Cooling enabled",
+                "supply_temperature_sensor": "Supply temperature reference",
+                "surface_temperature_sensor": "Surface temperature reference",
+                "condensation_margin": "Condensation margin",
+                "supply_temperature_max_age_seconds": "Supply reference maximum age",
+                "surface_temperature_max_age_seconds": "Surface reference maximum age"
+              },
+              "data_description": {
+                "cooling_enabled": "Allow this circuit to deliver cooling. Cooling requires a supply or surface temperature reference.",
+                "supply_temperature_sensor": "Sensor for the circuit supply water temperature, used for condensation protection.",
+                "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection.",
+                "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point.",
+                "supply_temperature_max_age_seconds": "A supply temperature reading older than this is treated as stale.",
+                "surface_temperature_max_age_seconds": "A surface temperature reading older than this is treated as stale."
+              }
+            }
           }
         },
         "review": {
@@ -207,16 +407,27 @@
           "description": "Review these non-fatal topology warnings before saving:\n{warnings}",
           "data": {
             "confirm": "I understand these warnings"
+          },
+          "data_description": {
+            "confirm": "Required to save a topology that has the warnings listed above."
           }
         }
       },
       "error": {
         "name_required": "A circuit name is required.",
         "invalid_circuit": "The circuit cannot be added to this topology.",
-        "confirm_required": "Confirm that you understand these warnings before saving."
+        "zones_required": "Select at least one zone.",
+        "valves_required": "Select at least one valve.",
+        "confirm_required": "Confirm that you understand these warnings before saving.",
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
+        "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every zone this circuit serves. Add them to those zones first, or turn cooling off."
       },
       "abort": {
-        "incomplete_plant": "The plant needs at least one zone, valve, and pump before adding a circuit."
+        "incomplete_plant": "The plant needs at least one zone, valve, and pump before adding a circuit.",
+        "already_configured": "This object is already configured.",
+        "reconfigure_successful": "The configuration was updated."
       }
     },
     "zone": {
@@ -230,67 +441,100 @@
           "title": "Add a comfort zone",
           "description": "Choose exactly one thermostat owner, then configure observations and route the Zone through existing circuits. An external thermostat is read-only to Hydronicus and must not independently command the same actuators.",
           "data": {
-            "name": "Zone name",
-            "thermostat_kind": "Thermostat owner",
-            "external_climate_entity": "Existing climate thermostat",
-            "temperature_sensors": "Temperature sensors",
-            "humidity_sensors": "Humidity sensors",
-            "humidity_sensor_metadata": "Humidity sensor metadata",
-            "temperature_aggregation": "Temperature aggregation",
-            "circuit_ids": "Circuits",
-            "configure_sensor_metadata": "Edit sensor metadata",
-            "heating_start_delta": "Heating start hysteresis",
-            "heating_stop_delta": "Heating stop hysteresis",
-            "cooling_start_delta": "Cooling start hysteresis",
-            "cooling_stop_delta": "Cooling stop hysteresis",
-            "minimum_active_duration_seconds": "Minimum active duration (seconds)",
-            "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
-            "comfort": "Comfort preset target",
-            "eco": "Eco preset target",
-            "away": "Away preset target"
+            "thermostat_kind": "Thermostat owner"
+          },
+          "data_description": {
+            "thermostat_kind": "Choose whether Hydronicus creates its own thermostat or reads demand from an existing climate entity."
           }
         },
         "reconfigure": {
           "title": "Update comfort zone",
           "description": "Change the thermostat owner, observations, aggregation policy, or available circuits. Hydronicus remains read-only toward an external climate entity, which must not independently command the same actuators.",
           "data": {
+            "thermostat_kind": "Thermostat owner"
+          },
+          "data_description": {
+            "thermostat_kind": "Choose whether Hydronicus creates its own thermostat or reads demand from an existing climate entity."
+          }
+        },
+        "details": {
+          "title": "Configure the comfort zone",
+          "description": "Configure the observations, policy, and circuits owned by this comfort zone.",
+          "data": {
             "name": "Zone name",
-            "thermostat_kind": "Thermostat owner",
             "external_climate_entity": "Existing climate thermostat",
             "temperature_sensors": "Temperature sensors",
             "humidity_sensors": "Humidity sensors",
-            "humidity_sensor_metadata": "Humidity sensor metadata",
             "temperature_aggregation": "Temperature aggregation",
-            "circuit_ids": "Circuits",
             "configure_sensor_metadata": "Edit sensor metadata",
             "heating_start_delta": "Heating start hysteresis",
             "heating_stop_delta": "Heating stop hysteresis",
-            "cooling_start_delta": "Cooling start hysteresis",
-            "cooling_stop_delta": "Cooling stop hysteresis",
-            "minimum_active_duration_seconds": "Minimum active duration (seconds)",
-            "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
+            "minimum_active_duration_seconds": "Minimum active duration",
+            "minimum_idle_duration_seconds": "Minimum idle duration",
             "comfort": "Comfort preset target",
             "eco": "Eco preset target",
-            "away": "Away preset target"
+            "away": "Away preset target",
+            "circuit_ids": "Circuits"
+          },
+          "data_description": {
+            "name": "Shown as the name of the zone thermostat and its entities.",
+            "external_climate_entity": "The climate entity that owns demand for this zone. Hydronicus only reads it and never commands it.",
+            "temperature_sensors": "Room temperature sensors combined into the zone temperature.",
+            "humidity_sensors": "Optional room humidity sensors, used for the dew point when cooling.",
+            "temperature_aggregation": "How readings from several temperature sensors are combined into one zone temperature.",
+            "configure_sensor_metadata": "Opens one extra form per temperature sensor to set its weight, calibration offset, and freshness limit.",
+            "heating_start_delta": "Heating starts when the zone temperature falls this far below the target.",
+            "heating_stop_delta": "Heating stops when the zone temperature rises this far above the target.",
+            "minimum_active_duration_seconds": "Once demand starts, it is held for at least this long. Use 0 to disable.",
+            "minimum_idle_duration_seconds": "Once demand stops, it stays off for at least this long. Use 0 to disable.",
+            "comfort": "Optional target temperature for the comfort preset.",
+            "eco": "Optional target temperature for the eco preset.",
+            "away": "Optional target temperature for the away preset.",
+            "circuit_ids": "Hydraulic circuits that can deliver heat to this zone."
+          },
+          "sections": {
+            "cooling": {
+              "name": "Cooling",
+              "description": "Hysteresis used when the zone is in cooling mode.",
+              "data": {
+                "cooling_start_delta": "Cooling start hysteresis",
+                "cooling_stop_delta": "Cooling stop hysteresis"
+              },
+              "data_description": {
+                "cooling_start_delta": "Cooling starts when the zone temperature rises this far above the target.",
+                "cooling_stop_delta": "Cooling stops when the zone temperature falls this far below the target."
+              }
+            }
           }
         },
         "sensor_metadata": {
           "title": "Edit temperature sensor",
-          "description": "Configure this sensor explicitly. Required sensors block the zone when stale or unavailable.",
+          "description": "Configure {sensor} explicitly. A required sensor blocks the zone when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
           "data": {
             "sensor_entity": "Temperature sensor",
             "required": "Required sensor",
             "weight": "Aggregation weight",
-            "calibration_offset": "Calibration offset (degrees Celsius)",
-            "max_age_seconds": "Maximum age (seconds)",
+            "calibration_offset": "Calibration offset",
+            "max_age_seconds": "Maximum age",
             "designated_reference": "Designated reference sensor"
+          },
+          "data_description": {
+            "sensor_entity": "The sensor these settings apply to.",
+            "required": "A required sensor that is stale or unavailable blocks the zone. An optional one is left out of the aggregate instead.",
+            "weight": "Relative weight of this sensor in the weighted mean.",
+            "calibration_offset": "Added to every reading from this sensor before aggregation.",
+            "max_age_seconds": "A reading older than this is treated as stale.",
+            "designated_reference": "Used alone when the zone aggregation is set to designated reference."
           }
         },
         "sensor_policy": {
           "title": "Choose sensor aggregation",
-          "description": "All selected sensors have editable metadata.",
+          "description": "All selected sensors have editable metadata, so every aggregation policy is available.",
           "data": {
             "temperature_aggregation": "Temperature aggregation"
+          },
+          "data_description": {
+            "temperature_aggregation": "How readings from several temperature sensors are combined into one zone temperature."
           }
         },
         "review": {
@@ -298,18 +542,30 @@
           "description": "Review these non-fatal topology warnings before saving:\n{warnings}",
           "data": {
             "confirm": "I understand these warnings"
+          },
+          "data_description": {
+            "confirm": "Required to save a topology that has the warnings listed above."
           }
         }
       },
       "error": {
         "name_required": "A zone name is required.",
-      "invalid_zone": "The zone cannot be added to this topology.",
-      "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
-      "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
-      "confirm_required": "Confirm that you understand these warnings before saving."
+        "invalid_zone": "The zone cannot be added to this topology.",
+        "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls.",
+        "circuits_required": "Select at least one circuit.",
+        "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
+        "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
+        "confirm_required": "Confirm that you understand these warnings before saving.",
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "humidity_required_for_cooling": "Circuits with cooling need at least one humidity sensor in each zone they serve.",
+        "temperature_required_for_cooling": "Circuits with cooling need at least one temperature sensor in each zone they serve, even when an existing thermostat owns the zone.",
+        "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed."
       },
       "abort": {
-        "no_circuits": "Add a hydraulic circuit before adding a zone."
+        "no_circuits": "Add a hydraulic circuit before adding a zone.",
+        "already_configured": "This object is already configured.",
+        "reconfigure_successful": "The configuration was updated."
       }
     },
     "source": {
@@ -325,13 +581,24 @@
           "data": {
             "name": "Source name",
             "source_type": "Source type",
-            "priority": "Priority (lower wins)",
+            "priority": "Priority",
             "availability_entity": "Availability entity",
             "source_demand_entity": "Source demand entity",
             "temperature_entity": "Buffer temperature entity",
-            "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
-            "maximum_age_seconds": "Maximum buffer temperature age (seconds)",
-            "hysteresis": "Buffer threshold hysteresis (degrees Celsius)"
+            "minimum_temperature": "Minimum buffer temperature",
+            "maximum_age_seconds": "Maximum buffer temperature age",
+            "hysteresis": "Buffer threshold hysteresis"
+          },
+          "data_description": {
+            "name": "Shown as the name of this heat source.",
+            "source_type": "An external source is available when its availability entity says so. A buffer is also qualified by its temperature.",
+            "priority": "When several sources are available, the lowest number wins.",
+            "availability_entity": "Optional entity that reports whether the source can supply heat.",
+            "source_demand_entity": "Optional switch or valve that requests heat from the source. It is only commanded outside Dry run.",
+            "temperature_entity": "Sensor for the buffer temperature. Required for a temperature-qualified buffer.",
+            "minimum_temperature": "The buffer qualifies only at or above this temperature.",
+            "maximum_age_seconds": "A buffer temperature reading older than this is treated as stale.",
+            "hysteresis": "Once qualified, the buffer stays qualified until it falls this far below the minimum."
           }
         },
         "reconfigure": {
@@ -340,38 +607,338 @@
           "data": {
             "name": "Source name",
             "source_type": "Source type",
-            "priority": "Priority (lower wins)",
+            "priority": "Priority",
             "availability_entity": "Availability entity",
             "source_demand_entity": "Source demand entity",
             "temperature_entity": "Buffer temperature entity",
-            "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
-            "maximum_age_seconds": "Maximum buffer temperature age (seconds)",
-            "hysteresis": "Buffer threshold hysteresis (degrees Celsius)"
+            "minimum_temperature": "Minimum buffer temperature",
+            "maximum_age_seconds": "Maximum buffer temperature age",
+            "hysteresis": "Buffer threshold hysteresis"
+          },
+          "data_description": {
+            "name": "Shown as the name of this heat source.",
+            "source_type": "An external source is available when its availability entity says so. A buffer is also qualified by its temperature.",
+            "priority": "When several sources are available, the lowest number wins.",
+            "availability_entity": "Optional entity that reports whether the source can supply heat.",
+            "source_demand_entity": "Optional switch or valve that requests heat from the source. It is only commanded outside Dry run.",
+            "temperature_entity": "Sensor for the buffer temperature. Required for a temperature-qualified buffer.",
+            "minimum_temperature": "The buffer qualifies only at or above this temperature.",
+            "maximum_age_seconds": "A buffer temperature reading older than this is treated as stale.",
+            "hysteresis": "Once qualified, the buffer stays qualified until it falls this far below the minimum."
+          }
+        },
+        "review": {
+          "title": "Review source warnings",
+          "description": "Review these warnings before saving:\n{warnings}",
+          "data": {
+            "confirm": "I understand these warnings"
+          },
+          "data_description": {
+            "confirm": "Required to save a source that has the warnings listed above."
           }
         }
       },
       "error": {
         "name_required": "A source name is required.",
-        "invalid_source": "The source configuration is not valid."
+        "invalid_source": "The source configuration is not valid.",
+        "confirm_required": "Confirm that you understand these warnings before saving.",
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the plant back into itself.",
+        "buffer_temperature_required": "A temperature-qualified buffer needs a temperature entity."
+      },
+      "abort": {
+        "already_configured": "This object is already configured.",
+        "reconfigure_successful": "The configuration was updated."
+      }
+    }
+  },
+  "selector": {
+    "thermostat_kind": {
+      "options": {
+        "hydronicus": "Hydronicus digital thermostat",
+        "external_climate": "Existing Home Assistant climate entity"
+      }
+    },
+    "temperature_aggregation": {
+      "options": {
+        "mean": "Mean",
+        "median": "Median",
+        "minimum": "Heating-oriented minimum",
+        "maximum": "Cooling-oriented maximum",
+        "designated_reference": "Designated reference",
+        "weighted_mean": "Weighted mean"
+      }
+    },
+    "source_type": {
+      "options": {
+        "external": "External source",
+        "temperature_qualified_buffer": "Temperature-qualified buffer"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "dry_run": {
+        "name": "Dry run"
+      },
+      "mode_changeover_lockout": {
+        "name": "Mode changeover lockout"
+      },
+      "zone_demand": {
+        "name": "Demand"
+      },
+      "zone_blocked": {
+        "name": "Blocked"
+      },
+      "zone_cooling_demand": {
+        "name": "Cooling demand"
+      },
+      "zone_cooling_blocked": {
+        "name": "Cooling blocked"
+      },
+      "source_demand": {
+        "name": "Demand"
+      },
+      "source_available": {
+        "name": "Available"
+      },
+      "source_active": {
+        "name": "Active"
+      },
+      "source_blocked": {
+        "name": "Blocked"
+      },
+      "valve_requested": {
+        "name": "Requested"
+      },
+      "pump_requested": {
+        "name": "Requested"
+      },
+      "actuator_mismatch": {
+        "name": "Mismatch"
+      },
+      "actuator_blocked": {
+        "name": "Blocked"
+      }
+    },
+    "button": {
+      "safe_shutdown": {
+        "name": "Safe shutdown"
+      }
+    },
+    "select": {
+      "requested_mode": {
+        "name": "Requested mode",
+        "state": {
+          "auto": "Auto",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      }
+    },
+    "sensor": {
+      "controller_status": {
+        "name": "Controller status",
+        "state": {
+          "stopped": "Stopped",
+          "safe_shutdown": "Safe shutdown",
+          "initializing": "Initializing",
+          "blocked": "Blocked",
+          "auto": "Auto",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      },
+      "reconciliation_status": {
+        "name": "Reconciliation status",
+        "state": {
+          "not_started": "Not started",
+          "changed": "Changed",
+          "unchanged": "Unchanged"
+        }
+      },
+      "topology_preview": {
+        "name": "Topology preview"
+      },
+      "operating_mode": {
+        "name": "Operating mode",
+        "state": {
+          "auto": "Auto",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      },
+      "mode_changeover_explanation": {
+        "name": "Mode changeover explanation"
+      },
+      "active_source": {
+        "name": "Active source"
+      },
+      "source_changeover": {
+        "name": "Source changeover",
+        "state": {
+          "idle": "Idle",
+          "waiting_for_hydraulics": "Waiting for hydraulics",
+          "minimum_dwell": "Minimum dwell",
+          "releasing": "Releasing",
+          "breaking": "Breaking",
+          "selecting": "Selecting",
+          "active": "Active"
+        }
+      },
+      "source_dwell": {
+        "name": "Source dwell"
+      },
+      "recommended_source": {
+        "name": "Recommended source"
+      },
+      "source_recommendation": {
+        "name": "Source recommendation"
+      },
+      "source_blocked_reason": {
+        "name": "Blocked reason"
+      },
+      "zone_explanation": {
+        "name": "Explanation"
+      },
+      "zone_aggregate_temperature": {
+        "name": "Aggregate temperature"
+      },
+      "zone_blocked_reason": {
+        "name": "Blocked reason"
+      },
+      "zone_cooling_blocked_reason": {
+        "name": "Cooling blocked reason"
+      },
+      "zone_cooling_dew_point": {
+        "name": "Cooling dew point"
+      },
+      "zone_cooling_condensation_margin": {
+        "name": "Cooling condensation margin"
+      },
+      "actuator_feedback_reason": {
+        "name": "Feedback reason"
       }
     }
   },
   "issues": {
     "missing_sensor_binding": {
-      "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. Restore the entity or open Hydronicus configuration, select the current sensor, and save the configuration."
+      "title": "Missing sensor for {object_name}",
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_sensor_binding_fixable": {
+      "title": "Missing sensor for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing sensor for {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. Select Submit to open the configuration of {object_type} {object_name}, choose the current sensor, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid sensor is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     },
     "missing_feedback_binding": {
-      "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Restore the feedback entity or open Hydronicus configuration, select the current feedback entity, and save the configuration."
+      "title": "Missing feedback for {object_name}",
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the feedback entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_feedback_binding_fixable": {
+      "title": "Missing feedback for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing feedback for {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Select Submit to open the configuration of {object_type} {object_name}, choose the current feedback entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid feedback entity is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     },
     "missing_actuator_binding": {
-      "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Restore the actuator or open Hydronicus configuration, select the current actuator, and save the configuration."
+      "title": "Missing actuator for {object_name}",
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the actuator: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_actuator_binding_fixable": {
+      "title": "Missing actuator for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing actuator for {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Select Submit to open the configuration of {object_type} {object_name}, choose the current actuator, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid actuator is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
     },
     "missing_thermostat_binding": {
-      "title": "Resolve a missing or renamed external thermostat for {object_type} {object_name}",
-      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Restore the climate entity or open Hydronicus configuration, select the current thermostat, and save the configuration."
+      "title": "Missing thermostat for {object_name}",
+      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the climate entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_thermostat_binding_fixable": {
+      "title": "Missing thermostat for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing thermostat for {object_name}",
+            "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. Select Submit to open the configuration of {object_type} {object_name}, choose the current climate entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The configuration of {object_type} {object_name} is open. The repair clears after a valid climate entity is saved.",
+          "subentry_not_found": "The configuration that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
+    },
+    "output_conflict": {
+      "title": "{plant} is held in Dry run",
+      "description": "{plant} is set to run outside Dry run, but {other_plant} is already out of Dry run and controls {entities}. Two live plants would fight over these entities, so Hydronicus holds {plant} in Dry run because {other_plant} is using the same outputs, and sends no commands from it. Its Dry run setting and confirmed outputs are kept. {plant} resumes automatically when the conflict is gone, for example when {other_plant} enters Dry run, is unloaded, or is removed. To end the conflict for good, bind different entities in one of the plants, remove one of the plants, or turn on Dry run for one of them."
+    }
+  },
+  "exceptions": {
+    "invalid_stored_graph": {
+      "message": "The stored configuration of Plant {plant} cannot be loaded safely: {error} Reconfigure or remove the affected objects, then reload the integration."
+    },
+    "invalid_target_temperature": {
+      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
+    },
+    "output_authorization_mismatch": {
+      "message": "Leaving Dry run for Plant {plant} requires authorization for the exact current outputs. Review the outputs and confirm again."
+    },
+    "preset_not_configured": {
+      "message": "The preset {preset_mode} is not configured for zone {zone}."
+    },
+    "runtime_not_started": {
+      "message": "Plant {plant} is not running. Wait until the integration has finished loading and try again."
+    },
+    "selector_option_missing": {
+      "message": "The source selector command for {entity_id} has no option to select."
+    },
+    "unknown_zone": {
+      "message": "Zone {zone_id} is not a Hydronicus thermostat zone of Plant {plant}."
+    },
+    "unsupported_hvac_mode": {
+      "message": "The HVAC mode {hvac_mode} is not supported by this zone thermostat."
+    },
+    "unsupported_plant_mode": {
+      "message": "The plant mode {mode} is not supported."
+    },
+    "unsupported_preset_mode": {
+      "message": "The preset {preset_mode} is not supported."
+    },
+    "output_conflict": {
+      "message": "Plant {plant} cannot leave Dry run because live plant {other_plant} already controls {entities}. One actuator entity belongs to one live plant."
     }
   }
 }

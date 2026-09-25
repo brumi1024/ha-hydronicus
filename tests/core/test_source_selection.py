@@ -12,6 +12,7 @@ from hydronicus_core.model import (
     ActuatorAction,
     Circuit,
     DeliveryRoute,
+    NumericObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
@@ -23,7 +24,6 @@ from hydronicus_core.model import (
     SourceSelectionActuator,
     SourceSelectionPhase,
     SourceSelectionRuntime,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
@@ -104,9 +104,9 @@ def _snapshot(
     source_demand_states: dict[str, bool] | None = None,
 ) -> PlantSnapshot:
     return PlantSnapshot(
-        temperatures={"sensor.zone": TemperatureObservation(19.0, now)},
+        temperatures={"sensor.zone": NumericObservation(19.0, now)},
         source_temperatures={
-            "buffer": TemperatureObservation(buffer_temperature, now),
+            "buffer": NumericObservation(buffer_temperature, now),
         },
         source_availability={"buffer": buffer_available},
         source_selector_states={"selector": selector},

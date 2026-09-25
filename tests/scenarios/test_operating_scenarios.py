@@ -13,6 +13,7 @@ from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     FeedbackObservation,
+    NumericObservation,
     PlantConfiguration,
     PlantMode,
     PlantSnapshot,
@@ -25,7 +26,6 @@ from hydronicus_core.model import (
     SourceSelectionActuator,
     SourceSelectionPhase,
     SourceSelectionRuntime,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
@@ -139,7 +139,7 @@ def test_series_valves_command_timeline_and_overrun_protection() -> None:
     )
 
     def snapshot(living: float, now: datetime) -> PlantSnapshot:
-        return PlantSnapshot({"sensor.living": TemperatureObservation(living, now)})
+        return PlantSnapshot({"sensor.living": NumericObservation(living, now)})
 
     runtime = RuntimeState()
     timeline: list[tuple[tuple[str, str], ...]] = []
@@ -223,7 +223,7 @@ async def test_active_executor_tracer_is_idempotent_at_unchanged_fake_clock() ->
         temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         valve_opening=30,
     )
-    snapshot = PlantSnapshot({"sensor.zone": TemperatureObservation(20.0, NOW)})
+    snapshot = PlantSnapshot({"sensor.zone": NumericObservation(20.0, NOW)})
     executor = ActuatorExecutor.from_plant(plant, dry_run=False)
     dispatched: list[ActuatorOperation] = []
 
@@ -404,8 +404,8 @@ def test_source_selection_falls_back_after_source_unavailable() -> None:
     failed = evaluate(
         plant,
         PlantSnapshot(
-            {"sensor.zone": TemperatureObservation(19.0, NOW)},
-            source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+            {"sensor.zone": NumericObservation(19.0, NOW)},
+            source_temperatures={"buffer": NumericObservation(45.0, NOW)},
             source_availability={"buffer": False},
         ),
         runtime,
@@ -418,10 +418,8 @@ def test_source_selection_falls_back_after_source_unavailable() -> None:
     waiting = evaluate(
         plant,
         PlantSnapshot(
-            {"sensor.zone": TemperatureObservation(19.0, NOW + timedelta(seconds=4))},
-            source_temperatures={
-                "buffer": TemperatureObservation(45.0, NOW + timedelta(seconds=4))
-            },
+            {"sensor.zone": NumericObservation(19.0, NOW + timedelta(seconds=4))},
+            source_temperatures={"buffer": NumericObservation(45.0, NOW + timedelta(seconds=4))},
             source_availability={"buffer": False},
         ),
         failed.next_runtime,
@@ -432,10 +430,8 @@ def test_source_selection_falls_back_after_source_unavailable() -> None:
     fallback = evaluate(
         plant,
         PlantSnapshot(
-            {"sensor.zone": TemperatureObservation(19.0, NOW + timedelta(seconds=5))},
-            source_temperatures={
-                "buffer": TemperatureObservation(45.0, NOW + timedelta(seconds=5))
-            },
+            {"sensor.zone": NumericObservation(19.0, NOW + timedelta(seconds=5))},
+            source_temperatures={"buffer": NumericObservation(45.0, NOW + timedelta(seconds=5))},
             source_availability={"buffer": False},
         ),
         waiting.next_runtime,
@@ -472,7 +468,7 @@ def test_buffer_becomes_ineligible_during_active_heating() -> None:
             ScenarioStep(
                 timedelta(),
                 {"sensor.zone": 19.0},
-                source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+                source_temperatures={"buffer": NumericObservation(45.0, NOW)},
                 source_availability={"buffer": True},
                 valves={"valve": ValveState.OPENING},
                 pumps={"pump": PumpState.OFF},
@@ -483,7 +479,7 @@ def test_buffer_becomes_ineligible_during_active_heating() -> None:
             ScenarioStep(
                 timedelta(seconds=1),
                 {"sensor.zone": 19.0},
-                source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+                source_temperatures={"buffer": NumericObservation(45.0, NOW)},
                 source_availability={"buffer": True},
                 valves={"valve": ValveState.OPEN},
                 pumps={"pump": PumpState.RUNNING},
@@ -494,7 +490,7 @@ def test_buffer_becomes_ineligible_during_active_heating() -> None:
             ScenarioStep(
                 timedelta(seconds=30),
                 {"sensor.zone": 19.0},
-                source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+                source_temperatures={"buffer": NumericObservation(45.0, NOW)},
                 source_availability={"buffer": True},
                 valves={"valve": ValveState.OPEN},
                 pumps={"pump": PumpState.RUNNING},
@@ -529,7 +525,7 @@ def test_zone_sensor_becomes_stale() -> None:
                 timedelta(seconds=31),
                 {},
                 observations={
-                    "sensor.zone": TemperatureObservation(19.0, NOW),
+                    "sensor.zone": NumericObservation(19.0, NOW),
                 },
                 valves={"valve": ValveState.CLOSED},
                 pumps={"pump": PumpState.OFF},

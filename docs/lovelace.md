@@ -3,23 +3,33 @@
 The Hydronicus Plant card is a bundled TypeScript custom card for one configured Plant.
 It presents the Plant state and the controller's structured explanations without exposing configured sensor, valve, pump, source-demand, or private URL bindings.
 
-## Install the card resource
+## Loading the card
 
-Restart Home Assistant after installing or upgrading Hydronicus so the integration can register its frontend path.
-Open **Settings > Dashboards > Resources**.
-Select **Add Resource**.
-Enter `/hydronicus/hydronicus-plant-card.js` as the URL.
-Choose **JavaScript Module** as the resource type.
-Save the resource and reload the browser page.
+Hydronicus loads the card automatically.
+Restart Home Assistant after installing or upgrading Hydronicus, then reload the browser page.
+No dashboard resource is needed, and the bundle must not be copied into `/config/www`.
 
-The URL is served by Hydronicus from the installed integration package.
-Do not copy the generated bundle into `/config/www`.
+The integration serves the bundle from the installed package at a URL that contains the integration version, such as `/hydronicus/0.1.0-rc.6/hydronicus-plant-card.js`, and registers it as a frontend module.
+The browser caches that URL, and an upgrade or a rebuilt bundle changes it, so the browser never keeps a stale card.
 The release package validator checks that the bundled JavaScript exists and has the same version as the integration manifest.
+
+### Remove the old manual resource
+
+Earlier releases asked you to add `/hydronicus/hydronicus-plant-card.js` as a dashboard resource.
+That resource is now redundant.
+Open **Settings > Dashboards**, open the three-dot menu, and select **Resources**.
+Delete the `/hydronicus/hydronicus-plant-card.js` entry, then reload the browser page.
+Resources are only listed when advanced mode is enabled in your user profile.
+A dashboard in YAML mode lists resources under `lovelace: resources:` in `configuration.yaml`; remove the entry there and restart Home Assistant.
+
+Until you remove it, the old resource keeps working.
+The integration still serves that URL without long-lived caching, and the card ignores the second load.
 
 ## Add one card
 
-Use the Lovelace card editor and select one Plant from the dynamic Plant list.
-The editor stores the Plant UUID and an optional density preference.
+Open a dashboard in edit mode, add a card, and pick **Hydronicus Plant** from the card picker.
+The picker prefills the first Plant you can read.
+The visual editor lists the Plants you can read by name and stores the Plant UUID and an optional density preference.
 The equivalent YAML is:
 
 ```yaml
@@ -29,6 +39,7 @@ density: comfortable
 ```
 
 Replace the example UUID with the UUID of the configured Plant.
+Existing cards with `plant: <uuid>` keep working unchanged.
 The editor does not hardcode Zones, Circuits, valves, pumps, sources, or household entity IDs.
 
 ## Card contract
@@ -36,6 +47,16 @@ The editor does not hardcode Zones, Circuits, valves, pumps, sources, or househo
 The card subscribes to `hydronicus/subscribe_plant` and validates the versioned presentation schema before rendering.
 The integration sends one initial snapshot and subsequent meaningful snapshots after runtime state, diagnostics, or operation outcomes change.
 The card can show multiple configured Plants through separate card instances without mixing their snapshots.
+
+The card subscribes once per Home Assistant connection and Plant.
+A stream for a Plant whose config entry exists but is not loaded yet, for example while Home Assistant starts or reloads the Plant, is accepted.
+It reports the Plant as unavailable and starts sending snapshots once the Plant finishes loading.
+While a Plant is unloaded or reloading, the card shows it as unavailable and hides its controls.
+After a lost connection, the card keeps the last snapshot with a notice and subscribes again when Home Assistant is reachable.
+A transient subscription failure is retried with exponential backoff, from one second up to one minute.
+A Plant that no longer exists and a Plant the user may not read are terminal states with a clear message; the card does not retry them.
+When the backend revokes access to a stream, it sends an `unauthorized` status event before it ends the stream.
+When a Plant is deleted, its streams end with a `plant_not_found` status event.
 
 The header shows the Plant name, operational status, requested mode, active mode, execution boundary, active source, and recommended source.
 The Zones section shows thermostat ownership, current and target temperatures when available, presets for Hydronicus thermostats, demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
@@ -45,6 +66,10 @@ The alert and explanation sections surface stable priority-ordered diagnostics a
 The operation section distinguishes proposed, executed, suppressed, failed, and timed-out outcomes.
 
 The presentation schema is version 2.
+Every temperature in the snapshot is in degrees Celsius.
+The card shows temperatures in the unit system of the Home Assistant instance, and formats numbers with the number format from the user's profile.
+Target changes are sent in that unit system, which Home Assistant converts for the climate entity.
+The plus and minus buttons step by 0.5 °C, or by 1 °F under US customary units.
 
 Hydronicus thermostat Zones receive a permission-filtered Hydronicus climate entity and expose target and preset controls.
 
@@ -65,41 +90,56 @@ Configured physical entity IDs do not cross the presentation boundary and are ne
 
 The configured external thermostat entity ID is also redacted from the presentation stream.
 
+Selecting the Plant name opens the more-info dialog of the Hydronicus mode select entity.
+Selecting a Hydronicus thermostat Zone name opens the more-info dialog of its Hydronicus climate entity.
+
+When an action such as a mode or target change fails, the card keeps showing the Plant, returns the control to its real value, and shows the error inline until you dismiss it or the next action succeeds.
+
 The card displays the active Dry run or mixed execution boundary prominently.
 It does not provide a Dry run toggle.
 The existing Plant configuration and its safety gates remain the authority for whether actuator operations are proposed or executed.
 
+## Frontend data
+
+The card reads the Home Assistant connection, the action API, the unit system, and the locale from the frontend context groups that Home Assistant documents for custom cards.
+When a context is not provided, it falls back to the `hass` object that Home Assistant also sets on every card.
+It stores only the values it uses, so state changes of unrelated entities do not re-render the card.
+
 ## Layout and accessibility
 
-The card exposes Home Assistant Sections grid options with a default six-row by six-column footprint.
-The minimum footprint is four rows by three columns.
+In the Sections view the card spans the full section width by default, at least six columns, and its height follows its content, so it never overlaps the cards below it.
+In the masonry view the card reports a height estimate based on its Zones, paths, actuators, alerts, and operations.
 The card uses a responsive Zone grid, horizontally scrollable hydraulic paths, and controls that collapse for narrow layouts.
 The `comfortable` and `compact` density values provide a readable default and a denser dashboard option.
-Colors are based on Home Assistant theme variables with light and dark theme fallbacks.
-The translucent surfaces inherit the dashboard behind them and use backdrop blur when the browser supports it.
+The card renders inside `ha-card` and uses Home Assistant theme variables, so it follows light, dark, and custom themes.
+Heating and cooling colors follow the theme's climate state colors.
 Heating, cooling, idle, and attention colors are derived from the real Plant snapshot and do not change controller behavior.
+The layout uses logical CSS properties, so it mirrors in right-to-left languages, including the direction of the flow animation.
 Active, requested, waiting, and overrun delivery paths animate in the flow direction.
 Idle, blocked, and unavailable paths remain still so motion never implies flow that the controller did not report.
-Interactive controls have visible focus indicators, keyboard labels, disabled states, and touch-friendly minimum sizes.
+Interactive controls have visible focus indicators, accessible names, disabled states, and touch-friendly minimum sizes.
+Headings start at level two inside the card, and grouped diagnostics are exposed as lists.
 Safe shutdown accepts pointer or keyboard hold input and shows hold progress.
+The hold is cancelled when the pointer is released early, leaves the button, is cancelled by the browser, or loses capture, and when the button loses focus.
 The card disables ambient, flow, loading, and state animations when the operating system requests reduced motion.
 
-### Liquid glass theme variables
+### Theme variables
 
-The card works without custom theme values, but a dashboard theme can tune the glass and motion through inherited CSS variables.
+The card works without custom theme values, but a dashboard theme can tune it through inherited CSS variables.
 
 ```css
 --hydronicus-glass-blur: 24px;
 --hydronicus-glass-opacity: 68%;
---hydronicus-heating-color: #ff9b62;
---hydronicus-cooling-color: #55c9f6;
+--hydronicus-heating-color: var(--state-climate-heat-color);
+--hydronicus-cooling-color: var(--state-climate-cool-color);
 --hydronicus-idle-color: var(--primary-color);
 --hydronicus-attention-color: var(--error-color);
 --hydronicus-flow-duration: 2.2s;
 --hydronicus-ambient-duration: 16s;
 ```
 
-Use a lower glass opacity when the dashboard background should remain more visible.
+The card surface is opaque by default.
+Set a glass opacity below 100% and a glass blur to let the dashboard background show through.
 Keep enough contrast between the card surface and text to preserve readability in both light and dark themes.
 
 ## Synthetic staging checks

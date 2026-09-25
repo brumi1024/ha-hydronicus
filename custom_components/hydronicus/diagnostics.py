@@ -209,6 +209,9 @@ def _configuration_shape(runtime: HydronicRuntime, references: _References) -> d
             "reference": references.ref("plant", runtime.plant.id),
             "name": _REDACTED_NAME,
             "dry_run": runtime.dry_run,
+            # True while the Plant is stored live but held in Dry run because
+            # another live Plant uses the same outputs.
+            "held_by_output_conflict": runtime.output_hold is not None,
             "diagnostics_include_actuator_details": runtime.diagnostics_include_actuator_details,
         },
         "counts": {

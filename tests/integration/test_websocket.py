@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unittest.mock import patch
 
+import pytest
+from homeassistant.exceptions import Unauthorized
+from homeassistant.setup import async_setup_component
+from homeassistant.util.hass_dict import HassKey
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.presentation import PRESENTATION_SCHEMA_VERSION
 from custom_components.hydronicus.websocket import (
+    DATA_SUBSCRIPTIONS,
     WS_LIST_PLANTS,
     WS_SUBSCRIBE_PLANT,
+    PlantSubscriptions,
     _filter_snapshot_for_user,
     _readable_entity_ids,
     ws_list_plants,
@@ -212,3 +220,175 @@ async def test_subscribe_missing_plant_returns_defined_error(hass) -> None:
         {"id": 1, "type": WS_SUBSCRIBE_PLANT, "plant_id": "missing"},
     )
     assert connection.errors[0][1] == "plant_not_found"
+
+
+def _seed_states(hass) -> None:
+    hass.states.async_set("sensor.ws_zone_a", "18")
+    hass.states.async_set("sensor.ws_zone_b", "19")
+    hass.states.async_set("switch.ws_valve", "off")
+    hass.states.async_set("switch.ws_pump", "off")
+
+
+async def _subscribe(hass, connection: _Connection, msg_id: int = 5) -> None:
+    await ws_subscribe_plant.__wrapped__(  # type: ignore[attr-defined]
+        hass,
+        connection,
+        {"id": msg_id, "type": WS_SUBSCRIBE_PLANT, "plant_id": PLANT_ID},
+    )
+
+
+async def test_subscription_to_a_plant_that_is_not_loaded_binds_when_it_loads(hass) -> None:
+    """A stream opened while Home Assistant starts binds once the Plant is loaded."""
+    _seed_states(hass)
+    assert await async_setup_component(hass, DOMAIN, {})
+    entry = _entry()
+    entry.add_to_hass(hass)
+    connection = _Connection(_User())
+
+    await _subscribe(hass, connection)
+
+    assert connection.errors == []
+    assert connection.results == [
+        (
+            5,
+            {
+                "schema_version": PRESENTATION_SCHEMA_VERSION,
+                "snapshot": None,
+                "status": "unavailable",
+            },
+        )
+    ]
+    assert connection.events == [(5, {"status": "unavailable", "plant_id": PLANT_ID})]
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    snapshots = [event["snapshot"] for _msg_id, event in connection.events if "snapshot" in event]
+    assert snapshots
+    assert snapshots[-1]["plant"]["id"] == PLANT_ID
+
+
+async def test_loaded_state_signal_binds_streams_without_the_setup_hook(hass) -> None:
+    """Binding follows the config entry state, not only the explicit setup hook."""
+    _seed_states(hass)
+    assert await async_setup_component(hass, DOMAIN, {})
+    entry = _entry()
+    entry.add_to_hass(hass)
+    connection = _Connection(_User())
+    await _subscribe(hass, connection)
+
+    with patch("custom_components.hydronicus.register_runtime"):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert any("snapshot" in event for _msg_id, event in connection.events)
+    subscription = hass.data[DATA_SUBSCRIPTIONS].for_plant(PLANT_ID)[0]
+    assert subscription.runtime is entry.runtime_data
+
+
+async def test_unknown_plant_is_not_found_even_when_other_plants_exist(hass) -> None:
+    """Only a Plant without any config entry is terminally missing."""
+    _seed_states(hass)
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    connection = _Connection(_User())
+
+    await ws_subscribe_plant.__wrapped__(  # type: ignore[attr-defined]
+        hass,
+        connection,
+        {"id": 1, "type": WS_SUBSCRIBE_PLANT, "plant_id": "00000000-0000-4000-8000-00000000ffff"},
+    )
+
+    assert connection.errors[0][1] == "plant_not_found"
+    assert connection.subscriptions == {}
+
+
+async def test_pending_subscription_requires_a_readable_plant_entity(hass) -> None:
+    """A stream for an unloaded Plant still follows entity permissions."""
+    _seed_states(hass)
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    class _DenyAll:
+        def check_entity(self, _entity_id: str, _permission: str) -> bool:
+            return False
+
+    class _ZoneA:
+        def check_entity(self, entity_id: str, _permission: str) -> bool:
+            return entity_id.endswith("zone_a_demand")
+
+    with pytest.raises(Unauthorized):
+        await _subscribe(hass, _Connection(_User(_DenyAll())))
+
+    allowed = _Connection(_User(_ZoneA()))
+    await _subscribe(hass, allowed)
+    assert allowed.events == [(5, {"status": "unavailable", "plant_id": PLANT_ID})]
+
+
+async def test_revoked_access_sends_a_status_event_before_closing(hass) -> None:
+    """A client learns why its stream stopped instead of waiting forever."""
+    _seed_states(hass)
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    class _Revocable:
+        allowed = True
+
+        def check_entity(self, _entity_id: str, _permission: str) -> bool:
+            return self.allowed
+
+    permissions = _Revocable()
+    connection = _Connection(_User(permissions))
+    await _subscribe(hass, connection)
+    assert connection.subscriptions
+
+    permissions.allowed = False
+    hass.data[DATA_SUBSCRIPTIONS].for_plant(PLANT_ID)[0].publish()
+
+    assert connection.events[-1] == (5, {"status": "unauthorized", "plant_id": PLANT_ID})
+    assert connection.subscriptions == {}
+    assert hass.data[DATA_SUBSCRIPTIONS].for_plant(PLANT_ID) == ()
+
+
+async def test_removing_the_plant_ends_its_streams_as_not_found(hass) -> None:
+    """A deleted Plant ends the stream with a terminal status."""
+    _seed_states(hass)
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    connection = _Connection(_User())
+    await _subscribe(hass, connection)
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    statuses = [event.get("status") for _msg_id, event in connection.events]
+    assert statuses[-2:] == ["unavailable", "plant_not_found"]
+    assert connection.subscriptions == {}
+
+
+async def test_plant_registry_uses_typed_keys_and_loaded_entries(hass) -> None:
+    """X4: no string hass.data keys, and discovery follows loaded entries."""
+    _seed_states(hass)
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert DOMAIN not in hass.data
+    assert isinstance(DATA_SUBSCRIPTIONS, HassKey)
+    assert isinstance(hass.data[DATA_SUBSCRIPTIONS], PlantSubscriptions)
+
+    async def _listed() -> list[str]:
+        connection = _Connection(_User())
+        await ws_list_plants.__wrapped__(  # type: ignore[attr-defined]
+            hass, connection, {"id": 1, "type": WS_LIST_PLANTS}
+        )
+        return [plant["id"] for plant in connection.results[0][1]["plants"]]
+
+    assert await _listed() == [PLANT_ID]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert await _listed() == []

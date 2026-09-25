@@ -653,11 +653,16 @@ class CompiledPlant:
 
 
 @dataclass(frozen=True, slots=True)
-class TemperatureObservation:
-    """A temperature reading supplied by the runtime adapter."""
+class NumericObservation:
+    """A normalized temperature or humidity reading supplied by the runtime adapter.
+
+    ``invalid_reason`` explains why the adapter could not produce a usable
+    ``value``, such as an unsupported unit or a physically implausible reading.
+    """
 
     value: float | None
     observed_at: datetime | None
+    invalid_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -712,12 +717,12 @@ class PlantSnapshot:
     ``temperatures``.
     """
 
-    temperatures: Mapping[str, TemperatureObservation]
+    temperatures: Mapping[str, NumericObservation]
     thermostats: Mapping[str, ThermostatState] = field(default_factory=dict)
-    humidities: Mapping[str, TemperatureObservation] = field(default_factory=dict)
-    supply_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
-    surface_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
-    source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    humidities: Mapping[str, NumericObservation] = field(default_factory=dict)
+    supply_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
+    surface_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
+    source_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
     source_availability: Mapping[str, bool] = field(default_factory=dict)
     source_selector_states: Mapping[str, str | None] = field(default_factory=dict)
     source_demand_states: Mapping[str, bool] = field(default_factory=dict)

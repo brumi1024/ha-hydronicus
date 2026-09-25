@@ -8,6 +8,7 @@ import pytest
 from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
+    ExternalClimateThermostatConfig,
     PlantConfiguration,
     Pump,
     Source,
@@ -16,7 +17,13 @@ from hydronicus_core.model import (
     Valve,
     Zone,
 )
-from hydronicus_core.topology import TopologyValidationError, compile_topology
+from hydronicus_core.topology import (
+    CoolingObservationError,
+    CoolingReferenceError,
+    DuplicateActuatorBindingError,
+    TopologyValidationError,
+    compile_topology,
+)
 
 
 def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
@@ -1075,3 +1082,69 @@ def test_compile_topology_rejects_empty_valve_readiness_entity() -> None:
 
     with pytest.raises(TopologyValidationError, match="readiness feedback entity"):
         compile_topology(plant)
+
+
+def _cooling_plant(zone: Zone, **circuit_kwargs: object) -> PlantConfiguration:
+    return PlantConfiguration(
+        id="cooling",
+        zones=(zone,),
+        valves=(Valve("valve", "Valve", "switch.valve"),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump", **circuit_kwargs),),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+
+
+def test_cooling_observation_errors_name_the_circuit_zone_and_observation() -> None:
+    """Flows map a missing cooling observation to one form field without parsing text."""
+    cooling: dict[str, object] = {
+        "cooling_enabled": True,
+        "supply_temperature_sensor": "sensor.supply",
+    }
+    no_humidity = Zone("zone", "Zone", 24.0, _metadata("sensor.temperature"))
+
+    with pytest.raises(CoolingObservationError) as humidity:
+        compile_topology(_cooling_plant(no_humidity, **cooling))
+    assert (humidity.value.circuit_id, humidity.value.zone_id) == ("circuit", "zone")
+    assert humidity.value.observation == "humidity"
+    assert isinstance(humidity.value, TopologyValidationError)
+    assert "requires humidity observations for zone zone" in str(humidity.value)
+
+    no_temperature = Zone(
+        "zone",
+        "Zone",
+        humidity_sensor_metadata=_metadata("sensor.humidity"),
+        thermostat=ExternalClimateThermostatConfig("climate.zone"),
+    )
+    with pytest.raises(CoolingObservationError) as temperature:
+        compile_topology(_cooling_plant(no_temperature, **cooling))
+    assert temperature.value.observation == "temperature"
+
+
+def test_cooling_reference_error_names_the_circuit() -> None:
+    zone = Zone(
+        "zone",
+        "Zone",
+        24.0,
+        _metadata("sensor.temperature"),
+        humidity_sensor_metadata=_metadata("sensor.humidity"),
+    )
+
+    with pytest.raises(CoolingReferenceError, match="supply or surface") as error:
+        compile_topology(_cooling_plant(zone, cooling_enabled=True))
+    assert error.value.circuit_id == "circuit"
+
+
+def test_duplicate_binding_error_names_the_entities() -> None:
+    zone = Zone("zone", "Zone", 21.0, _metadata("sensor.temperature"))
+    duplicate = PlantConfiguration(
+        id="plant",
+        zones=(zone,),
+        valves=(Valve("valve", "Valve", "switch.shared"),),
+        pumps=(Pump("pump", "Pump", "switch.shared"),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+    with pytest.raises(DuplicateActuatorBindingError) as binding:
+        compile_topology(duplicate)
+    assert binding.value.entity_ids == ("switch.shared",)

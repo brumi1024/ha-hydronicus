@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from hydronicus_core.configuration import (
+    DesignatedReferenceError,
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
@@ -623,8 +624,18 @@ def test_rejects_invalid_sensor_metadata(metadata, message) -> None:
         )
 
 
-def test_designated_reference_requires_one_metadata_record() -> None:
-    with pytest.raises(StoredTopologyError, match="exactly one designated"):
+@pytest.mark.parametrize(
+    ("references", "aggregation", "message"),
+    [
+        ((False,), "designated_reference", "exactly one designated"),
+        ((True, True), "mean", "multiple designated references"),
+    ],
+)
+def test_designated_reference_errors_name_the_zone(
+    references: tuple[bool, ...], aggregation: str, message: str
+) -> None:
+    """Flows explain designated-reference mistakes from the structured error."""
+    with pytest.raises(DesignatedReferenceError, match=message) as error:
         plant_configuration_from_entry_data(
             {
                 "plant_id": PLANT_ID,
@@ -637,8 +648,11 @@ def test_designated_reference_requires_one_metadata_record() -> None:
                                 "kind": "hydronicus",
                                 "initial_target_temperature": 21.0,
                             },
-                            "temperature_sensor_metadata": [{"entity_id": "sensor.one"}],
-                            "temperature_aggregation": "designated_reference",
+                            "temperature_sensor_metadata": [
+                                {"entity_id": f"sensor.t{index}", "designated_reference": marked}
+                                for index, marked in enumerate(references)
+                            ],
+                            "temperature_aggregation": aggregation,
                         }
                     ],
                     "circuits": [],
@@ -646,6 +660,8 @@ def test_designated_reference_requires_one_metadata_record() -> None:
                 },
             }
         )
+    assert error.value.zone_id == ZONE_ID
+    assert isinstance(error.value, StoredTopologyError)
 
 
 def test_route_enablement_is_preserved() -> None:

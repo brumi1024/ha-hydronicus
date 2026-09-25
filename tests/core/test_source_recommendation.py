@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from hydronicus_core.configuration import (
+    BufferTemperatureRequiredError,
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
@@ -13,13 +14,13 @@ from hydronicus_core.controller import evaluate, recommend_source
 from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
+    NumericObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
     RuntimeState,
     Source,
     SourceKind,
-    TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
     Zone,
@@ -62,10 +63,10 @@ def _plant(*sources: Source):
 def _snapshot(
     *,
     source_availability: dict[str, bool] | None = None,
-    source_temperatures: dict[str, TemperatureObservation] | None = None,
+    source_temperatures: dict[str, NumericObservation] | None = None,
 ) -> PlantSnapshot:
     return PlantSnapshot(
-        temperatures={"sensor.zone": TemperatureObservation(19.0, NOW)},
+        temperatures={"sensor.zone": NumericObservation(19.0, NOW)},
         source_availability=source_availability or {},
         source_temperatures=source_temperatures or {},
     )
@@ -162,6 +163,27 @@ def test_rejects_invalid_stored_source_configuration() -> None:
         )
 
 
+def test_stored_buffer_without_temperature_names_the_source() -> None:
+    """Flows explain a buffer without a temperature entity from the structured error."""
+    with pytest.raises(BufferTemperatureRequiredError, match="requires a temperature") as error:
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": STORED_PLANT_ID,
+                "topology": {
+                    "sources": [
+                        {
+                            "id": STORED_BUFFER_ID,
+                            "name": "Buffer",
+                            "source_type": "temperature_qualified_buffer",
+                        }
+                    ]
+                },
+            }
+        )
+    assert error.value.source_id == STORED_BUFFER_ID
+    assert isinstance(error.value, StoredTopologyError)
+
+
 @pytest.mark.parametrize(
     "source_fields",
     [
@@ -244,7 +266,7 @@ def test_buffer_stale_or_unavailable_falls_back_to_external_source() -> None:
         ),
         Source("boiler", "Boiler", priority=2),
     )
-    fresh = TemperatureObservation(45.0, NOW)
+    fresh = NumericObservation(45.0, NOW)
     selected = evaluate(
         plant,
         _snapshot(
@@ -258,9 +280,7 @@ def test_buffer_stale_or_unavailable_falls_back_to_external_source() -> None:
         plant,
         _snapshot(
             source_availability={"buffer": True},
-            source_temperatures={
-                "buffer": TemperatureObservation(45.0, NOW - timedelta(seconds=31))
-            },
+            source_temperatures={"buffer": NumericObservation(45.0, NOW - timedelta(seconds=31))},
         ),
         selected.next_runtime,
         NOW,
@@ -307,7 +327,7 @@ def test_buffer_hysteresis_prevents_recommendation_chatter() -> None:
     for temperature, expected in readings:
         result = evaluate(
             plant,
-            _snapshot(source_temperatures={"buffer": TemperatureObservation(temperature, NOW)}),
+            _snapshot(source_temperatures={"buffer": NumericObservation(temperature, NOW)}),
             runtime,
             NOW,
         )
@@ -320,7 +340,7 @@ def test_recommendation_without_demand_is_explicit_and_no_sources_is_optional() 
     no_demand = evaluate(
         source_plant,
         PlantSnapshot(
-            temperatures={"sensor.zone": TemperatureObservation(22.0, NOW)},
+            temperatures={"sensor.zone": NumericObservation(22.0, NOW)},
         ),
         RuntimeState(),
         NOW,

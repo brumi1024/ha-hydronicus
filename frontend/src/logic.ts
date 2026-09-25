@@ -1,3 +1,4 @@
+import { CELSIUS, steppedTarget, type TemperatureUnit } from "./format";
 import type { PlantSnapshot, ZoneSnapshot } from "./types";
 
 export const PRESENTATION_SCHEMA_VERSION = 2;
@@ -73,6 +74,10 @@ export function isFlowingState(state: string): boolean {
   return FLOWING_STATES.has(state.toLowerCase());
 }
 
+/**
+ * Build a target change. `temperature` is in the user's unit system, because
+ * Home Assistant converts `climate.set_temperature` from that unit.
+ */
 export function actionForTarget(zone: ZoneSnapshot, temperature: number): ActionCall | null {
   if (zone.thermostat.kind !== "hydronicus" || !zone.thermostat.control_entity_id) return null;
   return {
@@ -123,10 +128,28 @@ export function phaseLabel(phase: string): string {
   return phase.replaceAll("_", " ");
 }
 
-export function adjustTarget(zone: ZoneSnapshot, delta: number): number | null {
+/** Hydronicus entities whose states Home Assistant translates. */
+export type TranslatedState = "select.requested_mode" | "sensor.operating_mode" | "sensor.controller_status";
+
+/**
+ * The label Home Assistant shows for a state of a Hydronicus entity, from
+ * the integration's entity translations, or the readable raw value.
+ */
+export function stateLabel(localize: ((key: string) => string) | undefined, entity: TranslatedState, state: string): string {
+  const [platform, key] = entity.split(".");
+  return localize?.(`component.hydronicus.entity.${platform}.${key}.state.${state}`) || phaseLabel(state);
+}
+
+/** The presets a Zone offers besides "none"; empty when it has none. */
+export function zonePresets(zone: ZoneSnapshot): string[] {
+  return [...new Set(zone.thermostat.preset_modes)].filter((preset) => preset !== "none");
+}
+
+/**
+ * The next target one step up or down, in the user's unit system, from the
+ * Celsius target in the snapshot.
+ */
+export function adjustTarget(zone: ZoneSnapshot, direction: 1 | -1, unit: TemperatureUnit = CELSIUS): number | null {
   if (zone.thermostat.target_temperature === null) return null;
-  return Math.min(
-    35,
-    Math.max(5, Number((zone.thermostat.target_temperature + delta).toFixed(1))),
-  );
+  return steppedTarget(zone.thermostat.target_temperature, direction, unit);
 }

@@ -16,8 +16,12 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_ACTUATOR,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
-from custom_components.hydronicus.entry_configuration import output_authorization
+from custom_components.hydronicus.entry_configuration import (
+    output_authorization,
+    subentry_draft,
+)
 from custom_components.hydronicus.runtime import HydronicRuntime
+from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -267,7 +271,7 @@ async def test_add_rejects_duplicate_binding_without_mutating_entry(hass) -> Non
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "invalid_actuator"}
+    assert result["errors"] == {CONF_ENTITY_ID: "actuator_entity_in_use"}
     assert not entry.subentries
     assert entry.runtime_data is initial_runtime
 
@@ -312,7 +316,7 @@ async def test_reconfigure_rejects_duplicate_binding_without_mutating_entry(hass
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "reconfigure"
-    assert result["errors"] == {"base": "invalid_actuator"}
+    assert result["errors"] == {CONF_ENTITY_ID: "actuator_entity_in_use"}
     assert dict(subentry.data) == original_data
     assert entry.runtime_data is runtime_after_add
     assert hass.states.get(entity_id) is not None
@@ -475,3 +479,130 @@ async def test_failed_shutdown_retains_parent_graph_after_subentry_removal(
     assert actuator_id in runtime.plant.valves
     assert entry.data["dry_run"] is False
     assert "parent graph and active runtime were retained" in caplog.text
+
+
+async def test_reconfigure_prefills_feedback_section_and_keeps_flat_shape(hass) -> None:
+    """Saving an unchanged reconfigure form keeps every stored feedback binding."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ACTUATOR),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    assert fields["feedback"]["expanded"] is False
+    assert fields["opening_time_seconds"]["selector"]["number"]["unit_of_measurement"] == "s"
+    assert "text" in fields[CONF_NAME]["selector"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Return valve",
+            CONF_ENTITY_ID: "switch.return_valve",
+            CONF_OPENING_TIME: 45,
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+            "feedback": {
+                "readiness_entity_id": "binary_sensor.synthetic_valve_ready",
+                "position_feedback_entity": "sensor.return_valve_position",
+                "position_feedback_max_age_seconds": 600,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    created = subentry_draft(entry, subentry)
+    assert created["position_feedback_entity"] == "sensor.return_valve_position"
+    assert created["position_feedback_max_age_seconds"] == 600.0
+    assert created["readiness_entity_id"] == "binary_sensor.synthetic_valve_ready"
+    assert type(created[CONF_OPENING_TIME]) is float
+    assert "feedback" not in created
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    assert form_value(result, "feedback.position_feedback_entity") == (
+        "sensor.return_valve_position"
+    )
+    assert form_value(result, "feedback.readiness_entity_id") == (
+        "binary_sensor.synthetic_valve_ready"
+    )
+    assert form_value(result, "feedback.position_feedback_max_age_seconds") == 600.0
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=frontend_submission(result)
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry_draft(entry, subentry) == created
+
+
+async def test_rejected_actuator_form_keeps_submitted_values(hass) -> None:
+    """A validation error re-shows the form with what the user entered."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ACTUATOR),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "  ",
+            CONF_ENTITY_ID: "switch.return_valve",
+            CONF_OPENING_TIME: 45,
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+            "feedback": {"position_feedback_entity": "sensor.return_valve_position"},
+        },
+    )
+
+    assert result["errors"] == {"base": "name_required"}
+    assert form_value(result, CONF_ENTITY_ID) == "switch.return_valve"
+    assert form_value(result, CONF_OPENING_TIME) == 45.0
+    assert form_value(result, "feedback.position_feedback_entity") == (
+        "sensor.return_valve_position"
+    )
+    assert not entry.subentries
+
+
+async def test_add_and_reconfigure_reject_empty_circuit_selection(hass) -> None:
+    """An empty circuit list stays on the form with a field error and no mutation."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    valve = {
+        CONF_NAME: "Return valve",
+        CONF_ENTITY_ID: "switch.return_valve",
+        CONF_OPENING_TIME: 45.0,
+        CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+    }
+    empty = {**valve, CONF_CIRCUIT_IDS: []}
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_ACTUATOR),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], empty)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_CIRCUIT_IDS: "circuits_required"}
+    assert form_value(result, CONF_ENTITY_ID) == "switch.return_valve"
+    assert not entry.subentries
+
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], valve)
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    stored_draft = subentry_draft(entry, subentry)
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], empty)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+    assert result["errors"] == {CONF_CIRCUIT_IDS: "circuits_required"}
+    assert form_value(result, CONF_CIRCUIT_IDS) == []
+    assert subentry_draft(entry, subentry) == stored_draft

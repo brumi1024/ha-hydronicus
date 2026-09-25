@@ -6,17 +6,21 @@ from typing import cast
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicConfigEntry
 from .core.model import PlantMode
 from .entity_device import plant_device_info
 from .runtime import HydronicRuntime
 
+# The runtime serializes mode requests under its own operation lock.
+PARALLEL_UPDATES = 0
+
 
 class PlantModeSelect(SelectEntity):
     """Select the requested operating mode without directly controlling cooling."""
 
+    _attr_translation_key = "requested_mode"
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_options = [mode.value for mode in PlantMode]
@@ -26,7 +30,6 @@ class PlantModeSelect(SelectEntity):
         self._entry = entry
         runtime = entry.runtime_data
         self._attr_unique_id = f"{runtime.plant_id}_requested_mode"
-        self._attr_name = "Requested mode"
         self._attr_device_info = plant_device_info(runtime)
 
     @property
@@ -49,7 +52,9 @@ class PlantModeSelect(SelectEntity):
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: HydronicConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add the one plant-level requested-mode selector."""
     async_add_entities([PlantModeSelect(entry)])

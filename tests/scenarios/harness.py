@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING
 from hydronicus_core.controller import evaluate
 from hydronicus_core.model import (
     ActuatorFeedback,
+    NumericObservation,
     PlantMode,
     PlantSnapshot,
     PumpState,
     RuntimeState,
-    TemperatureObservation,
     ValveState,
     ZoneDecisionStatus,
 )
@@ -36,10 +36,10 @@ class ScenarioStep:
     valves: Mapping[str, ValveState] = field(default_factory=dict)
     pumps: Mapping[str, PumpState] = field(default_factory=dict)
     commands: frozenset[tuple[str, str]] = frozenset()
-    observations: Mapping[str, TemperatureObservation] | None = None
+    observations: Mapping[str, NumericObservation] | None = None
     zone_demands: Mapping[str, bool] = field(default_factory=dict)
     zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
-    source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    source_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
     source_availability: Mapping[str, bool] = field(default_factory=dict)
     actuator_feedback: Mapping[str, ActuatorFeedback] = field(default_factory=dict)
     check_source: bool = False
@@ -67,20 +67,20 @@ def run_scenario(
                 step.observations
                 if step.observations is not None
                 else {
-                    entity_id: TemperatureObservation(value, now)
+                    entity_id: NumericObservation(value, now)
                     for entity_id, value in step.temperatures.items()
                 }
             ),
             humidities={
-                entity_id: TemperatureObservation(value, now)
+                entity_id: NumericObservation(value, now)
                 for entity_id, value in step.humidities.items()
             },
             supply_temperatures={
-                entity_id: TemperatureObservation(value, now)
+                entity_id: NumericObservation(value, now)
                 for entity_id, value in step.supply_temperatures.items()
             },
             surface_temperatures={
-                entity_id: TemperatureObservation(value, now)
+                entity_id: NumericObservation(value, now)
                 for entity_id, value in step.surface_temperatures.items()
             },
             source_temperatures=step.source_temperatures,

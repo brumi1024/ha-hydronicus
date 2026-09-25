@@ -58,6 +58,43 @@ Select one of the available policies:
 - **Heating-oriented minimum** uses the lowest reading.
 - **Cooling-oriented maximum** supports cooling shadow evaluation, but physical cooling starts are not supported or authorized in this release.
 - **Designated reference** uses the one observation marked as the reference.
+
+### Observation units
+
+Hydronicus evaluates every temperature in degrees Celsius and every humidity in percent, whatever unit system Home Assistant displays.
+It reads each observation's `unit_of_measurement` attribute and normalizes the value once, when the observation is read.
+The same rules apply to Zone temperature sensors, Zone humidity sensors, Circuit supply and surface temperature sensors, and Source temperature inputs.
+
+| Observation | Accepted unit | Result |
+| --- | --- | --- |
+| Temperature | `°C` | Used as reported. |
+| Temperature | `°F` or `K` | Converted to Celsius. |
+| Temperature | No unit | Assumed to be Celsius. |
+| Temperature | Any other unit | Unusable. |
+| Humidity | `%` or no unit | Used as relative humidity in percent. |
+| Humidity | Any other unit | Unusable. |
+
+A sensor without a unit is assumed to report Celsius, so give a unit-less template sensor a Celsius value or add the correct `unit_of_measurement`.
+An unusable observation takes the same path as an unavailable or non-numeric one, so a required sensor blocks its Zone and the controller fails closed.
+An existing external climate entity reports its current and target temperatures in the Home Assistant unit system, and Hydronicus converts them to Celsius as well.
+Hydronicus-owned sensors, diagnostics, and the Plant card data carry Celsius values, and Home Assistant converts the entity values for display.
+
+### Plausible observation ranges
+
+After unit conversion, each reading must also fall inside a physically plausible range.
+A reading outside its range is unusable and takes the same fail-closed path as an unsupported unit.
+The ranges are inclusive and fixed; they catch sensor faults, not comfort or safety limits.
+
+| Observation | Plausible range | Why |
+| --- | --- | --- |
+| Zone temperature | -50 to 100 °C | Room air, from unheated spaces to saunas. |
+| Circuit surface temperature | -50 to 100 °C | Heated or cooled floors, walls, and ceilings stay within room-air limits. |
+| Circuit supply temperature | -50 to 150 °C | Pressurized boilers and district heating can supply water above 100 °C. |
+| Source temperature | -50 to 150 °C | Buffer and boiler water follows the same limits as supply water. |
+| Zone humidity | 0 to 100 % | Relative humidity cannot leave this range. |
+
+The ranges reject common fault readings, such as 0 K (-273.15 °C) from a misconfigured template or -127 °C from a disconnected one-wire probe.
+The blocked reason names the rejected value, for example `implausible value -273.15 °C`.
 - **Weighted mean** applies the positive weights configured through detailed sensor editing.
 
 Designated-reference and weighted-mean policies become available after completing the detailed sensor editor because they depend on per-sensor metadata.
@@ -141,11 +178,32 @@ It warns when a shared valve prevents independent hydraulic control.
 
 Read [how Hydronicus works](how-it-works.md) for diagrams and the complete ownership rules.
 
+## One live Plant per actuator entity
+
+One actuator entity belongs to one live Plant.
+Sharing equipment between Circuits happens inside one Plant, never across Plants.
+A valve, pump, or source-demand entity that two Plants bind can be commanded by only one of them at a time, because two live Plants would switch it against each other and either one's Safe shutdown could stop equipment the other needs.
+A Plant counts as live when it is loaded and not in Dry run.
+Plants in Dry run may bind the same entities, for example to compare a draft configuration with the live one.
+When you choose a valve, pump, or source-demand entity that another Plant already binds, the initial setup review and the actuator and source review steps list it as a warning that names the other Plant.
+The warning does not block saving; in the actuator and source forms you confirm it with "I understand these warnings".
+Turning Dry run off is refused while another live Plant controls one of the same entities, and the error names that Plant and the shared entities.
+If two Plants that are both set to run outside Dry run share an entity, the first one to finish claiming its outputs during setup runs live.
+The other one is held in Dry run before it sends any command, and a repair explains the conflict.
+Which Plant claims first is decided when they set up, so it is usually the same at every start, but a Plant whose setup is delayed or retried can lose to a later one.
+Holding a Plant does not change its settings: its Dry run setting and its confirmed outputs are kept.
+The held Plant resumes by itself, through a normal reload, once the conflict is gone, for example when the live Plant enters Dry run, is unloaded, is removed, or fails to set up.
+If several held Plants share the same outputs, only the first of them in Home Assistant's entry order resumes, and the others stay held.
+While a Plant is held, its Dry run binary sensor is on, its `held_by_output_conflict` attribute is true, and its `held_by_plant` attribute names the live Plant.
+Turning Dry run on for a held Plant stores Dry run, so it no longer resumes by itself.
+
 ## Configuration checklist
 
 Before accepting a simulated Plant, check all of the following:
 
 - Every temperature sensor is numeric and available.
+- Every temperature sensor reports `°C`, `°F`, `K`, or a Celsius value without a unit.
+- Every reading falls inside its [plausible range](#plausible-observation-ranges).
 - Every selected sensor belongs to the intended test configuration.
 - Each Zone has at least one selected Circuit.
 - Each Circuit has a valid valve path and pump.

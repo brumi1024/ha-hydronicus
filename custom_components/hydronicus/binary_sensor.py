@@ -4,14 +4,33 @@ from __future__ import annotations
 
 from typing import cast
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicConfigEntry
 from .core.model import PumpState, ValveState, ZoneRuntime
 from .entity_device import plant_device_info, topology_device_info
 from .runtime import HydronicRuntime
+
+# Entities render one atomic runtime evaluation and never poll or call out.
+PARALLEL_UPDATES = 0
+
+# Prose reasons, operation lists, deadlines, and failure details change on
+# almost every evaluation and would bloat history without adding value.
+VOLATILE_ATTRIBUTES = frozenset(
+    {
+        "operations",
+        "reason",
+        "deadline",
+        "execution_failure",
+        "stale_feedback",
+    }
+)
 
 
 class HydronicShadowEntity(BinarySensorEntity):
@@ -19,6 +38,7 @@ class HydronicShadowEntity(BinarySensorEntity):
 
     _attr_has_entity_name = True
     _attr_should_poll = False
+    _unrecorded_attributes = VOLATILE_ATTRIBUTES
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the entity to one plant runtime."""
@@ -33,12 +53,11 @@ class HydronicShadowEntity(BinarySensorEntity):
 class DryRunBinarySensor(HydronicShadowEntity):
     """Expose the Plant-wide Dry run safety boundary."""
 
-    _attr_icon = "mdi:eye-outline"
+    _attr_translation_key = "dry_run"
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         super().__init__(entry)
         self._attr_unique_id = f"{self._runtime.plant_id}_dry_run"
-        self._attr_name = "Dry run"
 
     @property
     def is_on(self) -> bool:
@@ -47,9 +66,16 @@ class DryRunBinarySensor(HydronicShadowEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the latest operation boundary and safe-shutdown phase."""
+        """Expose the latest operation boundary and safe-shutdown phase.
+
+        A Plant stored live can be held in Dry run while another live Plant uses
+        the same outputs; the hold attributes say so and name that Plant.
+        """
+        hold = self._runtime.output_hold
         return {
             "dry_run": self._runtime.dry_run,
+            "held_by_output_conflict": hold is not None,
+            "held_by_plant": hold.other_plant if hold is not None else None,
             "safe_shutdown_phase": self._runtime.runtime_state.safe_shutdown_phase.value,
             "operations": self._runtime.execution_summary(),
         }
@@ -58,12 +84,12 @@ class DryRunBinarySensor(HydronicShadowEntity):
 class ModeChangeoverLockoutBinarySensor(HydronicShadowEntity):
     """Whether a requested mode is waiting for safe shared-plant idle."""
 
-    _attr_icon = "mdi:lock-clock"
+    _attr_translation_key = "mode_changeover_lockout"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         super().__init__(entry)
         self._attr_unique_id = f"{self._runtime.plant_id}_mode_changeover_lockout"
-        self._attr_name = "Mode changeover lockout"
 
     @property
     def is_on(self) -> bool:
@@ -95,11 +121,12 @@ class ModeChangeoverLockoutBinarySensor(HydronicShadowEntity):
 class ZoneDemandBinarySensor(HydronicShadowEntity):
     """Whether a zone currently requests heat."""
 
+    _attr_translation_key = "zone_demand"
+
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_demand"
-        self._attr_name = "Demand"
         self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
@@ -111,13 +138,14 @@ class ZoneDemandBinarySensor(HydronicShadowEntity):
 class ZoneBlockedBinarySensor(HydronicShadowEntity):
     """Whether sensor health currently blocks a zone from requesting heat."""
 
-    _attr_icon = "mdi:alert-circle-outline"
+    _attr_translation_key = "zone_blocked"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_blocked"
-        self._attr_name = "Blocked"
         self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
@@ -143,11 +171,12 @@ class ZoneBlockedBinarySensor(HydronicShadowEntity):
 class ZoneCoolingDemandBinarySensor(HydronicShadowEntity):
     """Whether a zone currently requests cooling."""
 
+    _attr_translation_key = "zone_cooling_demand"
+
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_demand"
-        self._attr_name = "Cooling demand"
         self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
@@ -171,13 +200,14 @@ class ZoneCoolingDemandBinarySensor(HydronicShadowEntity):
 class ZoneCoolingBlockedBinarySensor(HydronicShadowEntity):
     """Whether cooling safety currently blocks a zone."""
 
-    _attr_icon = "mdi:water-alert-outline"
+    _attr_translation_key = "zone_cooling_blocked"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         super().__init__(entry)
         self._zone_id = zone_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_blocked"
-        self._attr_name = "Cooling blocked"
         self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
 
     @property
@@ -199,11 +229,12 @@ class ZoneCoolingBlockedBinarySensor(HydronicShadowEntity):
 class SourceDemandBinarySensor(HydronicShadowEntity):
     """Expose one guarded source-demand recommendation as a synthetic output."""
 
+    _attr_translation_key = "source_demand"
+
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_demand"
-        self._attr_name = "Demand"
         self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
@@ -231,11 +262,13 @@ class SourceDemandBinarySensor(HydronicShadowEntity):
 class SourceAvailableBinarySensor(HydronicShadowEntity):
     """Expose the source availability input used by qualification."""
 
+    _attr_translation_key = "source_available"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_available"
-        self._attr_name = "Available"
         self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
@@ -258,11 +291,13 @@ class SourceAvailableBinarySensor(HydronicShadowEntity):
 class SourceActiveBinarySensor(HydronicShadowEntity):
     """Expose which source owns the current guarded heating request."""
 
+    _attr_translation_key = "source_active"
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
+
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_active"
-        self._attr_name = "Active"
         self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
@@ -275,13 +310,14 @@ class SourceActiveBinarySensor(HydronicShadowEntity):
 class SourceBlockedBinarySensor(HydronicShadowEntity):
     """Expose source-specific blocking without blocking unrelated source demand."""
 
-    _attr_icon = "mdi:source-branch-off"
+    _attr_translation_key = "source_blocked"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
         super().__init__(entry)
         self._source_id = source_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_blocked"
-        self._attr_name = "Blocked"
         self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
 
     @property
@@ -297,6 +333,9 @@ class SourceBlockedBinarySensor(HydronicShadowEntity):
         return {"reason": getattr(diagnostic, "reason", None)}
 
 
+_REQUESTED_TRANSLATION_KEYS = {"valve": "valve_requested", "pump": "pump_requested"}
+
+
 class ActuatorRequestedBinarySensor(HydronicShadowEntity):
     """Whether a valve or pump is virtually requested by the controller."""
 
@@ -307,7 +346,7 @@ class ActuatorRequestedBinarySensor(HydronicShadowEntity):
         self._actuator_id = actuator_id
         self._kind = kind
         self._attr_unique_id = f"{self._runtime.plant_id}_{kind}_{actuator_id}_requested"
-        self._attr_name = "Requested"
+        self._attr_translation_key = _REQUESTED_TRANSLATION_KEYS[kind]
         self._attr_device_info = topology_device_info(
             self._runtime, kind, actuator_id, actuator_name
         )
@@ -328,13 +367,14 @@ class ActuatorRequestedBinarySensor(HydronicShadowEntity):
 class ActuatorMismatchBinarySensor(HydronicShadowEntity):
     """Expose a manual actuator-state mismatch without toggle behavior."""
 
-    _attr_icon = "mdi:alert-outline"
+    _attr_translation_key = "actuator_mismatch"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
         super().__init__(entry)
         self._actuator_id = actuator_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_mismatch"
-        self._attr_name = "Mismatch"
         kind = "valve" if actuator_id in self._runtime.plant.valves else "pump"
         self._attr_device_info = topology_device_info(self._runtime, kind, actuator_id, name)
 
@@ -363,13 +403,14 @@ class ActuatorMismatchBinarySensor(HydronicShadowEntity):
 class ActuatorBlockedBinarySensor(HydronicShadowEntity):
     """Expose whether unsafe actuator feedback blocks dependent circuits."""
 
-    _attr_icon = "mdi:shield-alert-outline"
+    _attr_translation_key = "actuator_blocked"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
         super().__init__(entry)
         self._actuator_id = actuator_id
         self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_blocked"
-        self._attr_name = "Blocked"
         kind = "valve" if actuator_id in self._runtime.plant.valves else "pump"
         self._attr_device_info = topology_device_info(self._runtime, kind, actuator_id, name)
 
@@ -395,7 +436,9 @@ class ActuatorBlockedBinarySensor(HydronicShadowEntity):
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: HydronicConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add demand and actuator-request entities."""
     runtime = entry.runtime_data

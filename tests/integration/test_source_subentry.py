@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import voluptuous_serialize
+import pytest
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
+from probatio import to_field_list
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
@@ -22,6 +24,7 @@ from custom_components.hydronicus.const import (
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import subentry_draft
+from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -87,7 +90,7 @@ async def _add_buffer_source(hass, entry):
         context={"source": config_entries.SOURCE_USER},
     )
     assert result["type"] == FlowResultType.FORM
-    voluptuous_serialize.convert(result["data_schema"], custom_serializer=cv.custom_serializer)
+    to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
     return await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
@@ -238,3 +241,139 @@ async def test_synthetic_selector_stays_shadow_only_while_recommendation_runs(ha
         operation.entity_id != "select.synthetic_source"
         for operation in runtime.last_execution.executed
     )
+
+
+async def test_source_form_selectors_and_persisted_types(hass) -> None:
+    """The source form uses typed selectors while priority stays a stored integer."""
+    hass.states.async_set("sensor.living_temperature", "19.0")
+    hass.states.async_set("binary_sensor.buffer_available", "on")
+    hass.states.async_set("sensor.buffer_temperature", "45.0")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    source_type = fields[CONF_SOURCE_TYPE]["selector"]["select"]
+    assert source_type["translation_key"] == CONF_SOURCE_TYPE
+    assert source_type["options"] == ["external", "temperature_qualified_buffer"]
+    assert fields[CONF_SOURCE_TEMPERATURE_ENTITY]["selector"]["entity"]["device_class"] == [
+        "temperature"
+    ]
+    assert fields[CONF_SOURCE_PRIORITY]["selector"]["number"]["step"] == 1.0
+    assert fields[CONF_SOURCE_MINIMUM_TEMPERATURE]["selector"]["number"]["unit_of_measurement"] == (
+        "°C"
+    )
+
+    result = await _add_buffer_source(hass, entry)
+    await hass.async_block_till_done()
+    subentry = next(iter(entry.subentries.values()))
+    created = subentry_draft(entry, subentry)
+    assert created[CONF_SOURCE_PRIORITY] == 1
+    assert type(created[CONF_SOURCE_PRIORITY]) is int
+    assert type(created[CONF_SOURCE_MINIMUM_TEMPERATURE]) is float
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    assert form_value(result, CONF_SOURCE_TEMPERATURE_ENTITY) == "sensor.buffer_temperature"
+    assert form_value(result, CONF_SOURCE_DEMAND_ENTITY) == "switch.synthetic_source"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=frontend_submission(result)
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry_draft(entry, subentry) == created
+    assert type(subentry_draft(entry, subentry)[CONF_SOURCE_PRIORITY]) is int
+
+
+@pytest.mark.parametrize("priority", ["nan", "inf", "-inf", 1.7])
+async def test_source_priority_rejects_non_finite_and_fractional_values(hass, priority) -> None:
+    """A priority that is not a whole finite number fails schema validation cleanly."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    with pytest.raises(InvalidData) as raised:
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            {"name": "Boiler", CONF_SOURCE_PRIORITY: priority},
+        )
+
+    assert CONF_SOURCE_PRIORITY in raised.value.schema_errors
+    assert not entry.subentries
+
+
+async def test_source_priority_accepts_a_whole_float_and_stores_an_int(hass) -> None:
+    """The number selector's float for a whole priority is persisted as an int."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Boiler", CONF_SOURCE_PRIORITY: 3.0},
+    )
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    created = subentry_draft(entry, next(iter(entry.subentries.values())))
+    assert created[CONF_SOURCE_PRIORITY] == 3
+    assert type(created[CONF_SOURCE_PRIORITY]) is int
+
+
+async def test_buffer_without_temperature_entity_is_explained(hass) -> None:
+    """A buffer source without a temperature entity gets a field error on that picker."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Buffer", CONF_SOURCE_TYPE: "temperature_qualified_buffer"},
+    )
+
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_SOURCE_TEMPERATURE_ENTITY: "buffer_temperature_required"}
+    assert not entry.subentries
+
+
+async def test_source_pickers_hide_and_reject_hydronicus_entities(hass) -> None:
+    """Availability and temperature pickers hide Hydronicus entities, and submit rejects one."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    registry = er.async_get(hass)
+    own = {item.entity_id for item in er.async_entries_for_config_entry(registry, entry.entry_id)}
+    assert "binary_sensor.hydronic_plant_dry_run" in own
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SOURCE),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    fields = form_fields(result)
+    for field in (CONF_SOURCE_AVAILABILITY_ENTITY, CONF_SOURCE_TEMPERATURE_ENTITY):
+        assert own <= set(fields[field]["selector"]["entity"]["exclude_entities"]), field
+
+    # The first form has no stored value, so the hidden entity also fails schema validation.
+    with pytest.raises(InvalidData):
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            {
+                "name": "Boiler",
+                CONF_SOURCE_AVAILABILITY_ENTITY: "binary_sensor.hydronic_plant_dry_run",
+            },
+        )

@@ -28,6 +28,22 @@ class StoredTopologyError(ValueError):
     """Raised when stored topology data cannot safely be reconstructed."""
 
 
+class BufferTemperatureRequiredError(StoredTopologyError):
+    """A temperature-qualified buffer source has no temperature entity."""
+
+    def __init__(self, source_id: str) -> None:
+        self.source_id = source_id
+        super().__init__("A temperature-qualified buffer requires a temperature entity.")
+
+
+class DesignatedReferenceError(StoredTopologyError):
+    """A zone marks more than one, or lacks its required, designated reference sensor."""
+
+    def __init__(self, zone_id: str, message: str) -> None:
+        self.zone_id = zone_id
+        super().__init__(message)
+
+
 _SENSOR_METADATA_KEY = "temperature_sensor_metadata"
 _SENSOR_KEYS = frozenset(
     {
@@ -200,15 +216,14 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
     )
     hysteresis = _number(mapping, "hysteresis", 0.5, non_negative=True)
     demand_entity = _optional_entity_id(mapping, "source_demand_entity")
+    source_id = _id(mapping, "id", require_uuid=require_uuid)
     minimum_temperature: float | None = None
     if kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
         if temperature_entity is None:
-            raise StoredTopologyError(
-                "A temperature-qualified buffer requires a temperature entity."
-            )
+            raise BufferTemperatureRequiredError(source_id)
         minimum_temperature = _number(mapping, "minimum_temperature", 0.0)
     return Source(
-        id=_id(mapping, "id", require_uuid=require_uuid),
+        id=source_id,
         name=str(_required(mapping, "name")),
         priority=_source_priority(mapping),
         kind=kind,
@@ -468,16 +483,19 @@ def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float
 
 
 def _validate_reference_policy(
+    zone_id: str,
     aggregation: TemperatureAggregation,
     metadata: tuple[TemperatureSensorMetadata, ...],
 ) -> tuple[TemperatureSensorMetadata, ...]:
     """Validate designated-reference metadata against the selected policy."""
     designated = [sensor for sensor in metadata if sensor.designated_reference]
     if len(designated) > 1:
-        raise StoredTopologyError("Stored temperature sensors have multiple designated references.")
+        raise DesignatedReferenceError(
+            zone_id, "Stored temperature sensors have multiple designated references."
+        )
     if aggregation is TemperatureAggregation.DESIGNATED_REFERENCE and len(designated) != 1:
-        raise StoredTopologyError(
-            "Designated-reference aggregation requires exactly one designated sensor."
+        raise DesignatedReferenceError(
+            zone_id, "Designated-reference aggregation requires exactly one designated sensor."
         )
     return metadata
 
@@ -518,9 +536,10 @@ def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
     )
     humidity_metadata = humidity_sensor_metadata_from_mapping(item)
     aggregation = _temperature_aggregation(item)
-    metadata = _validate_reference_policy(aggregation, metadata)
+    zone_id = _id(item, "id", require_uuid=True)
+    metadata = _validate_reference_policy(zone_id, aggregation, metadata)
     return Zone(
-        id=_id(item, "id", require_uuid=True),
+        id=zone_id,
         name=str(_required(item, "name")),
         temperature_sensor_metadata=metadata,
         aggregation=aggregation,

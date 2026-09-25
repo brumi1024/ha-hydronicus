@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 
 from .const import DOMAIN
 from .runtime import HydronicRuntime
