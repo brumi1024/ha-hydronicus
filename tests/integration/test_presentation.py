@@ -174,4 +174,4 @@ async def test_presentation_carries_thermostat_hvac_mode_and_modes(hass) -> None
     assert thermostats[ZONE_A]["hvac_mode"] == "heat"
     assert thermostats[ZONE_B]["hvac_mode"] == "off"
     assert thermostats[ZONE_A]["hvac_modes"] == ["off", "heat"]
-    assert thermostats[ZONE_A]["explanation"] == "Hydronicus owns this Room's thermostat."
+    assert thermostats[ZONE_A]["explanation"] == "Hydronicus owns this room's digital thermostat."
