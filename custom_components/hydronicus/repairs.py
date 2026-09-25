@@ -30,6 +30,7 @@ _TRANSLATION_KEYS = {
     BindingCategory.THERMOSTAT: "missing_thermostat_binding",
 }
 _FIXABLE_SUFFIX = "_fixable"
+_SUBENTRY_OBJECT_TYPES = frozenset({"zone", "valve", "circuit", "source"})
 
 
 def _plant_issue_prefix(plant_id: str) -> str:
@@ -55,18 +56,15 @@ def _plant_entry(hass: HomeAssistant, plant_id: str) -> ConfigEntry[HydronicRunt
 
 
 def _owning_subentry_id(entry: ConfigEntry[HydronicRuntime], binding: EntityBinding) -> str | None:
-    """Return the config subentry that owns the object carrying one binding."""
-    runtime = entry.runtime_data
-    owners = {
-        "zone": runtime.zone_subentry_ids,
-        "valve": runtime.actuator_subentry_ids,
-        "circuit": runtime.circuit_subentry_ids,
-        "source": runtime.source_subentry_ids,
-    }.get(binding.object_type)
-    if owners is not None:
-        return owners.get(binding.object_id)
-    # Pumps, and every object created with the plant, are owned by the parent entry.
-    return None
+    """Return the room or source subentry whose reconfigure flow can fix one binding.
+
+    A zone and its room's private loops and valves open that room, and a source
+    with a handle opens its source. Pumps, shared loops and valves, Plant-owned
+    sources, and the source selector belong to the Plant and return ``None``.
+    """
+    if binding.object_type not in _SUBENTRY_OBJECT_TYPES:
+        return None
+    return entry.runtime_data.subentry_id_for(binding.object_id)
 
 
 def async_sync_repairs(

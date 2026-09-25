@@ -15,9 +15,6 @@ from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    CONFIG_ENTRY_MINOR_VERSION,
-    CONFIG_ENTRY_VERSION,
-    DOMAIN,
 )
 from custom_components.hydronicus.core.executor import (
     ActuatorFailureKind,
@@ -37,6 +34,7 @@ from custom_components.hydronicus.core.model import (
 )
 from custom_components.hydronicus.entry_configuration import authorize_outputs
 from custom_components.hydronicus.runtime import HydronicRuntime
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -121,13 +119,7 @@ def _entry(
         data["topology"]["valves"][0]["readiness_entity_id"] = readiness_entity_id
     if not dry_run:
         data = authorize_outputs(data)
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Synthetic plant",
-        data=data,
-        version=CONFIG_ENTRY_VERSION,
-        minor_version=CONFIG_ENTRY_MINOR_VERSION,
-    )
+    return plant_entry(data, title="Synthetic plant")
 
 
 def _register_recorder(hass, calls: list[tuple[str, str, str]]) -> None:

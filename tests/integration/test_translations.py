@@ -34,10 +34,8 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
     DOMAIN,
-    SUBENTRY_TYPE_ACTUATOR,
-    SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
-    SUBENTRY_TYPE_ZONE,
 )
 
 COMPONENT_DIR = Path(__file__).parents[2] / "custom_components" / DOMAIN
@@ -515,19 +513,10 @@ def test_static_discovery_sees_the_flow_contract() -> None:
         "selector.temperature_aggregation",
         "selector.source_type",
     } <= paths
-    for subentry_type in ("actuator", "circuit", "zone", "source"):
-        assert f"config_subentries.{subentry_type}.error.dry_run_shutdown_in_progress" in paths
-        assert f"config_subentries.{subentry_type}.abort.reconfigure_successful" in paths
-    assert "config_subentries.zone.error.invalid_zone" in paths
-    assert "config_subentries.zone.error.thermostat_loop" in paths
-    assert found.form_steps["config_subentries.zone"] == {
-        "user",
-        "reconfigure",
-        "details",
-        "sensor_metadata",
-        "sensor_policy",
-        "review",
-    }
+    assert "config_subentries.source.error.dry_run_shutdown_in_progress" in paths
+    assert "config_subentries.source.abort.reconfigure_successful" in paths
+    assert "config_subentries.room.abort.room_flow_pending" in paths
+    assert found.form_steps["config_subentries.source"] == {"user", "reconfigure", "review"}
 
 
 def test_every_section_entry_is_a_nonempty_string() -> None:
@@ -800,82 +789,12 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     entry = _plant_entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
-    confirm = {"confirm": True}
 
-    actuator = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ACTUATOR}")
-    valve = {
-        CONF_NAME: "Return valve",
-        "entity_id": "switch.return_valve",
-        "opening_time_seconds": 30,
-        "circuit_ids": [FLOOR_CIRCUIT_ID],
-    }
-    result = await _subentry_flow(
-        hass, entry, SUBENTRY_TYPE_ACTUATOR, actuator, [{**valve, CONF_NAME: " "}, valve, {}]
-    )
-    assert result["step_id"] == "review"
-    assert result["errors"] == {"base": "confirm_required"}
-    result = actuator.check(
-        await hass.config_entries.subentries.async_configure(result["flow_id"], confirm)
-    )
-    await hass.async_block_till_done()
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _reconfigure(hass, entry, SUBENTRY_TYPE_ACTUATOR, actuator, [valve, confirm])
-    assert result["reason"] == "reconfigure_successful"
-
-    circuit = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_CIRCUIT}")
-    loop = {
-        CONF_NAME: "Wall loop",
-        "zone_ids": [ZONE_ID],
-        "valve_ids": [VALVE_ID],
-        "pump_id": PUMP_ID,
-    }
-    result = await _subentry_flow(
-        hass, entry, SUBENTRY_TYPE_CIRCUIT, circuit, [{**loop, CONF_NAME: " "}, loop, confirm]
-    )
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _reconfigure(hass, entry, SUBENTRY_TYPE_CIRCUIT, circuit, [loop, confirm])
-    assert result["reason"] == "reconfigure_successful"
-
-    zone = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ZONE}")
-    office = {
-        CONF_NAME: "Office",
-        "temperature_sensors": ["sensor.office"],
-        "temperature_aggregation": "mean",
-        "circuit_ids": [FLOOR_CIRCUIT_ID],
-    }
-    result = await _subentry_flow(
-        hass,
-        entry,
-        SUBENTRY_TYPE_ZONE,
-        zone,
-        [
-            {"thermostat_kind": "hydronicus"},
-            {**office, CONF_NAME: " "},
-            {**office, "configure_sensor_metadata": True},
-            {"sensor_entity": "sensor.office"},
-            {"temperature_aggregation": "weighted_mean"},
-            confirm,
-        ],
-    )
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _reconfigure(
-        hass,
-        entry,
-        SUBENTRY_TYPE_ZONE,
-        zone,
-        [
-            # The picker hides Hydronicus climates, so the loop is submitted with the
-            # thermostat kind, which the backend still rejects.
-            {
-                "thermostat_kind": "external_climate",
-                **office,
-                "external_climate_entity": "climate.hydronic_plant_living_room",
-            },
-            {**office, "external_climate_entity": "climate.office"},
-            confirm,
-        ],
-    )
-    assert result["reason"] == "reconfigure_successful"
+    room = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ROOM}")
+    result = await _subentry_flow(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
+    assert result["reason"] == "room_flow_pending"
+    result = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
+    assert result["reason"] == "room_flow_pending"
 
     source = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_SOURCE}")
     boiler = {CONF_NAME: "Boiler", "source_type": "external", "priority": 1}
@@ -886,18 +805,9 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     result = await _reconfigure(hass, entry, SUBENTRY_TYPE_SOURCE, source, [boiler])
     assert result["reason"] == "reconfigure_successful"
 
-    assert actuator.steps == {"user", "reconfigure", "review"}
-    assert circuit.steps == {"user", "reconfigure", "review"}
-    assert zone.steps == {
-        "user",
-        "reconfigure",
-        "details",
-        "sensor_metadata",
-        "sensor_policy",
-        "review",
-    }
+    assert room.steps == set()
     assert source.steps == {"user", "reconfigure"}
-    assert [*actuator.missing, *circuit.missing, *zone.missing, *source.missing] == []
+    assert [*room.missing, *source.missing] == []
 
 
 async def test_runtime_entities_and_issues_are_translated(hass) -> None:

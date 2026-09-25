@@ -4,7 +4,7 @@ from typing import Final
 
 DOMAIN: Final = "hydronicus"
 PLATFORMS: Final = ("binary_sensor", "button", "climate", "select", "sensor")
-CONFIG_ENTRY_VERSION: Final = 2
+CONFIG_ENTRY_VERSION: Final = 3
 CONFIG_ENTRY_MINOR_VERSION: Final = 0
 CONF_NAME: Final = "name"
 CONF_ACTUATOR_KIND: Final = "actuator_kind"
@@ -102,9 +102,6 @@ DEFAULT_VALVE_OPENING_TIME: Final = 30.0
 DEFAULT_PUMP_OVERRUN: Final = 120.0
 DEFAULT_CONDENSATION_MARGIN: Final = 2.0
 DEFAULT_REFERENCE_MAX_AGE: Final = 1800.0
-SUBENTRY_TYPE_ACTUATOR: Final = "actuator"
-SUBENTRY_TYPE_CIRCUIT: Final = "circuit"
-SUBENTRY_TYPE_ZONE: Final = "zone"
 SUBENTRY_TYPE_SOURCE: Final = "source"
 SUBENTRY_TYPE_ROOM: Final = "room"
 ACTUATOR_KIND_VALVE: Final = "valve"

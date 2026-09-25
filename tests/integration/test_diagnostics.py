@@ -213,3 +213,28 @@ async def test_verbose_actuator_entities_are_opt_in(hass) -> None:
         hass.states.get("sensor.private_solymar_plant_private_manifold_valve_feedback_reason")
         is None
     )
+
+
+async def test_diagnostics_name_the_owner_of_every_object_without_room_titles(hass) -> None:
+    """Each object names its room, by opaque zone reference, or the Plant."""
+    hass.states.async_set("sensor.private_bedroom_temperature", "18.0")
+    hass.states.async_set("switch.private_manifold_valve", "off")
+    hass.states.async_set("switch.private_plant_pump", "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    relationships = diagnostics["compiled_topology"]["relationships"]
+    room = {"kind": "room", "reference": "zone-1"}
+    plant = {"kind": "plant", "reference": "plant-1"}
+    assert [zone["owner"] for zone in relationships["zones"]] == [room]
+    assert [circuit["owner"] for circuit in relationships["circuits"]] == [room, room]
+    assert [route["owner"] for route in relationships["routes"]] == [room, room]
+    assert [valve["owner"] for valve in relationships["actuators"]["valves"]] == [room]
+    assert [pump["owner"] for pump in relationships["actuators"]["pumps"]] == [plant]
+    # The room title is the zone name, which diagnostics keep redacted.
+    (room_subentry,) = entry.subentries.values()
+    assert room_subentry.title == "Bedroom near the nursery"
+    assert room_subentry.title not in json.dumps(diagnostics)

@@ -454,7 +454,7 @@ async def async_setup_entry(
             ZoneCoolingDemandBinarySensor(entry, zone.id, zone.name),
             ZoneCoolingBlockedBinarySensor(entry, zone.id, zone.name),
         ]
-        if subentry_id := runtime.zone_subentry_ids.get(zone.id):
+        if subentry_id := runtime.subentry_id_for(zone.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
             parent_entities.extend(entities)
@@ -465,7 +465,7 @@ async def async_setup_entry(
             SourceActiveBinarySensor(entry, source.id, source.name),
             SourceBlockedBinarySensor(entry, source.id, source.name),
         ]
-        if subentry_id := runtime.source_subentry_ids.get(source.id):
+        if subentry_id := runtime.subentry_id_for(source.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
             parent_entities.extend(entities)
@@ -475,10 +475,11 @@ async def async_setup_entry(
             ActuatorMismatchBinarySensor(entry, valve.id, valve.name),
             ActuatorBlockedBinarySensor(entry, valve.id, valve.name),
         ]
-        if subentry_id := runtime.actuator_subentry_ids.get(valve.id):
+        if subentry_id := runtime.subentry_id_for(valve.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
             parent_entities.extend(entities)
+    # Pumps are Plant equipment, so their entities always belong to the parent.
     for pump in runtime.plant.pumps.values():
         parent_entities.extend(
             (

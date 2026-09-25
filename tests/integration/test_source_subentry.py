@@ -35,6 +35,13 @@ ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 SELECTOR_ID = "00000000-0000-4000-8000-000000000007"
 
 
+def _source_subentries(entry: MockConfigEntry) -> list:
+    """Return the source handles; the migrated Plant also has one room handle."""
+    return [
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_SOURCE
+    ]
+
+
 def _entry() -> MockConfigEntry:
     """Return a synthetic active-heating topology with no configured sources."""
     return MockConfigEntry(
@@ -270,7 +277,7 @@ async def test_source_form_selectors_and_persisted_types(hass) -> None:
 
     result = await _add_buffer_source(hass, entry)
     await hass.async_block_till_done()
-    subentry = next(iter(entry.subentries.values()))
+    subentry = _source_subentries(entry)[0]
     created = subentry_draft(entry, subentry)
     assert created[CONF_SOURCE_PRIORITY] == 1
     assert type(created[CONF_SOURCE_PRIORITY]) is int
@@ -307,7 +314,7 @@ async def test_source_priority_rejects_non_finite_and_fractional_values(hass, pr
         )
 
     assert CONF_SOURCE_PRIORITY in raised.value.schema_errors
-    assert not entry.subentries
+    assert not _source_subentries(entry)
 
 
 async def test_source_priority_accepts_a_whole_float_and_stores_an_int(hass) -> None:
@@ -326,7 +333,7 @@ async def test_source_priority_accepts_a_whole_float_and_stores_an_int(hass) -> 
     )
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
-    created = subentry_draft(entry, next(iter(entry.subentries.values())))
+    created = subentry_draft(entry, _source_subentries(entry)[0])
     assert created[CONF_SOURCE_PRIORITY] == 3
     assert type(created[CONF_SOURCE_PRIORITY]) is int
 
@@ -348,7 +355,7 @@ async def test_buffer_without_temperature_entity_is_explained(hass) -> None:
 
     assert result["step_id"] == "user"
     assert result["errors"] == {CONF_SOURCE_TEMPERATURE_ENTITY: "buffer_temperature_required"}
-    assert not entry.subentries
+    assert not _source_subentries(entry)
 
 
 async def test_source_pickers_hide_and_reject_hydronicus_entities(hass) -> None:

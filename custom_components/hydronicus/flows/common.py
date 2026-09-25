@@ -80,6 +80,7 @@ from ..const import (
     DEFAULT_TARGET_TEMPERATURE,
     DEFAULT_TEMPERATURE_AGGREGATION,
     DOMAIN,
+    SUBENTRY_TYPE_SOURCE,
     THERMOSTAT_KIND_EXTERNAL_CLIMATE,
     THERMOSTAT_KIND_HYDRONICUS,
 )
@@ -91,15 +92,15 @@ from ..core.model import (
     MIN_ZONE_TARGET_TEMPERATURE,
     TemperatureAggregation,
 )
+from ..core.ownership import OwnershipError
 from ..core.topology import (
     CoolingObservationError,
     CoolingReferenceError,
     TopologyValidationError,
-    compile_topology,
 )
 from ..entry_configuration import (
-    effective_plant_configuration,
-    entry_data_with_subentry_draft,
+    data_with_source,
+    effective_plant_from_data,
 )
 from ..output_ownership import bound_by_other_plant
 
@@ -378,26 +379,23 @@ def subentry_handle(draft: Mapping[str, Any]) -> dict[str, str]:
     return {"id": str(draft["id"])}
 
 
-async def async_persist_subentry_graph(
-    flow: config_entries.ConfigSubentryFlow,
+async def async_persist_entry_data(
+    flow: config_entries.ConfigFlow
+    | config_entries.OptionsFlow
+    | config_entries.ConfigSubentryFlow,
     entry: config_entries.ConfigEntry,
-    subentry_type: str,
-    draft: Mapping[str, Any],
-    *,
-    excluded_subentry_id: str | None = None,
+    data: Mapping[str, Any],
 ) -> bool:
-    """Safely persist one complete graph mutation before returning its UI handle."""
+    """Store edited Plant data once the Plant has safely reached Dry run.
+
+    An active Plant first completes its safe shutdown through the runtime. When
+    that cannot finish, nothing is stored and ``False`` is returned.
+    """
     if not bool(entry.data.get(CONF_DRY_RUN, True)):
         runtime = getattr(entry, "runtime_data", None)
         if runtime is None or not await runtime.async_set_dry_run(True, hass=flow.hass):
             return False
-    data = entry_data_with_subentry_draft(
-        entry,
-        subentry_type,
-        draft,
-        excluded_subentry_id=excluded_subentry_id,
-    )
-    flow.hass.config_entries.async_update_entry(entry, data=data)
+    flow.hass.config_entries.async_update_entry(entry, data=dict(data))
     return True
 
 
@@ -467,24 +465,21 @@ def cooling_reference_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
 def effective_topology_error(
     entry: config_entries.ConfigEntry,
     *,
-    proposed_actuators: Sequence[Mapping[str, Any]] = (),
-    proposed_circuits: Sequence[Mapping[str, Any]] = (),
-    proposed_zones: Sequence[Mapping[str, Any]] = (),
     proposed_sources: Sequence[Mapping[str, Any]] = (),
     excluded_subentry_id: str | None = None,
-) -> StoredTopologyError | TopologyValidationError | None:
-    """Return why a complete proposed topology is rejected, without mutating the entry."""
+) -> StoredTopologyError | TopologyValidationError | OwnershipError | None:
+    """Return why proposed source records are rejected, without mutating the entry.
+
+    A reconfigured source replaces its stored record by id, so the excluded
+    subentry needs no separate handling and is accepted for the source flow.
+    """
+    del excluded_subentry_id
+    data: Mapping[str, Any] = entry.data
     try:
-        effective = effective_plant_configuration(
-            entry,
-            proposed_actuators=proposed_actuators,
-            proposed_circuits=proposed_circuits,
-            proposed_zones=proposed_zones,
-            proposed_sources=proposed_sources,
-            excluded_subentry_id=excluded_subentry_id,
-        )
-        compile_topology(effective.configuration)
-    except (StoredTopologyError, TopologyValidationError) as error:
+        for record in proposed_sources:
+            data = data_with_source(data, record)
+        effective_plant_from_data(data)
+    except (StoredTopologyError, TopologyValidationError, OwnershipError) as error:
         return error
     return None
 
@@ -940,6 +935,14 @@ class SubentryReviewMixin(_SubentryFlowBase):
     _reconfigure: bool
     _review_warnings: str
 
+    def _entry_data_with_draft(
+        self, data: Mapping[str, Any], draft: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Return the Plant data with the draft applied, validated and in Dry run."""
+        if self._subentry_type == SUBENTRY_TYPE_SOURCE:
+            return data_with_source(data, draft)
+        raise StoredTopologyError(f"Unsupported subentry type {self._subentry_type!r}.")
+
     async def _async_save_draft(
         self,
         draft: dict[str, Any],
@@ -963,12 +966,8 @@ class SubentryReviewMixin(_SubentryFlowBase):
         """Persist the draft graph and return its UI handle, or ``None`` if Dry run is pending."""
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry() if self._reconfigure else None
-        if not await async_persist_subentry_graph(
-            self,
-            entry,
-            self._subentry_type,
-            self._draft,
-            excluded_subentry_id=subentry.subentry_id if subentry is not None else None,
+        if not await async_persist_entry_data(
+            self, entry, self._entry_data_with_draft(entry.data, self._draft)
         ):
             return None
         if subentry is not None:

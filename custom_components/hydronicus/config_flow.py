@@ -9,18 +9,12 @@ from .const import (
     CONFIG_ENTRY_MINOR_VERSION,
     CONFIG_ENTRY_VERSION,
     DOMAIN,
-    SUBENTRY_TYPE_ACTUATOR,
-    SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
-    SUBENTRY_TYPE_ZONE,
 )
 from .flows.common import OwnEntityPickerMixin
-from .flows.legacy import (
-    ActuatorSubentryFlowHandler,
-    CircuitSubentryFlowHandler,
-    ZoneSubentryFlowHandler,
-)
 from .flows.plant import PlantSettingsSteps
+from .flows.room import RoomSubentryFlowHandler
 from .flows.setup import SetupSteps
 from .flows.source import SourceSubentryFlowHandler
 
@@ -38,10 +32,8 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     def async_get_supported_subentry_types(
         cls, config_entry: config_entries.ConfigEntry
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """Return dynamic object types supported by this plant."""
+        """Return the handle types of a Plant: rooms and sources."""
         return {
-            SUBENTRY_TYPE_ACTUATOR: ActuatorSubentryFlowHandler,
-            SUBENTRY_TYPE_CIRCUIT: CircuitSubentryFlowHandler,
-            SUBENTRY_TYPE_ZONE: ZoneSubentryFlowHandler,
+            SUBENTRY_TYPE_ROOM: RoomSubentryFlowHandler,
             SUBENTRY_TYPE_SOURCE: SourceSubentryFlowHandler,
         }

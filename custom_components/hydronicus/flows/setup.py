@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.helpers import selector
 
 from ..const import (
@@ -67,6 +68,7 @@ from ..core.configuration import (
 from ..core.model import (
     CompiledPlant,
 )
+from ..core.ownership import derive_ownership
 from ..core.topology import (
     TopologyValidationError,
     compile_topology,
@@ -75,6 +77,8 @@ from ..entry_configuration import (
     authorization_output_lines,
     authorize_outputs,
     exclusive_output_entity_ids,
+    new_plant_data,
+    subentries_for,
 )
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
@@ -493,9 +497,20 @@ class SetupSteps(ConfigFlowBase):
                 )
             await self.async_set_unique_id(self._draft[CONF_PLANT_ID])
             self._abort_if_unique_id_configured()
+            # The first room owns its loop and valve, and the pump belongs to the Plant.
+            data = new_plant_data(
+                name=self._draft[CONF_NAME],
+                plant_id=self._draft[CONF_PLANT_ID],
+                topology=topology,
+                ownership=derive_ownership(plant_configuration_from_entry_data(self._draft)),
+            )
             if not self._draft[CONF_DRY_RUN]:
-                self._draft = authorize_outputs(self._draft)
-            return self.async_create_entry(title=self._draft[CONF_NAME], data=self._draft)
+                data = authorize_outputs(data)
+            return self.async_create_entry(
+                title=self._draft[CONF_NAME],
+                data=data,
+                subentries=cast(list[ConfigSubentryData], subentries_for(data)),
+            )
 
         return self.async_show_form(
             step_id="review",

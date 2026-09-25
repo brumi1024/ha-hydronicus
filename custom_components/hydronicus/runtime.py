@@ -80,9 +80,9 @@ from .core.model import (
     ZoneDecision,
     ZoneDecisionStatus,
 )
-from .core.topology import compile_topology
+from .core.ownership import PlantOwnership
 from .entry_configuration import (
-    effective_plant_configuration,
+    effective_plant,
     output_authorization,
     runtime_configuration_fingerprint,
 )
@@ -105,11 +105,10 @@ class HydronicRuntime:
     name: str
     dry_run: bool
     plant: CompiledPlant
-    actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
-    circuit_subentry_ids: Mapping[str, str] = field(default_factory=dict)
-    zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
+    # Zone, room-owned circuit and valve, and source ids -> owning config subentry id.
+    object_subentry_ids: Mapping[str, str] = field(default_factory=dict)
+    ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(room_objects={}))
     diagnostics_include_actuator_details: bool = False
-    source_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     plant_device_id: str | None = None
     configuration_fingerprint: str = ""
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
@@ -166,21 +165,19 @@ class HydronicRuntime:
         A runtime built with ``output_hold`` is in Dry run from construction,
         whatever the stored setting says, so it can never send a command.
         """
-        effective = effective_plant_configuration(entry)
-        plant = compile_topology(effective.configuration)
+        effective = effective_plant(entry)
+        plant = effective.compiled
         return cls(
             plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
             name=str(entry.data.get(CONF_NAME, getattr(entry, "title", "Hydronic plant"))),
             dry_run=bool(entry.data.get(CONF_DRY_RUN, True)) or output_hold is not None,
             output_hold=output_hold,
             plant=plant,
-            actuator_subentry_ids=effective.actuator_subentry_ids,
-            circuit_subentry_ids=effective.circuit_subentry_ids,
-            zone_subentry_ids=effective.zone_subentry_ids,
+            object_subentry_ids=effective.object_subentry_ids,
+            ownership=effective.ownership,
             diagnostics_include_actuator_details=bool(
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
             ),
-            source_subentry_ids=effective.source_subentry_ids,
             configuration_fingerprint=runtime_configuration_fingerprint(entry),
             runtime_state=RuntimeState(
                 requested_mode=_stored_requested_mode(entry),
@@ -205,6 +202,10 @@ class HydronicRuntime:
             },
             _entry=entry,
         )
+
+    def subentry_id_for(self, object_id: str) -> str | None:
+        """Return the config subentry owning an object, or ``None`` for the parent Plant."""
+        return self.object_subentry_ids.get(object_id)
 
     def _not_started_error(self) -> HomeAssistantError:
         """Describe an operation that reached a runtime without Home Assistant attached."""

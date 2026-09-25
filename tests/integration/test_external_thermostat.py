@@ -138,7 +138,7 @@ async def test_missing_external_binding_creates_thermostat_repair(hass) -> None:
     )
     issues = issue_registry.async_get(hass).issues
     assert any(
-        issue.domain == DOMAIN and issue.translation_key == "missing_thermostat_binding"
+        issue.domain == DOMAIN and issue.translation_key == "missing_thermostat_binding_fixable"
         for issue in issues.values()
     )
 

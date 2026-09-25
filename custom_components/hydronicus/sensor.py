@@ -704,7 +704,7 @@ async def async_setup_entry(
     source_subentry_entities: dict[str, list[SensorEntity]] = {}
     for source in runtime.plant.sources.values():
         entity = SourceBlockedReasonSensor(entry, source.id, source.name)
-        if subentry_id := runtime.source_subentry_ids.get(source.id):
+        if subentry_id := runtime.subentry_id_for(source.id):
             source_subentry_entities.setdefault(subentry_id, []).append(entity)
         else:
             parent_entities.append(entity)
@@ -718,18 +718,22 @@ async def async_setup_entry(
             ZoneDewPointSensor(entry, zone.id, zone.name),
             ZoneCondensationMarginSensor(entry, zone.id, zone.name),
         ]
-        if subentry_id := runtime.zone_subentry_ids.get(zone.id):
+        if subentry_id := runtime.subentry_id_for(zone.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
             parent_entities.extend(entities)
-    for actuator_id, actuator in (*runtime.plant.valves.items(), *runtime.plant.pumps.items()):
-        if not runtime.diagnostics_include_actuator_details:
-            continue
-        entity = ActuatorFeedbackReasonSensor(entry, actuator_id, actuator.name)
-        if subentry_id := runtime.actuator_subentry_ids.get(actuator_id):
-            subentry_entities.setdefault(subentry_id, []).append(entity)
-        else:
-            parent_entities.append(entity)
+    if runtime.diagnostics_include_actuator_details:
+        for valve in runtime.plant.valves.values():
+            entity = ActuatorFeedbackReasonSensor(entry, valve.id, valve.name)
+            if subentry_id := runtime.subentry_id_for(valve.id):
+                subentry_entities.setdefault(subentry_id, []).append(entity)
+            else:
+                parent_entities.append(entity)
+        # Pumps are Plant equipment, so their entities always belong to the parent.
+        parent_entities.extend(
+            ActuatorFeedbackReasonSensor(entry, pump.id, pump.name)
+            for pump in runtime.plant.pumps.values()
+        )
     async_add_entities(parent_entities)
     for subentry_id, entities in source_subentry_entities.items():
         subentry_entities.setdefault(subentry_id, []).extend(entities)

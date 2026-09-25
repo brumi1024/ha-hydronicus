@@ -269,7 +269,7 @@ async def async_setup_entry(
         if not isinstance(zone.thermostat, HydronicusThermostatConfig):
             continue
         entity = ZoneClimate(entry, zone.id, zone.name)
-        if subentry_id := runtime.zone_subentry_ids.get(zone.id):
+        if subentry_id := runtime.subentry_id_for(zone.id):
             subentry_entities.setdefault(subentry_id, []).append(entity)
         else:
             parent_entities.append(entity)

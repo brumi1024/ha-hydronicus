@@ -1,184 +1,544 @@
-"""Tests for parent-owned graph persistence and output authorization."""
+"""Tests for the version 3 Plant graph, its edit API, and output authorization."""
 
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_OUTPUT_AUTHORIZATION,
+    CONF_ROOM_OBJECTS,
     CONF_SUBENTRY_OBJECTS,
-    CONFIG_ENTRY_MINOR_VERSION,
-    CONFIG_ENTRY_VERSION,
-    DOMAIN,
-    SUBENTRY_TYPE_ZONE,
 )
+from custom_components.hydronicus.core.configuration import StoredTopologyError
+from custom_components.hydronicus.core.ownership import OwnershipError, PlantOwnership
+from custom_components.hydronicus.core.topology import TopologyValidationError
 from custom_components.hydronicus.entry_configuration import (
+    EquipmentInUseError,
+    RoomDraft,
+    SubentrySync,
     authorize_outputs,
-    entry_data_with_subentry_draft,
+    data_with_plant,
+    data_with_pump,
+    data_with_room,
+    effective_plant,
+    effective_plant_from_data,
+    invalidate_output_authorization,
+    new_plant_data,
     output_authorization,
     output_authorization_is_valid,
+    reconcile_removed_subentries,
+    room_draft,
+    runtime_configuration_fingerprint,
+    subentries_for,
+    subentry_sync,
 )
-from custom_components.hydronicus.flows.common import async_persist_subentry_graph
+from custom_components.hydronicus.flows.common import async_persist_entry_data
+from tests.integration.plant_fixtures import (
+    MANIFOLD_PUMP_ID,
+    PLANT_ID,
+    manifold_entry,
+    manifold_rooms,
+    manifold_topology,
+    plant_data,
+    plant_entry,
+    subentry_id_for,
+)
 
-PLANT_ID = "00000000-0000-4000-8000-000000000001"
-ZONE_ID = "00000000-0000-4000-8000-000000000002"
-VALVE_ID = "00000000-0000-4000-8000-000000000003"
-PUMP_ID = "00000000-0000-4000-8000-000000000004"
-CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
-ROUTE_ID = "00000000-0000-4000-8000-000000000006"
+LIVING, BEDROOM = manifold_rooms(("Living room", "Bedroom"))
 SOURCE_ID = "00000000-0000-4000-8000-000000000007"
-ADDED_ZONE_ID = "00000000-0000-4000-8000-000000000008"
-ADDED_ROUTE_ID = "00000000-0000-4000-8000-000000000009"
+OFFICE_ZONE = "00000000-0000-4000-8000-0000000000a1"
+OFFICE_LOOP = "00000000-0000-4000-8000-0000000000a2"
+OFFICE_VALVE = "00000000-0000-4000-8000-0000000000a3"
+OFFICE_ROUTE = "00000000-0000-4000-8000-0000000000a4"
+SECOND_PUMP = "00000000-0000-4000-8000-0000000000b1"
+BOILER = {
+    "id": SOURCE_ID,
+    "name": "Boiler",
+    "source_type": "external",
+    "source_demand_entity": "switch.boiler_demand",
+}
 
 
-def _base_data() -> dict[str, object]:
-    """Return one complete canonical parent graph."""
-    return {
-        "name": "Synthetic plant",
-        "plant_id": PLANT_ID,
-        "dry_run": True,
-        "topology": {
-            "zones": [
-                {
-                    "id": ZONE_ID,
-                    "name": "Living room",
-                    "thermostat": {
-                        "kind": "hydronicus",
-                        "initial_target_temperature": 21.0,
-                    },
-                    "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
-                }
-            ],
-            "valves": [
-                {
-                    "id": VALVE_ID,
-                    "name": "Floor valve",
-                    "entity_id": "switch.floor_valve",
-                }
-            ],
-            "pumps": [
-                {
-                    "id": PUMP_ID,
-                    "name": "Floor pump",
-                    "entity_id": "switch.floor_pump",
-                }
-            ],
-            "circuits": [
-                {
-                    "id": CIRCUIT_ID,
-                    "name": "Floor circuit",
-                    "valve_ids": [VALVE_ID],
-                    "pump_id": PUMP_ID,
-                }
-            ],
-            "routes": [
-                {
-                    "id": ROUTE_ID,
-                    "zone_id": ZONE_ID,
-                    "circuit_id": CIRCUIT_ID,
-                }
-            ],
-            "sources": [
-                {
-                    "id": SOURCE_ID,
-                    "name": "Boiler",
-                    "source_type": "external",
-                    "source_demand_entity": "switch.boiler_demand",
-                }
-            ],
+def _data(**kwargs: Any) -> dict[str, Any]:
+    return plant_data(manifold_topology(sources=[BOILER]), **kwargs)
+
+
+def _office() -> RoomDraft:
+    return RoomDraft(
+        zone={
+            "id": OFFICE_ZONE,
+            "name": "Office",
+            "thermostat": {"kind": "hydronicus", "initial_target_temperature": 20.0},
+            "temperature_sensor_metadata": [{"entity_id": "sensor.office_temperature"}],
         },
-        CONF_SUBENTRY_OBJECTS: {},
-    }
+        circuits=[
+            {
+                "id": OFFICE_LOOP,
+                "name": "Office loop",
+                "valve_ids": [OFFICE_VALVE],
+                "pump_id": MANIFOLD_PUMP_ID,
+            }
+        ],
+        valves=[{"id": OFFICE_VALVE, "name": "Office valve", "entity_id": "switch.office_valve"}],
+        routes=[{"id": OFFICE_ROUTE, "zone_id": OFFICE_ZONE, "circuit_id": OFFICE_LOOP}],
+    )
 
 
-def _added_zone_draft() -> dict[str, object]:
-    """Return a complete UI draft for one additional Zone."""
-    return {
-        "id": ADDED_ZONE_ID,
-        "name": "Office",
-        "thermostat": {
-            "kind": "hydronicus",
-            "initial_target_temperature": 20.0,
-        },
-        "temperature_sensor_metadata": [{"entity_id": "sensor.office_temperature"}],
-        "temperature_aggregation": "mean",
-        "circuit_ids": [CIRCUIT_ID],
-        "routes": [{"id": ADDED_ROUTE_ID, "circuit_id": CIRCUIT_ID}],
-    }
+def _kitchen_topology() -> tuple[Any, dict[str, Any]]:
+    """Return a third room, alone on the manifold pump, with the boiler."""
+    names = ("Living room", "Bedroom", "Kitchen")
+    kitchen = manifold_rooms(names)[2]
+    topology = manifold_topology(names, sources=[BOILER])
+    kept = {kitchen.zone_id, kitchen.circuit_id, kitchen.valve_id, kitchen.route_id}
+    for collection in ("zones", "circuits", "valves", "routes"):
+        topology[collection] = [record for record in topology[collection] if record["id"] in kept]
+    return kitchen, topology
+
+
+def _ids(data: dict[str, Any], collection: str) -> list[str]:
+    return [record["id"] for record in data["topology"][collection]]
 
 
 def test_output_authorization_is_bound_to_the_exact_graph_and_outputs() -> None:
     """Any physical binding change invalidates the stored activation grant."""
-    data = _base_data()
+    data = _data()
     authorization = output_authorization(data)
 
     assert authorization["outputs"] == [
-        {"kind": "pump", "id": PUMP_ID, "entity_id": "switch.floor_pump"},
-        {
-            "kind": "source_demand",
-            "id": SOURCE_ID,
-            "entity_id": "switch.boiler_demand",
-        },
-        {"kind": "valve", "id": VALVE_ID, "entity_id": "switch.floor_valve"},
+        {"kind": "pump", "id": MANIFOLD_PUMP_ID, "entity_id": "switch.manifold_pump"},
+        {"kind": "source_demand", "id": SOURCE_ID, "entity_id": "switch.boiler_demand"},
+        {"kind": "valve", "id": LIVING.valve_id, "entity_id": LIVING.valve_entity},
+        {"kind": "valve", "id": BEDROOM.valve_id, "entity_id": BEDROOM.valve_entity},
     ]
-
     active = authorize_outputs(data)
     assert active[CONF_DRY_RUN] is False
     assert output_authorization_is_valid(active)
-
     changed = deepcopy(active)
     changed["topology"]["valves"][0]["entity_id"] = "switch.other_valve"
     assert not output_authorization_is_valid(changed)
 
 
-def test_graph_mutation_returns_to_dry_run_and_invalidates_authorization() -> None:
-    """A valid graph edit cannot inherit authorization for the prior outputs."""
-    active = authorize_outputs(_base_data())
-    entry = SimpleNamespace(data=active, subentries={})
+def test_new_plant_data_gives_every_zone_and_source_a_handle() -> None:
+    """New Plant data is version 3 data in Dry run with its room ownership."""
+    data = _data()
 
-    updated = entry_data_with_subentry_draft(
-        entry,
-        SUBENTRY_TYPE_ZONE,
-        _added_zone_draft(),
+    assert data[CONF_DRY_RUN] is True
+    assert CONF_OUTPUT_AUTHORIZATION not in data
+    assert data[CONF_SUBENTRY_OBJECTS] == {
+        LIVING.zone_id: "room",
+        BEDROOM.zone_id: "room",
+        SOURCE_ID: "source",
+    }
+    assert data[CONF_ROOM_OBJECTS] == {
+        LIVING.circuit_id: LIVING.zone_id,
+        BEDROOM.circuit_id: BEDROOM.zone_id,
+        LIVING.valve_id: LIVING.zone_id,
+        BEDROOM.valve_id: BEDROOM.zone_id,
+    }
+    assert subentries_for(data) == [
+        {
+            "data": {"id": LIVING.zone_id},
+            "subentry_type": "room",
+            "title": "Living room",
+            "unique_id": LIVING.zone_id,
+        },
+        {
+            "data": {"id": BEDROOM.zone_id},
+            "subentry_type": "room",
+            "title": "Bedroom",
+            "unique_id": BEDROOM.zone_id,
+        },
+        {
+            "data": {"id": SOURCE_ID},
+            "subentry_type": "source",
+            "title": "Boiler",
+            "unique_id": SOURCE_ID,
+        },
+    ]
+
+
+def test_new_plant_data_rejects_ownership_that_is_not_deletion_closed() -> None:
+    """A room cannot own a loop another room routes to."""
+    topology = manifold_topology()
+    topology["routes"].append(
+        {
+            "id": "00000000-0000-4000-8000-0000000000c1",
+            "zone_id": BEDROOM.zone_id,
+            "circuit_id": LIVING.circuit_id,
+        }
     )
+    ownership = PlantOwnership(room_objects={LIVING.circuit_id: LIVING.zone_id})
 
-    assert active[CONF_DRY_RUN] is False
-    assert CONF_OUTPUT_AUTHORIZATION in active
-    assert updated[CONF_DRY_RUN] is True
-    assert CONF_OUTPUT_AUTHORIZATION not in updated
-    assert updated[CONF_SUBENTRY_OBJECTS] == {ADDED_ZONE_ID: SUBENTRY_TYPE_ZONE}
-    assert {zone["id"] for zone in updated["topology"]["zones"]} == {
-        ZONE_ID,
-        ADDED_ZONE_ID,
+    with pytest.raises(OwnershipError) as error:
+        new_plant_data(name="Plant", plant_id=PLANT_ID, topology=topology, ownership=ownership)
+
+    assert LIVING.circuit_id in error.value.object_ids
+
+
+def test_effective_plant_maps_room_objects_to_their_room_subentry() -> None:
+    """Zones, private loops and valves, and sources resolve to their handle subentry."""
+    entry = plant_entry(_data())
+
+    plant = effective_plant(entry)
+
+    living = subentry_id_for(LIVING.zone_id)
+    assert plant.object_subentry_ids == {
+        LIVING.zone_id: living,
+        LIVING.circuit_id: living,
+        LIVING.valve_id: living,
+        BEDROOM.zone_id: subentry_id_for(BEDROOM.zone_id),
+        BEDROOM.circuit_id: subentry_id_for(BEDROOM.zone_id),
+        BEDROOM.valve_id: subentry_id_for(BEDROOM.zone_id),
+        SOURCE_ID: subentry_id_for(SOURCE_ID),
+    }
+    assert set(plant.compiled.zones) == {LIVING.zone_id, BEDROOM.zone_id}
+    assert effective_plant_from_data(entry.data).object_subentry_ids == {}
+
+
+def test_a_plant_owned_source_needs_no_subentry() -> None:
+    """A source without a handle belongs to the Plant and stays valid."""
+    data = _data()
+    del data[CONF_SUBENTRY_OBJECTS][SOURCE_ID]
+    entry = plant_entry(data)
+    assert len(entry.subentries) == 2
+
+    plant = effective_plant(entry)
+
+    assert SOURCE_ID in plant.compiled.sources
+    assert SOURCE_ID not in plant.object_subentry_ids
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        pytest.param(
+            lambda data: data[CONF_SUBENTRY_OBJECTS].pop(BEDROOM.zone_id),
+            "Zones without a room handle",
+            id="zone_without_room",
+        ),
+        pytest.param(
+            lambda data: data[CONF_SUBENTRY_OBJECTS].update({LIVING.valve_id: "room"}),
+            "does not name a stored zone",
+            id="room_handle_on_valve",
+        ),
+        pytest.param(
+            lambda data: data[CONF_SUBENTRY_OBJECTS].update({BEDROOM.zone_id: "zone"}),
+            "unsupported type 'zone'",
+            id="legacy_handle_type",
+        ),
+    ],
+)
+def test_version_3_readers_reject_inconsistent_handles(change, message: str) -> None:
+    """Every zone has exactly one room handle, and only room and source handles exist."""
+    data = _data()
+    change(data)
+
+    with pytest.raises(StoredTopologyError, match=message):
+        effective_plant_from_data(data)
+
+
+def test_effective_plant_rejects_a_handle_without_its_subentry() -> None:
+    """Outside reconciliation, a recorded handle must have its subentry."""
+    entry = plant_entry(_data())
+    subentries = {
+        subentry_id: subentry
+        for subentry_id, subentry in entry.subentries.items()
+        if subentry.unique_id != BEDROOM.zone_id
     }
 
+    with pytest.raises(StoredTopologyError, match="without a config subentry"):
+        effective_plant(SimpleNamespace(data=entry.data, subentries=subentries))
 
-async def test_active_graph_mutation_aborts_when_safe_shutdown_cannot_finish(hass) -> None:
-    """A failed transition to Dry run leaves the parent graph byte-for-byte unchanged."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Synthetic plant",
-        version=CONFIG_ENTRY_VERSION,
-        minor_version=CONFIG_ENTRY_MINOR_VERSION,
-        data=authorize_outputs(_base_data()),
+
+def test_room_draft_round_trips_and_edits_a_room_in_place() -> None:
+    """A room replaces exactly its own records and keeps the order of the rest."""
+    data = authorize_outputs(_data())
+    draft = room_draft(data, BEDROOM.zone_id)
+
+    assert draft.zone["name"] == "Bedroom"
+    assert [circuit["id"] for circuit in draft.circuits] == [BEDROOM.circuit_id]
+    assert [valve["id"] for valve in draft.valves] == [BEDROOM.valve_id]
+    assert [route["id"] for route in draft.routes] == [BEDROOM.route_id]
+    assert data_with_room(data, draft) == invalidate_output_authorization(data)
+
+    renamed = replace(draft, zone={**draft.zone, "name": "Guest room"})
+    extra_valve = {"id": OFFICE_VALVE, "name": "Second valve", "entity_id": "switch.second"}
+    edited = replace(
+        renamed,
+        valves=[*draft.valves, extra_valve],
+        circuits=[{**draft.circuits[0], "valve_ids": [BEDROOM.valve_id, OFFICE_VALVE]}],
     )
+    updated = data_with_room(data, edited)
+
+    assert updated[CONF_DRY_RUN] is True
+    assert CONF_OUTPUT_AUTHORIZATION not in updated
+    assert _ids(updated, "zones") == [LIVING.zone_id, BEDROOM.zone_id]
+    assert updated["topology"]["zones"][1]["name"] == "Guest room"
+    assert _ids(updated, "valves") == [LIVING.valve_id, BEDROOM.valve_id, OFFICE_VALVE]
+    assert updated[CONF_ROOM_OBJECTS][OFFICE_VALVE] == BEDROOM.zone_id
+
+
+def test_data_with_room_drops_private_objects_the_room_no_longer_has() -> None:
+    """A room that switches to a shared loop takes its private loop and valve with it."""
+    ownership = PlantOwnership(
+        room_objects={BEDROOM.circuit_id: BEDROOM.zone_id, BEDROOM.valve_id: BEDROOM.zone_id}
+    )
+    data = new_plant_data(
+        name="Plant", plant_id=PLANT_ID, topology=manifold_topology(), ownership=ownership
+    )
+    draft = room_draft(data, BEDROOM.zone_id)
+    shared_route = {**draft.routes[0], "circuit_id": LIVING.circuit_id}
+
+    updated = data_with_room(data, replace(draft, circuits=[], valves=[], routes=[shared_route]))
+
+    assert _ids(updated, "circuits") == [LIVING.circuit_id]
+    assert _ids(updated, "valves") == [LIVING.valve_id]
+    assert updated["topology"]["routes"][1] == shared_route
+    assert updated[CONF_ROOM_OBJECTS] == {}
+
+
+def test_data_with_room_inserts_a_new_room() -> None:
+    """A new zone id adds a room with its private loop and valve."""
+    updated = data_with_room(_data(), _office())
+
+    assert _ids(updated, "zones")[-1] == OFFICE_ZONE
+    assert updated[CONF_SUBENTRY_OBJECTS][OFFICE_ZONE] == "room"
+    assert updated[CONF_ROOM_OBJECTS][OFFICE_LOOP] == OFFICE_ZONE
+    assert updated[CONF_ROOM_OBJECTS][OFFICE_VALVE] == OFFICE_ZONE
+    assert subentries_for(updated)[-1]["title"] == "Office"
+
+
+@pytest.mark.parametrize(
+    ("edit", "error"),
+    [
+        pytest.param(
+            lambda draft: replace(
+                draft,
+                routes=[{**draft.routes[0], "zone_id": LIVING.zone_id}],
+            ),
+            StoredTopologyError,
+            id="route_from_another_zone",
+        ),
+        pytest.param(
+            lambda draft: replace(
+                draft,
+                circuits=[{**draft.circuits[0], "id": LIVING.circuit_id}],
+                routes=[{**draft.routes[0], "circuit_id": LIVING.circuit_id}],
+            ),
+            StoredTopologyError,
+            id="takes_another_rooms_loop",
+        ),
+        pytest.param(
+            lambda draft: replace(
+                draft,
+                circuits=[{**draft.circuits[0], "valve_ids": [LIVING.valve_id]}],
+                valves=[],
+            ),
+            OwnershipError,
+            id="uses_another_rooms_valve",
+        ),
+        pytest.param(
+            lambda draft: replace(draft, routes=[]),
+            OwnershipError,
+            id="private_loop_without_route",
+        ),
+        pytest.param(
+            lambda draft: replace(
+                draft,
+                circuits=[{**draft.circuits[0], "pump_id": SECOND_PUMP}],
+            ),
+            TopologyValidationError,
+            id="unknown_pump",
+        ),
+    ],
+)
+def test_data_with_room_rejects_invalid_rooms(edit, error: type[Exception]) -> None:
+    """A room edit is validated against ownership and compiled before it is returned."""
+    with pytest.raises(error):
+        data_with_room(_data(), edit(_office()))
+
+
+def test_data_with_pump_adds_replaces_and_removes_plant_pumps() -> None:
+    """Pumps are Plant equipment; one in use cannot be removed."""
+    data = authorize_outputs(_data())
+    pump = {"name": "Second pump", "entity_id": "switch.second_pump"}
+
+    added = data_with_pump(data, SECOND_PUMP, pump)
+    assert _ids(added, "pumps") == [MANIFOLD_PUMP_ID, SECOND_PUMP]
+    assert added[CONF_DRY_RUN] is True
+    assert CONF_OUTPUT_AUTHORIZATION not in added
+    renamed = data_with_pump(added, SECOND_PUMP, {**pump, "name": "Spare pump"})
+    assert renamed["topology"]["pumps"][1] == {"id": SECOND_PUMP, **pump, "name": "Spare pump"}
+    assert _ids(data_with_pump(renamed, SECOND_PUMP, None), "pumps") == [MANIFOLD_PUMP_ID]
+
+    with pytest.raises(EquipmentInUseError) as in_use:
+        data_with_pump(added, MANIFOLD_PUMP_ID, None)
+    assert in_use.value.users == ("Living room loop", "Bedroom loop")
+    with pytest.raises(StoredTopologyError):
+        data_with_pump(added, SECOND_PUMP, {"id": MANIFOLD_PUMP_ID, **pump})
+
+
+@dataclass(frozen=True)
+class _Imported:
+    name: str
+    topology: dict[str, Any]
+    ownership: PlantOwnership
+
+
+def test_data_with_plant_replaces_the_graph_and_gives_every_object_a_handle() -> None:
+    """A plant file replaces name, topology, and ownership, and keeps the Plant id."""
+    data = authorize_outputs(_data())
+    kitchen, topology = _kitchen_topology()
+    imported = _Imported(
+        name="Imported",
+        topology=topology,
+        ownership=PlantOwnership(room_objects={kitchen.circuit_id: kitchen.zone_id}),
+    )
+
+    updated = data_with_plant(data, imported)
+
+    assert updated["name"] == "Imported"
+    assert updated["plant_id"] == PLANT_ID
+    assert updated["topology"]["zones"] == topology["zones"]
+    assert updated[CONF_ROOM_OBJECTS] == {kitchen.circuit_id: kitchen.zone_id}
+    assert updated[CONF_SUBENTRY_OBJECTS] == {kitchen.zone_id: "room", SOURCE_ID: "source"}
+    assert updated[CONF_DRY_RUN] is True
+    assert CONF_OUTPUT_AUTHORIZATION not in updated
+
+
+def test_subentry_sync_adds_and_retitles_handles() -> None:
+    """A new room gets a handle and a renamed room gets its new title."""
+    entry = plant_entry(_data())
+    draft = room_draft(entry.data, LIVING.zone_id)
+    data = data_with_room(entry.data, replace(draft, zone={**draft.zone, "name": "Lounge"}))
+    data = data_with_room(data, _office())
+
+    assert subentry_sync(entry, data) == SubentrySync(
+        add=[
+            {
+                "data": {"id": OFFICE_ZONE},
+                "subentry_type": "room",
+                "title": "Office",
+                "unique_id": OFFICE_ZONE,
+            }
+        ],
+        remove=[],
+        retitle=[(subentry_id_for(LIVING.zone_id), "Lounge")],
+    )
+
+
+def test_subentry_sync_matches_a_replaced_plant() -> None:
+    """Rooms that disappear are removed and new ones are added."""
+    entry = plant_entry(_data())
+    kitchen, topology = _kitchen_topology()
+    imported = _Imported(
+        name="Imported",
+        topology=topology,
+        ownership=PlantOwnership(room_objects={}),
+    )
+
+    sync = subentry_sync(entry, data_with_plant(entry.data, imported))
+
+    assert sync.add == [
+        {
+            "data": {"id": kitchen.zone_id},
+            "subentry_type": "room",
+            "title": "Kitchen",
+            "unique_id": kitchen.zone_id,
+        }
+    ]
+    assert sorted(sync.remove) == sorted(
+        [subentry_id_for(LIVING.zone_id), subentry_id_for(BEDROOM.zone_id)]
+    )
+    assert sync.retitle == []
+
+
+def test_runtime_fingerprint_includes_room_ownership() -> None:
+    """Moving a loop between a room and the Plant rebuilds the runtime."""
+    entry = plant_entry(_data())
+    moved = dict(entry.data)
+    moved[CONF_ROOM_OBJECTS] = {
+        key: value for key, value in entry.data[CONF_ROOM_OBJECTS].items() if key != LIVING.valve_id
+    }
+
+    assert runtime_configuration_fingerprint(entry) != runtime_configuration_fingerprint(
+        SimpleNamespace(data=moved, subentries=entry.subentries)
+    )
+
+
+def test_reconciliation_removes_the_closure_of_a_deleted_room() -> None:
+    """A vanished room handle removes its zone, routes, and private loops and valves."""
+    entry = plant_entry(authorize_outputs(_data()))
+    assert reconcile_removed_subentries(entry) is None
+    remaining = {
+        subentry_id: subentry
+        for subentry_id, subentry in entry.subentries.items()
+        if subentry.unique_id not in {BEDROOM.zone_id, SOURCE_ID}
+    }
+
+    data = reconcile_removed_subentries(SimpleNamespace(data=entry.data, subentries=remaining))
+
+    assert data is not None
+    assert _ids(data, "zones") == [LIVING.zone_id]
+    assert _ids(data, "circuits") == [LIVING.circuit_id]
+    assert _ids(data, "valves") == [LIVING.valve_id]
+    assert _ids(data, "routes") == [LIVING.route_id]
+    assert _ids(data, "pumps") == [MANIFOLD_PUMP_ID]
+    assert _ids(data, "sources") == []
+    assert data[CONF_SUBENTRY_OBJECTS] == {LIVING.zone_id: "room"}
+    assert data[CONF_ROOM_OBJECTS] == {
+        LIVING.circuit_id: LIVING.zone_id,
+        LIVING.valve_id: LIVING.zone_id,
+    }
+    assert data[CONF_DRY_RUN] is True
+    assert CONF_OUTPUT_AUTHORIZATION not in data
+
+
+async def test_persisting_data_aborts_when_safe_shutdown_cannot_finish(hass) -> None:
+    """A failed transition to Dry run leaves the parent graph byte-for-byte unchanged."""
+    entry = manifold_entry(dry_run=False)
     entry.add_to_hass(hass)
     runtime = SimpleNamespace(async_set_dry_run=AsyncMock(return_value=False))
     entry.runtime_data = runtime
     original = deepcopy(dict(entry.data))
 
-    persisted = await async_persist_subentry_graph(
-        SimpleNamespace(hass=hass),
-        entry,
-        SUBENTRY_TYPE_ZONE,
-        _added_zone_draft(),
+    persisted = await async_persist_entry_data(
+        SimpleNamespace(hass=hass), entry, data_with_room(entry.data, _office())
     )
 
     assert persisted is False
     runtime.async_set_dry_run.assert_awaited_once_with(True, hass=hass)
     assert dict(entry.data) == original
+
+
+async def test_persisting_data_reaches_dry_run_then_stores(hass) -> None:
+    """A live Plant reaches Dry run through its runtime before the data is stored."""
+    entry = manifold_entry(dry_run=False)
+    entry.add_to_hass(hass)
+    runtime = SimpleNamespace(async_set_dry_run=AsyncMock(return_value=True))
+    entry.runtime_data = runtime
+    data = data_with_room(entry.data, _office())
+
+    assert await async_persist_entry_data(SimpleNamespace(hass=hass), entry, data)
+
+    runtime.async_set_dry_run.assert_awaited_once_with(True, hass=hass)
+    assert dict(entry.data) == data
+
+
+def test_plant_entry_builder_matches_the_contract() -> None:
+    """The shared fixture builds exactly one handle per zone and source."""
+    entry = plant_entry(_data())
+
+    assert isinstance(entry, MockConfigEntry)
+    assert (entry.version, entry.minor_version) == (3, 0)
+    assert sorted(subentry.unique_id for subentry in entry.subentries.values()) == sorted(
+        [LIVING.zone_id, BEDROOM.zone_id, SOURCE_ID]
+    )
