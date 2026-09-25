@@ -610,6 +610,7 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
             "severity": severity,
             "priority": _SEVERITY_ORDER[severity],
             "scope": scope,
+            "name": _scope_name(runtime, scope),
             "message": message,
         }
 
@@ -684,6 +685,7 @@ def _explanation_steps(runtime: Any, evaluation: Any) -> list[dict[str, object]]
             {
                 "order": 0,
                 "scope": "plant",
+                "name": str(runtime.name),
                 "code": "initializing",
                 "message": "The controller has not evaluated the Plant yet.",
             }
@@ -695,7 +697,15 @@ def _explanation_steps(runtime: Any, evaluation: Any) -> list[dict[str, object]]
     def add(scope: str, code: str, message: str) -> None:
         nonlocal order
         if message:
-            steps.append({"order": order, "scope": scope, "code": code, "message": message})
+            steps.append(
+                {
+                    "order": order,
+                    "scope": scope,
+                    "name": _scope_name(runtime, scope),
+                    "code": code,
+                    "message": message,
+                }
+            )
             order += 1
 
     add("plant", "mode", diagnostics.mode_explanation)
@@ -779,6 +789,18 @@ def _safe_shutdown_snapshot(runtime: Any) -> dict[str, object]:
         "phase": _value(phase),
         "message": "Safe shutdown delegates ordered release and stop sequencing to Hydronicus.",
     }
+
+
+def _scope_name(runtime: Any, scope: str) -> str:
+    """Name the Plant, room, loop, or equipment an alert or explanation is about."""
+    plant = runtime.plant
+    if scope == "plant":
+        return str(runtime.name)
+    if scope in plant.zones:
+        return str(plant.zones[scope].name)
+    if scope in plant.circuits:
+        return str(plant.circuits[scope].name)
+    return _actuator_name(runtime, scope) or scope
 
 
 def _actuator_name(runtime: Any, actuator_id: str) -> str | None:

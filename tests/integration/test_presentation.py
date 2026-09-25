@@ -150,6 +150,15 @@ async def test_presentation_updates_include_execution_boundary_and_alert_priorit
     assert snapshot["plant"]["execution_boundary"]["mode"] == "dry_run"
     assert snapshot["plant"]["execution_boundary"]["dry_run"] is True
     assert any(alert["code"] == "zone_sensor_blocked" for alert in snapshot["alerts"])
+    sensor_alert = next(
+        alert for alert in snapshot["alerts"] if alert["code"] == "zone_sensor_blocked"
+    )
+    assert sensor_alert["name"] == "Zone B"
+    names_by_scope = {step["scope"]: step["name"] for step in snapshot["explanations"]}
+    assert names_by_scope["plant"] == entry.runtime_data.name
+    assert names_by_scope[ZONE_A] == "Zone A"
+    assert "Circuit A" in names_by_scope.values()
+    assert "Shared synthetic pump" in names_by_scope.values()
     assert snapshot["alerts"] == sorted(
         snapshot["alerts"], key=lambda alert: (alert["priority"], alert["code"], alert["scope"])
     )

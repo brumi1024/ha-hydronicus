@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionForHvacMode, actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneHvacModes } from "../src/logic";
+import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneHvacModes } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
@@ -177,5 +177,18 @@ describe("Header summaries", () => {
 
   it("names path nodes with the Room and Loop vocabulary", () => {
     expect(["zone", "circuit", "valve", "pump", "source"].map(nodeKindLabel)).toEqual(["Room", "Loop", "Valve", "Pump", "Source"]);
+  });
+});
+
+describe("Alert titles", () => {
+  it("names the room or equipment and uses a readable label", () => {
+    expect(alertTitle({ code: "zone_sensor_blocked", scope: "zone-1", name: "Living" })).toBe("Living · Sensor blocked");
+    expect(alertTitle({ code: "actuator_mismatch", scope: "valve-1", name: "Living loop valve" })).toBe("Living loop valve · Equipment mismatch");
+  });
+
+  it("leaves the Plant name out of Plant alerts and falls back without a name", () => {
+    expect(alertTitle({ code: "binding_unavailable", scope: "plant", name: "Hydronic plant" })).toBe("Entity unavailable");
+    expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Room blocked");
+    expect(alertTitle({ code: "something_new", scope: "plant" })).toBe("Something new");
   });
 });

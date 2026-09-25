@@ -2,7 +2,7 @@ import { ContextConsumer, createContext } from "@lit/context";
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { configForm, plantDirectory, stubConfig, validateConfig, type ConfigForm } from "./config";
 import { CELSIUS, formatNumber, formatTemperature, formatTemperatureDelta, targetStep, temperatureUnit, type TemperatureUnit } from "./format";
-import { actionForHvacMode, actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryClass, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, operationLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sentenceLabel, sourceSummary, stateLabel, zoneHvacModes, zonePresets, type ActionCall } from "./logic";
+import { actionForHvacMode, alertTitle, actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryClass, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, operationLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sentenceLabel, sourceSummary, stateLabel, zoneHvacModes, zonePresets, type ActionCall } from "./logic";
 import { errorMessage, PlantStream, type StreamStatus } from "./stream";
 import { cardStyles } from "./styles";
 import type {
@@ -363,7 +363,7 @@ export class HydronicusPlantCard extends LitElement {
     if (!alerts.length) return nothing;
     return html`<section aria-labelledby="hydronicus-alerts"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-alerts">Alerts</h3></div><span class="meta" dir="auto">${formatNumber(alerts.length, this._locale, 0)}</span></div>${alerts.slice(0, 3).map((alert) => {
       const urgent = alert.severity === "error" || alert.severity === "critical";
-      return html`<p class="alert ${urgent ? "error" : ""}" data-severity=${alert.severity} dir="auto"><strong>${sentenceLabel(alert.code)}</strong><span> · ${alert.message}</span></p>`;
+      return html`<p class="alert ${urgent ? "error" : ""}" data-severity=${alert.severity} dir="auto"><strong>${alertTitle(alert)}</strong><span> · ${alert.message}</span></p>`;
     })}</section>`;
   }
 
@@ -444,7 +444,7 @@ export class HydronicusPlantCard extends LitElement {
   }
 
   private _renderExplanations(snapshot: PlantSnapshot) {
-    return html`<section><details><summary>Controller explanations</summary>${snapshot.explanations.map((step) => html`<div class="operation"><span class="operation-marker" aria-hidden="true"></span><p class="operation-copy" dir="auto"><strong>${nodeKindLabel(step.scope)}</strong> · ${step.message}</p></div>`)}</details></section>`;
+    return html`<section><details><summary>Controller explanations</summary>${snapshot.explanations.map((step) => html`<div class="operation"><span class="operation-marker" aria-hidden="true"></span><p class="operation-copy" dir="auto"><strong>${step.name ?? nodeKindLabel(step.scope)}</strong> · ${step.message}</p></div>`)}</details></section>`;
   }
 
   private _renderOperations(snapshot: PlantSnapshot) {

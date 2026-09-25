@@ -213,6 +213,24 @@ const NODE_KIND_LABELS: Record<string, string> = {
   circuit: "Loop",
 };
 
+const ALERT_LABELS: Record<string, string> = {
+  plant_initializing: "Starting",
+  plant_unavailable: "Plant unavailable",
+  binding_unavailable: "Entity unavailable",
+  zone_sensor_blocked: "Sensor blocked",
+  zone_mode_blocked: "Room blocked",
+  cooling_blocked: "Cooling blocked",
+  actuator_mismatch: "Equipment mismatch",
+  actuator_blocked: "Equipment blocked",
+  mode_changeover: "Mode changeover",
+};
+
+/** The title of an alert, naming what it is about when that is not the whole Plant. */
+export function alertTitle(alert: { code: string; scope: string; name?: string }): string {
+  const label = ALERT_LABELS[alert.code] ?? sentenceLabel(alert.code);
+  return alert.scope !== "plant" && alert.name ? `${alert.name} · ${label}` : label;
+}
+
 /** The user-facing name of a delivery path node kind. */
 export function nodeKindLabel(kind: string): string {
   return NODE_KIND_LABELS[kind] ?? sentenceLabel(kind);
