@@ -300,6 +300,23 @@ def mode_options(hass: HomeAssistant, entity_id: str) -> list[str]:
     return [str(option) for option in options] if isinstance(options, list) else []
 
 
+def mode_suggestions(hass: HomeAssistant, entity_id: str) -> dict[str, str]:
+    """Suggest the options of a mode select whose names say heating and cooling."""
+    suggestions: dict[str, str] = {}
+    for key in ("heat", "cool"):
+        named = [option for option in mode_options(hass, entity_id) if key in option.lower()]
+        if len(named) == 1:
+            suggestions[key] = named[0]
+    return suggestions
+
+
+def entity_label(hass: HomeAssistant, entity_id: str) -> str:
+    """An entity's friendly name with its ID, or the ID alone when it has no other name."""
+    state = hass.states.get(entity_id)
+    name = state.attributes.get("friendly_name") if state is not None else None
+    return f"{name} ({entity_id})" if isinstance(name, str) and name else entity_id
+
+
 def mode_schema(hass: HomeAssistant, entity_id: str, values: Mapping[str, Any]) -> vol.Schema:
     options = mode_options(hass, entity_id)
     return vol.Schema(
@@ -461,7 +478,7 @@ def pump_labels(document: Document) -> dict[str, str]:
     """Each pump's slug with how the loop form names it."""
     labels = {}
     for slug, pump in pumps(document).items():
-        how = f"switch {pump['switch']}" if "switch" in pump else "driven by the source"
+        how = pump.get("switch", "driven by the source")
         labels[slug] = f"{title(pump, slug)} ({how})"
     return labels
 

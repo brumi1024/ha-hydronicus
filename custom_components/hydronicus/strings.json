@@ -49,14 +49,14 @@
       },
       "source_mode": {
         "title": "Source modes",
-        "description": "Choose which options of {entity_id} make the source heat and cool. Hydronicus sets the select to follow the Plant mode.",
+        "description": "Choose which options of {select} make the source heat and cool. Hydronicus sets the select to follow the Plant mode.",
         "data": {
           "heat": "Heating option",
           "cool": "Cooling option"
         },
         "data_description": {
-          "heat": "The option of {entity_id} that makes the source heat.",
-          "cool": "The option of {entity_id} that makes the source cool."
+          "heat": "The option of {select} that makes the source heat.",
+          "cool": "The option of {select} that makes the source cool."
         }
       },
       "pump": {

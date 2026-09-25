@@ -220,6 +220,8 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         entity_id = self._mode_entity
         assert entity_id is not None
         values = docs.mode_values(self._document, entity_id) if user_input is None else user_input
+        if not values:
+            values = forms.mode_suggestions(self.hass, entity_id)
         checked: forms.Checked | None = None
         if user_input is not None:
             heat, cool = str(user_input.get("heat") or ""), str(user_input.get("cool") or "")
@@ -240,7 +242,7 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
             "source_mode",
             forms.mode_schema(self.hass, entity_id, values),
             checked,
-            {"entity_id": entity_id},
+            {"select": forms.entity_label(self.hass, entity_id)},
         )
 
     async def _after_plant(self) -> ConfigFlowResult:

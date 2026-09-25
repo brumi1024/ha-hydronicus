@@ -118,6 +118,16 @@ async def async_guided_reference(hass: HomeAssistant) -> ConfigEntry:
         if index == 0:
             zone["presets"] = {"comfort": 21, "eco": 19, "away": 16}
         result = await async_submit(flow, result, zone)
+        if index == 0:
+            labels = {
+                option["value"]: option["label"]
+                for option in _selector(result, "pump")["select"]["options"]
+            }
+            assert labels == {
+                "heat_pump": "Heat pump (driven by the source)",
+                "floor": f"Floor ({FLOOR_PUMP})",
+                "towel_dryer": f"Towel dryer ({TOWEL_PUMP})",
+            }
         for loop_index, (loop, valve, pump) in enumerate(loops):
             assert result["step_id"] == "zone_loop", result
             modes = ["heat", "cool"] if pump == "heat_pump" else ["heat"]
@@ -439,13 +449,21 @@ async def test_a_problem_shows_on_its_field_or_at_the_base_in_words(hass: HomeAs
 
 async def test_a_mode_select_offers_its_own_options(hass: HomeAssistant) -> None:
     flow = hass.config_entries.flow
-    hass.states.async_set("select.mode", "Heating", {"options": ["Heating", "Cooling", "Auto"]})
+    hass.states.async_set(
+        "select.mode",
+        "Heating",
+        {"options": ["Heating", "Cooling", "Auto"], "friendly_name": "Heat pump mode"},
+    )
     result = await async_start(hass)
     result = await async_submit(
         flow, result, {"name": "Flat", "request": "switch.request", "mode_select": "select.mode"}
     )
     assert result["step_id"] == "source_mode"
     assert _selector(result, "heat")["select"]["options"] == ["Heating", "Cooling", "Auto"]
+    assert result["description_placeholders"]["select"] == "Heat pump mode (select.mode)"
+    assert (suggested(result, "heat"), suggested(result, "cool")) == ("Heating", "Cooling"), (
+        "the options that name heating and cooling are suggested"
+    )
 
     result = await async_submit(flow, result, {"heat": "Heating", "cool": "Heating"})
     assert result["errors"] == {"cool": "invalid_value"}
