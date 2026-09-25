@@ -116,7 +116,7 @@ The zone gets no reading from the area, and the rest of its areas and sensors ke
 Select **Submit** in the repair to open the zone's edit menu, choose **Name, areas, thermostat owner, and sensors**, remove the entry shown as **Unknown area selected**, and save.
 Creating the area again also clears the repair, but Home Assistant makes a new area's ID from its name and offers no way to choose the ID.
 The repair therefore names the area to create, such as `Kids room` for the ID `kids_room`, and you can rename the area afterwards without changing its ID.
-The repair and the zone card show a missing area by the name it last had, or by its ID after Home Assistant restarts, and the card shows dashes for its readings until the area is removed.
+The repair and the zone card show a missing area by the name it last had, or by a name spelled from its ID after Home Assistant restarts, and the card marks it Missing until the area is removed.
 The Plant header reports the Plant as `degraded` while an area repair is open, and the zone shows the problem as an alert.
 
 ### A zone has no temperature sensor

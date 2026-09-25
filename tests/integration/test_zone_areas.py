@@ -354,7 +354,8 @@ async def test_resolution_reads_missing_areas_and_absent_sensors(hass, home) -> 
         "sensor.kitchen_temperature",
         "sensor.kitchen_humidity",
     }
-    assert resolution.name("attic") == "attic"
+    # A missing area never seen is named from its ID, as a person would write it.
+    assert resolution.name("attic") == "Attic"
     assert resolution.name("kitchen") == "Kitchen"
 
 
@@ -513,7 +514,7 @@ async def test_the_zone_snapshot_lists_each_area_in_zone_order(hass, home) -> No
         },
         {
             "id": "attic",
-            "name": "attic",
+            "name": "Attic",
             "missing": True,
             "temperature": None,
             "humidity": None,
@@ -654,7 +655,7 @@ async def test_every_area_repair_title_names_its_plant_and_zone(hass, home) -> N
     # A list of repairs cuts a long title short, so the Plant and zone come first.
     for key, title in titles.items():
         assert title.startswith("Hydronic plant, zone "), key
-    assert titles["zone_area_missing"] == ("Hydronic plant, zone Ground floor: missing area attic")
+    assert titles["zone_area_missing"] == ("Hydronic plant, zone Ground floor: missing area Attic")
     assert titles["zone_without_temperature_source"] == (
         "Hydronic plant, zone Ground floor: no temperature sensor"
     )
@@ -701,7 +702,7 @@ async def test_a_missing_area_repair_advises_a_name_that_recreates_its_id(hass, 
     # The area's last known name, and a name made from an ID never seen.
     assert by_area["kids_room"].translation_placeholders["area"] == "Kids room"
     assert by_area["kids_room"].translation_placeholders["recreate_name"] == "Kids room"
-    assert by_area["attic_2"].translation_placeholders["area"] == "attic_2"
+    assert by_area["attic_2"].translation_placeholders["area"] == "Attic 2"
     assert by_area["attic_2"].translation_placeholders["recreate_name"] == "Attic 2"
     text = _rendered(by_area["kids_room"])
     assert "create an area named Kids room again" in text
@@ -745,6 +746,8 @@ async def test_area_repairs_put_the_plant_header_in_need_of_attention(hass, home
 
 
 async def test_every_area_problem_raises_an_alert(hass, home) -> None:
+    for entity_id in (GROUND.valve_entity, UPSTAIRS.valve_entity, "switch.manifold_pump"):
+        hass.states.async_set(entity_id, "off")
     entry = await _plant_with_every_area_problem(hass)
 
     snapshot = entry.runtime_data.presentation_snapshot(hass)
@@ -756,9 +759,15 @@ async def test_every_area_problem_raises_an_alert(hass, home) -> None:
     assert self_feed["message"] == (
         "Area Study names a sensor that Hydronicus provides, so the zone ignores it."
     )
-    # The lost area sensor is an unresolved binding, which already marks the Plant.
-    assert snapshot["plant"]["health"] == "unavailable"
-    assert ("binding_unavailable", "plant") in alerts
+    # The lost area sensor is optional, so it degrades the Plant without blocking control.
+    assert snapshot["plant"]["health"] == "degraded"
+    assert ("binding_unavailable", "plant") not in alerts
+    lost = alerts[("optional_sensor_unavailable", UPSTAIRS.zone_id)]
+    assert lost["severity"] == "warning"
+    assert lost["message"] == (
+        "The optional temperature sensor of area Den is missing in Home Assistant, so Hydronicus "
+        "leaves it out instead of blocking control."
+    )
 
 
 async def test_a_missing_area_on_the_zone_card_is_flagged_with_its_last_name(hass, home) -> None:
@@ -771,5 +780,5 @@ async def test_a_missing_area_on_the_zone_card_is_flagged_with_its_last_name(has
     assert [(area["id"], area["name"], area["missing"]) for area in areas] == [
         ("hall", "Hall", False),
         ("kitchen", "Kitchen", True),
-        ("attic", "attic", True),
+        ("attic", "Attic", True),
     ]

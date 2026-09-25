@@ -15,6 +15,8 @@ from .core.executor import (
     ActuatorOperation,
 )
 from .core.model import (
+    BindingCategory,
+    EntityBinding,
     ExternalClimateThermostatState,
     ExternalHvacAction,
     HydronicusThermostatConfig,
@@ -109,14 +111,15 @@ def build_plant_summary(runtime: Any) -> dict[str, object]:
     evaluation = runtime.evaluation
     diagnostics = evaluation.diagnostics if evaluation is not None else None
     status = runtime.operational_status()
-    if runtime.unresolved_bindings:
+    if _blocking_bindings(runtime):
         health = "unavailable"
     elif status == "blocked":
         health = "blocked"
     elif status in {"initializing", "stopped"}:
         health = status
-    elif runtime.area_problems:
-        # A zone area repair is open: the Plant runs, but a zone lacks a reading.
+    elif runtime.area_problems or runtime.unresolved_bindings:
+        # A zone area repair is open or a sensor is missing: the Plant runs, but
+        # a zone or loop lacks a reading.
         health = "degraded"
     else:
         health = "healthy"
@@ -191,7 +194,8 @@ def _zone_snapshots(
     zone_entity_ids: Mapping[str, str],
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
-    for zone_id, zone in sorted(runtime.plant.zones.items()):
+    for zone_id in _zone_ids(runtime):
+        zone = runtime.plant.zones[zone_id]
         heating = diagnostics.zone_decisions.get(zone_id) if diagnostics else None
         cooling = diagnostics.cooling_zone_decisions.get(zone_id) if diagnostics else None
         aggregation = heating.aggregation if heating else None
@@ -303,6 +307,26 @@ def _zone_snapshots(
             }
         )
     return result
+
+
+def _zone_ids(runtime: Any) -> list[str]:
+    """Return the zone ids in setup order, then any others by id."""
+    rank = {zone_id: index for index, zone_id in enumerate(runtime.zone_order)}
+    return sorted(runtime.plant.zones, key=lambda zone_id: (rank.get(zone_id, len(rank)), zone_id))
+
+
+def _ordered_routes(runtime: Any) -> list[Any]:
+    """Return the routes grouped by zone in setup order, each zone's in stored order."""
+    zone_rank = {zone_id: index for index, zone_id in enumerate(_zone_ids(runtime))}
+    route_rank = {route_id: index for index, route_id in enumerate(runtime.route_order)}
+    return sorted(
+        runtime.plant.routes,
+        key=lambda route: (
+            zone_rank.get(route.zone_id, len(zone_rank)),
+            route_rank.get(route.id, len(route_rank)),
+            route.id,
+        ),
+    )
 
 
 def _zone_phase(
@@ -516,7 +540,7 @@ def _delivery_paths(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
     control_plan = evaluation.control_plan if evaluation else None
     diagnostics = evaluation.diagnostics if evaluation else None
     paths: list[dict[str, object]] = []
-    for route in sorted(runtime.plant.routes, key=lambda item: item.id):
+    for route in _ordered_routes(runtime):
         zone = runtime.plant.zones[route.zone_id]
         circuit = runtime.plant.circuits[route.circuit_id]
         zone_runtime = runtime.runtime_state.zone_runtime.get(zone.id)
@@ -626,13 +650,16 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
         add("plant_initializing", "info", "plant", "Hydronicus is evaluating the Plant.")
     if runtime.operational_status() == "stopped":
         add("plant_unavailable", "error", "plant", "The Hydronicus Plant is unavailable.")
-    if runtime.unresolved_bindings:
+    if _blocking_bindings(runtime):
         add(
             "binding_unavailable",
             "error",
             "plant",
             "One or more configured bindings are unavailable; control is blocked.",
         )
+    for (required, scope), bindings in _missing_sensors(runtime).items():
+        code, severity, message = _missing_sensor_alert(runtime, required, bindings)
+        add(code, severity, scope, message)
     for (kind, zone_id), area_ids in _area_problems_by_zone(runtime).items():
         severity, message = _area_problem_alert(runtime, kind, area_ids)
         add(kind.value, severity, zone_id, message)
@@ -677,6 +704,57 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
                 "and not executed.",
             )
     return _sorted_alerts(alerts.values())
+
+
+def _blocking_bindings(runtime: Any) -> tuple[EntityBinding, ...]:
+    """Return the unresolved bindings that block control on their own.
+
+    A missing thermostat, actuator, or feedback entity blocks every path through
+    it. A missing sensor does not by itself: an optional one is left out, and the
+    controller blocks what needs a required one, which its own alerts report.
+    """
+    return tuple(
+        binding
+        for binding in runtime.unresolved_bindings
+        if binding.category is not BindingCategory.SENSOR
+    )
+
+
+def _missing_sensors(runtime: Any) -> dict[tuple[bool, str], list[EntityBinding]]:
+    """Group the unresolved sensors by whether they are required and what they belong to."""
+    grouped: dict[tuple[bool, str], list[EntityBinding]] = {}
+    for binding in runtime.unresolved_bindings:
+        if binding.category is BindingCategory.SENSOR:
+            grouped.setdefault((binding.required, binding.object_id), []).append(binding)
+    return grouped
+
+
+def _missing_sensor_alert(
+    runtime: Any, required: bool, bindings: list[EntityBinding]
+) -> tuple[str, str, str]:
+    """Return the code, severity, and message of the missing sensors of one object."""
+    qualifier = "" if required else "optional "
+    phrases = []
+    for binding in bindings:
+        if binding.area_id is not None:
+            role = binding.label.removeprefix("area ")
+            name = runtime.area_resolution.name(binding.area_id)
+            phrases.append(f"the {qualifier}{role} of area {name}")
+        else:
+            phrases.append(
+                f"the {qualifier}{binding.label.removeprefix(f'{binding.object_type} ')}"
+            )
+    text = listed(phrases)
+    several = len(bindings) > 1
+    missing = f"{text[0].upper()}{text[1:]} {'are' if several else 'is'} missing in Home Assistant"
+    pronoun = "them" if several else "it"
+    if required:
+        return "sensor_unavailable", "error", f"{missing}, so Hydronicus cannot use {pronoun}."
+    return (
+        "optional_sensor_unavailable",
+        "warning",
+        f"{missing}, so Hydronicus leaves {pronoun} out instead of blocking control.",
+    )
 
 
 def _area_problems_by_zone(runtime: Any) -> dict[tuple[ZoneAreaProblemKind, str], list[str]]:

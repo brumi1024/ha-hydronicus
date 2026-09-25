@@ -125,6 +125,10 @@ class HydronicRuntime:
     configuration_fingerprint: str = ""
     # What the covered areas named when this runtime was built; a change reloads the Plant.
     area_resolution: AreaResolution = field(default_factory=AreaResolution)
+    # Zone and route ids in their stored order, which is the order they were set up.
+    # The compiled Plant indexes them by id, so the presentation lists them by this.
+    zone_order: tuple[str, ...] = ()
+    route_order: tuple[str, ...] = ()
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
@@ -204,6 +208,8 @@ class HydronicRuntime:
             ),
             configuration_fingerprint=runtime_configuration_fingerprint(entry, areas.fingerprint()),
             area_resolution=areas,
+            zone_order=tuple(zone.id for zone in effective.configuration.zones),
+            route_order=tuple(route.id for route in effective.configuration.routes),
             runtime_state=RuntimeState(
                 requested_mode=_stored_requested_mode(entry),
             ),

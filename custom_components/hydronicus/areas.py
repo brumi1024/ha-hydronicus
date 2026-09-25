@@ -83,8 +83,12 @@ class AreaResolution:
         return frozenset(named | set(self.self_provided_entity_ids))
 
     def name(self, area_id: str) -> str:
-        """Return an area's name, its last name when it is missing, or else its ID."""
-        return self.area_names.get(area_id, area_id)
+        """Return an area's name, its last name when it is missing, or else a name from its ID.
+
+        A name spelled from the ID, such as ``Kids room`` for ``kids_room``, reads
+        like the area's own name where a raw ID would read like a code.
+        """
+        return self.area_names.get(area_id) or _name_from_id(area_id)
 
     def recreate_name(self, area_id: str) -> str:
         """Return a name that gives a new area this ID again.
@@ -93,7 +97,7 @@ class AreaResolution:
         comes back by its last name when that still makes its ID, and otherwise
         by a name spelled from the ID, such as ``Kids room`` for ``kids_room``.
         """
-        for name in (self.area_names.get(area_id), area_id.replace("_", " ").capitalize()):
+        for name in (self.area_names.get(area_id), _name_from_id(area_id)):
             if name and slugify(name) == area_id:
                 return name
         return area_id
@@ -111,6 +115,11 @@ class AreaResolution:
                 for area_id, entity_ids in sorted(self.self_provided.items())
             },
         }
+
+
+def _name_from_id(area_id: str) -> str:
+    """Spell an area ID as a name, such as ``Kids room`` for ``kids_room``."""
+    return area_id.replace("_", " ").capitalize()
 
 
 def _stored_zones(data: Mapping[str, Any]) -> list[Mapping[str, Any]]:

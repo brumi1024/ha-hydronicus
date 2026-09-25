@@ -635,7 +635,7 @@ async def test_the_sensors_step_names_a_missing_area_in_its_settings(hass, home)
 
     assert result["step_id"] == "area_metadata"
     assert result["description_placeholders"] == {
-        "area": "attic",
+        "area": "Attic",
         "temperature_sensor": "None",
         "humidity_sensor": "None",
     }
