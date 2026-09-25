@@ -13,19 +13,27 @@ from .const import (
     SUBENTRY_TYPE_SOURCE,
 )
 from .flows.common import OwnEntityPickerMixin
-from .flows.plant import PlantSettingsSteps
+from .flows.plant import PlantSettingsOptionsFlow
 from .flows.room import RoomSubentryFlowHandler
 from .flows.setup import SetupSteps
 from .flows.source import SourceSubentryFlowHandler
 
 
 class HydronicClimateConfigFlow(  # type: ignore[call-arg]
-    OwnEntityPickerMixin, SetupSteps, PlantSettingsSteps, config_entries.ConfigFlow, domain=DOMAIN
+    OwnEntityPickerMixin, SetupSteps, config_entries.ConfigFlow, domain=DOMAIN
 ):
     """Handle creation of a hydronic plant config entry."""
 
     VERSION = CONFIG_ENTRY_VERSION
     MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> PlantSettingsOptionsFlow:
+        """Return Plant settings, which the Plant entry's Configure button opens."""
+        return PlantSettingsOptionsFlow()
 
     @classmethod
     @callback

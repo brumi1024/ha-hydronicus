@@ -125,7 +125,7 @@ To use guided setup:
 Guided setup names each room's loop after the room, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
 The plant file uses the same names, which is why both paths create the same entity IDs.
 
-The review lists the two rooms and the compiled topology, such as `Room Bedroom can request loop Bedroom loop.`
+The review lists the two rooms and how they connect, such as `Bedroom is heated by Bedroom loop.`
 It also lists one warning, `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; ...`, because separate room thermostats cannot control loops on one pump independently.
 That is expected for a manifold, so turn on **I understand these warnings** and submit.
 The new Plant starts in Dry run.

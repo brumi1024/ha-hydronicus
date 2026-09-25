@@ -1,4 +1,4 @@
-"""Plant settings: the reconfigure menu, pumps, the plant file dialog, and plant file edits."""
+"""Plant settings: the Configure menu, pumps, the plant file dialog, and plant file edits."""
 
 from __future__ import annotations
 
@@ -68,15 +68,15 @@ async def _loaded_manifold(hass, *, dry_run: bool = True):
 
 
 async def _open(hass, entry, option: str) -> dict[str, Any]:
-    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == FlowResultType.MENU
-    return await hass.config_entries.flow.async_configure(
+    return await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": option}
     )
 
 
 async def _submit(hass, result, user_input) -> dict[str, Any]:
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], user_input)
     await hass.async_block_till_done()
     return result
 
@@ -126,14 +126,20 @@ def _derived_id(kind: str, slug: str) -> str:
 # --------------------------------------------------------------------------
 
 
-async def test_reconfigure_opens_the_plant_settings_menu(hass) -> None:
-    """Plant settings are one menu over Dry run, pumps, and the plant file."""
-    entry = await _loaded_manifold(hass)
+async def test_configure_opens_the_plant_settings_menu(hass) -> None:
+    """Plant settings are one menu over Dry run, pumps, and the plant file.
 
-    result = await entry.start_reconfigure_flow(hass)
+    They are the entry's options flow, so the Plant row shows a Configure button,
+    and there is no second Reconfigure entry point to the same menu.
+    """
+    entry = await _loaded_manifold(hass)
+    assert entry.supports_options is True
+    assert entry.supports_reconfigure is False
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["type"] == FlowResultType.MENU
-    assert result["step_id"] == "reconfigure"
+    assert result["step_id"] == "init"
     assert list(result["menu_options"]) == [
         "dry_run",
         "add_pump",
@@ -150,7 +156,7 @@ async def test_menu_hides_pump_editing_without_pumps(hass) -> None:
     entry = plant_entry(plant_data({}))
     entry.add_to_hass(hass)
 
-    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert "edit_pump" not in result["menu_options"]
     assert "add_pump" in result["menu_options"]
@@ -168,7 +174,7 @@ async def test_dry_run_step_keeps_the_confirmation(hass) -> None:
     result = await _submit(hass, result, {"dry_run_confirmation": True})
 
     assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert entry.data[CONF_DRY_RUN] is False
 
 
@@ -196,7 +202,7 @@ async def test_pumps_can_be_added_edited_and_removed(hass) -> None:
         },
     )
     assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     (spare,) = [
         pump for pump in entry.data["topology"]["pumps"] if pump["entity_id"] == SPARE_PUMP_ENTITY
     ]
@@ -221,7 +227,7 @@ async def test_pumps_can_be_added_edited_and_removed(hass) -> None:
         result,
         {"name": "Reserve pump", "entity_id": SPARE_PUMP_ENTITY, "overrun_seconds": 30.0},
     )
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     (reserve,) = [pump for pump in entry.data["topology"]["pumps"] if pump["id"] == spare["id"]]
     assert reserve["name"] == "Reserve pump"
     assert reserve["overrun_seconds"] == 30.0
@@ -240,7 +246,7 @@ async def test_pumps_can_be_added_edited_and_removed(hass) -> None:
             "remove_pump": True,
         },
     )
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert [pump["id"] for pump in entry.data["topology"]["pumps"]] == [MANIFOLD_PUMP_ID]
     assert spare["id"] not in entry.runtime_data.plant.pumps
     # The removed pump leaves no orphaned entities or device behind.
@@ -343,7 +349,7 @@ async def _stored_spare_pump(hass, entry, entity_id: str = SPARE_PUMP_ENTITY) ->
     )
     if result["type"] == FlowResultType.FORM and result["step_id"] == "pump_review":
         result = await _submit(hass, result, {"confirm": True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     (spare,) = [pump for pump in entry.data["topology"]["pumps"] if pump["entity_id"] == entity_id]
     return str(spare["id"])
 
@@ -373,7 +379,7 @@ async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None
     assert result["errors"] == {"base": "confirm_required"}
     assert dict(entry.data) == data
     result = await _submit(hass, result, {"confirm": True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert [pump["entity_id"] for pump in entry.data["topology"]["pumps"]] == [
         MANIFOLD_PUMP_ENTITY,
         OTHER_PLANT_OUTPUT,
@@ -390,7 +396,7 @@ async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None
     )
     assert result["step_id"] == "pump_review"
     result = await _submit(hass, result, {"confirm": True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert entry.data["topology"]["pumps"][1]["name"] == "Reserve pump"
 
 
@@ -438,7 +444,7 @@ async def test_a_pump_change_without_new_warnings_saves_directly(hass) -> None:
     )
 
     assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert entry.data["topology"]["pumps"][0]["name"] == "Main pump"
 
 
@@ -517,7 +523,7 @@ async def test_a_pump_review_waits_for_a_live_plant_to_reach_dry_run(hass, monke
 
     monkeypatch.undo()
     result = await _submit(hass, result, {"confirm": True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert entry.data[CONF_DRY_RUN] is True
     assert OTHER_PLANT_OUTPUT in [pump["entity_id"] for pump in entry.data["topology"]["pumps"]]
 
@@ -559,7 +565,7 @@ async def _apply(hass, entry, document) -> dict[str, Any]:
     confirm = {"confirm": True} if "confirm" in _schema_keys(result) else {}
     result = await _submit(hass, result, confirm)
     assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     await hass.async_block_till_done()
     return result
 
@@ -718,7 +724,7 @@ async def test_review_lists_changes_and_requires_confirmation_of_warnings(hass) 
     assert "- Removes loop Bedroom loop" in changes
     assert "- Removes valve Bedroom loop valve" in changes
     assert "- Adds pump Spare pump" in changes
-    assert "Room Lounge can request loop Living room loop." in placeholders["logic"]
+    assert "Lounge is heated by Living room loop." in placeholders["logic"]
     assert "Spare pump" in placeholders["warnings"]
 
     # Only an unused pump is left to warn about, which never blocks a save.
@@ -958,7 +964,7 @@ async def test_plant_file_review_confirmed_after_the_plant_changed_is_shown_agai
         pump,
         {"name": "Spare pump", "entity_id": SPARE_PUMP_ENTITY, "overrun_seconds": 0.0},
     )
-    assert pump["reason"] == "reconfigure_successful"
+    assert pump["reason"] == "settings_saved"
     data = deepcopy(dict(entry.data))
 
     result = await _submit(hass, review, {})
@@ -970,7 +976,7 @@ async def test_plant_file_review_confirmed_after_the_plant_changed_is_shown_agai
 
     result = await _submit(hass, result, {})
 
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     await hass.async_block_till_done()
     assert [pump["name"] for pump in entry.data["topology"]["pumps"]] == ["Manifold pump"]
     assert room_subentry(entry, LIVING.zone_id).title == "Lounge"

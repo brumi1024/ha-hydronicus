@@ -119,10 +119,10 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     assert result["step_id"] == "import_review"
     placeholders = result["description_placeholders"]
     assert placeholders["name"] == "Trial plant"
-    assert "- Room Bedroom can request loop Bedroom loop." in placeholders["logic"]
+    assert "- Bedroom is heated by Bedroom loop." in placeholders["logic"]
     assert (
-        "- Loop Bedroom loop opens valve Bedroom loop valve before requesting pump "
-        "Circulation pump." in placeholders["logic"]
+        "- Bedroom loop opens Bedroom loop valve, then starts Circulation pump."
+        in placeholders["logic"]
     )
     # The README tells the user to expect this one warning and to confirm it.
     # The loops are listed in file order, so the text is the same on every import.

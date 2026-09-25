@@ -44,7 +44,7 @@ Guided setup takes one menu, one Plant form, one form per room, and a review.
 
 1. Choose **Guided setup**.
 2. In **Name the Plant**, enter the **Plant name** and choose the **Pump entity** that the loops of every room share.
-   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after the last loop stops heating, before its valves close.
+   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after heating demand ends, before the valves close.
    Cooling stops the pump without overrun.
 3. In **Add a room**, describe one room:
    - **Room name** names the room's thermostat and entities.
@@ -52,11 +52,17 @@ Guided setup takes one menu, one Plant form, one form per room, and a review.
    - **Existing climate thermostat** is optional; when set, that climate entity owns the room's demand, and the temperature sensors become optional.
    - **Loop valves** are the switches or valves of the room's own loop.
      Hydronicus creates the loop, names it after the room, such as `Bedroom loop`, and names its valves after the loop, such as `Bedroom loop valve`.
+   - **Cooling** is an optional, collapsed section that lets the room's own loop cool too.
+     Turn on **Cool this room**, choose the room's **Humidity sensors**, and choose a **Supply temperature sensor** or a **Surface temperature sensor**, or both, as the loop's condensation reference.
+     **Condensation margin** defaults to 2.0 °C, as in the loop form.
+     Cooling also needs the room's **Temperature sensors**, even when an existing climate thermostat owns the room.
    - **Add another room** shows the form again for the next room.
      Leave it off after the last room.
-4. **Review the Plant** lists the rooms, the compiled topology, and the warnings.
+   From the second room on, the form lists the rooms added so far.
+4. **Review the Plant** lists the rooms, how they connect, and the warnings.
 
-The compiled topology shows one line per loop and one per room, such as `Loop Bedroom loop opens valve Bedroom loop valve before requesting pump Circulation pump.` and `Room Bedroom can request loop Bedroom loop.`
+Under How it connects, the review shows one line per loop and one per room, such as `Bedroom loop opens Bedroom loop valve, then starts Circulation pump.` and `Bedroom is heated by Bedroom loop.`
+A room whose loop cools reads `Bedroom is heated and cooled by Bedroom loop.`
 When the rooms share the pump, the review warns that the shared pump limits independent control.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before the Plant is created.
 Later room, loop, and plant file edits ask only about warnings that the edit introduces.
@@ -69,7 +75,7 @@ Guided setup names the pump `Circulation pump`; rename it, add more pumps, or ch
 1. Choose **Import a plant file**.
 2. Paste the file into **Plant file** and submit.
    An empty editor, or YAML that the editor cannot read, is reported at the top level, and the editor marks the line with the YAML problem.
-3. **Review the imported Plant** lists the Plant name, the rooms, the compiled topology, and the warnings.
+3. **Review the imported Plant** lists the Plant name, the rooms, how they connect, and the warnings.
    Confirm a warning other than unused equipment with **I understand these warnings**, and submit.
 
 The Plant is created in Dry run, with one room entry per room and one source entry per source.
@@ -87,6 +93,9 @@ The **Add a room** form has the same fields as in guided setup, plus two that ap
 - **Shared loops** appears when the Plant has shared loops, which are Plant loops that also deliver heat to this room.
 
 A room needs **Loop valves** or at least one of the **Shared loops**.
+The **Cooling** section applies to the room's own loop, so turning on **Cool this room** needs **Loop valves**.
+A room served only by shared loops is refused with a message to choose Loop valves or leave cooling off, because a shared loop is Plant equipment that only the plant file edits.
+To make an existing room cool, use **Sensor aggregation and humidity** for its humidity sensors and the **Cooling** section of its loop.
 Saving a room returns the Plant to Dry run.
 
 ### Thermostat owner
@@ -147,7 +156,7 @@ Changing the target or preset reevaluates demand immediately without bypassing a
 
 ## Loops and valves
 
-A room's first loop comes from **Loop valves** on the room form.
+A room's first loop comes from **Loop valves** on the room form, and the form's **Cooling** section can make that loop cool.
 **Add a loop** and **Edit or remove a loop** open **Configure a loop**:
 
 - **Loop name** names the loop.
@@ -165,7 +174,7 @@ Every chosen valve must open before the pump may run.
 
 ## Plant settings
 
-Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a menu that names the Plant, with these options:
+Select **Configure** on the Plant entry to open **Plant settings**, a menu that names the Plant, with these options:
 
 - **Dry run** turns Dry run on, or leaves it after confirming the exact heating outputs.
 - **Add a pump** adds a pump with its **Pump name**, **Pump entity**, **Pump overrun**, and optional **Feedback** entities.
@@ -177,6 +186,7 @@ Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a men
 
 Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.
 Leaving Dry run requires **I understand these outputs may be controlled** for the exact output list shown.
+A repair for a missing pump entity opens the same **Plant settings** menu.
 
 The `hydronicus.export_plant` action returns the same plant file as **Show the plant file**.
 

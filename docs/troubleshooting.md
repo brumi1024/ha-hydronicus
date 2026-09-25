@@ -258,7 +258,7 @@ To end the conflict for good, bind different entities in one of the Plants, remo
 ### Turning Dry run off reports another Plant or changed outputs
 
 If the confirmation reports that another Plant controls some of the same entities, that Plant is live and owns them.
-This also applies to a Plant that is held in Dry run: its reconfigure form shows Dry run on, and turning it off is refused until the conflict is gone.
+This also applies to a Plant that is held in Dry run: its Plant settings show Dry run on, and turning it off is refused until the conflict is gone.
 Resolve the overlap as described above before trying again.
 If the confirmation reports that the outputs changed since the form was shown, the Plant configuration was edited while the form was open.
 Review the updated output list that the form now shows, and confirm again only if it is what you expect.

@@ -27,19 +27,19 @@
         "sections": {
           "pump_options": {
             "name": "Pump options",
-            "description": "How the pump behaves after the heating demand ends.",
+            "description": "How the pump behaves after heating demand ends.",
             "data": {
               "overrun_seconds": "Pump overrun"
             },
             "data_description": {
-              "overrun_seconds": "How long the pump keeps running after the last valve closes."
+              "overrun_seconds": "How long the pump keeps running after heating demand ends, before the valves close. Cooling stops the pump without overrun."
             }
           }
         }
       },
       "room": {
         "title": "Add a room",
-        "description": "A room is one comfort zone with its thermostat, its sensors, and its own loop on the Plant's pump. Rooms added so far:\n{rooms}",
+        "description": "A room has its thermostat, its sensors, and its own loop on the Plant's pump. Open Cooling to let that loop cool too.{rooms}",
         "data": {
           "name": "Room name",
           "temperature_sensors": "Temperature sensors",
@@ -53,11 +53,31 @@
           "external_climate_entity": "Optional. When set, this climate entity owns demand for the room, and Hydronicus only reads it and never commands it.",
           "valves": "Switches or valves of the room's own loop. Hydronicus creates the loop and names it after the room.",
           "add_another": "Show this form again for the next room. Leave it off to review the Plant."
+        },
+        "sections": {
+          "cooling": {
+            "name": "Cooling",
+            "description": "Let the room's own loop cool too. Cooling needs Loop valves, humidity sensors, and a supply or surface temperature sensor for condensation protection.",
+            "data": {
+              "cooling_enabled": "Cool this room",
+              "humidity_sensors": "Humidity sensors",
+              "supply_temperature_sensor": "Supply temperature sensor",
+              "surface_temperature_sensor": "Surface temperature sensor",
+              "condensation_margin": "Condensation margin"
+            },
+            "data_description": {
+              "cooling_enabled": "Enable cooling on the loop created from Loop valves. A shared loop cools only when the plant file enables it.",
+              "humidity_sensors": "Room humidity sensors, used for the dew point. Required when cooling is on.",
+              "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection. Set this or a surface temperature sensor when cooling is on.",
+              "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection. Set this or a supply temperature sensor when cooling is on.",
+              "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point."
+            }
+          }
         }
       },
       "review": {
         "title": "Review the Plant",
-        "description": "Rooms:\n{rooms}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
+        "description": "Rooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -77,165 +97,37 @@
       },
       "import_review": {
         "title": "Review the imported Plant",
-        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
+        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
         "data_description": {
           "confirm": "Required to create a Plant that has the warnings listed above."
         }
-      },
-      "reconfigure": {
-        "title": "Plant settings",
-        "description": "Choose what to change in {plant}. Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.",
-        "menu_options": {
-          "dry_run": "Dry run",
-          "add_pump": "Add a pump",
-          "edit_pump": "Edit or remove a pump",
-          "export_plant": "Show the plant file",
-          "edit_plant": "Edit plant file"
-        },
-        "menu_option_descriptions": {
-          "dry_run": "Turn Dry run on, or leave it after confirming the outputs.",
-          "add_pump": "Add a circulation pump that loops can use.",
-          "edit_pump": "Change a pump's entity, overrun, or feedback, or remove an unused pump.",
-          "export_plant": "Show this Plant as a plant file to back it up or rebuild it elsewhere.",
-          "edit_plant": "Edit the whole Plant as a plant file, including shared loops, shared valves, and sources."
-        }
-      },
-      "dry_run": {
-        "title": "Dry run",
-        "description": "Dry run calculates the real heating and cooling plan without service calls. Turn it off only after reviewing the configured outputs.",
-        "data": {
-          "dry_run": "Dry run"
-        },
-        "data_description": {
-          "dry_run": "When on, Hydronicus calculates the full plan but sends no commands to any actuator."
-        }
-      },
-      "dry_run_confirmation": {
-        "title": "Confirm heating control",
-        "description": "Hydronicus will be allowed to control only these exact heating and cooling outputs when the plan permits them:\n{outputs}",
-        "data": {
-          "dry_run_confirmation": "I understand these outputs may be controlled"
-        },
-        "data_description": {
-          "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
-        }
-      },
-      "edit_pump": {
-        "title": "Edit a pump",
-        "description": "Choose the pump to change or remove.",
-        "data": {
-          "pump": "Pump"
-        },
-        "data_description": {
-          "pump": "The Plant pump to edit."
-        }
-      },
-      "pump": {
-        "title": "Pump",
-        "description": "A pump is Plant equipment that any loop can use. Saving returns the Plant to Dry run.",
-        "data": {
-          "name": "Pump name",
-          "entity_id": "Pump entity",
-          "overrun_seconds": "Pump overrun",
-          "remove_pump": "Remove this pump"
-        },
-        "data_description": {
-          "name": "Shown in the loop forms and in the plant file.",
-          "entity_id": "The switch that runs this circulation pump.",
-          "overrun_seconds": "How long the pump keeps running after the last valve closes.",
-          "remove_pump": "Remove the pump from the Plant. Only a pump that no loop uses can be removed."
-        },
-        "sections": {
-          "feedback": {
-            "name": "Feedback",
-            "description": "Optional entities that confirm what the pump is doing.",
-            "data": {
-              "power_feedback_entity": "Pump power feedback",
-              "power_feedback_max_age_seconds": "Pump power feedback maximum age",
-              "flow_feedback_entity": "Pump flow feedback",
-              "flow_feedback_max_age_seconds": "Pump flow feedback maximum age",
-              "fault_feedback_entity": "Pump fault feedback",
-              "fault_feedback_max_age_seconds": "Pump fault feedback maximum age"
-            },
-            "data_description": {
-              "power_feedback_entity": "Optional sensor that reports the pump power draw.",
-              "power_feedback_max_age_seconds": "Power feedback older than this is treated as stale.",
-              "flow_feedback_entity": "Optional sensor that reports the measured flow.",
-              "flow_feedback_max_age_seconds": "Flow feedback older than this is treated as stale.",
-              "fault_feedback_entity": "Optional binary sensor or sensor that reports a pump fault.",
-              "fault_feedback_max_age_seconds": "Fault feedback older than this is treated as stale."
-            }
-          }
-        }
-      },
-      "pump_review": {
-        "title": "Review pump warnings",
-        "description": "Review these warnings before saving the pump:\n{warnings}\n\nSaving returns the Plant to Dry run.",
-        "data": {
-          "confirm": "I understand these warnings"
-        },
-        "data_description": {
-          "confirm": "Required to save a pump that has the warnings listed above."
-        }
-      },
-      "edit_plant": {
-        "title": "Edit plant file",
-        "description": "Edit the whole Plant as a plant file. An object that keeps its id keeps its entities, and a new object without an id gets one from its slug. The next step lists the changes before anything is saved.",
-        "data": {
-          "document": "Plant file"
-        },
-        "data_description": {
-          "document": "Required. The plant file in YAML, starting with the current Plant."
-        }
-      },
-      "edit_plant_review": {
-        "title": "Review plant file changes",
-        "description": "Changes:\n{changes}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nApplying the plant file returns the Plant to Dry run.",
-        "data": {
-          "confirm": "I understand these warnings"
-        },
-        "data_description": {
-          "confirm": "Required to apply a plant file that has the warnings listed above."
-        }
       }
     },
     "error": {
       "name_required": "A name is required.",
-      "dry_run_confirmation_required": "Confirm that the configured outputs may be controlled.",
-      "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit Dry run again after the shutdown finishes.",
-      "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
       "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
       "temperature_sensors_required": "Select at least one temperature sensor for a room that Hydronicus controls.",
       "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
       "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
       "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every room this loop serves. Add them first, or turn cooling off.",
       "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
-      "outputs_changed": "The outputs changed since this form was shown. Review the updated list and confirm again.",
-      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live Plant. Turn on Dry run for {other_plant}, or bind different entities in this Plant, then try again.",
       "confirm_required": "Confirm that you understand these warnings before saving.",
       "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
-      "equipment_in_use": "This pump is still used by {users}. Move those loops to another pump before removing it.",
-      "invalid_pump": "The pump cannot be saved: {error}",
       "invalid_document": "The plant file is not valid at {path}: {error}",
       "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the Plant back into itself.",
-      "plant_id_mismatch": "This plant file belongs to another Plant. Remove its top-level id, or set it to this Plant's id, to apply it here.",
-      "plant_changed": "The Plant changed while you reviewed this plant file. Check the updated list of changes and submit again to apply it.",
       "delivery_required": "Choose at least one valve for the room's loop.",
       "pump_required": "Choose the pump for this loop.",
       "temperature_required_for_cooling": "Loops with cooling need at least one temperature sensor in each room they serve, even when an existing thermostat owns the room.",
       "humidity_required_for_cooling": "Loops with cooling need at least one humidity sensor in each room they serve.",
-      "invalid_room": "The room cannot be saved: {error}"
+      "invalid_room": "The room cannot be saved: {error}",
+      "cooling_requires_room_loop": "Cooling from this form applies to the room's own loop. Choose Loop valves, or leave cooling off."
     },
     "abort": {
       "already_configured": "This Plant is already configured.",
-      "already_in_progress": "A setup flow for this Plant is already in progress.",
-      "reconfigure_successful": "The Plant configuration was updated.",
-      "plant_exported": "This is the plant file of the Plant. Copy it to back up the Plant or to rebuild it with the same entity IDs on another Home Assistant instance.\n\n{document}",
-      "plant_file_unavailable": "The stored Plant graph is not valid, so it has no plant file to show: {error} Replace it through Edit plant file, or restore a backup.",
-      "no_changes": "The plant file matches the current Plant, so nothing was changed."
+      "already_in_progress": "A setup flow for this Plant is already in progress."
     }
   },
   "config_subentries": {
@@ -248,7 +140,7 @@
       "step": {
         "user": {
           "title": "Add a room",
-          "description": "A room is one comfort zone with its thermostat, its sensors, and the loops that heat it. Choose valves to give the room its own loop, or choose shared loops of the Plant. Saving a room returns the Plant to Dry run.",
+          "description": "A room has its thermostat, its sensors, and the loops that heat it. Choose valves to give the room its own loop, or choose shared loops of the Plant. Open Cooling to let the room's own loop cool too. Saving a room returns the Plant to Dry run.",
           "data": {
             "name": "Room name",
             "temperature_sensors": "Temperature sensors",
@@ -264,6 +156,26 @@
             "valves": "Switches or valves of the room's own loop. Hydronicus creates the loop and names it after the room.",
             "pump": "The pump that circulates water through the room's loop.",
             "shared_loops": "Loops of the Plant that also deliver heat to this room. They are edited only through the plant file."
+          },
+          "sections": {
+            "cooling": {
+              "name": "Cooling",
+              "description": "Let the room's own loop cool too. Cooling needs Loop valves, humidity sensors, and a supply or surface temperature sensor for condensation protection.",
+              "data": {
+                "cooling_enabled": "Cool this room",
+                "humidity_sensors": "Humidity sensors",
+                "supply_temperature_sensor": "Supply temperature sensor",
+                "surface_temperature_sensor": "Surface temperature sensor",
+                "condensation_margin": "Condensation margin"
+              },
+              "data_description": {
+                "cooling_enabled": "Enable cooling on the loop created from Loop valves. A shared loop cools only when the plant file enables it.",
+                "humidity_sensors": "Room humidity sensors, used for the dew point. Required when cooling is on.",
+                "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection. Set this or a surface temperature sensor when cooling is on.",
+                "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection. Set this or a supply temperature sensor when cooling is on.",
+                "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point."
+              }
+            }
           }
         },
         "reconfigure": {
@@ -469,7 +381,8 @@
         "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every room this loop serves. Add them first, or turn cooling off.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
         "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit again after the shutdown finishes.",
-        "invalid_room": "The room cannot be saved: {error}"
+        "invalid_room": "The room cannot be saved: {error}",
+        "cooling_requires_room_loop": "Cooling from this form applies to the room's own loop. Choose Loop valves, or leave cooling off."
       },
       "abort": {
         "no_pumps": "The Plant has no pump yet. Add a pump before adding a room or a loop.",
@@ -561,6 +474,149 @@
         "subentry_removed": "This source was removed while it was being edited.",
         "reconfigure_successful": "The configuration was updated."
       }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Plant settings",
+        "description": "Choose what to change in {plant}. Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.",
+        "menu_options": {
+          "dry_run": "Dry run",
+          "add_pump": "Add a pump",
+          "edit_pump": "Edit or remove a pump",
+          "export_plant": "Show the plant file",
+          "edit_plant": "Edit plant file"
+        },
+        "menu_option_descriptions": {
+          "dry_run": "Turn Dry run on, or leave it after confirming the outputs.",
+          "add_pump": "Add a circulation pump that loops can use.",
+          "edit_pump": "Change a pump's entity, overrun, or feedback, or remove an unused pump.",
+          "export_plant": "Show this Plant as a plant file to back it up or rebuild it elsewhere.",
+          "edit_plant": "Edit the whole Plant as a plant file, including shared loops, shared valves, and sources."
+        }
+      },
+      "dry_run": {
+        "title": "Dry run",
+        "description": "Dry run calculates the real heating and cooling plan without service calls. Turn it off only after reviewing the configured outputs.",
+        "data": {
+          "dry_run": "Dry run"
+        },
+        "data_description": {
+          "dry_run": "When on, Hydronicus calculates the full plan but sends no commands to any actuator."
+        }
+      },
+      "dry_run_confirmation": {
+        "title": "Confirm heating control",
+        "description": "Hydronicus will be allowed to control only these exact heating and cooling outputs when the plan permits them:\n{outputs}",
+        "data": {
+          "dry_run_confirmation": "I understand these outputs may be controlled"
+        },
+        "data_description": {
+          "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
+        }
+      },
+      "edit_pump": {
+        "title": "Edit a pump",
+        "description": "Choose the pump to change or remove.",
+        "data": {
+          "pump": "Pump"
+        },
+        "data_description": {
+          "pump": "The Plant pump to edit."
+        }
+      },
+      "pump": {
+        "title": "Pump",
+        "description": "A pump is Plant equipment that any loop can use. Saving returns the Plant to Dry run.",
+        "data": {
+          "name": "Pump name",
+          "entity_id": "Pump entity",
+          "overrun_seconds": "Pump overrun",
+          "remove_pump": "Remove this pump"
+        },
+        "data_description": {
+          "name": "Shown in the loop forms and in the plant file.",
+          "entity_id": "The switch that runs this circulation pump.",
+          "overrun_seconds": "How long the pump keeps running after heating demand ends, before the valves close. Cooling stops the pump without overrun.",
+          "remove_pump": "Remove the pump from the Plant. Only a pump that no loop uses can be removed."
+        },
+        "sections": {
+          "feedback": {
+            "name": "Feedback",
+            "description": "Optional entities that confirm what the pump is doing.",
+            "data": {
+              "power_feedback_entity": "Pump power feedback",
+              "power_feedback_max_age_seconds": "Pump power feedback maximum age",
+              "flow_feedback_entity": "Pump flow feedback",
+              "flow_feedback_max_age_seconds": "Pump flow feedback maximum age",
+              "fault_feedback_entity": "Pump fault feedback",
+              "fault_feedback_max_age_seconds": "Pump fault feedback maximum age"
+            },
+            "data_description": {
+              "power_feedback_entity": "Optional sensor that reports the pump power draw.",
+              "power_feedback_max_age_seconds": "Power feedback older than this is treated as stale.",
+              "flow_feedback_entity": "Optional sensor that reports the measured flow.",
+              "flow_feedback_max_age_seconds": "Flow feedback older than this is treated as stale.",
+              "fault_feedback_entity": "Optional binary sensor or sensor that reports a pump fault.",
+              "fault_feedback_max_age_seconds": "Fault feedback older than this is treated as stale."
+            }
+          }
+        }
+      },
+      "pump_review": {
+        "title": "Review pump warnings",
+        "description": "Review these warnings before saving the pump:\n{warnings}\n\nSaving returns the Plant to Dry run.",
+        "data": {
+          "confirm": "I understand these warnings"
+        },
+        "data_description": {
+          "confirm": "Required to save a pump that has the warnings listed above."
+        }
+      },
+      "edit_plant": {
+        "title": "Edit plant file",
+        "description": "Edit the whole Plant as a plant file. An object that keeps its id keeps its entities, and a new object without an id gets one from its slug. The next step lists the changes before anything is saved.",
+        "data": {
+          "document": "Plant file"
+        },
+        "data_description": {
+          "document": "Required. The plant file in YAML, starting with the current Plant."
+        }
+      },
+      "edit_plant_review": {
+        "title": "Review plant file changes",
+        "description": "Changes:\n{changes}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nApplying the plant file returns the Plant to Dry run.",
+        "data": {
+          "confirm": "I understand these warnings"
+        },
+        "data_description": {
+          "confirm": "Required to apply a plant file that has the warnings listed above."
+        }
+      }
+    },
+    "error": {
+      "name_required": "A name is required.",
+      "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
+      "dry_run_confirmation_required": "Confirm that the configured outputs may be controlled.",
+      "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit Dry run again after the shutdown finishes.",
+      "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
+      "outputs_changed": "The outputs changed since this form was shown. Review the updated list and confirm again.",
+      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live Plant. Turn on Dry run for {other_plant}, or bind different entities in this Plant, then try again.",
+      "confirm_required": "Confirm that you understand these warnings before saving.",
+      "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
+      "equipment_in_use": "This pump is still used by {users}. Move those loops to another pump before removing it.",
+      "invalid_pump": "The pump cannot be saved: {error}",
+      "invalid_document": "The plant file is not valid at {path}: {error}",
+      "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the Plant back into itself.",
+      "plant_id_mismatch": "This plant file belongs to another Plant. Remove its top-level id, or set it to this Plant's id, to apply it here.",
+      "plant_changed": "The Plant changed while you reviewed this plant file. Check the updated list of changes and submit again to apply it."
+    },
+    "abort": {
+      "settings_saved": "The Plant settings were saved.",
+      "plant_exported": "This is the plant file of the Plant. Copy it to back up the Plant or to rebuild it with the same entity IDs on another Home Assistant instance.\n\n{document}",
+      "plant_file_unavailable": "The stored Plant graph is not valid, so it has no plant file to show: {error} Replace it through Edit plant file, or restore a backup.",
+      "no_changes": "The plant file matches the current Plant, so nothing was changed."
     }
   },
   "selector": {
