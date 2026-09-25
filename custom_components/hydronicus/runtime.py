@@ -605,7 +605,9 @@ class PlantRuntime:
         plant, states = self.plant, self.hass.states
         issues: list[Issue] = [output_not_responding(plant, entity) for entity in result.repairs]
         armed = self.armed
-        # A new Plant arms its outputs at setup; later additions wait for confirmation.
+        # A new Plant starts with nothing armed, and its owner arms it in Plant settings,
+        # so a Repair then would only repeat that step. Once any output is armed, an
+        # unarmed one is new, such as a new zone's valve, and waits for confirmation.
         if armed and (unarmed := set(self._outputs) - armed):
             issues.append(outputs_awaiting_confirmation(plant, unarmed))
         self.missing = {
