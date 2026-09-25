@@ -11,7 +11,7 @@ Hydronicus loads both cards automatically, from one bundle.
 Restart Home Assistant after installing or upgrading Hydronicus, then reload the browser page.
 No dashboard resource is needed, and the bundle must not be copied into `/config/www`.
 
-The integration serves the bundle from the installed package at a URL that contains the integration version, such as `/hydronicus/0.1.0-rc.6/hydronicus-plant-card.js`, and registers it as a frontend module.
+The integration serves the bundle from the installed package at a URL that contains the integration version, such as `/hydronicus/0.1.0/hydronicus-plant-card.js`, and registers it as a frontend module.
 The browser caches that URL, and an upgrade or a rebuilt bundle changes it, so the browser never keeps a stale card.
 The release package validator checks that the bundled JavaScript exists and has the same version as the integration manifest.
 

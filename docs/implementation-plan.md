@@ -1,6 +1,7 @@
 # Hydronicus implementation plan
 
-Status: Production hardening, full local verification, and scoped disposable Home Assistant 2026.8.2 working-tree staging are complete in the `0.1.0-rc.6` candidate, while HACS-installed release evidence, physical pilots, and human approvals remain incomplete.
+Status: `0.1.0` is the first stable release.
+The owner declared the M4-M9 evidence issues done and closed them on 2026-09-25.
 
 This document is the current implementation and evidence snapshot for main.
 
@@ -9,20 +10,20 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 ## Current baseline
 
 - Repository: `brumi1024/ha-hydronicus`.
-- Production-hardening implementation commit: `1090203` before the `0.1.0-rc.6` release preparation.
-- The exact release commit is the commit tagged `v0.1.0-rc.6`.
+- Implementation commit: `ca127bd` before the `0.1.0` release preparation.
+- The exact release commit is the commit tagged `v0.1.0`.
 - Integration name: Hydronicus.
 - Domain: `hydronicus`.
 - Package: `custom_components/hydronicus`.
-- Candidate version: `0.1.0-rc.6`.
-- The manifest and bundled frontend identify the current release candidate as `0.1.0-rc.6`.
-- Config-entry version `2.0` is the canonical contract in the hardening working tree.
-- Version `1.1` has a tested, restart-safe migration into one parent-owned graph with ID-only subentry handles.
+- Release version: `0.1.0`.
+- The manifest and bundled frontend identify the current release as `0.1.0`.
+- Config-entry version `3.0` is the canonical contract, with one room subentry per room.
+- Versions `2.0` and `1.1` have tested, restart-safe migrations into version `3.0`, with version `1.1` passing through the parent-owned version `2.0` graph.
 - Presentation schema version is `2`.
-- The current working tree passed `make verify` with 420 Python tests and 8 frontend tests.
+- The release preparation passed `make verify` with 932 Python tests and 132 frontend tests.
 - The release-package regression test simulates extraction directly into `config/custom_components/hydronicus` and requires `manifest.json` at that root.
-- The current working tree reports 92.67 percent core coverage.
-- Release metadata, the bundled frontend, the HACS archive, and public-beta checks passed for `0.1.0-rc.6`.
+- The release preparation reports 94.75 percent core coverage.
+- Release metadata, the bundled frontend, the HACS archive, and public-beta checks passed for `0.1.0`.
 - The current working tree preserves the pure evaluation seam while adding parent-owned graph persistence, concrete migration coverage, single-writer runtime mutation, target-aware timeout reconciliation, and Home Assistant 2026.8 object devices.
 - The previous focused release, actuator, cooling, source, and operating-scenario suite passed before the migration cleanup.
 - The current `scripts/public_beta_smoke.py` run passed all public-beta repository checks.
@@ -33,7 +34,7 @@ It supersedes the obsolete implementation-wave snapshot and must be reconciled a
 - The current hardening work replaces earlier speculative migration ideas with a concrete version 1.1 to 2.0 migration backed by persisted predecessor fixtures.
 - A disposable Home Assistant `2026.8.2` working-tree run passed config creation, subentry add and reconfiguration, version 1.1 to 2.0 migration, device ownership, redacted diagnostics, reload, subentry deletion, entry removal, and service-level shutdown with zero synthetic actuator service calls.
 - GitHub prereleases `v0.1.0-rc.1`, `v0.1.0-rc.2`, and `v0.1.0-rc.3` are published with incorrectly nested `hydronicus.zip` assets.
-- The `0.1.0-rc.6` archive places integration files at its root so HACS extracts `manifest.json` directly into `config/custom_components/hydronicus`.
+- The `0.1.0` archive places integration files at its root so HACS extracts `manifest.json` directly into `config/custom_components/hydronicus`.
 - `docs/research/` belongs to the user and must not be staged, modified, moved, deleted, or committed.
 - Existing worktrees are retained and must not be deleted or repurposed by this plan.
 
@@ -254,7 +255,7 @@ Version `0.1.0` is the initial public release with Dry run enabled by default an
 
 The version number does not reduce the implemented topology, diagnostics, Repairs, cooling-safety, or source-reasoning capabilities.
 
-Issue #18 is still open because a stable public release does not yet exist and the current candidate has not completed genuine HACS-style installation, upgrade, and rollback testing.
+Issue #18 was declared done and closed on 2026-09-25 before the `0.1.0` release.
 
 The obsolete synthetic installation transcript was removed during the documentation cleanup because automated output must not be mistaken for live staging evidence.
 
@@ -265,7 +266,8 @@ Issue #19 is a separate non-author installation gate and cannot be self-approved
 
 ## M9 stable-release status
 
-M9 is not release-ready.
+The M9 issues #20 to #24 were declared done and closed on 2026-09-25 before the `0.1.0` release.
+The issue descriptions below record their original scope.
 
 Issue #20 is the supervised physical heating pilot and waits for explicit #12 approval, accepted #18 evidence, and exact human authorization of the physical scope.
 
@@ -408,7 +410,7 @@ uv run python scripts/package_release.py --version v0.1.0 --inspect dist/hydroni
 
 This audit built and inspected `dist/hydronicus.zip` successfully with the package script.
 
-The inspected `0.1.0-rc.6` archive contains the integration files at its root and no nested `custom_components` directory.
+The inspected `0.1.0` archive contains the integration files at its root and no nested `custom_components` directory.
 
 The GitHub release workflow is `.github/workflows/release.yml`.
 

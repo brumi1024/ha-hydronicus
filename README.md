@@ -13,21 +13,18 @@ It models rooms (comfort zones), loops (hydraulic circuits), delivery routes, va
 
 ## Current status
 
-The release target is `0.1.0`.
-The current prerelease candidate is `0.1.0-rc.6`.
-The current candidate supports end-to-end Dry run behavior and a configurable Plant control boundary.
-Anyone can install Hydronicus, configure a Plant through the Home Assistant UI, exercise heating and cooling demand, inspect hydraulic sequencing and source recommendations, and troubleshoot the result without operating equipment.
-A disposable Home Assistant 2026.8.2 working-tree run has validated configuration flows, migration, object ownership, diagnostics, reload, deletion, removal, and a clean Dry run shutdown with zero actuator service calls.
-HACS-installed evidence from the exact committed candidate remains pending.
+The current release is `0.1.0`, the first stable release.
+Anyone can install Hydronicus, configure a Plant through the Home Assistant UI, exercise heating and cooling demand, inspect hydraulic sequencing and source recommendations, and troubleshoot the result in Dry run without operating equipment.
+When Dry run is turned off in Plant settings, Hydronicus controls the confirmed valves, pumps, and direct source-demand output.
 
-| Capability | Current candidate | `v0.1.0` release target |
+| Capability | Dry run (default) | Dry run off |
 | --- | --- | --- |
-| Heating valves and pumps | Proposed in Dry run; controlled when off | Same behavior |
-| Cooling valves and pumps, with condensation protection | Proposed in Dry run; controlled when off | Same behavior |
-| Source recommendation | Visible in both modes; selection remains Dry run | Same behavior |
-| Direct source demand | Proposed in Dry run; controlled when off after a valid pump path | Same behavior |
+| Heating valves and pumps | Proposed | Controlled |
+| Cooling valves and pumps, with condensation protection | Proposed | Controlled |
+| Source recommendation | Visible | Visible; source selection stays proposed |
+| Direct source demand | Proposed | Controlled while heating, after a valid pump path |
 
-The codebase contains the tested generic service-call executor needed for heating control.
+The codebase contains the tested generic service-call executor for heating and cooling control.
 The Plant UI exposes one Dry run setting, records proposed versus executed operations, and performs an ordered safe shutdown when Dry run is re-enabled.
 
 The current implementation includes:
@@ -52,8 +49,8 @@ The current implementation includes:
 - Structured non-fatal warnings when shared valves or pumps limit independent control, and for unused Plant equipment.
 
 Home Assistant Repairs for unresolved bindings, redacted downloadable diagnostics, startup reconciliation, and bounded command-failure handling are implemented.
-Cooling starts, source-selector changeover, and physical actuator rollout remain gated milestone work.
-Treat the roadmap as a statement of intent rather than authorization to use those paths on physical equipment.
+Source-selector changeover remains Dry run only.
+Treat the roadmap as a statement of intent rather than authorization to use future paths on physical equipment.
 
 ## Installation
 
@@ -142,8 +139,8 @@ The new Plant starts in Dry run.
 The requested entities describe what Hydronicus would do.
 Dry run does not send a command to the configured valve, pump, or direct source-demand entity, so the history of the three trial `input_boolean` helpers stays unchanged.
 Changing a Hydronicus climate target changes the calculated demand and the latest proposed operations.
-If Dry run is turned off in an isolated test, heating valve and pump operations can execute after the configured confirmation.
-Cooling starts and source-selector operations remain proposed and do not execute.
+If Dry run is turned off in an isolated test, heating and cooling valve and pump operations can execute after the configured confirmation.
+Source-selector operations remain proposed and do not execute.
 
 See [configuration and simulation](docs/configuration.md) for rooms, loops, and Plant settings, [the plant file reference](docs/plant-file.md) for the file format, and [troubleshooting](docs/troubleshooting.md) if the flow or entities do not behave as expected.
 
@@ -154,7 +151,7 @@ It evaluates the configured graph, reads actuator feedback, and records proposed
 It cannot prove that a real valve opens, that a pump produces flow, or that a heat source can deliver safe water.
 
 Do not infer physical safety from a Dry run result.
-Turning Dry run off is a tested software control boundary for heating operations, not authorization to operate a physical plant.
+Turning Dry run off is a tested software control boundary for heating and cooling operations, not authorization to operate a physical plant.
 Keep real equipment outside the actuator path until the exact staged scope has human approval.
 
 ## Supported topology
@@ -241,7 +238,6 @@ See [the development environment](docs/development.md) for local setup and verif
 See [the staging contract](docs/home-server-staging.md) for synthetic and shadow runtime checks.
 See [the implementation plan](docs/implementation-plan.md) for the roadmap and milestone boundaries.
 
-Documentation in this repository describes the current public beta where it can be verified.
-Active physical control remains outside this public-beta release, even where synthetic execution seams exist for tests.
+Documentation in this repository describes the current release where it can be verified.
 
 Contributions are welcome while the project is taking shape.
