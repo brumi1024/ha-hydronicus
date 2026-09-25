@@ -1,0 +1,11 @@
+hydronicus: 1
+name: Invalid slug
+pumps:
+  pump: switch.pump
+rooms:
+  Bedroom:
+    temperature_sensors: [sensor.bedroom_temperature]
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve]
+        pump: pump

@@ -1,0 +1,19 @@
+hydronicus: 1
+name: Other room's private valve
+pumps:
+  pump: switch.pump
+rooms:
+  living_room:
+    temperature_sensors: [sensor.living_temperature]
+    valves:
+      living_valve: switch.living_valve
+    loops:
+      living_loop:
+        valves: [living_valve]
+        pump: pump
+  bedroom:
+    temperature_sensors: [sensor.bedroom_temperature]
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve, living_valve]
+        pump: pump

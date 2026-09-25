@@ -1,0 +1,25 @@
+hydronicus: 1
+name: Shared manifold
+pumps:
+  pump: switch.pump
+valves:
+  hall_valve:
+    entity_id: switch.hall_valve
+    opening_time_seconds: 120
+loops:
+  hall_loop:
+    valves: [hall_valve]
+    pump: pump
+rooms:
+  living_room:
+    temperature_sensors: [sensor.living_temperature]
+    shared_loops: [hall_loop]
+  bedroom:
+    temperature_sensors: [sensor.bedroom_temperature]
+    shared_loops:
+      - loop: hall_loop
+        route_enabled: false
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve, hall_valve]
+        pump: pump

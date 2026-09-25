@@ -1,0 +1,10 @@
+name: Missing format version
+pumps:
+  pump: switch.pump
+rooms:
+  bedroom:
+    temperature_sensors: [sensor.bedroom_temperature]
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve]
+        pump: pump

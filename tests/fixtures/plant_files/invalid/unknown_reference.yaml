@@ -1,0 +1,11 @@
+hydronicus: 1
+name: Unknown reference
+pumps:
+  pump: switch.pump
+rooms:
+  bedroom:
+    temperature_sensors: [sensor.bedroom_temperature]
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve]
+        pump: bedroom_pump
