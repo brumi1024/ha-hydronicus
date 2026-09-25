@@ -744,6 +744,9 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={"name": "Second plant", CONF_PUMP_ENTITY: SHARED_PUMP}
     )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "zoning_grouped"}
+    )
     assert result["step_id"] == "zone"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],

@@ -33,7 +33,7 @@ First confirm whether a Plant with the same repository installation already exis
 ### A setup form cannot select an entity
 
 The **Pump entity** of guided setup and the pump form expects a `switch` entity.
-The zone form's **Temperature sensors** expect `sensor` entities, and **Existing climate thermostat** expects one `climate` entity.
+The zone form's **Extra temperature sensors** expect `sensor` entities, and **Existing climate thermostat** expects one `climate` entity.
 **Loop valves** and the loop form's **Valves** expect `switch` or `valve` entities.
 Confirm that the synthetic entities have the expected domain and are visible in Home Assistant.
 Temperature pickers list only sensors with the `temperature` device class, and humidity pickers list only sensors with the `humidity` device class.

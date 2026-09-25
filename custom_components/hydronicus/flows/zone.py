@@ -1,8 +1,8 @@
 """Zone subentry flow.
 
-A zone is the space one thermostat controls, with its sensors, its Delivery
-Routes, and its private loops and valves. Adding a zone asks for the zone
-basics; editing one opens a menu of focused steps. Every save applies the whole
+A zone is the space one thermostat controls, with its areas, its sensors, its
+Delivery Routes, and its private loops and valves. Adding a zone asks for the
+zone basics; editing one opens a menu of focused steps. Every save applies the whole
 zone with ``data_with_zone``, reviews warnings when needed, and reaches Dry run
 first.
 """
@@ -19,7 +19,16 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import selector
 
+from ..areas import (
+    AreaResolution,
+    area_review_warnings,
+    area_warnings_to_confirm,
+    names_temperature_sensor,
+    resolve_area_sensors,
+)
 from ..const import (
+    CONF_AREA_ID,
+    CONF_AREAS,
     CONF_CONDENSATION_MARGIN,
     CONF_CONFIGURE_SENSOR_METADATA,
     CONF_COOLING_ENABLED,
@@ -84,6 +93,9 @@ from .common import (
 )
 from .zone_form import (
     CONF_PUMP,
+    area_metadata_record,
+    area_metadata_schema,
+    areas_for,
     cooling_reference_fields,
     graph_errors,
     new_route,
@@ -122,7 +134,12 @@ _THERMOSTAT_FIELDS = frozenset(
     }
 )
 _SENSOR_FIELDS = frozenset(
-    {CONF_TEMPERATURE_AGGREGATION, CONF_HUMIDITY_SENSORS, CONF_CONFIGURE_SENSOR_METADATA}
+    {
+        CONF_AREAS,
+        CONF_TEMPERATURE_AGGREGATION,
+        CONF_HUMIDITY_SENSORS,
+        CONF_CONFIGURE_SENSOR_METADATA,
+    }
 )
 _LOOP_COOLING_FIELDS = (
     CONF_COOLING_ENABLED,
@@ -154,6 +171,8 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     _zone: dict[str, Any]
     _metadata_records: list[dict[str, Any]]
     _metadata_index: int
+    _area_records: list[dict[str, Any]]
+    _area_index: int
     _loop_id: str | None
     _loop_input: dict[str, Any]
     _loop_draft: ZoneDraft
@@ -204,16 +223,25 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     ) -> config_entries.SubentryFlowResult | None:
         """Review warnings first, or save now; ``None`` means Dry run is still pending.
 
-        A warning this change introduces, or an output shared with another Plant,
-        needs an explicit confirmation. ``origin`` submits the form that drafted
-        the zone again, which reports why a Plant changed meanwhile rejects it.
+        A warning this change introduces, including an area warning that needs a
+        confirmation, or an output shared with another Plant, needs an explicit
+        confirmation. ``origin`` submits the form that drafted the zone again,
+        which reports why a Plant changed meanwhile rejects it.
         """
         self._origin = origin
+        entry = self._get_entry()
         compiled = effective_plant_from_data(self._proposed).compiled
         sharing = self._sharing()
-        before = effective_plant(self._get_entry()).compiled
-        if sharing or warnings_to_confirm(compiled, before):
-            self._review_warnings = warning_text(compiled, sharing)
+        before = effective_plant(entry).compiled
+        areas = area_review_warnings(self.hass, self._proposed)
+        if (
+            sharing
+            or warnings_to_confirm(compiled, before)
+            or area_warnings_to_confirm(areas, area_review_warnings(self.hass, entry.data))
+        ):
+            self._review_warnings = warning_text(
+                compiled, (*(warning.message for warning in areas), *sharing)
+            )
             return self._review_form()
         return await self._async_persist()
 
@@ -299,7 +327,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             form_errors, placeholders = zone_form_errors(self.hass, user_input, plant)
             errors.update(form_errors)
             if not errors:
-                draft = zone_draft_from_form(user_input, plant=plant, existing=None)
+                draft = zone_draft_from_form(self.hass, user_input, plant=plant, existing=None)
                 zone_id = str(draft.zone["id"])
                 if any(subentry.unique_id == zone_id for subentry in entry.subentries.values()):
                     return self.async_abort(reason="already_configured")
@@ -341,7 +369,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Change the zone's name, thermostat owner, temperature sensors, and shared loops."""
+        """Change the zone's name, areas, thermostat owner, sensors, and shared loops."""
         entry = self._get_entry()
         plant = effective_plant(entry)
         current = self._stored_zone()
@@ -360,7 +388,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             if current.circuits and errors.get("base") == "delivery_required":
                 del errors["base"]
             if not errors:
-                draft = zone_draft_from_form(user_input, plant=plant, existing=current)
+                draft = zone_draft_from_form(self.hass, user_input, plant=plant, existing=current)
                 graph, placeholders = self._propose(draft, frozenset(schema.schema))
                 errors.update(graph)
             if not errors:
@@ -425,7 +453,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     async def async_step_sensors(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Change the temperature aggregation and humidity sensors, or edit sensor metadata."""
+        """Change the areas, aggregation, and humidity sensors, or edit sensor metadata."""
         current = self._stored_zone()
         schema = _picked(zone_schema(current.zone), _SENSOR_FIELDS)
         errors: dict[str, str] = {}
@@ -433,6 +461,17 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         if user_input is not None:
             errors = own_entity_errors(self.hass, user_input)
             zone = deepcopy(current.zone)
+            chosen = [str(area_id) for area_id in user_input.get(CONF_AREAS) or ()]
+            if areas := areas_for(zone.get(CONF_AREAS), chosen):
+                zone[CONF_AREAS] = areas
+            else:
+                zone.pop(CONF_AREAS, None)
+            if (
+                _is_hydronicus_thermostat(zone)
+                and not sensor_entity_ids(zone.get(CONF_TEMPERATURE_SENSOR_METADATA))
+                and not names_temperature_sensor(self.hass, chosen)
+            ):
+                errors[CONF_AREAS] = "no_temperature_source"
             aggregation = str(user_input[CONF_TEMPERATURE_AGGREGATION])
             zone[CONF_TEMPERATURE_AGGREGATION] = aggregation
             zone[CONF_HUMIDITY_SENSOR_METADATA] = sensor_metadata_for(
@@ -443,6 +482,8 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 self._zone = zone
                 self._metadata_records = []
                 self._metadata_index = 0
+                self._area_records = []
+                self._area_index = 0
                 return await self.async_step_sensor_metadata()
             if (
                 not errors
@@ -504,6 +545,28 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             )
         if self._metadata_records:
             self._zone[CONF_TEMPERATURE_SENSOR_METADATA] = self._metadata_records
+        return await self.async_step_area_metadata()
+
+    async def async_step_area_metadata(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Edit the settings of one area at a time, after the explicit sensors."""
+        areas = self._zone.get(CONF_AREAS) or []
+        if user_input is not None:
+            area_id = str(areas[self._area_index][CONF_AREA_ID])
+            self._area_records.append(area_metadata_record(area_id, user_input))
+            self._area_index += 1
+        if self._area_index < len(areas):
+            area = areas[self._area_index]
+            area_id = str(area[CONF_AREA_ID])
+            resolution = resolve_area_sensors(self.hass, [area_id])
+            return self.async_show_form(
+                step_id="area_metadata",
+                data_schema=area_metadata_schema(area),
+                description_placeholders=_area_placeholders(resolution, area_id),
+            )
+        if self._area_records:
+            self._zone[CONF_AREAS] = self._area_records
         return await self.async_step_sensor_policy()
 
     async def async_step_sensor_policy(
@@ -519,12 +582,15 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             # flow may have changed while the metadata steps were open.
             zone = deepcopy(current.zone)
             for key in (
+                CONF_AREAS,
                 CONF_TEMPERATURE_SENSOR_METADATA,
                 CONF_HUMIDITY_SENSOR_METADATA,
                 CONF_TEMPERATURE_AGGREGATION,
             ):
                 if key in self._zone:
                     zone[key] = deepcopy(self._zone[key])
+                else:
+                    zone.pop(key, None)
             errors, placeholders = self._propose(
                 ZoneDraft(
                     zone=zone,
@@ -811,6 +877,16 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 "entity": str(valve[CONF_ENTITY_ID]),
             },
         )
+
+
+def _area_placeholders(resolution: AreaResolution, area_id: str) -> dict[str, str]:
+    """Name an area and the sensors it names, which its settings apply to."""
+    sensors = resolution.area_sensors.get(area_id)
+    return {
+        "area": resolution.name(area_id),
+        "temperature_sensor": (sensors and sensors.temperature_entity_id) or "None",
+        "humidity_sensor": (sensors and sensors.humidity_entity_id) or "None",
+    }
 
 
 def _apply_valve_details(valve: dict[str, Any], details: Mapping[str, Any]) -> None:

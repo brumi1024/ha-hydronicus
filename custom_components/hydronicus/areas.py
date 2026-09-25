@@ -1,8 +1,8 @@
 """The Home Assistant areas that zones cover, and the sensors those areas name.
 
-Every area registry read goes through this module. A zone follows the
+Every area and floor registry read goes through this module. A zone follows the
 temperature and humidity sensors that each of its areas currently names, so the
-runtime, the plant file review, diagnostics, and repairs resolve them here.
+runtime, the flows, the plant file review, diagnostics, and repairs resolve them here.
 
 Home Assistant does not update an area's sensors when one of those entities is
 renamed in the entity registry (checked against 2026.9), so a renamed sensor
@@ -21,6 +21,7 @@ from typing import Any
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import floor_registry as fr
 
 from .const import (
     CONF_AREA_ID,
@@ -149,6 +150,44 @@ def resolve_area_sensors(hass: HomeAssistant, area_ids: Iterable[str]) -> AreaRe
         self_provided=self_provided,
         area_names=names,
     )
+
+
+def names_temperature_sensor(hass: HomeAssistant, area_ids: Iterable[str]) -> bool:
+    """Return whether any of the areas names a temperature sensor a zone can follow."""
+    resolution = resolve_area_sensors(hass, area_ids)
+    return any(sensors.temperature_entity_id for sensors in resolution.area_sensors.values())
+
+
+def areas_with_temperature_sensor(hass: HomeAssistant) -> list[str]:
+    """Return every area that names a temperature sensor a zone can follow, by name."""
+    areas = sorted(ar.async_get(hass).async_list_areas(), key=lambda area: area.name.casefold())
+    resolution = resolve_area_sensors(hass, (area.id for area in areas))
+    return [
+        area.id
+        for area in areas
+        if resolution.area_sensors[area.id].temperature_entity_id is not None
+    ]
+
+
+def zone_name_for_areas(hass: HomeAssistant, area_ids: Sequence[str]) -> str | None:
+    """Return the name a zone over these areas takes when the user gives none.
+
+    One area gives its own name, and areas that all lie on one floor give the
+    floor's name. Anything else, including an area that does not exist, gives
+    no name, so the user names the zone.
+    """
+    registry = ar.async_get(hass)
+    wanted = tuple(dict.fromkeys(area_ids))
+    areas = [area for area_id in wanted if (area := registry.async_get_area(area_id))]
+    if not areas or len(areas) != len(wanted):
+        return None
+    if len(areas) == 1:
+        return areas[0].name
+    floor_ids = {area.floor_id for area in areas}
+    if len(floor_ids) != 1 or (floor_id := floor_ids.pop()) is None:
+        return None
+    floor = fr.async_get(hass).async_get_floor(floor_id)
+    return floor.name if floor is not None else None
 
 
 def entry_area_resolution(hass: HomeAssistant, entry: Any) -> AreaResolution:

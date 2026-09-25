@@ -75,10 +75,12 @@ async def _start(hass, option: str):
 
 
 async def _first_zone(hass, *, name: str = "Hydronic plant", pump: str = PUMP):
-    """Advance guided setup to its first zone form."""
+    """Advance guided setup to its first zone form, grouping areas into zones."""
     result = await _start(hass, "guided")
     result = await _submit(hass, result, {CONF_NAME: name, "pump_entity": pump})
-    assert result["step_id"] == "zone", result.get("errors")
+    assert result["step_id"] == "zoning", result.get("errors")
+    result = await _submit(hass, result, {"next_step_id": "zoning_grouped"})
+    assert result["step_id"] == "zone"
     return result
 
 
@@ -139,8 +141,8 @@ async def test_setup_starts_with_a_menu_of_guided_setup_and_import(hass) -> None
 # --------------------------------------------------------------------------
 
 
-async def test_guided_setup_creates_a_three_zone_manifold_in_six_screens(hass) -> None:
-    """Menu, Plant form, one form per zone, and the review: six screens in total."""
+async def test_guided_setup_creates_a_three_zone_manifold_in_seven_screens(hass) -> None:
+    """Menu, Plant form, zoning menu, one form per zone, and the review: seven screens."""
     screens = []
 
     async def show(result):
@@ -159,6 +161,7 @@ async def test_guided_setup_creates_a_three_zone_manifold_in_six_screens(hass) -
             {CONF_NAME: "Manifold", "pump_entity": PUMP, "pump_options": {"overrun_seconds": 90}},
         )
     )
+    result = await show(await _submit(hass, result, {"next_step_id": "zoning_grouped"}))
     for index, (name, sensor, valve) in enumerate(ZONES):
         result = await show(
             await _submit(
@@ -174,7 +177,7 @@ async def test_guided_setup_creates_a_three_zone_manifold_in_six_screens(hass) -
     result = await _submit(hass, result, {"confirm": True})
     await hass.async_block_till_done()
 
-    assert screens == ["user", "guided", "zone", "zone", "zone", "review"]
+    assert screens == ["user", "guided", "zoning", "zone", "zone", "zone", "review"]
     assert result["type"] == FlowResultType.CREATE_ENTRY
     entry: ConfigEntry = result["result"]
     assert (entry.version, entry.minor_version) == (4, 0)
@@ -248,9 +251,11 @@ async def test_guided_forms_ask_only_for_what_setup_needs(hass) -> None:
     assert "dry_run" not in fields
 
     result = await _submit(hass, result, {CONF_NAME: "Hydronic plant", "pump_entity": PUMP})
+    result = await _submit(hass, result, {"next_step_id": "zoning_grouped"})
     fields = form_fields(result)
     assert set(fields) == {
         CONF_NAME,
+        "areas",
         "temperature_sensors",
         "external_climate_entity",
         "valves",
@@ -400,7 +405,8 @@ async def test_zone_rejects_an_empty_temperature_sensor_selection(hass) -> None:
     result = await _submit(hass, result, zone)
 
     assert result["step_id"] == "zone"
-    assert result["errors"] == {"temperature_sensors": "temperature_sensors_required"}
+    # Without areas or sensors, the zone has no temperature reading.
+    assert result["errors"] == {"areas": "no_temperature_source"}
     assert form_value(result, CONF_NAME) == "Study"
     assert form_value(result, "valves") == ["switch.study_valve"]
 
@@ -436,7 +442,7 @@ async def test_zone_rejects_blank_names_and_missing_valves(hass) -> None:
     )
 
     assert result["step_id"] == "zone"
-    assert result["errors"] == {CONF_NAME: "name_required", "base": "delivery_required"}
+    assert result["errors"] == {CONF_NAME: "zone_name_required", "base": "delivery_required"}
 
 
 async def test_zone_rejects_hydronicus_entities(hass) -> None:

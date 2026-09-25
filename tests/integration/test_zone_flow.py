@@ -443,8 +443,8 @@ async def test_empty_required_selections_are_reported_on_their_fields(hass) -> N
     result = await _configure(hass, result, {"name": " ", "temperature_sensors": [], "valves": []})
 
     assert result["errors"] == {
-        "name": "name_required",
-        "temperature_sensors": "temperature_sensors_required",
+        "name": "zone_name_required",
+        "areas": "no_temperature_source",
         "base": "delivery_required",
     }
     assert entry.data["topology"]["zones"] == []
@@ -651,6 +651,7 @@ async def test_zone_step_keeps_ids_and_switches_the_thermostat(hass) -> None:
     assert result["step_id"] == "zone"
     assert set(form_fields(result)) == {
         "name",
+        "areas",
         "temperature_sensors",
         "external_climate_entity",
         "shared_loops",
@@ -751,6 +752,7 @@ async def test_sensors_step_edits_metadata_and_policy_and_keeps_ids(hass) -> Non
 
     result = await _menu(hass, entry, zone_id, "sensors")
     assert set(form_fields(result)) == {
+        "areas",
         "temperature_aggregation",
         "humidity_sensors",
         "configure_sensor_metadata",

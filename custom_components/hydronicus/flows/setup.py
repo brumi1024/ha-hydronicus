@@ -1,8 +1,9 @@
 """Config flow steps that create a new Plant: guided setup and plant file import.
 
-Guided setup asks for the Plant and its one pump, then one form per zone, and
-reviews the result. Import reads a whole plant file. Both build stored data
-with the graph edit API, so every new Plant starts in Dry run.
+Guided setup asks for the Plant and its one pump, then how the home is zoned,
+then one form per zone, and reviews the result. Import reads a whole plant
+file. Both build stored data with the graph edit API, so every new Plant starts
+in Dry run.
 """
 
 from __future__ import annotations
@@ -16,8 +17,14 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.helpers import selector
 
-from ..areas import area_review_warnings, area_warnings_to_confirm
+from ..areas import (
+    area_review_warnings,
+    area_warnings_to_confirm,
+    areas_with_temperature_sensor,
+    zone_name_for_areas,
+)
 from ..const import (
+    CONF_AREAS,
     CONF_ENTITY_ID,
     CONF_NAME,
     CONF_OVERRUN,
@@ -54,13 +61,25 @@ from .common import (
     warnings_to_confirm,
     with_submitted_values,
 )
-from .zone_form import graph_errors, zone_draft_from_form, zone_form_errors, zone_form_schema
+from .zone_form import (
+    area_selector,
+    graph_errors,
+    zone_draft_from_form,
+    zone_form_errors,
+    zone_form_schema,
+)
 
 CONF_ADD_ANOTHER: Final = "add_another"
 CONF_CONFIRM: Final = "confirm"
 CONF_DOCUMENT: Final = "document"
 SECTION_PUMP_OPTIONS: Final = "pump_options"
 MENU_OPTIONS: Final = ("guided", "import_plant")
+ZONING_WHOLE_HOME: Final = "zoning_whole_home"
+ZONING_PER_AREA: Final = "zoning_per_area"
+ZONING_GROUPED: Final = "zoning_grouped"
+ZONING_OPTIONS: Final = (ZONING_WHOLE_HOME, ZONING_PER_AREA, ZONING_GROUPED)
+# The name of the one zone that covers the whole home.
+WHOLE_HOME_ZONE_NAME: Final = "Home"
 # The name of the one pump guided setup creates; Plant settings can rename it.
 GUIDED_PUMP_NAME: Final = "Circulation pump"
 # The path shown for a plant file error that no single key causes.
@@ -82,13 +101,24 @@ def _guided_schema() -> vol.Schema:
     )
 
 
-def _zone_schema() -> vol.Schema:
+def _zone_schema(defaults: Mapping[str, Any], *, add_another: bool) -> vol.Schema:
     """Return the zone form: zone basics with the implied pump, and ``add_another``.
 
     A Plant being set up has one pump and no shared loops, so neither is asked for.
+    Only grouping areas into zones asks whether another zone follows.
     """
-    return zone_form_schema(pumps=(), shared_loops=()).extend(
+    schema = zone_form_schema(pumps=(), shared_loops=(), defaults=defaults)
+    if not add_another:
+        return schema
+    return schema.extend(
         {vol.Optional(CONF_ADD_ANOTHER, default=False): selector.BooleanSelector()}
+    )
+
+
+def _areas_schema(areas: list[str]) -> vol.Schema:
+    """Return the form that chooses the areas that each get their own zone."""
+    return vol.Schema(
+        {vol.Optional(CONF_AREAS, description={"suggested_value": areas or None}): area_selector()}
     )
 
 
@@ -127,6 +157,10 @@ class SetupSteps(ConfigFlowBase):
     """Create a new Plant by guided setup or from a plant file."""
 
     _data: dict[str, Any]
+    _zoning: str
+    # One zone per area: the chosen areas, and the index of the zone being added.
+    _zone_areas: list[str]
+    _zone_index: int
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -222,26 +256,78 @@ class SetupSteps(ConfigFlowBase):
                     topology={CONF_PUMPS: [pump]},
                     ownership=PlantOwnership(zone_objects={}),
                 )
-                return await self.async_step_zone()
+                return await self.async_step_zoning()
         return self.async_show_form(
             step_id="guided",
             data_schema=with_submitted_values(self, _guided_schema(), user_input),
             errors=errors,
         )
 
+    async def async_step_zoning(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Ask how the home is zoned; every answer ends in the zone form."""
+        return self.async_show_menu(step_id="zoning", menu_options=list(ZONING_OPTIONS))
+
+    async def async_step_zoning_whole_home(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Add one zone over every area that names a temperature sensor."""
+        self._zoning = ZONING_WHOLE_HOME
+        return await self.async_step_zone()
+
+    async def async_step_zoning_per_area(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Choose the areas that each get a zone of their own."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            chosen = list(dict.fromkeys(str(area) for area in user_input.get(CONF_AREAS) or ()))
+            if chosen:
+                self._zoning = ZONING_PER_AREA
+                self._zone_areas = chosen
+                self._zone_index = 0
+                return await self.async_step_zone()
+            errors[CONF_AREAS] = "areas_required"
+        return self.async_show_form(
+            step_id="zoning_per_area",
+            data_schema=_areas_schema(areas_with_temperature_sensor(self.hass)),
+            errors=errors,
+        )
+
+    async def async_step_zoning_grouped(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Add zones one by one, each over the areas the user groups into it."""
+        self._zoning = ZONING_GROUPED
+        return await self.async_step_zone()
+
+    def _zone_defaults(self) -> tuple[dict[str, Any], str]:
+        """Return the prefilled values of the next zone form, and its progress text."""
+        if self._zoning == ZONING_WHOLE_HOME:
+            areas = areas_with_temperature_sensor(self.hass)
+            return {CONF_NAME: WHOLE_HOME_ZONE_NAME, CONF_AREAS: areas}, ""
+        if self._zoning == ZONING_PER_AREA:
+            area_id = self._zone_areas[self._zone_index]
+            name = zone_name_for_areas(self.hass, [area_id]) or ""
+            progress = f"\n\nZone {self._zone_index + 1} of {len(self._zone_areas)}: {name}."
+            return {CONF_NAME: name, CONF_AREAS: [area_id]}, progress
+        return {}, ""
+
     async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Add one zone with its own loop on the Plant's pump, which may also cool it."""
         plant = effective_plant_from_data(self._data)
-        schema = _zone_schema()
+        defaults, progress = self._zone_defaults()
+        schema = _zone_schema(defaults, add_another=self._zoning == ZONING_GROUPED)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
             form_errors, placeholders = zone_form_errors(self.hass, user_input, plant)
             errors.update(form_errors)
             if not errors:
-                draft = zone_draft_from_form(user_input, plant=plant, existing=None)
+                draft = zone_draft_from_form(self.hass, user_input, plant=plant, existing=None)
                 try:
                     data = data_with_zone(self._data, draft)
                 except GRAPH_EDIT_ERRORS as error:
@@ -249,15 +335,28 @@ class SetupSteps(ConfigFlowBase):
                     errors.update(graph)
                 else:
                     self._data = data
-                    if user_input.get(CONF_ADD_ANOTHER, False):
-                        return await self.async_step_zone()
-                    return await self.async_step_review()
+                    return await self._async_next_zone(user_input)
         return self.async_show_form(
             step_id="zone",
             data_schema=with_submitted_values(self, schema, user_input),
             errors=errors,
-            description_placeholders={**placeholders, "zones": _zones_so_far(self._data)},
+            description_placeholders={
+                **placeholders,
+                "progress": progress,
+                "zones": _zones_so_far(self._data),
+            },
         )
+
+    async def _async_next_zone(
+        self, user_input: Mapping[str, Any]
+    ) -> config_entries.ConfigFlowResult:
+        """Show the next zone form of the chosen zoning, or the review after the last."""
+        if self._zoning == ZONING_GROUPED and user_input.get(CONF_ADD_ANOTHER, False):
+            return await self.async_step_zone()
+        if self._zoning == ZONING_PER_AREA and self._zone_index + 1 < len(self._zone_areas):
+            self._zone_index += 1
+            return await self.async_step_zone()
+        return await self.async_step_review()
 
     async def async_step_review(
         self, user_input: dict[str, Any] | None = None

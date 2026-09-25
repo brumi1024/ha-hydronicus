@@ -22,7 +22,10 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 
+from ..areas import names_temperature_sensor, zone_name_for_areas
 from ..const import (
+    CONF_AREA_ID,
+    CONF_AREAS,
     CONF_AWAY_TARGET,
     CONF_CALIBRATION_OFFSET,
     CONF_CIRCUIT_IDS,
@@ -125,6 +128,11 @@ def valve_entity_selector() -> selector.EntitySelector:
     )
 
 
+def area_selector() -> selector.AreaSelector:
+    """Return the picker for the Home Assistant areas a zone covers."""
+    return selector.AreaSelector(selector.AreaSelectorConfig(multiple=True))
+
+
 def _suggested(key: str, defaults: Mapping[str, Any], *, required: bool = False) -> vol.Marker:
     """Build a field that suggests a stored value, which the user can still clear."""
     marker = vol.Required if required else vol.Optional
@@ -169,6 +177,7 @@ def zone_form_schema(
     """Build the zone basics form.
 
     ``defaults`` holds form values, as ``zone_form_defaults`` returns them. The
+    name may stay empty when the chosen areas give one. The
     pump is asked for only when the Plant has two or more pumps, and shared
     loops only when the Plant has any. A form that creates the zone's private
     loop from its valves also has a collapsed Cooling section, because cooling
@@ -176,7 +185,9 @@ def zone_form_schema(
     """
     defaults = defaults or {}
     schema: dict[Any, Any] = {
-        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): name_selector(),
+        # An empty name takes the name of the areas, which zone_form_errors checks.
+        _suggested(CONF_NAME, defaults): name_selector(),
+        _suggested(CONF_AREAS, defaults): area_selector(),
         _suggested(CONF_TEMPERATURE_SENSORS, defaults): sensor_selector(
             SensorDeviceClass.TEMPERATURE, multiple=True
         ),
@@ -203,6 +214,8 @@ def zone_form_defaults(draft: ZoneDraft) -> dict[str, Any]:
     private_loops = {canonical_id(circuit["id"]) for circuit in draft.circuits}
     defaults: dict[str, Any] = {
         CONF_NAME: draft.zone.get(CONF_NAME, ""),
+        # A missing area stays listed, so the form shows it and the user can remove it.
+        CONF_AREAS: area_ids(draft.zone.get(CONF_AREAS)),
         CONF_TEMPERATURE_SENSORS: sensor_entity_ids(
             draft.zone.get(CONF_TEMPERATURE_SENSOR_METADATA)
         ),
@@ -246,26 +259,30 @@ def zone_form_errors(
     such as an entity another valve already uses, come from applying the draft.
     """
     errors: dict[str, str] = {}
-    if not str(user_input.get(CONF_NAME, "")).strip():
-        errors[CONF_NAME] = "name_required"
-    # vol.Required accepts an empty list, which a lazily loaded frontend picker
-    # can submit, so required selections are checked explicitly.
+    if zone_form_name(hass, user_input) is None:
+        errors[CONF_NAME] = "zone_name_required"
+    areas = _submitted_area_ids(user_input)
+    sensors = user_input.get(CONF_TEMPERATURE_SENSORS)
+    # A Hydronicus thermostat needs a temperature reading now, from an extra
+    # sensor or from an area that names one. An empty list, as a lazily loaded
+    # frontend picker can submit, is no sensor.
     external = user_input.get(CONF_EXTERNAL_CLIMATE_ENTITY)
-    if not external and not user_input.get(CONF_TEMPERATURE_SENSORS):
-        errors[CONF_TEMPERATURE_SENSORS] = "temperature_sensors_required"
+    if not external and not sensors and not names_temperature_sensor(hass, areas):
+        errors[CONF_AREAS] = "no_temperature_source"
     if not user_input.get(CONF_VALVES) and not user_input.get(CONF_SHARED_LOOPS):
         errors["base"] = "delivery_required"
     elif user_input.get(CONF_VALVES) and _pump_id(user_input, plant) is None:
         errors[CONF_PUMP if len(plant.configuration.pumps) >= 2 else "base"] = "pump_required"
     # Cooling from the zone form applies to the zone's own loop, so it needs Loop
     # valves: a shared loop is Plant equipment that only the plant file edits. The
-    # other checks mirror what the graph requires of a cooling loop, made here so
-    # that each error names what fixes it. Fields inside the collapsed section are
-    # reported on the form.
+    # other checks mirror what the graph requires of a cooling loop, where an area
+    # counts as a temperature and a humidity source, made here so that each error
+    # names what fixes it. Fields inside the collapsed section are reported on the
+    # form.
     cooling = _cooling_input(user_input)
     cooling_on = bool(cooling.get(CONF_COOLING_ENABLED))
-    if cooling_on and not user_input.get(CONF_TEMPERATURE_SENSORS):
-        errors.setdefault(CONF_TEMPERATURE_SENSORS, "temperature_required_for_cooling")
+    if cooling_on and not sensors and not areas and CONF_AREAS not in errors:
+        errors[CONF_TEMPERATURE_SENSORS] = "temperature_required_for_cooling"
     if cooling_on and "base" not in errors:
         if not user_input.get(CONF_VALVES):
             errors["base"] = "cooling_requires_zone_loop"
@@ -274,7 +291,7 @@ def zone_form_errors(
             or cooling.get(CONF_SURFACE_TEMPERATURE_SENSOR)
         ):
             errors["base"] = "cooling_reference_required"
-        elif not cooling.get(CONF_HUMIDITY_SENSORS):
+        elif not cooling.get(CONF_HUMIDITY_SENSORS) and not areas:
             errors["base"] = "humidity_required_for_cooling"
     errors.update(own_entity_errors(hass, user_input))
     if external and is_hydronicus_owned(hass, str(external)):
@@ -282,8 +299,24 @@ def zone_form_errors(
     return errors, {}
 
 
+def zone_form_name(hass: HomeAssistant, user_input: Mapping[str, Any]) -> str | None:
+    """Return the submitted zone name, or the name its areas give when it is empty."""
+    if name := str(user_input.get(CONF_NAME) or "").strip():
+        return name
+    return zone_name_for_areas(hass, _submitted_area_ids(user_input))
+
+
+def _submitted_area_ids(user_input: Mapping[str, Any]) -> list[str]:
+    """Return the chosen area IDs of a submitted form, each once."""
+    return list(dict.fromkeys(str(area_id) for area_id in user_input.get(CONF_AREAS) or ()))
+
+
 def zone_draft_from_form(
-    user_input: Mapping[str, Any], *, plant: EffectivePlant, existing: ZoneDraft | None
+    hass: HomeAssistant,
+    user_input: Mapping[str, Any],
+    *,
+    plant: EffectivePlant,
+    existing: ZoneDraft | None,
 ) -> ZoneDraft:
     """Draft a zone from valid zone basics.
 
@@ -292,21 +325,27 @@ def zone_draft_from_form(
     and the route ids and route flags of the shared loops it keeps. ``valves``
     creates the zone's first private loop, so it is ignored for a zone that
     already has one. The Cooling section of a new zone gives the zone its
-    humidity sensors and the private loop its cooling settings.
+    humidity sensors and the private loop its cooling settings. A kept area keeps
+    its settings, and a new one starts from the defaults.
     """
-    name = str(user_input[CONF_NAME]).strip()
+    name = zone_form_name(hass, user_input)
+    if name is None:
+        raise ValueError("A zone needs a name.")
+    areas = _submitted_area_ids(user_input)
     sensors = [str(entity_id) for entity_id in user_input.get(CONF_TEMPERATURE_SENSORS) or ()]
     external = user_input.get(CONF_EXTERNAL_CLIMATE_ENTITY) or None
     cooling = _cooling_input(user_input)
     if existing is None:
         humidity = [str(entity_id) for entity_id in cooling.get(CONF_HUMIDITY_SENSORS) or ()]
         zone = _new_zone(str(uuid4()), name, sensors, external, humidity)
+        _set_areas(zone, areas)
         circuits: list[dict[str, Any]] = []
         valves: list[dict[str, Any]] = []
         kept_routes: list[dict[str, Any]] = []
         previous_shared: dict[str, dict[str, Any]] = {}
     else:
         zone = _updated_zone(existing.zone, name, sensors, external)
+        _set_areas(zone, areas)
         circuits = deepcopy(existing.circuits)
         valves = deepcopy(existing.valves)
         private = {canonical_id(circuit["id"]) for circuit in circuits}
@@ -424,6 +463,80 @@ def sensor_entity_ids(metadata: Any) -> list[str]:
         for record in metadata
         if isinstance(record, Mapping) and record.get(CONF_ENTITY_ID)
     ]
+
+
+def area_ids(areas: Any) -> list[str]:
+    """Return the area IDs of stored zone areas, in stored order."""
+    if not isinstance(areas, list):
+        return []
+    return [
+        str(area[CONF_AREA_ID])
+        for area in areas
+        if isinstance(area, Mapping) and area.get(CONF_AREA_ID)
+    ]
+
+
+def areas_for(stored: Any, chosen: Sequence[str]) -> list[dict[str, Any]]:
+    """Keep the settings of retained areas and add new areas with default settings.
+
+    A new area is stored as its ID alone, as a plant file imports a bare area.
+    """
+    by_id = {
+        str(area[CONF_AREA_ID]): dict(area)
+        for area in stored or ()
+        if isinstance(area, Mapping) and area.get(CONF_AREA_ID)
+    }
+    return [by_id.get(area_id, {CONF_AREA_ID: area_id}) for area_id in dict.fromkeys(chosen)]
+
+
+def _set_areas(zone: dict[str, Any], chosen: Sequence[str]) -> None:
+    """Set the areas a zone record covers, leaving the field out when it covers none."""
+    if areas := areas_for(zone.get(CONF_AREAS), chosen):
+        zone[CONF_AREAS] = areas
+    else:
+        zone.pop(CONF_AREAS, None)
+
+
+# The settings of an area, with the defaults a stored area and a plant file leave out.
+AREA_SETTING_DEFAULTS: dict[str, Any] = {
+    CONF_REQUIRED: False,
+    CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
+    CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
+    CONF_DESIGNATED_REFERENCE: False,
+}
+
+
+def area_metadata_schema(defaults: Mapping[str, Any]) -> vol.Schema:
+    """Build the settings form of one area, which apply to its temperature sensor."""
+
+    def default(key: str) -> Any:
+        return defaults.get(key, AREA_SETTING_DEFAULTS[key])
+
+    return vol.Schema(
+        {
+            vol.Required(CONF_REQUIRED, default=default(CONF_REQUIRED)): (
+                selector.BooleanSelector()
+            ),
+            vol.Required(CONF_WEIGHT, default=default(CONF_WEIGHT)): positive(
+                number(step="any", minimum=0)
+            ),
+            vol.Required(CONF_MAX_AGE, default=default(CONF_MAX_AGE)): max_age_selector(),
+            vol.Required(CONF_DESIGNATED_REFERENCE, default=default(CONF_DESIGNATED_REFERENCE)): (
+                selector.BooleanSelector()
+            ),
+        }
+    )
+
+
+def area_metadata_record(area_id: str, user_input: Mapping[str, Any]) -> dict[str, Any]:
+    """Return one stored area from its settings form, leaving out default settings."""
+    record: dict[str, Any] = {CONF_AREA_ID: area_id}
+    for key, default in AREA_SETTING_DEFAULTS.items():
+        value = user_input.get(key, default)
+        value = bool(value) if isinstance(default, bool) else float(value)
+        if value != default:
+            record[key] = value
+    return record
 
 
 def sensor_metadata_for(metadata: Any, entity_ids: Sequence[str]) -> list[dict[str, Any]]:
@@ -866,9 +979,14 @@ def _zone_temperature_aggregation_default(defaults: Mapping[str, Any]) -> str:
 
 
 def _zone_has_editable_sensor_metadata(defaults: Mapping[str, Any]) -> bool:
-    """Return whether a persisted zone can expose metadata-dependent policies."""
+    """Return whether a persisted zone can expose metadata-dependent policies.
+
+    An area has editable settings too, which apply to its temperature sensor.
+    """
     metadata = defaults.get(CONF_TEMPERATURE_SENSOR_METADATA)
-    return isinstance(metadata, list) and bool(metadata)
+    return (isinstance(metadata, list) and bool(metadata)) or bool(
+        area_ids(defaults.get(CONF_AREAS))
+    )
 
 
 def _temperature_aggregation_selector(
@@ -917,6 +1035,7 @@ def zone_schema(
         thermostat_defaults = {}
     schema: dict[Any, Any] = {
         vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): name_selector(),
+        _suggested(CONF_AREAS, {CONF_AREAS: area_ids(defaults.get(CONF_AREAS))}): (area_selector()),
         (vol.Required if thermostat_kind == THERMOSTAT_KIND_HYDRONICUS else vol.Optional)(
             CONF_TEMPERATURE_SENSORS,
             default=zone_temperature_sensor_defaults(defaults),

@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -566,15 +567,22 @@ def test_static_discovery_sees_the_flow_contract() -> None:
         "thermostat",
         "sensors",
         "sensor_metadata",
+        "area_metadata",
         "sensor_policy",
         "edit_loop",
         "loop",
         "valve_details",
     }
     assert found.form_steps["config_subentries.source"] == {"user", "reconfigure", "review"}
-    assert {"user", "guided", "zone", "review", "import_plant", "import_review"} <= (
-        found.form_steps["config"]
-    )
+    assert {
+        "user",
+        "guided",
+        "zoning_per_area",
+        "zone",
+        "review",
+        "import_plant",
+        "import_review",
+    } <= (found.form_steps["config"])
 
 
 def test_every_section_entry_is_a_nonempty_string() -> None:
@@ -725,12 +733,25 @@ async def test_setup_flow_steps_are_fully_translated(hass) -> None:
         return audit.check(await flow.async_configure(result["flow_id"], dict(user_input)))
 
     plant = {CONF_NAME: "Plant", "pump_entity": "switch.pump"}
+    hass.states.async_set("sensor.den_temperature", "20.0", {"device_class": "temperature"})
+    ar.async_get(hass).async_create("Den", temperature_entity_id="sensor.den_temperature")
+    for answer in ("zoning_whole_home", "zoning_per_area"):
+        result = await start("guided")
+        result = await submit(result, plant)
+        result = await submit(result, {"next_step_id": answer})
+        if answer == "zoning_per_area":
+            result = await submit(result, {"areas": []})
+            assert result["errors"] == {"areas": "areas_required"}
+            result = await submit(result, {"areas": ["den"]})
+        assert result["step_id"] == "zone"
+        flow.async_abort(result["flow_id"])
     result = await start("guided")
     result = await submit(result, {**plant, CONF_NAME: " "})
     assert result["errors"] == {CONF_NAME: "name_required"}
     result = await submit(result, plant)
-    result = await submit(result, {CONF_NAME: "Living room", "valves": ["switch.pump"]})
-    assert result["errors"] == {"temperature_sensors": "temperature_sensors_required"}
+    result = await submit(result, {"next_step_id": "zoning_grouped"})
+    result = await submit(result, {CONF_NAME: " ", "valves": ["switch.pump"]})
+    assert result["errors"] == {CONF_NAME: "zone_name_required", "areas": "no_temperature_source"}
     zone = {CONF_NAME: "Living room", "temperature_sensors": ["sensor.zone"]}
     result = await submit(result, zone)
     assert result["errors"] == {"base": "delivery_required"}
@@ -781,7 +802,16 @@ async def test_setup_flow_steps_are_fully_translated(hass) -> None:
     result = await submit(result, {"document": {**document, "id": imported.data[CONF_PLANT_ID]}})
     assert result["reason"] == "already_configured"
 
-    assert audit.steps == {"user", "guided", "zone", "review", "import_plant", "import_review"}
+    assert audit.steps == {
+        "user",
+        "guided",
+        "zoning",
+        "zoning_per_area",
+        "zone",
+        "review",
+        "import_plant",
+        "import_review",
+    }
     assert audit.missing == []
 
 
@@ -945,25 +975,47 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
 
     zone = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ZONE}")
-    for option, steps in {
-        "zone": [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_zone"]}],
-        "thermostat": [{}],
-        "sensors": [
-            {"temperature_aggregation": "mean", "configure_sensor_metadata": True},
-            {"sensor_entity": "sensor.missing_zone"},
-            {"temperature_aggregation": "mean"},
-        ],
-        "edit_loop": [
-            {"loop": FLOOR_CIRCUIT_ID},
-            {
-                CONF_NAME: "Floor loop",
-                "valves": ["switch.floor_valve"],
-                "pump": PUMP_ID,
-                "configure_valve_feedback": True,
-            },
-            {},
-        ],
-    }.items():
+    hass.states.async_set("sensor.den_temperature", "20.0", {"device_class": "temperature"})
+    ar.async_get(hass).async_create("Den", temperature_entity_id="sensor.den_temperature")
+    for option, steps in [
+        ("zone", [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_zone"]}]),
+        ("thermostat", [{}]),
+        (
+            "sensors",
+            [
+                {"temperature_aggregation": "mean", "configure_sensor_metadata": True},
+                {"sensor_entity": "sensor.missing_zone"},
+                {"temperature_aggregation": "mean"},
+            ],
+        ),
+        # An area has a settings form of its own after the explicit sensors.
+        (
+            "sensors",
+            [
+                {
+                    "areas": ["den"],
+                    "temperature_aggregation": "mean",
+                    "configure_sensor_metadata": True,
+                },
+                {"sensor_entity": "sensor.missing_zone"},
+                {},
+                {"temperature_aggregation": "mean"},
+            ],
+        ),
+        (
+            "edit_loop",
+            [
+                {"loop": FLOOR_CIRCUIT_ID},
+                {
+                    CONF_NAME: "Floor loop",
+                    "valves": ["switch.floor_valve"],
+                    "pump": PUMP_ID,
+                    "configure_valve_feedback": True,
+                },
+                {},
+            ],
+        ),
+    ]:
         result = await _reconfigure(
             hass,
             entry,
@@ -1029,6 +1081,7 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
         "thermostat",
         "sensors",
         "sensor_metadata",
+        "area_metadata",
         "sensor_policy",
         "edit_loop",
         "loop",

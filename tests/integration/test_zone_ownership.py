@@ -276,6 +276,9 @@ async def test_initial_setup_creates_one_zone_that_owns_its_loop_and_valve(hass)
         result["flow_id"], user_input={"name": "Study plant", "pump_entity": "switch.study_pump"}
     )
     result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "zoning_grouped"}
+    )
+    result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
             "name": "Study",

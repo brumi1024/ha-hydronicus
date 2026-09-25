@@ -115,9 +115,10 @@ To use guided setup:
 
 1. Choose **Guided setup**.
 2. In **Name the Plant**, enter `Trial plant` as the **Plant name**, choose `switch.hydronicus_trial_pump` as the **Pump entity**, and submit.
-3. In **Add a zone**, enter `Living room` as the **Zone name**, choose `sensor.hydronicus_trial_living_room_temperature` under **Temperature sensors** and `switch.hydronicus_trial_living_room_valve` under **Loop valves**, turn on **Add another zone**, and submit.
-4. In the next **Add a zone** form, enter `Bedroom` with `sensor.hydronicus_trial_bedroom_temperature` and `switch.hydronicus_trial_bedroom_valve`, leave **Add another zone** off, and submit.
-5. Continue with the review below.
+3. In **How is your home zoned?**, choose **Group areas into zones**.
+4. In **Add a zone**, enter `Living room` as the **Zone name**, choose `sensor.hydronicus_trial_living_room_temperature` under **Extra temperature sensors** and `switch.hydronicus_trial_living_room_valve` under **Loop valves**, turn on **Add another zone**, and submit.
+5. In the next **Add a zone** form, enter `Bedroom` with `sensor.hydronicus_trial_bedroom_temperature` and `switch.hydronicus_trial_bedroom_valve`, leave **Add another zone** off, and submit.
+6. Continue with the review below.
 
 Guided setup names each zone's loop after the zone, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
 The plant file uses the same names, which is why both paths create the same entity IDs.

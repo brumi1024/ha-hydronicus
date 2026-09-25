@@ -38,6 +38,10 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
         result["flow_id"],
         user_input={"name": "Trial plant", "pump_entity": "switch.hydronicus_trial_pump"},
     )
+    assert result["step_id"] == "zoning"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "zoning_grouped"}
+    )
     assert result["step_id"] == "zone"
     assert "target_temperature" not in {str(key.schema) for key in result["data_schema"].schema}
     result = await hass.config_entries.flow.async_configure(

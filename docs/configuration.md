@@ -35,31 +35,38 @@ Every new Plant starts in Dry run, so Hydronicus observes the actuator entities 
 Open **Settings > Devices & services > Add integration** and search for **Hydronicus**.
 The first menu offers two ways to create a Plant:
 
-- **Guided setup** asks for the Plant and its pump, then one form per zone.
+- **Guided setup** asks for the Plant and its pump, then how the home is zoned, then one form per zone.
 - **Import a plant file** rebuilds a Plant from a [plant file](plant-file.md), with the same entity IDs.
 
 ### Guided setup
 
-Guided setup takes one menu, one Plant form, one form per zone, and a review.
+Guided setup takes one menu, one Plant form, a zoning menu, one form per zone, and a review.
 
 1. Choose **Guided setup**.
 2. In **Name the Plant**, enter the **Plant name** and choose the **Pump entity** that the loops of every zone share.
    **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after heating demand ends, before the valves close.
    Cooling stops the pump without overrun.
-3. In **Add a zone**, describe one zone:
+3. **How is your home zoned?** offers three answers, and every answer ends in the zone form:
+   - **One zone for the whole home** opens one zone form named `Home` with every area that names a temperature sensor.
+   - **One zone per area** first asks which areas, starting with every area that names a temperature sensor, then opens one prefilled zone form per area.
+   - **Group areas into zones** opens the zone form with **Add another zone**.
+4. In **Add a zone**, describe one zone:
    - **Zone name** names the zone's thermostat and entities.
-   - **Temperature sensors** are combined into the zone temperature.
+     Left empty, it takes the name of the one chosen area, or of the floor that every chosen area is on.
+   - **Areas** are the Home Assistant areas the zone covers, and the zone follows the temperature and humidity sensors that each area names in its area settings.
+   - **Extra temperature sensors** are sensors outside the areas, such as a floor probe, and are combined with the areas into the zone temperature.
+     A zone that Hydronicus controls needs a temperature reading from an area or an extra sensor.
    - **Existing climate thermostat** is optional; when set, that climate entity owns the zone's demand, and the temperature sensors become optional.
    - **Loop valves** are the switches or valves of the zone's own loop.
      Hydronicus creates the loop, names it after the zone, such as `Bedroom loop`, and names its valves after the loop, such as `Bedroom loop valve`.
    - **Cooling** is an optional, collapsed section that lets the zone's own loop cool too.
-     Turn on **Cool this zone**, choose the zone's **Humidity sensors**, and choose a **Supply temperature sensor** or a **Surface temperature sensor**, or both, as the loop's condensation reference.
+     Turn on **Cool this zone**, choose **Extra humidity sensors** when the areas name none, and choose a **Supply temperature sensor** or a **Surface temperature sensor**, or both, as the loop's condensation reference.
      **Condensation margin** defaults to 2.0 °C, as in the loop form.
-     Cooling also needs the zone's **Temperature sensors**, even when an existing climate thermostat owns the zone.
+     Cooling also needs a temperature sensor or an area, even when an existing climate thermostat owns the zone.
    - **Add another zone** shows the form again for the next zone.
      Leave it off after the last zone.
    From the second zone on, the form lists the zones added so far.
-4. **Review the Plant** lists the zones, how they connect, and the warnings.
+5. **Review the Plant** lists the zones, how they connect, and the warnings, including area warnings such as an area that several zones cover.
 
 Under How it connects, the review shows one line per loop and one per zone, such as `Bedroom loop opens Bedroom loop valve, then starts Circulation pump.` and `Bedroom is heated by Bedroom loop.`
 A zone whose loop cools reads `Bedroom is heated and cooled by Bedroom loop.`
@@ -95,7 +102,7 @@ The **Add a zone** form has the same fields as in guided setup, plus two that ap
 A zone needs **Loop valves** or at least one of the **Shared loops**.
 The **Cooling** section applies to the zone's own loop, so turning on **Cool this zone** needs **Loop valves**.
 A zone served only by shared loops is refused with a message to choose Loop valves or leave cooling off, because a shared loop is Plant equipment that only the plant file edits.
-To make an existing zone cool, use **Sensor aggregation and humidity** for its humidity sensors and the **Cooling** section of its loop.
+To make an existing zone cool, use **Areas, sensor aggregation, and humidity** for its areas and humidity sensors and the **Cooling** section of its loop.
 Saving a zone returns the Plant to Dry run.
 
 ### Thermostat owner
@@ -118,10 +125,11 @@ Hydronicus does not infer the external integration's actuator or support externa
 
 Open the zone's **Reconfigure** action to reach the zone's edit menu, titled with the zone name, such as `Edit Bedroom`, with these options:
 
-- **Name, thermostat owner, and sensors** changes the **Zone name**, the **Existing climate thermostat**, the **Temperature sensors**, and the **Shared loops**.
+- **Name, areas, thermostat owner, and sensors** changes the **Zone name**, the **Areas**, the **Existing climate thermostat**, the **Extra temperature sensors**, and the **Shared loops**.
+  An area that no longer exists stays listed, so it can be removed here.
   Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.
 - **Thermostat settings** appears for a Hydronicus thermostat and sets the **Heating start hysteresis**, **Heating stop hysteresis**, **Minimum active duration**, **Minimum idle duration**, the **Comfort preset target**, **Eco preset target**, and **Away preset target**, and the **Cooling** hysteresis.
-- **Sensor aggregation and humidity** sets the **Temperature aggregation** and the **Humidity sensors**, and **Edit sensor metadata** opens one form per temperature sensor.
+- **Areas, sensor aggregation, and humidity** sets the **Areas**, the **Extra humidity sensors**, and the **Temperature aggregation**, and **Edit sensor metadata** opens one form per extra temperature sensor, then one per area.
 - **Add a loop** adds another private loop to the zone.
 - **Edit or remove a loop** appears when the zone has a private loop.
 
