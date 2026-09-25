@@ -116,7 +116,7 @@ Turning Dry run back on will perform the ordered safe shutdown before suppressin
 
 ## Cooling behavior
 
-Cooling demand uses room temperature, humidity, dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
+Cooling demand uses room temperature, humidity, the worst-case room dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
 It blocks unsafe or incomplete paths and explains condensation and shared-equipment conflicts.
 
 When Dry run is off, Hydronicus opens the valves and starts the pumps of loops that deliver cooling, in the same order as for heating.

@@ -147,6 +147,13 @@ An unusable optional sensor is excluded and reported, but the room still blocks 
 
 Designated reference and weighted mean depend on per-sensor metadata, so choose them in **Choose sensor aggregation** after completing **Edit sensor metadata**.
 
+**Temperature aggregation** decides demand, but never the dew point that protects a cooling room.
+Cooling safety calculates one worst-case dew point per room from its highest usable temperature and its highest usable humidity, even when different sensors report them.
+A room that covers a bathroom at 80 % and a bedroom at 50 % is protected at 80 %, although the 65 % average would permit colder water.
+Humidity sensors follow the same required, optional, calibration, and maximum age rules as temperature sensors, and aggregation weights do not apply to them.
+An unusable required temperature or humidity sensor blocks cooling, and an unusable optional one is left out of the worst case.
+The room climate entity reports the highest usable humidity as its current humidity.
+
 Hydronicus starts a fresh thermostat at 21.0 °C and HVAC mode off.
 Use the room's climate entity to change its target and mode after setup.
 The heating start and stop hysteresis define the band around the runtime target.
@@ -241,6 +248,7 @@ The pump enters virtual overrun before it becomes idle, and the valve closes aft
 No physical service call is dispatched while Dry run remains enabled.
 
 Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
+The room **Cooling dew point** sensor reports the worst-case dew point, and its `dew_point_temperature` and `dew_point_humidity` attributes show the highest readings it combines.
 A room has cooling entities only when it routes to a loop with cooling turned on, which is also when its thermostat offers cool modes.
 The Plant has source entities, such as **Recommended source** and **Source changeover**, only when it has at least one source.
 When a change removes an object's reason for an entity, such as turning off a loop's cooling, the reload removes that entity from Home Assistant.
