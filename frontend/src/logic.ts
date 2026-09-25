@@ -70,8 +70,22 @@ export function plantVisualState(
   return "idle";
 }
 
+/** A Room card's presentation state, from its own demand and blocking. */
+export function roomVisualState(zone: Pick<ZoneSnapshot, "blocked" | "demand" | "cooling">): PlantVisualState {
+  if (zone.blocked) return "attention";
+  if (zone.cooling.demand) return "cooling";
+  if (zone.demand) return "heating";
+  return "idle";
+}
+
 export function isFlowingState(state: string): boolean {
   return FLOWING_STATES.has(state.toLowerCase());
+}
+
+/** What a Room is asking for: cooling, heating, or nothing. */
+export function zoneDemandKind(zone: Pick<ZoneSnapshot, "demand" | "cooling"> | undefined): "cooling" | "heating" | "none" {
+  if (!zone) return "none";
+  return zone.cooling.demand ? "cooling" : zone.demand ? "heating" : "none";
 }
 
 /**

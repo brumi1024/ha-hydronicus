@@ -532,6 +532,26 @@ describe("C11 theme and badge", () => {
   });
 });
 
+describe("Hydraulic Flow", () => {
+  it("colours each path by its own Room's demand, not the Plant's", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const cooling = makeZone({ id: "zone-2", name: "Study", demand: false, phase: "cooling", cooling: { ...makeZone().cooling, demand: true } });
+    const path = (id: string, zoneId: string) => ({ id, zone_id: zoneId, circuit_id: `${id}-loop`, status: "active", problem: null, coupled: false, nodes: [{ kind: "zone", id: zoneId, name: zoneId, state: "active" }] });
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone(), cooling], delivery_paths: [path("heat", "zone-1"), path("cool", "zone-2"), path("gone", "zone-9")] }));
+
+    const kinds = [...root(card).querySelectorAll<HTMLElement>(".path")].map((element) => element.dataset.demandKind);
+    expect(kinds).toEqual(["heating", "cooling", "none"]);
+  });
+
+  it("caps the connectors so a path stays a compact chain at any width", () => {
+    const styles = (customElements.get(TAG) as unknown as { styles: { cssText: string } }).styles.cssText;
+    expect(styles).toMatch(/\.flow-link \{[^}]*max-inline-size: 2\.4rem;/);
+    // Node widths include their padding and border, so four fit a half-width card.
+    expect(styles).toMatch(/\.node \{[^}]*box-sizing: border-box;/);
+  });
+});
+
 describe("C13 right-to-left layouts", () => {
   it("uses only logical properties for the inline direction", () => {
     const styles = (customElements.get(TAG) as unknown as { styles: { cssText: string } }).styles.cssText;
@@ -739,5 +759,165 @@ describe("C10 double loading", () => {
     await expect(import("../src/index")).resolves.toBeDefined();
     const entries = (window.customCards ?? []).filter((card) => card.type === TAG);
     expect(entries).toHaveLength(1);
+  });
+});
+
+describe("Shared Plant subscription", () => {
+  it("shares one subscription between cards for the same Plant", async () => {
+    const hass = makeHass();
+    const first = await mount(hass);
+    const second = await mount(hass, { sections: ["rooms"] });
+    expect(hass.connection.subscriptions).toHaveLength(1);
+
+    await deliver(first, hass.connection);
+    await settle(second);
+    expect(text(first)).toContain("Test plant");
+    expect(root(second).querySelector(".zone")).not.toBeNull();
+
+    first.remove();
+    await settle();
+    expect(hass.connection.last.unsubscribed).toBe(false);
+    second.remove();
+    await settle();
+    expect(hass.connection.last.unsubscribed).toBe(true);
+  });
+
+  it("keeps the subscription when a card moves within the page", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection);
+    const other = document.createElement("div");
+    document.body.append(other);
+
+    other.append(card);
+    await settle(card);
+
+    expect(hass.connection.subscriptions).toHaveLength(1);
+    expect(hass.connection.last.unsubscribed).toBe(false);
+    expect(text(card)).toContain("Test plant");
+  });
+
+  it("keeps an action error on the card whose control failed", async () => {
+    const hass = makeHass();
+    const first = await mount(hass);
+    const second = await mount(hass);
+    await deliver(first, hass.connection);
+    await settle(second);
+    hass.failNextCall = "Entity is unavailable.";
+
+    root(first).querySelector<HTMLButtonElement>(".zone-actions button")?.click();
+    await settle(first);
+    await settle(second);
+
+    expect(root(first).querySelector(".action-error")).not.toBeNull();
+    expect(root(second).querySelector(".action-error")).toBeNull();
+  });
+});
+
+describe("Plant card sections", () => {
+  function richSnapshot() {
+    return makeSnapshot({
+      alerts: [{ code: "stale", severity: "warning", priority: 1, scope: "plant", message: "Sensor is stale." }],
+      delivery_paths: [{ id: "p", zone_id: "zone-1", circuit_id: "c", status: "active", problem: null, coupled: false, nodes: [{ kind: "zone", id: "zone-1", name: "Living room", state: "active" }] }],
+      actuators: [{ id: "a", name: "Pump", kind: "pump", state: "idle", requested: null, observed: "off", ready: true, blocked: false, mismatch: false, reason: null, active_consumers: [] }],
+      explanations: [{ order: 1, scope: "plant", code: "x", message: "Why." }],
+      execution: { boundary: {}, operations: { proposed: [{ action: "open", actuator_name: "Valve", result: "proposed" }], executed: [], suppressed: [], failed: [], timed_out: [] } },
+    });
+  }
+
+  /** The shown sections in document order, by their distinctive element. */
+  function shown(card: CardElement): string[] {
+    const markers: Array<[string, string]> = [
+      ["header", "header.header"],
+      ["alerts", "[aria-labelledby='hydronicus-alerts']"],
+      ["rooms", "[aria-labelledby='hydronicus-zones']"],
+      ["paths", "[aria-labelledby='hydronicus-paths']"],
+      ["equipment", "[aria-labelledby='hydronicus-actuators']"],
+      ["explanations", "details:not([open])"],
+      ["operations", "details[open]"],
+    ];
+    const found = markers
+      .map(([name, selector]) => [name, root(card).querySelector(selector)] as const)
+      .filter((entry): entry is readonly [string, Element] => entry[1] !== null);
+    return found
+      .sort(([, left], [, right]) => (left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+      .map(([name]) => name);
+  }
+
+  it("shows every section in the default order without `sections`", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, richSnapshot());
+
+    expect(shown(card)).toEqual(["header", "alerts", "rooms", "paths", "equipment", "explanations", "operations"]);
+    expect(root(card).querySelector(".boundary")).not.toBeNull();
+  });
+
+  it("shows only the configured sections, in the configured order", async () => {
+    const hass = makeHass();
+    const card = await mount(hass, { sections: ["rooms", "alerts"] });
+    await deliver(card, hass.connection, richSnapshot());
+
+    expect(shown(card)).toEqual(["rooms", "alerts"]);
+    // The execution boundary belongs to the header section.
+    expect(root(card).querySelector(".boundary")).toBeNull();
+    expect(root(card).querySelector("button.shutdown")).toBeNull();
+  });
+
+  it("keeps stream notices and action errors visible without the header", async () => {
+    const hass = makeHass();
+    const card = await mount(hass, { sections: ["rooms"] });
+    await deliver(card, hass.connection);
+    hass.failNextCall = "Entity is unavailable.";
+
+    root(card).querySelector<HTMLButtonElement>(".zone-actions button")?.click();
+    await settle(card);
+    hass.connection.fire("disconnected");
+    await settle(card);
+
+    const first = root(card).querySelector("ha-card")?.firstElementChild;
+    expect(first?.classList.contains("notice")).toBe(true);
+    expect(root(card).querySelector(".action-error")?.textContent).toContain("Entity is unavailable.");
+  });
+
+  it("validates `sections`", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    for (const sections of [["rooms", "rooms"], ["zones"], "rooms", [1]]) {
+      expect(() => card.setConfig({ type: `custom:${TAG}`, plant: PLANT_ID, sections }), JSON.stringify(sections)).toThrow();
+    }
+    // The visual editor clears every choice to an empty list: every section.
+    card.setConfig({ type: `custom:${TAG}`, plant: PLANT_ID, sections: [] });
+    await deliver(card, hass.connection, richSnapshot());
+    expect(shown(card)).toHaveLength(7);
+  });
+
+  it("offers the sections as an ordered choice in the editor", async () => {
+    const form = await (customElements.get(TAG) as CardClass).getConfigForm();
+    const field = form.schema.find((entry) => entry.name === "sections") as { selector: { select: Record<string, unknown> } };
+    expect(field.selector.select).toMatchObject({ multiple: true, reorder: true });
+    expect((field.selector.select.options as Array<{ value: string }>).map((option) => option.value)).toEqual([
+      "header", "alerts", "rooms", "paths", "equipment", "explanations", "operations",
+    ]);
+    expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID, sections: ["header"] })).not.toThrow();
+    expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID, sections: ["nope"] })).toThrow();
+    expect(form.computeLabel?.({ name: "sections" })).toBe("Sections");
+  });
+
+  it("sizes the card for the shown sections", async () => {
+    const hass = makeHass();
+    const full = await mount(hass);
+    const header = await mount(hass, { sections: ["header"] });
+    const rooms = await mount(hass, { sections: ["rooms"] });
+    await deliver(full, hass.connection, richSnapshot());
+    await settle(header);
+    await settle(rooms);
+
+    expect(header.getCardSize()).toBe(4);
+    expect(rooms.getCardSize()).toBe(6);
+    expect(full.getCardSize()).toBeGreaterThan(header.getCardSize() + rooms.getCardSize());
+    expect(full.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
+    expect(rooms.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
+    expect(header.getGridOptions()).toEqual({ columns: 6, min_columns: 4 });
   });
 });
