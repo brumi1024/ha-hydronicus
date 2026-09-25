@@ -2,7 +2,7 @@ hydronicus: 1
 name: Invalid slug
 pumps:
   pump: switch.pump
-rooms:
+zones:
   Bedroom:
     temperature_sensors: [sensor.bedroom_temperature]
     loops:

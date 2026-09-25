@@ -30,7 +30,7 @@ External thermostat demand is accepted from normalized `hvac_action` only.
 
 A Zone is the space one thermostat controls, together with its Areas, its sensors, its Delivery Routes, and its private Loops and valves.
 
-Each Zone is one `room` config subentry of its Plant; the stored subentry type keeps the name it had in v0.1.0, when the UI called a Zone a Room.
+Each Zone is one `zone` config subentry of its Plant.
 
 ## Area
 

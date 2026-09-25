@@ -1,11 +1,11 @@
-"""Room basics: the form that describes a room, and the records it drafts.
+"""Zone basics: the form that describes a zone, and the records it drafts.
 
-The room subentry flow and guided setup both use it. A room is one zone with
-its thermostat and sensors, its routes to shared loops, and at most one private
-loop created from the valves chosen here. Further private loops come from the
-room flow's loop steps.
+The zone subentry flow and guided setup both use it. A zone has its thermostat
+and sensors, its routes to shared loops, and at most one private loop created
+from the valves chosen here. Further private loops come from the
+zone flow's loop steps.
 
-The zone, thermostat, sensor, and loop fields that only the room flow's focused
+The zone, thermostat, sensor, and loop fields that only the zone flow's focused
 steps show live here too, next to the records they describe.
 """
 
@@ -94,7 +94,7 @@ from ..core.topology import (
     CoolingReferenceError,
     DuplicateActuatorBindingError,
 )
-from ..entry_configuration import EffectivePlant, RoomDraft, canonical_id
+from ..entry_configuration import EffectivePlant, ZoneDraft, canonical_id
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
     SECTION_COOLING,
@@ -117,7 +117,7 @@ CONF_PUMP = "pump"
 CONF_SHARED_LOOPS = "shared_loops"
 
 
-# Entity fields of the room forms that the shared own-entity check does not cover yet.
+# Entity fields of the zone forms that the shared own-entity check does not cover yet.
 def valve_entity_selector() -> selector.EntitySelector:
     """Return the picker for the switches and valves of a loop."""
     return selector.EntitySelector(
@@ -134,8 +134,8 @@ def _suggested(key: str, defaults: Mapping[str, Any], *, required: bool = False)
     return marker(key, description={"suggested_value": value})
 
 
-def _room_cooling_fields() -> dict[Any, Any]:
-    """Return the Cooling section of a new room: its humidity and its loop's cooling."""
+def _zone_cooling_fields() -> dict[Any, Any]:
+    """Return the Cooling section of a new zone: its humidity and its loop's cooling."""
     return {
         vol.Optional(CONF_COOLING_ENABLED, default=False): selector.BooleanSelector(),
         vol.Optional(CONF_HUMIDITY_SENSORS): sensor_selector(
@@ -154,23 +154,23 @@ def _room_cooling_fields() -> dict[Any, Any]:
 
 
 def _cooling_input(user_input: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Return the submitted Cooling section of a new room, or an empty mapping."""
+    """Return the submitted Cooling section of a new zone, or an empty mapping."""
     section_input = user_input.get(SECTION_COOLING)
     return section_input if isinstance(section_input, Mapping) else {}
 
 
-def room_form_schema(
+def zone_form_schema(
     *,
     pumps: Sequence[selector.SelectOptionDict],
     shared_loops: Sequence[selector.SelectOptionDict],
     defaults: Mapping[str, Any] | None = None,
     include_valves: bool = True,
 ) -> vol.Schema:
-    """Build the room basics form.
+    """Build the zone basics form.
 
-    ``defaults`` holds form values, as ``room_form_defaults`` returns them. The
+    ``defaults`` holds form values, as ``zone_form_defaults`` returns them. The
     pump is asked for only when the Plant has two or more pumps, and shared
-    loops only when the Plant has any. A form that creates the room's private
+    loops only when the Plant has any. A form that creates the zone's private
     loop from its valves also has a collapsed Cooling section, because cooling
     applies to that loop.
     """
@@ -193,12 +193,12 @@ def room_form_schema(
             list(shared_loops), multiple=True
         )
     if include_valves:
-        schema[vol.Optional(SECTION_COOLING)] = collapsed_section(_room_cooling_fields())
+        schema[vol.Optional(SECTION_COOLING)] = collapsed_section(_zone_cooling_fields())
     return vol.Schema(schema)
 
 
-def room_form_defaults(draft: RoomDraft) -> dict[str, Any]:
-    """Return the room basics form values of a stored room."""
+def zone_form_defaults(draft: ZoneDraft) -> dict[str, Any]:
+    """Return the zone basics form values of a stored zone."""
     thermostat = draft.zone.get(CONF_THERMOSTAT, {})
     private_loops = {canonical_id(circuit["id"]) for circuit in draft.circuits}
     defaults: dict[str, Any] = {
@@ -206,7 +206,7 @@ def room_form_defaults(draft: RoomDraft) -> dict[str, Any]:
         CONF_TEMPERATURE_SENSORS: sensor_entity_ids(
             draft.zone.get(CONF_TEMPERATURE_SENSOR_METADATA)
         ),
-        # A room routes only to its own loops and to Plant-owned loops.
+        # A zone routes only to its own loops and to Plant-owned loops.
         CONF_SHARED_LOOPS: [
             canonical_id(route["circuit_id"])
             for route in draft.routes
@@ -229,18 +229,18 @@ def pump_options(plant: EffectivePlant) -> list[selector.SelectOptionDict]:
 
 
 def shared_loop_options(plant: EffectivePlant) -> list[selector.SelectOptionDict]:
-    """Return every Plant-owned loop, which any room may route to."""
+    """Return every Plant-owned loop, which any zone may route to."""
     return [
         selector.SelectOptionDict(value=circuit.id, label=circuit.name)
         for circuit in plant.configuration.circuits
-        if circuit.id not in plant.ownership.room_objects
+        if circuit.id not in plant.ownership.zone_objects
     ]
 
 
-def room_form_errors(
+def zone_form_errors(
     hass: HomeAssistant, user_input: Mapping[str, Any], plant: EffectivePlant
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Return the form errors of submitted room basics, and their placeholders.
+    """Return the form errors of submitted zone basics, and their placeholders.
 
     Both are empty when the form is valid. Errors that depend on the whole graph,
     such as an entity another valve already uses, come from applying the draft.
@@ -257,7 +257,7 @@ def room_form_errors(
         errors["base"] = "delivery_required"
     elif user_input.get(CONF_VALVES) and _pump_id(user_input, plant) is None:
         errors[CONF_PUMP if len(plant.configuration.pumps) >= 2 else "base"] = "pump_required"
-    # Cooling from the room form applies to the room's own loop, so it needs Loop
+    # Cooling from the zone form applies to the zone's own loop, so it needs Loop
     # valves: a shared loop is Plant equipment that only the plant file edits. The
     # other checks mirror what the graph requires of a cooling loop, made here so
     # that each error names what fixes it. Fields inside the collapsed section are
@@ -268,7 +268,7 @@ def room_form_errors(
         errors.setdefault(CONF_TEMPERATURE_SENSORS, "temperature_required_for_cooling")
     if cooling_on and "base" not in errors:
         if not user_input.get(CONF_VALVES):
-            errors["base"] = "cooling_requires_room_loop"
+            errors["base"] = "cooling_requires_zone_loop"
         elif not (
             cooling.get(CONF_SUPPLY_TEMPERATURE_SENSOR)
             or cooling.get(CONF_SURFACE_TEMPERATURE_SENSOR)
@@ -282,16 +282,16 @@ def room_form_errors(
     return errors, {}
 
 
-def room_draft_from_form(
-    user_input: Mapping[str, Any], *, plant: EffectivePlant, existing: RoomDraft | None
-) -> RoomDraft:
-    """Draft a room from valid room basics.
+def zone_draft_from_form(
+    user_input: Mapping[str, Any], *, plant: EffectivePlant, existing: ZoneDraft | None
+) -> ZoneDraft:
+    """Draft a zone from valid zone basics.
 
-    A new room gets a new zone id. An existing room keeps its zone, its private
+    A new zone gets a new zone id. An existing zone keeps its id, its private
     loops and valves, its thermostat settings unless the thermostat kind changes,
     and the route ids and route flags of the shared loops it keeps. ``valves``
-    creates the room's first private loop, so it is ignored for a room that
-    already has one. The Cooling section of a new room gives the room its
+    creates the zone's first private loop, so it is ignored for a zone that
+    already has one. The Cooling section of a new zone gives the zone its
     humidity sensors and the private loop its cooling settings.
     """
     name = str(user_input[CONF_NAME]).strip()
@@ -326,7 +326,7 @@ def room_draft_from_form(
     if valve_entities and not circuits:
         pump_id = _pump_id(user_input, plant)
         if pump_id is None:
-            raise ValueError("A room loop needs a pump.")
+            raise ValueError("A zone loop needs a pump.")
         circuit, loop_valves = new_private_loop(
             f"{name} loop", valve_entities, pump_id=pump_id, taken_names=(), cooling=cooling
         )
@@ -336,7 +336,7 @@ def room_draft_from_form(
     for loop_id in dict.fromkeys(str(value) for value in user_input.get(CONF_SHARED_LOOPS) or ()):
         previous = previous_shared.get(canonical_id(loop_id))
         routes.append(deepcopy(previous) if previous is not None else new_route(zone_id, loop_id))
-    return RoomDraft(zone=zone, circuits=circuits, valves=valves, routes=routes)
+    return ZoneDraft(zone=zone, circuits=circuits, valves=valves, routes=routes)
 
 
 def new_route(zone_id: str, circuit_id: str) -> dict[str, Any]:
@@ -355,7 +355,7 @@ def new_private_loop(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return a new loop record and one new valve record per entity.
 
-    ``cooling`` holds the room form's Cooling section; without it the loop only heats.
+    ``cooling`` holds the zone form's Cooling section; without it the loop only heats.
     """
     cooling = cooling or {}
     loop_id = str(uuid4())
@@ -387,7 +387,7 @@ def new_valves(
 ) -> list[dict[str, Any]]:
     """Return new valve records named ``<loop> valve``, ``<loop> valve 2``, and so on.
 
-    A name another valve already has is skipped, so names stay unique in a room.
+    A name another valve already has is skipped, so names stay unique in a zone.
     """
     taken = set(taken_names)
     valves = []
@@ -478,7 +478,7 @@ def _new_zone(
 def _updated_zone(
     stored: Mapping[str, Any], name: str, sensors: Sequence[str], external: str | None
 ) -> dict[str, Any]:
-    """Apply room basics to a stored zone record.
+    """Apply zone basics to a stored zone record.
 
     Switching to an external thermostat drops the Hydronicus thermostat settings,
     and switching back starts from defaults.
@@ -510,9 +510,9 @@ def _pump_id(user_input: Mapping[str, Any], plant: EffectivePlant) -> str | None
 
 
 def graph_errors(
-    error: Exception, draft: RoomDraft, fields: frozenset[str]
+    error: Exception, draft: ZoneDraft, fields: frozenset[str]
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Map a rejected room edit to the field of the shown form that can fix it.
+    """Map a rejected zone edit to the field of the shown form that can fix it.
 
     A field error for a field the form does not show is reported on the form.
     """
@@ -535,11 +535,11 @@ def graph_errors(
         return on(CONF_TEMPERATURE_SENSORS, "temperature_required_for_cooling")
     if isinstance(error, DesignatedReferenceError) and error.zone_id == zone_id:
         return {"base": "designated_reference_count"}, {}
-    return {"base": "invalid_room"}, {"error": str(error)}
+    return {"base": "invalid_zone"}, {"error": str(error)}
 
 
 # --------------------------------------------------------------------------
-# Zone, thermostat, sensor, and loop fields of the room flow steps
+# Zone, thermostat, sensor, and loop fields of the zone flow steps
 # --------------------------------------------------------------------------
 
 
@@ -910,7 +910,7 @@ def zone_schema(
     *,
     thermostat_kind: str = THERMOSTAT_KIND_HYDRONICUS,
 ) -> vol.Schema:
-    """Build the zone fields that the room flow's thermostat and sensors steps pick from."""
+    """Build the zone fields that the zone flow's thermostat and sensors steps pick from."""
     defaults = defaults or {}
     thermostat_defaults = defaults.get(CONF_THERMOSTAT, {})
     if not isinstance(thermostat_defaults, Mapping):

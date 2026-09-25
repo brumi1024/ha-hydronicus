@@ -33,32 +33,32 @@ First confirm whether a Plant with the same repository installation already exis
 ### A setup form cannot select an entity
 
 The **Pump entity** of guided setup and the pump form expects a `switch` entity.
-The room form's **Temperature sensors** expect `sensor` entities, and **Existing climate thermostat** expects one `climate` entity.
+The zone form's **Temperature sensors** expect `sensor` entities, and **Existing climate thermostat** expects one `climate` entity.
 **Loop valves** and the loop form's **Valves** expect `switch` or `valve` entities.
 Confirm that the synthetic entities have the expected domain and are visible in Home Assistant.
 Temperature pickers list only sensors with the `temperature` device class, and humidity pickers list only sensors with the `humidity` device class.
 Give a template or helper sensor the matching `device_class` if it is missing from the list.
-Pickers never offer entities that Hydronicus itself creates, because binding a Hydronicus sensor back into a room would create a feedback loop.
+Pickers never offer entities that Hydronicus itself creates, because binding a Hydronicus sensor back into a zone would create a feedback loop.
 An entity chosen before this filtering existed stays selected when you reconfigure the object.
 
-### The room form has no pump or shared loop field
+### The zone form has no pump or shared loop field
 
-**Pump** appears only when the Plant has two or more pumps; with one pump, the room's loop uses it.
+**Pump** appears only when the Plant has two or more pumps; with one pump, the zone's loop uses it.
 **Shared loops** appears only when the Plant has shared loops, and **Shared valves** only when it has shared valves.
 Add pumps in the Plant settings, and add shared loops and shared valves in the [plant file](plant-file.md).
-**Add room** stops with **The Plant has no pump yet. Add a pump before adding a room or a loop.** until the Plant has a pump.
+**Add zone** stops with **The Plant has no pump yet. Add a pump before adding a zone or a loop.** until the Plant has a pump.
 
 ### A review asks to confirm a shared pump warning
 
-Rooms whose loops share one pump, as in every manifold that guided setup builds, produce a warning that the shared pump limits independent control.
-The topology is valid; the warning, such as `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate room thermostats cannot independently control heating and cooling through the same pump.`, says that the rooms cannot be controlled independently through the shared pump.
+Zones whose loops share one pump, as in every manifold that guided setup builds, produce a warning that the shared pump limits independent control.
+The topology is valid; the warning, such as `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate zone thermostats cannot independently control heating and cooling through the same pump.`, says that the zones cannot be controlled independently through the shared pump.
 Turn on **I understand these warnings** to save.
 Later edits do not ask about the shared pump again, because only a warning that a change introduces needs a confirmation.
 Unused equipment is reported without ever needing a confirmation.
 
 ### A plant file is rejected
 
-The form names the path of the first problem, such as `rooms.bedroom.loops.bedroom_loop.pump`, followed by a message.
+The form names the path of the first problem, such as `zones.bedroom.loops.bedroom_loop.pump`, followed by a message.
 A problem with the whole file, such as invalid YAML, is reported at the top level.
 An empty editor, or YAML that the editor cannot read, is reported as a plant file that is empty or not valid YAML, and the editor marks the line with the YAML problem.
 Check the key at that path against the [plant file reference](plant-file.md#errors).
@@ -73,23 +73,23 @@ A file that binds an entity provided by Hydronicus is refused with the path and 
 ### A pump cannot be removed
 
 A pump that a loop still uses cannot be removed, and the error names those loops.
-Move each loop to another pump in its room's **Edit or remove a loop** step, or edit the plant file, then remove the pump.
+Move each loop to another pump in its zone's **Edit or remove a loop** step, or edit the plant file, then remove the pump.
 
 ### The review reports an invalid topology
 
 Review the selected sensor, valve, and pump entities.
 Confirm that the loop and Delivery Route references are complete and that no object was removed while a relationship still points to it.
-Hydronicus rejects inconsistent graphs, and a room that no enabled Delivery Route leaves, rather than guessing a relationship.
+Hydronicus rejects inconsistent graphs, and a zone that no enabled Delivery Route leaves, rather than guessing a relationship.
 A loop, valve, or pump that no enabled Delivery Route reaches is accepted, reported as unused equipment, and never requested.
 
 ## Unavailable or invalid sensors
 
-### The room is unavailable or demand is off
+### The zone is unavailable or demand is off
 
-An unavailable, unknown, non-numeric, non-finite, untimestamped, or stale required sensor blocks the room immediately.
-The room **Blocked** binary sensor turns on, the diagnostic **Blocked reason** sensor explains the failure, and the room releases demand even during a minimum-active hold.
-An unusable optional sensor is excluded from aggregation and appears in the attributes of the room **Combined temperature** and **Blocked** entities.
-If no usable sensor remains, the room blocks even when every configured observation is optional.
+An unavailable, unknown, non-numeric, non-finite, untimestamped, or stale required sensor blocks the zone immediately.
+The zone **Blocked** binary sensor turns on, the diagnostic **Blocked reason** sensor explains the failure, and the zone releases demand even during a minimum-active hold.
+An unusable optional sensor is excluded from aggregation and appears in the attributes of the zone **Combined temperature** and **Blocked** entities.
+If no usable sensor remains, the zone blocks even when every configured observation is optional.
 
 Check the sensor state in **Settings > Tools > States**.
 Use a numeric value with a supported unit for the simulated sensor.
@@ -100,10 +100,10 @@ Do not paste private device attributes into a public report.
 
 Check the sensor's `unit_of_measurement` attribute in **Settings > Tools > States**.
 A temperature observation must report `°C`, `°F`, `K`, or no unit, and a humidity observation must report `%` or no unit.
-Any other unit, including a misspelled one such as `C` or `degC`, makes the observation unusable, so a required sensor blocks the room and demand is released.
+Any other unit, including a misspelled one such as `C` or `degC`, makes the observation unusable, so a required sensor blocks the zone and demand is released.
 This is deliberate: Hydronicus fails closed rather than guessing what an unknown unit means.
-Fix the unit on the source entity, for example in the template sensor definition, and the room recovers on the next state change.
-A value without a unit is assumed to be Celsius, so a unit-less sensor that reports Fahrenheit produces a wrong temperature rather than a blocked room; add the unit to such a sensor.
+Fix the unit on the source entity, for example in the template sensor definition, and the zone recovers on the next state change.
+A value without a unit is assumed to be Celsius, so a unit-less sensor that reports Fahrenheit produces a wrong temperature rather than a blocked zone; add the unit to such a sensor.
 The **Blocked reason** sensor names the cause, for example `sensor.living_temperature (unsupported unit 'degC')`.
 
 ### A sensor is reported as an implausible value
@@ -111,7 +111,7 @@ The **Blocked reason** sensor names the cause, for example `sensor.living_temper
 The **Blocked reason** sensor shows `implausible value` with the reading converted to Celsius, or to percent for humidity.
 The reading has a supported unit but lies outside the [plausible range](configuration.md#plausible-observation-ranges) for its observation type.
 Typical causes are a disconnected probe that reports a fault value such as -127 °C, a template that reports 0 K when its source is unavailable, and a sensor whose unit does not match its value, such as a Celsius value labelled `K`.
-Hydronicus fails closed for such a reading: a required sensor blocks the room, a loop reference blocks cooling, and a Source temperature disqualifies the Source.
+Hydronicus fails closed for such a reading: a required sensor blocks the zone, a loop reference blocks cooling, and a Source temperature disqualifies the Source.
 Fix the sensor or its unit at the source, and the observation recovers on the next state change.
 
 ### The temperature differs from the value Home Assistant shows
@@ -123,23 +123,23 @@ Compare the values after converting them to one unit before changing a target or
 ### A battery sensor appears stale
 
 Hydronicus uses Home Assistant's latest report timestamp and the observation's configured maximum age.
-The runtime schedules reevaluation at the freshness deadline, so a room can become blocked without another state-change event.
+The runtime schedules reevaluation at the freshness deadline, so a zone can become blocked without another state-change event.
 Increase the maximum age only when the sensor's real reporting behavior justifies it.
 Do not use a longer software timeout as a substitute for reliable sensing or independent physical protection.
 
 ### Multiple sensors give an unexpected aggregate
 
 Check the selected aggregation policy and the current state of every usable sensor.
-Mean and median use all usable calibrated readings selected for the room.
+Mean and median use all usable calibrated readings selected for the zone.
 Minimum and maximum intentionally bias the aggregate toward one extreme.
 Designated reference requires exactly one configured reference observation.
 Weighted mean uses the positive weights configured through detailed sensor editing.
-Inspect the room **Combined temperature** sensor attributes to confirm which observations were usable or excluded.
+Inspect the zone **Combined temperature** sensor attributes to confirm which observations were usable or excluded.
 
 ### Demand remains on or off after crossing the threshold
 
-Inspect the room explanation for a minimum-active hold or minimum-idle lockout deadline.
-Changing a target or preset reevaluates the room immediately but does not bypass a remaining duration.
+Inspect the zone explanation for a minimum-active hold or minimum-idle lockout deadline.
+Changing a target or preset reevaluates the zone immediately but does not bypass a remaining duration.
 A required-sensor failure is the exception: it blocks and releases demand immediately.
 
 ### An external thermostat does not create demand
@@ -154,22 +154,22 @@ Missing, unavailable, unknown, malformed, contradictory, or unsupported actions 
 
 The external target and current temperature attributes do not reconstruct demand.
 
-For cooling, verify that the room humidity observations and loop supply or surface safety observations are configured, fresh, and valid.
+For cooling, verify that the zone humidity observations and loop supply or surface safety observations are configured, fresh, and valid.
 
 Hydronicus never calls the external climate entity.
 
-If the external entity is missing, the room appears in Repairs as an unresolved thermostat binding.
+If the external entity is missing, the zone appears in Repairs as an unresolved thermostat binding.
 
 ## Warnings, explanations, and virtual states
 
 ### An explanation or reason entity is not on the dashboard
 
 Explanations and reasons are diagnostic entities.
-Open the room or Plant device page and look under **Diagnostic** for **Explanation**, **Blocked reason**, **Cooling blocked reason**, **Mode changeover explanation**, and **Source recommendation**.
+Open the zone or Plant device page and look under **Diagnostic** for **Explanation**, **Blocked reason**, **Cooling blocked reason**, **Mode changeover explanation**, and **Source recommendation**.
 
-### A room has no cooling entities, or the Plant has no source entities
+### A zone has no cooling entities, or the Plant has no source entities
 
-A room has cooling entities, and its thermostat offers cool modes, only when it routes to a loop with cooling turned on.
+A zone has cooling entities, and its thermostat offers cool modes, only when it routes to a loop with cooling turned on.
 The Plant has source entities only when it has at least one source.
 Turning off a loop's cooling or removing the last source removes the matching entities on the next reload.
 
@@ -187,7 +187,7 @@ The internal executor tests are not a supported rollout procedure.
 
 This is expected while the configured virtual valve opening time has not elapsed.
 The current sequence waits for virtual valve readiness before requesting the pump.
-The valve state and room explanation entities should show the reason.
+The valve state and zone explanation entities should show the reason.
 
 ### The pump remains requested after demand stops
 
@@ -195,21 +195,21 @@ This is expected during the configured virtual pump overrun period.
 The overrun protects the modeled loop sequence in Dry run and active heating mode.
 It does not prove that a physical pump needs the same timing.
 
-### A shared pump does not turn off when one room releases
+### A shared pump does not turn off when one zone releases
 
 This is expected when another requested loop still consumes the same pump.
-Inspect the topology preview and the room demand entities to identify the remaining virtual consumer.
+Inspect the topology preview and the zone demand entities to identify the remaining virtual consumer.
 
 ### The topology preview counts do not match the setup
 
-Reload the config entry after changing a room or a source.
+Reload the config entry after changing a zone or a source.
 Then inspect the topology preview attributes and the Home Assistant log for a reload exception.
 Do not assume that a display name identifies the persisted object relationship.
 
 ### A shared-valve warning appears during configuration
 
 The proposed topology is valid, but the named loops share a valve that limits independent hydraulic control.
-Review the affected valve, loops, and rooms before confirming the non-fatal warning.
+Review the affected valve, loops, and zones before confirming the non-fatal warning.
 Do not suppress the warning by modeling one physical valve as several independent actuators.
 
 ## Logs and diagnostics
@@ -228,7 +228,7 @@ Useful checks include:
 Download redacted diagnostics from the Hydronicus config entry or device page before filing an issue.
 Hydronicus also creates Repairs issues for unresolved configured entity bindings and removes them after the binding is restored.
 Each repair names the Plant and the entity it misses, such as `the switch bound to Bedroom loop valve`.
-A repair for a room's binding opens that room's edit menu, and a repair for a pump opens the Plant settings.
+A repair for a zone's binding opens that zone's edit menu, and a repair for a pump opens the Plant settings.
 A repair for a shared loop, a shared valve, or the source selector cannot open a form; edit the binding with **Edit plant file** in the Plant settings, or restore the original entity.
 If diagnostics are unavailable or a binding problem does not produce a Repair, capture the first relevant log exception and report it as a runtime problem.
 Use the [diagnostic bug-report template](../.github/ISSUE_TEMPLATE/diagnostic-bug-report.md) and provide only the information needed to reproduce the issue.
@@ -240,7 +240,7 @@ Use the [diagnostic bug-report template](../.github/ISSUE_TEMPLATE/diagnostic-bu
 Keep the Plant in Dry run.
 If the integration card reports that the stored configuration cannot be loaded safely, the stored Plant graph could not be decoded or compiled, and Hydronicus did not start a runtime for it.
 The message names the first problem it found.
-Check for an invalid or partially edited room or source and restore the last known-good configuration from a Home Assistant backup if necessary.
+Check for an invalid or partially edited zone or source and restore the last known-good configuration from a Home Assistant backup if necessary.
 Then restart or reload the integration and confirm that the topology preview returns.
 
 Reload, unload, removal, and Home Assistant stop do not issue equipment commands.
@@ -251,7 +251,7 @@ Physical equipment must still have its own independent controls and manual recov
 ### A topology edit unexpectedly enabled Dry run
 
 This is expected.
-Every topology or physical binding change, including a room, loop, or pump edit, a plant file edit, and the upgrade migration, invalidates the prior output fingerprint and returns the Plant to Dry run.
+Every topology or physical binding change, including a zone, loop, or pump edit and a plant file edit, invalidates the prior output fingerprint and returns the Plant to Dry run.
 Review the complete graph and the exact valve, pump, and direct source-demand output list before authorizing active heating again.
 
 ### A Plant is held in Dry run because of shared outputs
@@ -276,7 +276,7 @@ Review the updated output list that the form now shows, and confirm again only i
 
 ### A deleted object still appears in the topology preview
 
-Check the Hydronicus log for a message saying that the Plant could not reach Dry run after a room or source was removed.
+Check the Hydronicus log for a message saying that the Plant could not reach Dry run after a zone or source was removed.
 Hydronicus deliberately retains the parent graph when safe shutdown fails because deleting an actuator from the active runtime would hide its physical state.
 Resolve the actuator failure, use Safe shutdown or enable Dry run, then trigger a Plant reload so the pending deletion can be reconciled.
 

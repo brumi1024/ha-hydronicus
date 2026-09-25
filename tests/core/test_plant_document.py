@@ -43,18 +43,18 @@ def _by_id(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {record["id"]: record for record in records}
 
 
-def _minimal(**room: Any) -> dict[str, Any]:
-    """Return a one-room document, with room keys replaced by the arguments."""
+def _minimal(**zone: Any) -> dict[str, Any]:
+    """Return a one-zone document, with zone keys replaced by the arguments."""
     bedroom: dict[str, Any] = {
         "temperature_sensors": ["sensor.bedroom_temperature"],
         "loops": {"bedroom_loop": {"valves": ["switch.bedroom_valve"], "pump": "pump"}},
     }
-    bedroom.update(room)
+    bedroom.update(zone)
     return {
         "hydronicus": 1,
         "name": "Home",
         "pumps": {"pump": "switch.pump"},
-        "rooms": {"bedroom": bedroom},
+        "zones": {"bedroom": bedroom},
     }
 
 
@@ -77,7 +77,7 @@ def _reexport(imported: ImportedPlant) -> dict[str, Any]:
 
 
 POSITIVE_FIXTURES = (
-    "single_room.yaml",
+    "single_zone.yaml",
     "manifold.yaml",
     "two_pumps.yaml",
     "shared_loop.yaml",
@@ -112,7 +112,7 @@ def test_manifold_shares_one_pump_across_three_private_loops() -> None:
     pump_id = _derived("pump", "manifold_pump")
     assert [pump["id"] for pump in imported.topology["pumps"]] == [pump_id]
     assert {circuit["pump_id"] for circuit in imported.topology["circuits"]} == {pump_id}
-    assert imported.ownership.room_objects == {
+    assert imported.ownership.zone_objects == {
         _derived("circuit", "living_loop"): _derived("zone", "living_room"),
         _derived("valve", "living_loop_valve"): _derived("zone", "living_room"),
         _derived("circuit", "bedroom_loop"): _derived("zone", "bedroom"),
@@ -144,13 +144,13 @@ def test_two_pumps_keep_stored_pump_fields() -> None:
     ]
 
 
-def test_shared_loop_and_shared_valve_serve_two_rooms() -> None:
+def test_shared_loop_and_shared_valve_serve_two_zones() -> None:
     imported = import_plant_document(_load("shared_loop.yaml"), plant_id=PLANT_ID)
 
     hall_loop = _derived("circuit", "hall_loop")
     hall_valve = _derived("valve", "hall_valve")
-    assert hall_loop not in imported.ownership.room_objects
-    assert hall_valve not in imported.ownership.room_objects
+    assert hall_loop not in imported.ownership.zone_objects
+    assert hall_valve not in imported.ownership.zone_objects
     circuits = _by_id(imported.topology["circuits"])
     assert circuits[_derived("circuit", "bedroom_loop")]["valve_ids"] == [
         _derived("valve", "bedroom_loop_valve"),
@@ -176,16 +176,16 @@ def test_shared_loop_and_shared_valve_serve_two_rooms() -> None:
     ]
 
 
-def test_room_with_two_private_loops_sharing_a_private_valve() -> None:
+def test_zone_with_two_private_loops_sharing_a_private_valve() -> None:
     imported = import_plant_document(_load("private_loops_shared_valve.yaml"), plant_id=PLANT_ID)
 
     hall = _derived("zone", "hall")
     shared_valve = _derived("valve", "hall_zone_valve")
-    assert imported.ownership.room_objects[shared_valve] == hall
+    assert imported.ownership.zone_objects[shared_valve] == hall
     circuits = _by_id(imported.topology["circuits"])
     for loop in ("north_loop", "south_loop"):
         assert circuits[_derived("circuit", loop)]["valve_ids"][0] == shared_valve
-        assert imported.ownership.room_objects[_derived("circuit", loop)] == hall
+        assert imported.ownership.zone_objects[_derived("circuit", loop)] == hall
 
 
 def test_external_thermostat_short_and_long_forms() -> None:
@@ -252,7 +252,7 @@ def test_sources_and_source_selector() -> None:
         "entity_id": "select.heat_source",
         "minimum_dwell_seconds": 600,
     }
-    assert imported.ownership.room_objects.keys().isdisjoint(
+    assert imported.ownership.zone_objects.keys().isdisjoint(
         {_derived("source", "heat_pump"), _derived("source", "buffer")}
     )
 
@@ -309,7 +309,7 @@ def test_every_shorthand_form_expands_to_stored_records() -> None:
         _derived("valve", "living_loop_valve_2"),
     ]
     # A shorthand valve belongs to the owner of its loop.
-    assert imported.ownership.room_objects == {
+    assert imported.ownership.zone_objects == {
         _derived("circuit", "living_loop"): living,
         _derived("valve", "living_valve"): living,
         _derived("valve", "living_loop_valve"): living,
@@ -323,12 +323,12 @@ def test_every_shorthand_form_expands_to_stored_records() -> None:
 
 def test_shorthand_valve_slug_collides_with_an_explicit_valve() -> None:
     document = _minimal(valves={"bedroom_loop_valve": "switch.other"})
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["valves"] = [
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["valves"] = [
         "bedroom_loop_valve",
         "switch.bedroom_valve",
     ]
     # The explicit valve comes second in document order.
-    assert _error_path(document) == "rooms.bedroom.valves.bedroom_loop_valve"
+    assert _error_path(document) == "zones.bedroom.valves.bedroom_loop_valve"
 
 
 # Plant-level rules
@@ -336,6 +336,28 @@ def test_shorthand_valve_slug_collides_with_an_explicit_valve() -> None:
 
 def test_format_version_constant() -> None:
     assert PLANT_FILE_FORMAT == 1
+
+
+def test_zones_section_holds_the_zones() -> None:
+    imported = import_plant_document(_minimal(), plant_id=PLANT_ID)
+
+    bedroom = _derived("zone", "bedroom")
+    assert [zone["id"] for zone in imported.topology["zones"]] == [bedroom]
+    assert imported.ownership.zone_objects[_derived("circuit", "bedroom_loop")] == bedroom
+    assert imported.entity_paths["sensor.bedroom_temperature"] == (
+        "zones.bedroom.temperature_sensors.0"
+    )
+    assert list(_reexport(imported)) == ["hydronicus", "id", "name", "pumps", "zones"]
+
+
+def test_rooms_is_an_unknown_key() -> None:
+    document = _minimal()
+    document["rooms"] = document.pop("zones")
+
+    with pytest.raises(PlantDocumentError, match="Unknown key 'rooms'") as caught:
+        import_plant_document(document, plant_id=PLANT_ID)
+
+    assert caught.value.path == "rooms"
 
 
 def test_file_id_wins_over_the_plant_id_argument() -> None:
@@ -370,7 +392,7 @@ def test_plant_id_argument_is_the_fallback() -> None:
         ({"output_authorization": {}}, "output_authorization"),
         ({"requested_mode": "heat"}, "requested_mode"),
         ({"pumps": None}, "pumps"),
-        ({"rooms": []}, "rooms"),
+        ({"zones": []}, "zones"),
         ({"source_selector": "select.x"}, "source_selector"),
     ],
 )
@@ -397,8 +419,8 @@ def test_invalid_plant_id_argument_is_a_whole_plant_error() -> None:
 
 
 def test_error_carries_path_and_message() -> None:
-    error = PlantDocumentError("rooms.bedroom", "Broken.")
-    assert error.path == "rooms.bedroom"
+    error = PlantDocumentError("zones.bedroom", "Broken.")
+    assert error.path == "zones.bedroom"
     assert str(error) == "Broken."
     assert isinstance(error, ValueError)
 
@@ -407,14 +429,14 @@ def test_error_carries_path_and_message() -> None:
 
 
 def test_explicit_ids_and_names_are_kept() -> None:
-    room_id = "00000000-0000-4000-8000-000000000001"
+    zone_id = "00000000-0000-4000-8000-000000000001"
     route_id = "00000000-0000-4000-8000-000000000002"
-    document = _minimal(id=room_id, name="Master bedroom")
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["route_id"] = route_id
+    document = _minimal(id=zone_id, name="Master bedroom")
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["route_id"] = route_id
 
     imported = import_plant_document(document, plant_id=PLANT_ID)
 
-    assert imported.topology["zones"][0]["id"] == room_id
+    assert imported.topology["zones"][0]["id"] == zone_id
     assert imported.topology["zones"][0]["name"] == "Master bedroom"
     assert imported.topology["routes"][0]["id"] == route_id
     assert imported.topology["valves"][0]["name"] == "Bedroom loop valve"
@@ -422,7 +444,7 @@ def test_explicit_ids_and_names_are_kept() -> None:
 
 def test_missing_names_come_from_slugs() -> None:
     document = _minimal()
-    document["rooms"] = {"guest_bedroom_2": document["rooms"]["bedroom"]}
+    document["zones"] = {"guest_bedroom_2": document["zones"]["bedroom"]}
 
     imported = import_plant_document(document, plant_id=PLANT_ID)
 
@@ -430,7 +452,7 @@ def test_missing_names_come_from_slugs() -> None:
 
 
 def test_derived_ids_use_the_kind_and_slug() -> None:
-    imported = import_plant_document(_load("single_room.yaml"), plant_id=PLANT_ID)
+    imported = import_plant_document(_load("single_zone.yaml"), plant_id=PLANT_ID)
 
     assert imported.topology["zones"][0]["id"] == _derived("zone", "living_room")
     assert imported.topology["valves"][0]["id"] == _derived("valve", "living_loop_valve")
@@ -441,8 +463,8 @@ def test_derived_ids_use_the_kind_and_slug() -> None:
 
 def test_private_loop_route_enabled_flag() -> None:
     document = _minimal()
-    document["rooms"]["bedroom"]["shared_loops"] = ["hall_loop"]
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["route_enabled"] = False
+    document["zones"]["bedroom"]["shared_loops"] = ["hall_loop"]
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["route_enabled"] = False
     document["loops"] = {"hall_loop": {"valves": ["switch.hall"], "pump": "pump"}}
 
     imported = import_plant_document(document, plant_id=PLANT_ID)
@@ -454,7 +476,7 @@ def test_private_loop_route_enabled_flag() -> None:
 
 def test_route_enabled_true_is_the_default() -> None:
     document = _minimal()
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["route_enabled"] = True
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["route_enabled"] = True
     imported = import_plant_document(document, plant_id=PLANT_ID)
     assert "enabled" not in imported.topology["routes"][0]
 
@@ -469,18 +491,18 @@ def test_shared_loop_mapping_accepts_route_id() -> None:
     assert imported.topology["routes"][1]["id"] == route_id
 
 
-def test_room_loop_uses_own_and_plant_valves() -> None:
+def test_zone_loop_uses_own_and_plant_valves() -> None:
     document = _minimal(valves={"bedroom_valve": "switch.bedroom_valve"})
     document["valves"] = {"hall_valve": "switch.hall_valve"}
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["valves"] = [
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["valves"] = [
         "bedroom_valve",
         "hall_valve",
     ]
 
     imported = import_plant_document(document, plant_id=PLANT_ID)
 
-    assert _derived("valve", "hall_valve") not in imported.ownership.room_objects
-    assert imported.ownership.room_objects[_derived("valve", "bedroom_valve")] == _derived(
+    assert _derived("valve", "hall_valve") not in imported.ownership.zone_objects
+    assert imported.ownership.zone_objects[_derived("valve", "bedroom_valve")] == _derived(
         "zone", "bedroom"
     )
 
@@ -505,7 +527,7 @@ def test_hydronicus_thermostat_mapping_defaults_its_kind() -> None:
     }
 
 
-def test_room_without_thermostat_gets_a_hydronicus_thermostat() -> None:
+def test_zone_without_thermostat_gets_a_hydronicus_thermostat() -> None:
     imported = import_plant_document(_minimal(), plant_id=PLANT_ID)
     assert imported.topology["zones"][0]["thermostat"] == {"kind": "hydronicus"}
 
@@ -539,21 +561,21 @@ def test_stored_leaf_fields_pass_through() -> None:
 
 def test_null_optional_entity_fields_round_trip() -> None:
     document = _minimal()
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["surface_temperature_sensor"] = None
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["surface_temperature_sensor"] = None
 
     imported = import_plant_document(document, plant_id=PLANT_ID)
 
     assert imported.topology["circuits"][0]["surface_temperature_sensor"] is None
     assert None not in imported.entity_paths
     exported = _reexport(imported)
-    loop = exported["rooms"]["bedroom"]["loops"]["bedroom_loop"]
+    loop = exported["zones"]["bedroom"]["loops"]["bedroom_loop"]
     assert loop["surface_temperature_sensor"] is None
     assert _reexport(import_plant_document(exported, plant_id=PLANT_ID)) == exported
 
 
 def test_entity_paths_name_the_first_binding_of_every_entity() -> None:
     document = _load("shorthand.yaml")
-    document["rooms"]["living_room"]["temperature_sensors"] = [
+    document["zones"]["living_room"]["temperature_sensors"] = [
         {"entity_id": "sensor.living_temperature"},
         "sensor.living_temperature_2",
     ]
@@ -571,12 +593,12 @@ def test_entity_paths_name_the_first_binding_of_every_entity() -> None:
         "sensor.living_temperature_2": "pumps.main_pump.power_feedback_entity",
         "switch.shared_valve": "valves.shared_valve",
         "switch.shared_extra": "loops.shared_loop.valves.1",
-        "climate.living": "rooms.living_room.thermostat",
-        "sensor.living_temperature": "rooms.living_room.temperature_sensors.0.entity_id",
-        "sensor.living_humidity": "rooms.living_room.humidity_sensors.0",
-        "switch.living_valve": "rooms.living_room.valves.living_valve",
-        "switch.living_first": "rooms.living_room.loops.living_loop.valves.1",
-        "switch.living_second": "rooms.living_room.loops.living_loop.valves.3",
+        "climate.living": "zones.living_room.thermostat",
+        "sensor.living_temperature": "zones.living_room.temperature_sensors.0.entity_id",
+        "sensor.living_humidity": "zones.living_room.humidity_sensors.0",
+        "switch.living_valve": "zones.living_room.valves.living_valve",
+        "switch.living_first": "zones.living_room.loops.living_loop.valves.1",
+        "switch.living_second": "zones.living_room.loops.living_loop.valves.3",
         "switch.boiler": "sources.boiler.source_demand_entity",
         "select.source": "source_selector.entity_id",
     }
@@ -585,80 +607,80 @@ def test_entity_paths_name_the_first_binding_of_every_entity() -> None:
 def test_entity_paths_cover_long_form_thermostat_and_loop_sensors() -> None:
     imported = import_plant_document(_load("cooling.yaml"), plant_id=PLANT_ID)
     assert imported.entity_paths["sensor.living_supply"] == (
-        "rooms.living_room.loops.living_loop.supply_temperature_sensor"
+        "zones.living_room.loops.living_loop.supply_temperature_sensor"
     )
     external = import_plant_document(_load("external_thermostat.yaml"), plant_id=PLANT_ID)
-    assert external.entity_paths["climate.study"] == "rooms.study.thermostat.entity_id"
+    assert external.entity_paths["climate.study"] == "zones.study.thermostat.entity_id"
 
 
 # Shape and reference errors
 
 
 @pytest.mark.parametrize(
-    ("room", "path"),
+    ("zone", "path"),
     [
-        ({"thermostat": "sensor.bedroom"}, "rooms.bedroom.thermostat"),
-        ({"thermostat": {"kind": "gas"}}, "rooms.bedroom.thermostat.kind"),
+        ({"thermostat": "sensor.bedroom"}, "zones.bedroom.thermostat"),
+        ({"thermostat": {"kind": "gas"}}, "zones.bedroom.thermostat.kind"),
         (
             {"thermostat": {"kind": "hydronicus", "entity_id": "x"}},
-            "rooms.bedroom.thermostat.entity_id",
+            "zones.bedroom.thermostat.entity_id",
         ),
-        ({"thermostat": {"flavour": 1}}, "rooms.bedroom.thermostat.flavour"),
-        ({"thermostat": 5}, "rooms.bedroom.thermostat"),
-        ({"temperature_sensors": "sensor.x"}, "rooms.bedroom.temperature_sensors"),
-        ({"temperature_sensors": [5]}, "rooms.bedroom.temperature_sensors.0"),
-        ({"temperature_sensors": [""]}, "rooms.bedroom.temperature_sensors.0"),
+        ({"thermostat": {"flavour": 1}}, "zones.bedroom.thermostat.flavour"),
+        ({"thermostat": 5}, "zones.bedroom.thermostat"),
+        ({"temperature_sensors": "sensor.x"}, "zones.bedroom.temperature_sensors"),
+        ({"temperature_sensors": [5]}, "zones.bedroom.temperature_sensors.0"),
+        ({"temperature_sensors": [""]}, "zones.bedroom.temperature_sensors.0"),
         (
             {"temperature_sensors": [{"entity_id": "sensor.x", "offset": 1}]},
-            "rooms.bedroom.temperature_sensors.0.offset",
+            "zones.bedroom.temperature_sensors.0.offset",
         ),
         (
             {"temperature_sensors": [{"weight": 1}]},
-            "rooms.bedroom.temperature_sensors.0.entity_id",
+            "zones.bedroom.temperature_sensors.0.entity_id",
         ),
-        ({"temperature_sensors": []}, "rooms.bedroom.temperature_sensors"),
-        ({"humidity_sensors": [None]}, "rooms.bedroom.humidity_sensors.0"),
-        ({"valves": ["switch.x"]}, "rooms.bedroom.valves"),
-        ({"loops": {}}, "rooms.bedroom"),
-        ({"loops": {"bedroom_loop": "switch.x"}}, "rooms.bedroom.loops.bedroom_loop"),
+        ({"temperature_sensors": []}, "zones.bedroom.temperature_sensors"),
+        ({"humidity_sensors": [None]}, "zones.bedroom.humidity_sensors.0"),
+        ({"valves": ["switch.x"]}, "zones.bedroom.valves"),
+        ({"loops": {}}, "zones.bedroom"),
+        ({"loops": {"bedroom_loop": "switch.x"}}, "zones.bedroom.loops.bedroom_loop"),
         (
             {"loops": {"bedroom_loop": {"valves": ["switch.x"]}}},
-            "rooms.bedroom.loops.bedroom_loop.pump",
+            "zones.bedroom.loops.bedroom_loop.pump",
         ),
         (
             {"loops": {"bedroom_loop": {"pump": "pump"}}},
-            "rooms.bedroom.loops.bedroom_loop.valves",
+            "zones.bedroom.loops.bedroom_loop.valves",
         ),
         (
             {"loops": {"bedroom_loop": {"valves": [], "pump": "pump"}}},
-            "rooms.bedroom.loops.bedroom_loop.valves",
+            "zones.bedroom.loops.bedroom_loop.valves",
         ),
         (
             {"loops": {"bedroom_loop": {"valves": [5], "pump": "pump"}}},
-            "rooms.bedroom.loops.bedroom_loop.valves.0",
+            "zones.bedroom.loops.bedroom_loop.valves.0",
         ),
         (
             {"loops": {"bedroom_loop": {"valves": ["switch.x"], "pump": 5}}},
-            "rooms.bedroom.loops.bedroom_loop.pump",
+            "zones.bedroom.loops.bedroom_loop.pump",
         ),
         (
             {"loops": {"bedroom_loop": {"valves": ["nope"], "pump": "pump"}}},
-            "rooms.bedroom.loops.bedroom_loop.valves.0",
+            "zones.bedroom.loops.bedroom_loop.valves.0",
         ),
         (
             {
                 "valves": {"bedroom_valve": "switch.v"},
                 "loops": {"bedroom_loop": {"valves": ["bedroom_valve"] * 2, "pump": "pump"}},
             },
-            "rooms.bedroom.loops.bedroom_loop.valves.1",
+            "zones.bedroom.loops.bedroom_loop.valves.1",
         ),
         (
             {"loops": {"bedroom_loop": {"valves": ["switch.x"], "pump": "pump", "valve_ids": []}}},
-            "rooms.bedroom.loops.bedroom_loop.valve_ids",
+            "zones.bedroom.loops.bedroom_loop.valve_ids",
         ),
         (
             {"loops": {"bedroom_loop": {"valves": ["switch.x"], "pump": "pump", "route_id": "r"}}},
-            "rooms.bedroom.loops.bedroom_loop.route_id",
+            "zones.bedroom.loops.bedroom_loop.route_id",
         ),
         (
             {
@@ -666,7 +688,7 @@ def test_entity_paths_cover_long_form_thermostat_and_loop_sensors() -> None:
                     "bedroom_loop": {"valves": ["switch.x"], "pump": "pump", "route_enabled": 1}
                 }
             },
-            "rooms.bedroom.loops.bedroom_loop.route_enabled",
+            "zones.bedroom.loops.bedroom_loop.route_enabled",
         ),
         (
             {
@@ -678,39 +700,39 @@ def test_entity_paths_cover_long_form_thermostat_and_loop_sensors() -> None:
                     }
                 }
             },
-            "rooms.bedroom",
+            "zones.bedroom",
         ),
-        ({"shared_loops": "hall_loop"}, "rooms.bedroom.shared_loops"),
-        ({"shared_loops": ["nope"]}, "rooms.bedroom.shared_loops.0"),
-        ({"shared_loops": [5]}, "rooms.bedroom.shared_loops.0"),
-        ({"shared_loops": ["bedroom_loop"]}, "rooms.bedroom.shared_loops.0"),
-        ({"shared_loops": ["hall_loop", "hall_loop"]}, "rooms.bedroom.shared_loops.1"),
-        ({"shared_loops": [{"route_id": "x"}]}, "rooms.bedroom.shared_loops.0.loop"),
-        ({"shared_loops": [{"loop": "hall_loop", "x": 1}]}, "rooms.bedroom.shared_loops.0.x"),
-        ({"id": "nope"}, "rooms.bedroom.id"),
-        ({"name": ""}, "rooms.bedroom.name"),
-        ({"temperature_aggregation": "loudest"}, "rooms.bedroom"),
+        ({"shared_loops": "hall_loop"}, "zones.bedroom.shared_loops"),
+        ({"shared_loops": ["nope"]}, "zones.bedroom.shared_loops.0"),
+        ({"shared_loops": [5]}, "zones.bedroom.shared_loops.0"),
+        ({"shared_loops": ["bedroom_loop"]}, "zones.bedroom.shared_loops.0"),
+        ({"shared_loops": ["hall_loop", "hall_loop"]}, "zones.bedroom.shared_loops.1"),
+        ({"shared_loops": [{"route_id": "x"}]}, "zones.bedroom.shared_loops.0.loop"),
+        ({"shared_loops": [{"loop": "hall_loop", "x": 1}]}, "zones.bedroom.shared_loops.0.x"),
+        ({"id": "nope"}, "zones.bedroom.id"),
+        ({"name": ""}, "zones.bedroom.name"),
+        ({"temperature_aggregation": "loudest"}, "zones.bedroom"),
     ],
 )
-def test_room_shape_and_reference_errors(room: dict[str, Any], path: str) -> None:
-    document = _minimal(**room)
+def test_zone_shape_and_reference_errors(zone: dict[str, Any], path: str) -> None:
+    document = _minimal(**zone)
     document["loops"] = {"hall_loop": {"valves": ["switch.hall"], "pump": "pump"}}
     assert _error_path(document) == path
 
 
-def test_room_must_be_a_mapping() -> None:
+def test_zone_must_be_a_mapping() -> None:
     document = _minimal()
-    document["rooms"]["bedroom"] = None
-    assert _error_path(document) == "rooms.bedroom"
+    document["zones"]["bedroom"] = None
+    assert _error_path(document) == "zones.bedroom"
 
 
-def test_shared_loops_rejects_another_rooms_private_loop() -> None:
+def test_shared_loops_rejects_another_zones_private_loop() -> None:
     document = _minimal(shared_loops=["living_loop"])
-    document["rooms"]["living_room"] = {
+    document["zones"]["living_room"] = {
         "temperature_sensors": ["sensor.living"],
         "loops": {"living_loop": {"valves": ["switch.living"], "pump": "pump"}},
     }
-    assert _error_path(document) == "rooms.bedroom.shared_loops.0"
+    assert _error_path(document) == "zones.bedroom.shared_loops.0"
 
 
 @pytest.mark.parametrize(
@@ -810,10 +832,10 @@ def test_loops_share_one_namespace() -> None:
     assert _error_path(document) == "loops.bedroom_loop"
 
 
-def test_rooms_and_pumps_have_separate_namespaces() -> None:
+def test_zones_and_pumps_have_separate_namespaces() -> None:
     document = _minimal()
     document["pumps"] = {"bedroom": "switch.pump"}
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["pump"] = "bedroom"
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["pump"] = "bedroom"
     document["sources"] = {"bedroom": {}}
     imported = import_plant_document(document, plant_id=PLANT_ID)
     assert imported.topology["pumps"][0]["id"] == _derived("pump", "bedroom")
@@ -824,34 +846,34 @@ def test_duplicate_ids_point_at_the_second_object() -> None:
     same = "00000000-0000-4000-8000-000000000009"
     document = _minimal(id=same)
     document["pumps"]["pump"] = {"entity_id": "switch.pump", "id": same}
-    assert _error_path(document) == "rooms.bedroom.id"
+    assert _error_path(document) == "zones.bedroom.id"
 
 
 def test_duplicate_route_id_points_at_the_route() -> None:
     same = "00000000-0000-4000-8000-000000000009"
     document = _minimal(id=same)
-    document["rooms"]["bedroom"]["loops"]["bedroom_loop"]["route_id"] = same
-    assert _error_path(document) == "rooms.bedroom.loops.bedroom_loop.route_id"
+    document["zones"]["bedroom"]["loops"]["bedroom_loop"]["route_id"] = same
+    assert _error_path(document) == "zones.bedroom.loops.bedroom_loop.route_id"
 
 
 # Negative fixtures, one per error class
 
 
 NEGATIVE_FIXTURES = {
-    "unknown_key.yaml": "rooms.bedroom.colour",
-    "invalid_slug.yaml": "rooms.Bedroom",
-    "duplicate_slug.yaml": "rooms.bedroom.valves.bedroom_valve",
-    "unknown_reference.yaml": "rooms.bedroom.loops.bedroom_loop.pump",
-    "other_room_private_valve.yaml": "rooms.bedroom.loops.bedroom_loop.valves.1",
+    "unknown_key.yaml": "zones.bedroom.colour",
+    "invalid_slug.yaml": "zones.Bedroom",
+    "duplicate_slug.yaml": "zones.bedroom.valves.bedroom_valve",
+    "unknown_reference.yaml": "zones.bedroom.loops.bedroom_loop.pump",
+    "other_zone_private_valve.yaml": "zones.bedroom.loops.bedroom_loop.valves.1",
     "plant_loop_private_valve.yaml": "loops.hall_loop.valves.1",
     "compile_failure.yaml": "",
     "missing_format_version.yaml": "hydronicus",
-    "duplicate_actuator_binding.yaml": "rooms.bedroom.loops.bedroom_loop.valves.0",
-    "cooling_reference.yaml": "rooms.living_room.loops.living_loop",
-    "cooling_observation.yaml": "rooms.living_room.humidity_sensors",
-    "designated_reference.yaml": "rooms.living_room.temperature_sensors",
+    "duplicate_actuator_binding.yaml": "zones.bedroom.loops.bedroom_loop.valves.0",
+    "cooling_reference.yaml": "zones.living_room.loops.living_loop",
+    "cooling_observation.yaml": "zones.living_room.humidity_sensors",
+    "designated_reference.yaml": "zones.living_room.temperature_sensors",
     "buffer_temperature.yaml": "sources.buffer",
-    "ownership.yaml": "rooms.bedroom.valves.spare_valve",
+    "ownership.yaml": "zones.bedroom.valves.spare_valve",
 }
 
 
@@ -872,11 +894,11 @@ def test_compile_failure_keeps_the_core_message() -> None:
 
 def test_cooling_observation_temperature_path() -> None:
     document = _load("invalid/cooling_observation.yaml")
-    room = document["rooms"]["living_room"]
-    room["thermostat"] = "climate.living"
-    del room["temperature_sensors"]
-    room["humidity_sensors"] = ["sensor.living_humidity"]
-    assert _error_path(document) == "rooms.living_room.temperature_sensors"
+    zone = document["zones"]["living_room"]
+    zone["thermostat"] = "climate.living"
+    del zone["temperature_sensors"]
+    zone["humidity_sensors"] = ["sensor.living_humidity"]
+    assert _error_path(document) == "zones.living_room.temperature_sensors"
 
 
 # Export
@@ -894,7 +916,7 @@ def test_export_writes_the_canonical_form() -> None:
         name="Shared manifold", plant_id=PLANT_ID, topology=topology, ownership=ownership
     )
 
-    assert list(document) == ["hydronicus", "id", "name", "pumps", "valves", "loops", "rooms"]
+    assert list(document) == ["hydronicus", "id", "name", "pumps", "valves", "loops", "zones"]
     assert document["hydronicus"] == PLANT_FILE_FORMAT
     assert document["id"] == PLANT_ID
     assert document["pumps"] == {
@@ -916,8 +938,8 @@ def test_export_writes_the_canonical_form() -> None:
             "pump": "pump",
         }
     }
-    assert list(document["rooms"]) == ["bedroom", "living_room"]
-    assert document["rooms"]["bedroom"] == {
+    assert list(document["zones"]) == ["bedroom", "living_room"]
+    assert document["zones"]["bedroom"] == {
         "id": _derived("zone", "bedroom"),
         "name": "Bedroom",
         "thermostat": {"kind": "hydronicus"},
@@ -946,7 +968,7 @@ def test_export_writes_the_canonical_form() -> None:
             }
         ],
     }
-    assert document["rooms"]["living_room"]["shared_loops"] == [
+    assert document["zones"]["living_room"]["shared_loops"] == [
         {"loop": "hall_loop", "route_id": _derived("route", "living_room:hall_loop")}
     ]
 
@@ -965,8 +987,8 @@ def test_export_orders_keys_like_the_stored_decoder() -> None:
 
     document = _reexport(imported)
 
-    room = document["rooms"]["living_room"]
-    assert list(room) == [
+    exported = document["zones"]["living_room"]
+    assert list(exported) == [
         "id",
         "name",
         "thermostat",
@@ -975,17 +997,17 @@ def test_export_orders_keys_like_the_stored_decoder() -> None:
         "valves",
         "loops",
     ]
-    assert list(room["thermostat"]) == [
+    assert list(exported["thermostat"]) == [
         "kind",
         "initial_target_temperature",
         "cooling_start_delta",
     ]
-    assert list(room["temperature_sensors"][0]) == [
+    assert list(exported["temperature_sensors"][0]) == [
         "entity_id",
         "designated_reference",
         "weight",
     ]
-    assert list(room["loops"]["living_loop"]) == [
+    assert list(exported["loops"]["living_loop"]) == [
         "id",
         "name",
         "valves",
@@ -1025,7 +1047,7 @@ def test_export_does_not_alias_stored_values() -> None:
         _minimal(thermostat={"preset_targets": {"eco": 18}}), plant_id=PLANT_ID
     )
     document = _reexport(imported)
-    document["rooms"]["bedroom"]["thermostat"]["preset_targets"]["eco"] = 5
+    document["zones"]["bedroom"]["thermostat"]["preset_targets"]["eco"] = 5
     assert imported.topology["zones"][0]["thermostat"]["preset_targets"] == {"eco": 18}
 
 
@@ -1091,9 +1113,9 @@ def test_export_uses_the_plant_file_kind_for_prefixes() -> None:
     imported.topology["circuits"][0]["name"] = "1st loop"
     imported.topology["valves"][0]["name"] = "1st valve"
     document = _reexport(imported)
-    room = document["rooms"]["room_1st_bedroom"]
-    assert list(room["loops"]) == ["loop_1st_loop"]
-    assert list(room["valves"]) == ["valve_1st_valve"]
+    zone = document["zones"]["zone_1st_bedroom"]
+    assert list(zone["loops"]) == ["loop_1st_loop"]
+    assert list(zone["valves"]) == ["valve_1st_valve"]
 
 
 def test_export_omits_empty_collections_and_keeps_empty_sensor_lists() -> None:
@@ -1103,14 +1125,14 @@ def test_export_omits_empty_collections_and_keeps_empty_sensor_lists() -> None:
     document = _reexport(imported)
     assert "sources" not in document
     assert "source_selector" not in document
-    assert "shared_loops" not in document["rooms"]["bedroom"]
-    assert document["rooms"]["bedroom"]["temperature_sensors"] == []
+    assert "shared_loops" not in document["zones"]["bedroom"]
+    assert document["zones"]["bedroom"]["temperature_sensors"] == []
 
 
 def test_export_rejects_invalid_ownership() -> None:
     topology, ownership = _stored_manifold()
     broken = PlantOwnership(
-        {**ownership.room_objects, _derived("valve", "hall_valve"): _derived("zone", "bedroom")}
+        {**ownership.zone_objects, _derived("valve", "hall_valve"): _derived("zone", "bedroom")}
     )
     with pytest.raises(ValueError, match="private"):
         export_plant_document(name="P", plant_id=PLANT_ID, topology=topology, ownership=broken)

@@ -125,8 +125,8 @@ def _record_switch_calls(hass: HomeAssistant) -> list[tuple[str, str]]:
         hass.services.async_register("switch", service, record)
     for entity_id in (*OUTPUTS, "switch.other_valve", "switch.other_pump", "switch.other_boiler"):
         hass.states.async_set(entity_id, "off")
-    hass.states.async_set("sensor.cold_room", "17.0")
-    hass.states.async_set("sensor.warm_room", "25.0")
+    hass.states.async_set("sensor.cold_zone", "17.0")
+    hass.states.async_set("sensor.warm_zone", "25.0")
     return calls
 
 
@@ -154,8 +154,8 @@ async def test_two_live_plants_sharing_outputs_do_not_fight(hass: HomeAssistant)
     calls = _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
 
     for entry in (first, second):
@@ -163,7 +163,7 @@ async def test_two_live_plants_sharing_outputs_do_not_fight(hass: HomeAssistant)
             _zone_id(entry), ThermostatHvacMode.HEAT, hass=hass
         )
         await hass.async_block_till_done()
-    hass.states.async_set("sensor.cold_room", "17.1")
+    hass.states.async_set("sensor.cold_zone", "17.1")
     await hass.async_block_till_done()
 
     assert len(calls) < CALL_LIMIT, f"shared outputs were toggled {len(calls)} times"
@@ -181,8 +181,8 @@ async def test_leaving_dry_run_is_refused_while_another_live_plant_shares_output
     calls = _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room", source="switch.other_boiler", live=False),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone", source="switch.other_boiler", live=False),
     )
 
     with pytest.raises(ServiceValidationError) as raised:
@@ -205,8 +205,8 @@ async def test_plant_settings_confirmation_shows_the_output_conflict(hass: HomeA
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room", live=False),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone", live=False),
     )
 
     result = await hass.config_entries.options.async_init(second.entry_id)
@@ -233,8 +233,8 @@ async def test_second_live_plant_at_startup_yields_without_commands(hass: HomeAs
     # Heating state that a live Plant would release with commands if it saw it.
     for entity_id in OUTPUTS:
         hass.states.async_set(entity_id, "on")
-    first = _entry(_plant_data(1, sensor="sensor.cold_room"))
-    second = _entry(_plant_data(2, sensor="sensor.warm_room"))
+    first = _entry(_plant_data(1, sensor="sensor.cold_zone"))
+    second = _entry(_plant_data(2, sensor="sensor.warm_zone"))
     first.add_to_hass(hass)
     second.add_to_hass(hass)
     setup_order: list[str] = []
@@ -279,7 +279,7 @@ async def test_second_live_plant_setup_sends_no_command_before_yielding(
 ) -> None:
     """Setting up a conflicting live Plant never commands the shared outputs."""
     calls = _record_switch_calls(hass)
-    (first,) = await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_room"))
+    (first,) = await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_zone"))
     await first.runtime_data.async_set_zone_hvac_mode(
         _zone_id(first), ThermostatHvacMode.HEAT, hass=hass
     )
@@ -288,7 +288,7 @@ async def test_second_live_plant_setup_sends_no_command_before_yielding(
     assert ("turn_on", SHARED_VALVE) in before
 
     # Plant 2 has no demand, so a live Plant 2 would switch the shared path off.
-    (second,) = await _set_up_one_by_one(hass, _plant_data(2, sensor="sensor.warm_room"))
+    (second,) = await _set_up_one_by_one(hass, _plant_data(2, sensor="sensor.warm_zone"))
 
     assert second.runtime_data.dry_run is True
     assert calls == before
@@ -320,8 +320,8 @@ async def test_held_plant_resumes_when_the_conflict_is_gone(
     calls = _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
     stored = dict(second.data)
     assert f"output_conflict_{second.entry_id}" in _conflict_issues(hass)
@@ -356,8 +356,8 @@ async def test_owner_that_fails_setup_hands_its_outputs_to_the_held_plant(
     The failed owner can then be retried, and it is held in its turn.
     """
     calls = _record_switch_calls(hass)
-    first = _entry(_plant_data(1, sensor="sensor.cold_room"))
-    second = _entry(_plant_data(2, sensor="sensor.warm_room"))
+    first = _entry(_plant_data(1, sensor="sensor.cold_zone"))
+    second = _entry(_plant_data(2, sensor="sensor.warm_zone"))
     first.add_to_hass(hass)
     second.add_to_hass(hass)
     stored = {entry.entry_id: dict(entry.data) for entry in (first, second)}
@@ -408,7 +408,7 @@ async def test_failed_setup_can_be_retried(
 ) -> None:
     """A setup that fails after forwarding its platforms unloads them, so a retry works."""
     _record_switch_calls(hass)
-    entry = _entry(_plant_data(1, sensor="sensor.cold_room", live=False))
+    entry = _entry(_plant_data(1, sensor="sensor.cold_zone", live=False))
     entry.add_to_hass(hass)
     failures = [RuntimeError("transient failure after forwarding platforms")]
     original = HydronicRuntime.async_finish_start
@@ -446,8 +446,8 @@ async def test_reloading_the_owner_keeps_its_outputs(hass: HomeAssistant) -> Non
     calls = _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
 
     assert await hass.config_entries.async_reload(first.entry_id)
@@ -464,9 +464,9 @@ async def test_only_one_of_several_held_plants_resumes(hass: HomeAssistant) -> N
     calls = _record_switch_calls(hass)
     first, second, third = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
-        _plant_data(3, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
+        _plant_data(3, sensor="sensor.warm_zone"),
     )
     stored = {entry.entry_id: dict(entry.data) for entry in (second, third)}
     assert second.runtime_data.dry_run is True
@@ -500,8 +500,8 @@ async def test_held_plant_runtime_never_starts_live(
     monkeypatch.setattr(HydronicRuntime, "async_start", start)
     _first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
     assert await hass.config_entries.async_reload(second.entry_id)
     await hass.async_block_till_done()
@@ -518,8 +518,8 @@ async def test_dry_run_sensor_explains_a_held_plant(hass: HomeAssistant) -> None
     _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
     registry = er.async_get(hass)
     held_id = registry.async_get_entity_id(
@@ -560,8 +560,8 @@ async def test_turning_on_dry_run_for_a_held_plant_is_stored(hass: HomeAssistant
     calls = _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
 
     assert await second.runtime_data.async_set_dry_run(True, hass=hass)
@@ -582,8 +582,8 @@ async def test_plant_settings_show_a_held_plant_in_dry_run(hass: HomeAssistant) 
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
 
     result = await hass.config_entries.options.async_init(second.entry_id)
@@ -610,8 +610,8 @@ async def test_removing_the_yielded_plant_clears_its_repair(hass: HomeAssistant)
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
-        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
+        _plant_data(2, sensor="sensor.warm_zone"),
     )
 
     assert await hass.config_entries.async_remove(second.entry_id)
@@ -625,10 +625,10 @@ async def test_live_plants_without_shared_outputs_are_unaffected(hass: HomeAssis
     _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(1, sensor="sensor.cold_zone"),
         _plant_data(
             2,
-            sensor="sensor.warm_room",
+            sensor="sensor.warm_zone",
             valve="switch.other_valve",
             pump="switch.other_pump",
             source="switch.other_boiler",
@@ -650,8 +650,8 @@ async def test_dry_run_plants_may_share_outputs(hass: HomeAssistant) -> None:
     calls = _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room", live=False),
-        _plant_data(2, sensor="sensor.warm_room", live=False),
+        _plant_data(1, sensor="sensor.cold_zone", live=False),
+        _plant_data(2, sensor="sensor.warm_zone", live=False),
     )
 
     assert first.runtime_data.dry_run is True
@@ -664,7 +664,7 @@ def test_exclusive_outputs_are_the_authorized_outputs() -> None:
     """The source selector is never commanded, so it is not an exclusive output."""
     from custom_components.hydronicus.entry_configuration import exclusive_output_entity_ids
 
-    data = _plant_data(1, sensor="sensor.cold_room", selector="select.heat_source")
+    data = _plant_data(1, sensor="sensor.cold_zone", selector="select.heat_source")
 
     assert exclusive_output_entity_ids(data) == frozenset(OUTPUTS)
 
@@ -674,10 +674,10 @@ async def _dry_run_pair(hass: HomeAssistant) -> MockConfigEntry:
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
         hass,
-        _plant_data(1, sensor="sensor.cold_room", live=False),
+        _plant_data(1, sensor="sensor.cold_zone", live=False),
         _plant_data(
             2,
-            sensor="sensor.warm_room",
+            sensor="sensor.warm_zone",
             valve="switch.other_valve",
             pump="switch.other_pump",
             source=None,
@@ -735,7 +735,7 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
 ) -> None:
     """The setup review lists a valve or pump that another Plant binds, and saves once confirmed."""
     _record_switch_calls(hass)
-    await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_room", live=False))
+    await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_zone", live=False))
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
@@ -744,12 +744,12 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={"name": "Second plant", CONF_PUMP_ENTITY: SHARED_PUMP}
     )
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
             "name": "Study",
-            CONF_TEMPERATURE_SENSORS: ["sensor.warm_room"],
+            CONF_TEMPERATURE_SENSORS: ["sensor.warm_zone"],
             "valves": ["switch.other_valve"],
         },
     )

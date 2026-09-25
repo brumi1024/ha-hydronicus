@@ -213,7 +213,7 @@ def _zone_snapshots(
             ).value
             hvac_modes = [mode.value for mode in thermostat_hvac_modes(runtime.plant, zone_id)]
             thermostat_available = thermostat_state is not None
-            ownership = "Hydronicus owns this room's digital thermostat."
+            ownership = "Hydronicus owns this zone's digital thermostat."
         else:
             target = external_state.target_temperature
             preset = None
@@ -224,7 +224,7 @@ def _zone_snapshots(
                 cooling if external_state.hvac_action is ExternalHvacAction.COOLING else heating
             )
             thermostat_available = external_state.available and external_state.hvac_mode_valid
-            ownership = "An external thermostat controls this room. " + (
+            ownership = "An external thermostat controls this zone. " + (
                 external_decision.explanation if external_decision else external_state.explanation
             )
         blocked = (
@@ -792,7 +792,7 @@ def _safe_shutdown_snapshot(runtime: Any) -> dict[str, object]:
 
 
 def _scope_name(runtime: Any, scope: str) -> str:
-    """Name the Plant, room, loop, or equipment an alert or explanation is about."""
+    """Name the Plant, zone, loop, or equipment an alert or explanation is about."""
     plant = runtime.plant
     if scope == "plant":
         return str(runtime.name)

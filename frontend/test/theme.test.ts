@@ -153,20 +153,21 @@ describe("theme parts", () => {
     expect(sorted(parts(shadow(card)))).toEqual(sorted(documentedNames("### Parts")));
   });
 
-  it("gives the Room card's tile the same parts as the Room in the Plant card", async () => {
+  it("gives the Zone card's tile the same parts as the Zone in the Plant card", async () => {
     const plant = await mount("hydronicus-plant-card", {});
-    const room = await mount("hydronicus-room-card", { room: "zone-1" });
+    const zone = await mount("hydronicus-zone-card", { zone: "zone-1" });
     const inPlant = shadow(plant).querySelector("article.zone");
-    const tile = shadow(room).querySelector("article.zone");
-    if (!inPlant || !tile) throw new Error("A Room tile is missing.");
+    const tile = shadow(zone).querySelector("article.zone");
+    if (!inPlant || !tile) throw new Error("A Zone tile is missing.");
     expect(parts(tile)).toEqual(parts(inPlant));
-    expect(parts(tile)).toContain("room-title");
-    expect(shadow(room).querySelector("ha-card")?.getAttribute("part")).toBe("card");
+    expect(tile.getAttribute("part")).toBe("zone");
+    expect(tile.querySelector(".zone-title")?.getAttribute("part")).toBe("zone-title");
+    expect(shadow(zone).querySelector("ha-card")?.getAttribute("part")).toBe("card");
   });
 
   it("marks the frame of state cards as the card part", async () => {
-    const card = document.createElement("hydronicus-room-card") as CardElement;
-    card.setConfig({ type: "custom:hydronicus-room-card", plant: PLANT_ID });
+    const card = document.createElement("hydronicus-zone-card") as CardElement;
+    card.setConfig({ type: "custom:hydronicus-zone-card", plant: PLANT_ID });
     document.body.append(card);
     await settle(card);
     expect(sorted(parts(shadow(card)))).toEqual(["card", "eyebrow", "mark", "notice", "title"]);

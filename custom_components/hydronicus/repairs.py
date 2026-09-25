@@ -1,6 +1,6 @@
 """Home Assistant Repairs for unresolved topology bindings.
 
-A binding of a room-owned object or a source with a handle opens that room or
+A binding of a zone-owned object or a source with a handle opens that zone or
 source, and a pump binding opens Plant settings. Other Plant equipment (shared
 valves and loops, Plant-owned sources, and the source selector) is edited only
 through the plant file, so its repair explains that instead of offering a fix.
@@ -68,10 +68,10 @@ def _plant_entry(hass: HomeAssistant, plant_id: str) -> ConfigEntry[HydronicRunt
 
 
 def _owning_subentry_id(entry: ConfigEntry[HydronicRuntime], binding: EntityBinding) -> str | None:
-    """Return the room or source subentry whose reconfigure flow can fix one binding.
+    """Return the zone or source subentry whose reconfigure flow can fix one binding.
 
-    A zone and its room's private loops and valves open that room, and a source
-    with a handle opens its source. Pumps, shared loops and valves, Plant-owned
+    A zone and its private loops and valves open that zone, and a source with a
+    handle opens its source. Pumps, shared loops and valves, Plant-owned
     sources, and the source selector belong to the Plant and return ``None``.
     """
     if binding.object_type not in _SUBENTRY_OBJECT_TYPES:
@@ -197,7 +197,7 @@ class SubentryReconfigureRepairFlow(RepairsFlow):
 class PlantSettingsRepairFlow(RepairsFlow):
     """Explain an unresolved Plant equipment binding, then open Plant settings.
 
-    It shares its abort reasons with the room and source hand-off, so every
+    It shares its abort reasons with the zone and source hand-off, so every
     fixable issue translates both flows: ``reconfigure_subentry`` reports the
     hand-off, and ``subentry_not_found`` a Plant that no longer exists.
     """
@@ -242,7 +242,7 @@ async def async_create_fix_flow(
     issue_id: str,
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
-    """Create the fix flow of a room, source, or Plant settings binding."""
+    """Create the fix flow of a zone, source, or Plant settings binding."""
     data = data or {}
     entry_id = str(data.get(ISSUE_DATA_ENTRY_ID, ""))
     if ISSUE_DATA_SUBENTRY_ID not in data:

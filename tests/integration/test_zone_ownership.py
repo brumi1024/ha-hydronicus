@@ -1,4 +1,4 @@
-"""Room subentries own their zone, routes, and private loops and valves."""
+"""Zone subentries own their zone, routes, and private loops and valves."""
 
 from __future__ import annotations
 
@@ -18,17 +18,17 @@ from tests.integration.plant_fixtures import (
     MANIFOLD_PUMP_ID,
     PLANT_ID,
     manifold_entry,
-    manifold_rooms,
-    room_subentry,
+    manifold_zones,
+    zone_subentry,
 )
 
-LIVING, BEDROOM = manifold_rooms(("Living room", "Bedroom"))
+LIVING, BEDROOM = manifold_zones(("Living room", "Bedroom"))
 
 
 def _set_states(hass) -> None:
-    for room in (LIVING, BEDROOM):
-        hass.states.async_set(room.temperature_sensor, "18.0")
-        hass.states.async_set(room.valve_entity, "off")
+    for zone in (LIVING, BEDROOM):
+        hass.states.async_set(zone.temperature_sensor, "18.0")
+        hass.states.async_set(zone.valve_entity, "off")
     hass.states.async_set(MANIFOLD_PUMP_ENTITY, "off")
 
 
@@ -55,8 +55,8 @@ def _owned_registrations(hass, entry) -> dict[str, str | None]:
     return owners
 
 
-async def test_deleting_an_active_room_reaches_dry_run_before_the_graph_changes(hass) -> None:
-    """Deleting a room of a live Plant completes safe shutdown against the old graph first."""
+async def test_deleting_an_active_zone_reaches_dry_run_before_the_graph_changes(hass) -> None:
+    """Deleting a zone of a live Plant completes safe shutdown against the old graph first."""
     calls: list[tuple[str, str]] = []
 
     async def record_switch(call) -> None:
@@ -80,7 +80,7 @@ async def test_deleting_an_active_room_reaches_dry_run_before_the_graph_changes(
     calls.clear()
 
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, BEDROOM.zone_id).subentry_id
+        entry, zone_subentry(entry, BEDROOM.zone_id).subentry_id
     )
     await hass.async_block_till_done()
 
@@ -98,7 +98,7 @@ async def test_deleting_an_active_room_reaches_dry_run_before_the_graph_changes(
     assert set(plant.zones) == {LIVING.zone_id}
 
 
-async def test_failed_shutdown_retains_the_parent_graph_after_room_removal(
+async def test_failed_shutdown_retains_the_parent_graph_after_zone_removal(
     hass, monkeypatch
 ) -> None:
     """A failed safety transition cannot delete the graph the active runtime uses."""
@@ -121,7 +121,7 @@ async def test_failed_shutdown_retains_the_parent_graph_after_room_removal(
     monkeypatch.setattr(HydronicRuntime, "async_prepare_configuration_change", fail_transition)
 
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, BEDROOM.zone_id).subentry_id
+        entry, zone_subentry(entry, BEDROOM.zone_id).subentry_id
     )
     await hass.async_block_till_done()
 
@@ -133,10 +133,10 @@ async def test_failed_shutdown_retains_the_parent_graph_after_room_removal(
     assert entry.data["dry_run"] is False
 
 
-async def test_deleting_a_room_removes_its_entities_and_devices_and_the_plant_loads(
+async def test_deleting_a_zone_removes_its_entities_and_devices_and_the_plant_loads(
     hass,
 ) -> None:
-    """A room takes exactly its closure with it, and the rest of the Plant keeps working."""
+    """A zone takes exactly its closure with it, and the rest of the Plant keeps working."""
     _set_states(hass)
     entry = manifold_entry()
     entry.add_to_hass(hass)
@@ -148,7 +148,7 @@ async def test_deleting_a_room_removes_its_entities_and_devices_and_the_plant_lo
     assert _device(hass, entry, "valve", BEDROOM.valve_id) is not None
 
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, BEDROOM.zone_id).subentry_id
+        entry, zone_subentry(entry, BEDROOM.zone_id).subentry_id
     )
     await hass.async_block_till_done()
 
@@ -159,16 +159,16 @@ async def test_deleting_a_room_removes_its_entities_and_devices_and_the_plant_lo
     assert _device(hass, entry, "valve", BEDROOM.valve_id) is None
     assert _entity(hass, "binary_sensor", f"{PLANT_ID}_{LIVING.zone_id}_demand") is not None
     assert _entity(hass, "binary_sensor", f"{PLANT_ID}_pump_{MANIFOLD_PUMP_ID}_requested")
-    assert entry.data["room_objects"] == {
+    assert entry.data["zone_objects"] == {
         LIVING.circuit_id: LIVING.zone_id,
         LIVING.valve_id: LIVING.zone_id,
     }
-    assert entry.data["subentry_objects"] == {LIVING.zone_id: "room"}
+    assert entry.data["subentry_objects"] == {LIVING.zone_id: "zone"}
     assert [warning.code for warning in entry.runtime_data.plant.warnings] == []
 
-    # With the last room gone the pump is unused Plant equipment, which only warns.
+    # With the last zone gone the pump is unused Plant equipment, which only warns.
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, LIVING.zone_id).subentry_id
+        entry, zone_subentry(entry, LIVING.zone_id).subentry_id
     )
     await hass.async_block_till_done()
 
@@ -182,16 +182,16 @@ async def test_deleting_a_room_removes_its_entities_and_devices_and_the_plant_lo
 
 
 async def test_devices_show_the_ui_names_of_their_kinds(hass) -> None:
-    """A room device reads as a Room; the model is not part of any identifier or entity ID."""
+    """A zone device reads as a Zone; the model is not part of any identifier or entity ID."""
     _set_states(hass)
     entry = manifold_entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    room = _device(hass, entry, "zone", LIVING.zone_id)
-    assert room is not None
-    assert room.model == "Hydronicus Room"
+    zone = _device(hass, entry, "zone", LIVING.zone_id)
+    assert zone is not None
+    assert zone.model == "Hydronicus Zone"
     valve = _device(hass, entry, "valve", LIVING.valve_id)
     assert valve is not None
     assert valve.model == "Hydronicus Valve"
@@ -201,15 +201,15 @@ async def test_devices_show_the_ui_names_of_their_kinds(hass) -> None:
     assert _entity(hass, "climate", f"{PLANT_ID}_{LIVING.zone_id}_climate") is not None
 
 
-async def test_reload_reconstructs_rooms_and_their_entity_ownership(hass) -> None:
-    """Room entities and devices belong to their room, Plant equipment to the parent."""
+async def test_reload_reconstructs_zones_and_their_entity_ownership(hass) -> None:
+    """Zone entities and devices belong to their zone, Plant equipment to the parent."""
     _set_states(hass)
     entry = manifold_entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    living = room_subentry(entry, LIVING.zone_id).subentry_id
-    bedroom = room_subentry(entry, BEDROOM.zone_id).subentry_id
+    living = zone_subentry(entry, LIVING.zone_id).subentry_id
+    bedroom = zone_subentry(entry, BEDROOM.zone_id).subentry_id
     runtime = entry.runtime_data
     assert runtime.object_subentry_ids == {
         LIVING.zone_id: living,
@@ -222,11 +222,11 @@ async def test_reload_reconstructs_rooms_and_their_entity_ownership(hass) -> Non
     assert runtime.subentry_id_for(MANIFOLD_PUMP_ID) is None
 
     before = _owned_registrations(hass, entry)
-    for room, subentry_id in ((LIVING, living), (BEDROOM, bedroom)):
-        assert before[f"entity:{PLANT_ID}_{room.zone_id}_climate"] == subentry_id
-        assert before[f"entity:{PLANT_ID}_valve_{room.valve_id}_requested"] == subentry_id
-        assert before[f"device:{PLANT_ID}:zone:{room.zone_id}"] == subentry_id
-        assert before[f"device:{PLANT_ID}:valve:{room.valve_id}"] == subentry_id
+    for zone, subentry_id in ((LIVING, living), (BEDROOM, bedroom)):
+        assert before[f"entity:{PLANT_ID}_{zone.zone_id}_climate"] == subentry_id
+        assert before[f"entity:{PLANT_ID}_valve_{zone.valve_id}_requested"] == subentry_id
+        assert before[f"device:{PLANT_ID}:zone:{zone.zone_id}"] == subentry_id
+        assert before[f"device:{PLANT_ID}:valve:{zone.valve_id}"] == subentry_id
     assert before[f"entity:{PLANT_ID}_pump_{MANIFOLD_PUMP_ID}_requested"] is None
     assert before[f"device:{PLANT_ID}:pump:{MANIFOLD_PUMP_ID}"] is None
     assert before[f"device:{PLANT_ID}"] is None
@@ -253,7 +253,7 @@ async def test_a_handle_without_a_parent_record_fails_the_reload_it_triggers(has
         entry,
         ConfigSubentry(
             data=MappingProxyType({"id": stray}),
-            subentry_type="room",
+            subentry_type="zone",
             title="Stray",
             unique_id=stray,
         ),
@@ -265,8 +265,8 @@ async def test_a_handle_without_a_parent_record_fails_the_reload_it_triggers(has
     assert "Task exception was never retrieved" not in caplog.text
 
 
-async def test_initial_setup_creates_one_room_that_owns_its_loop_and_valve(hass) -> None:
-    """Guided setup creates version 3 data: one room, its loop and valve, a Plant pump."""
+async def test_initial_setup_creates_one_zone_that_owns_its_loop_and_valve(hass) -> None:
+    """Guided setup creates version 4 data: one zone, its loop and valve, a Plant pump."""
     hass.states.async_set("sensor.study_temperature", "18.0")
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
@@ -288,18 +288,18 @@ async def test_initial_setup_creates_one_room_that_owns_its_loop_and_valve(hass)
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     (entry,) = hass.config_entries.async_entries(DOMAIN)
-    assert (entry.version, entry.minor_version) == (3, 0)
+    assert (entry.version, entry.minor_version) == (4, 0)
     topology = entry.data["topology"]
     (zone,) = topology["zones"]
     (circuit,) = topology["circuits"]
     (valve,) = topology["valves"]
     (pump,) = topology["pumps"]
-    assert entry.data["subentry_objects"] == {zone["id"]: "room"}
-    assert entry.data["room_objects"] == {circuit["id"]: zone["id"], valve["id"]: zone["id"]}
-    (room,) = entry.subentries.values()
-    assert (room.subentry_type, room.unique_id, room.title) == ("room", zone["id"], "Study")
-    assert dict(room.data) == {"id": zone["id"]}
+    assert entry.data["subentry_objects"] == {zone["id"]: "zone"}
+    assert entry.data["zone_objects"] == {circuit["id"]: zone["id"], valve["id"]: zone["id"]}
+    (handle,) = entry.subentries.values()
+    assert (handle.subentry_type, handle.unique_id, handle.title) == ("zone", zone["id"], "Study")
+    assert dict(handle.data) == {"id": zone["id"]}
     runtime = entry.runtime_data
-    assert runtime.subentry_id_for(valve["id"]) == room.subentry_id
+    assert runtime.subentry_id_for(valve["id"]) == handle.subentry_id
     assert runtime.subentry_id_for(pump["id"]) is None
     assert hass.states.get("climate.study") is not None

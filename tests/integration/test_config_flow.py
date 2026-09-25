@@ -13,7 +13,6 @@ import yaml
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.config_flow import HydronicClimateConfigFlow
 from custom_components.hydronicus.const import (
@@ -28,12 +27,13 @@ from custom_components.hydronicus.flows.plant import PlantSettingsOptionsFlow
 from custom_components.hydronicus.plant_file import plant_file
 from tests.core.test_plant_document import NEGATIVE_FIXTURES
 from tests.integration.flow_forms import form_fields, form_value
+from tests.integration.plant_fixtures import plant_entry
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "plant_files"
 VALID_FIXTURES = sorted(path.name for path in FIXTURES.glob("*.yaml"))
 FILE_PLANT_ID = "00000000-0000-4000-8000-0000000000f1"
 PUMP = "switch.manifold_pump"
-ROOMS = (
+ZONES = (
     ("Living room", "sensor.living_temperature", "switch.living_valve"),
     ("Bedroom", "sensor.bedroom_temperature", "switch.bedroom_valve"),
     ("Office", "sensor.office_temperature", "switch.office_valve"),
@@ -55,7 +55,7 @@ def _own_entity(hass, domain: str, object_id: str) -> str:
     return registry_entry.entity_id
 
 
-def _room(name: str, sensor: str, valve: str, *, add_another: bool = False) -> dict[str, Any]:
+def _zone(name: str, sensor: str, valve: str, *, add_another: bool = False) -> dict[str, Any]:
     return {
         CONF_NAME: name,
         "temperature_sensors": [sensor],
@@ -74,11 +74,11 @@ async def _start(hass, option: str):
     return await _submit(hass, result, {"next_step_id": option})
 
 
-async def _first_room(hass, *, name: str = "Hydronic plant", pump: str = PUMP):
-    """Advance guided setup to its first room form."""
+async def _first_zone(hass, *, name: str = "Hydronic plant", pump: str = PUMP):
+    """Advance guided setup to its first zone form."""
     result = await _start(hass, "guided")
     result = await _submit(hass, result, {CONF_NAME: name, "pump_entity": pump})
-    assert result["step_id"] == "room", result.get("errors")
+    assert result["step_id"] == "zone", result.get("errors")
     return result
 
 
@@ -139,8 +139,8 @@ async def test_setup_starts_with_a_menu_of_guided_setup_and_import(hass) -> None
 # --------------------------------------------------------------------------
 
 
-async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -> None:
-    """Menu, Plant form, one form per room, and the review: six screens in total."""
+async def test_guided_setup_creates_a_three_zone_manifold_in_six_screens(hass) -> None:
+    """Menu, Plant form, one form per zone, and the review: six screens in total."""
     screens = []
 
     async def show(result):
@@ -159,25 +159,25 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
             {CONF_NAME: "Manifold", "pump_entity": PUMP, "pump_options": {"overrun_seconds": 90}},
         )
     )
-    for index, (name, sensor, valve) in enumerate(ROOMS):
+    for index, (name, sensor, valve) in enumerate(ZONES):
         result = await show(
             await _submit(
-                hass, result, _room(name, sensor, valve, add_another=index < len(ROOMS) - 1)
+                hass, result, _zone(name, sensor, valve, add_another=index < len(ZONES) - 1)
             )
         )
     assert result["step_id"] == "review"
     placeholders = result["description_placeholders"]
-    assert placeholders["rooms"] == "- Living room\n- Bedroom\n- Office"
+    assert placeholders["zones"] == "- Living room\n- Bedroom\n- Office"
     assert "Bedroom is heated by Bedroom loop." in placeholders["logic"]
-    # Three rooms on one pump carry the shared pump warning, which needs confirming.
+    # Three zones on one pump carry the shared pump warning, which needs confirming.
     assert "shared by loops" in placeholders["warnings"]
     result = await _submit(hass, result, {"confirm": True})
     await hass.async_block_till_done()
 
-    assert screens == ["user", "guided", "room", "room", "room", "review"]
+    assert screens == ["user", "guided", "zone", "zone", "zone", "review"]
     assert result["type"] == FlowResultType.CREATE_ENTRY
     entry: ConfigEntry = result["result"]
-    assert (entry.version, entry.minor_version) == (3, 0)
+    assert (entry.version, entry.minor_version) == (4, 0)
     assert entry.title == "Manifold"
     data = entry.data
     assert data[CONF_DRY_RUN] is True
@@ -194,24 +194,24 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
     zones = {zone["id"]: zone for zone in topology["zones"]}
     circuits = {circuit["id"]: circuit for circuit in topology["circuits"]}
     valves = {valve["id"]: valve for valve in topology["valves"]}
-    assert [zone[CONF_NAME] for zone in topology["zones"]] == [name for name, _, _ in ROOMS]
+    assert [zone[CONF_NAME] for zone in topology["zones"]] == [name for name, _, _ in ZONES]
     assert len(topology["routes"]) == 3
     for route in topology["routes"]:
         zone = zones[route["zone_id"]]
         circuit = circuits[route["circuit_id"]]
         (valve_id,) = circuit["valve_ids"]
-        name, sensor, valve = next(room for room in ROOMS if room[0] == zone[CONF_NAME])
+        name, sensor, valve = next(form for form in ZONES if form[0] == zone[CONF_NAME])
         assert circuit[CONF_NAME] == f"{name} loop"
         assert circuit["pump_id"] == pump["id"]
         assert valves[valve_id]["entity_id"] == valve
         assert valves[valve_id][CONF_NAME] == f"{name} loop valve"
         assert zone["temperature_sensor_metadata"][0]["entity_id"] == sensor
-        # The room owns its loop and valve; the pump belongs to the Plant.
-        assert data["room_objects"][circuit["id"]] == zone["id"]
-        assert data["room_objects"][valve_id] == zone["id"]
-    assert data["subentry_objects"] == dict.fromkeys(zones, "room")
+        # The zone owns its loop and valve; the pump belongs to the Plant.
+        assert data["zone_objects"][circuit["id"]] == zone["id"]
+        assert data["zone_objects"][valve_id] == zone["id"]
+    assert data["subentry_objects"] == dict.fromkeys(zones, "zone")
     assert _handles(entry) == sorted(
-        ("room", zone_id, zone[CONF_NAME], {"id": zone_id}) for zone_id, zone in zones.items()
+        ("zone", zone_id, zone[CONF_NAME], {"id": zone_id}) for zone_id, zone in zones.items()
     )
     runtime = entry.runtime_data
     assert runtime.dry_run is True
@@ -220,10 +220,10 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
 
 
 async def test_guided_setup_without_warnings_needs_no_confirmation(hass) -> None:
-    """One room on its own pump has nothing to confirm, and the pump overrun has a default."""
-    result = await _first_room(hass)
+    """One zone on its own pump has nothing to confirm, and the pump overrun has a default."""
+    result = await _first_zone(hass)
     assert "overrun_seconds" not in form_fields(result)
-    result = await _submit(hass, result, _room("Study", "sensor.study", "switch.study_valve"))
+    result = await _submit(hass, result, _zone("Study", "sensor.study", "switch.study_valve"))
 
     assert result["step_id"] == "review"
     assert result["description_placeholders"]["warnings"] == "- None"
@@ -235,7 +235,7 @@ async def test_guided_setup_without_warnings_needs_no_confirmation(hass) -> None
 
 
 async def test_guided_forms_ask_only_for_what_setup_needs(hass) -> None:
-    """The Plant form collapses the pump overrun; room forms have no pump or shared loops."""
+    """The Plant form collapses the pump overrun; zone forms have no pump or shared loops."""
     result = await _start(hass, "guided")
     fields = form_fields(result)
     assert set(fields) == {CONF_NAME, "pump_entity", "pump_options", "pump_options.overrun_seconds"}
@@ -277,19 +277,19 @@ async def test_guided_forms_ask_only_for_what_setup_needs(hass) -> None:
     assert margin["selector"]["number"]["unit_of_measurement"] == "°C"
 
 
-async def test_guided_room_form_lists_rooms_only_once_one_exists(hass) -> None:
-    """The first room form lists no rooms; later ones list the rooms added so far."""
-    result = await _first_room(hass)
-    assert result["description_placeholders"]["rooms"] == ""
+async def test_guided_zone_form_lists_zones_only_once_one_exists(hass) -> None:
+    """The first zone form lists no zones; later ones list the zones added so far."""
+    result = await _first_zone(hass)
+    assert result["description_placeholders"]["zones"] == ""
 
-    name, sensor, valve = ROOMS[0]
-    result = await _submit(hass, result, _room(name, sensor, valve, add_another=True))
+    name, sensor, valve = ZONES[0]
+    result = await _submit(hass, result, _zone(name, sensor, valve, add_another=True))
 
-    assert result["step_id"] == "room"
-    assert result["description_placeholders"]["rooms"] == ("\n\nRooms added so far:\n- Living room")
+    assert result["step_id"] == "zone"
+    assert result["description_placeholders"]["zones"] == ("\n\nZones added so far:\n- Living room")
 
 
-COOLING_ROOM = {
+COOLING_ZONE = {
     CONF_NAME: "Living room",
     "temperature_sensors": ["sensor.living_temperature"],
     "valves": ["switch.living_valve"],
@@ -302,10 +302,10 @@ COOLING_ROOM = {
 }
 
 
-async def test_guided_setup_creates_a_cooling_room(hass) -> None:
-    """The room form's Cooling section cools the private loop and stores the humidity sensors."""
-    result = await _first_room(hass)
-    result = await _submit(hass, result, COOLING_ROOM)
+async def test_guided_setup_creates_a_cooling_zone(hass) -> None:
+    """The zone form's Cooling section cools the private loop and stores the humidity sensors."""
+    result = await _first_zone(hass)
+    result = await _submit(hass, result, COOLING_ZONE)
 
     assert result["step_id"] == "review"
     assert (
@@ -326,11 +326,11 @@ async def test_guided_setup_creates_a_cooling_room(hass) -> None:
     assert circuit["condensation_margin"] == 3.0
 
 
-async def test_guided_room_without_cooling_keeps_a_heating_only_loop(hass) -> None:
+async def test_guided_zone_without_cooling_keeps_a_heating_only_loop(hass) -> None:
     """Leaving the section closed stores the loop with cooling off and the default margin."""
-    result = await _first_room(hass)
-    name, sensor, valve = ROOMS[0]
-    result = await _submit(hass, result, _room(name, sensor, valve))
+    result = await _first_zone(hass)
+    name, sensor, valve = ZONES[0]
+    result = await _submit(hass, result, _zone(name, sensor, valve))
     result = await _submit(hass, result, {"confirm": True} if form_fields(result) else {})
 
     topology = result["result"].data["topology"]
@@ -361,12 +361,12 @@ async def test_guided_room_without_cooling_keeps_a_heating_only_loop(hass) -> No
         ),
     ],
 )
-async def test_guided_cooling_room_is_validated(hass, change, errors) -> None:
-    """A cooling room needs a condensation reference, humidity, and temperature sensors."""
-    result = await _first_room(hass)
-    result = await _submit(hass, result, {**COOLING_ROOM, **change})
+async def test_guided_cooling_zone_is_validated(hass, change, errors) -> None:
+    """A cooling zone needs a condensation reference, humidity, and temperature sensors."""
+    result = await _first_zone(hass)
+    result = await _submit(hass, result, {**COOLING_ZONE, **change})
 
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     assert result["errors"] == errors
     # The rejected form keeps what the user entered in the section.
     assert form_value(result, "cooling.cooling_enabled") is True
@@ -393,24 +393,24 @@ async def test_guided_plant_form_rejects_a_hydronicus_pump(hass) -> None:
     assert result["errors"] == {"pump_entity": "own_entity"}
 
 
-async def test_room_rejects_an_empty_temperature_sensor_selection(hass) -> None:
-    """An empty list, as a lazily loaded picker can submit, stays on the room form."""
-    result = await _first_room(hass)
-    room = {**_room("Study", "sensor.study", "switch.study_valve"), "temperature_sensors": []}
-    result = await _submit(hass, result, room)
+async def test_zone_rejects_an_empty_temperature_sensor_selection(hass) -> None:
+    """An empty list, as a lazily loaded picker can submit, stays on the zone form."""
+    result = await _first_zone(hass)
+    zone = {**_zone("Study", "sensor.study", "switch.study_valve"), "temperature_sensors": []}
+    result = await _submit(hass, result, zone)
 
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     assert result["errors"] == {"temperature_sensors": "temperature_sensors_required"}
     assert form_value(result, CONF_NAME) == "Study"
     assert form_value(result, "valves") == ["switch.study_valve"]
 
-    result = await _submit(hass, result, _room("Study", "sensor.study", "switch.study_valve"))
+    result = await _submit(hass, result, _zone("Study", "sensor.study", "switch.study_valve"))
     assert result["step_id"] == "review"
 
 
-async def test_room_with_an_external_thermostat_needs_no_sensors(hass) -> None:
+async def test_zone_with_an_external_thermostat_needs_no_sensors(hass) -> None:
     """An existing climate entity supplies the temperature, so sensors stay optional."""
-    result = await _first_room(hass)
+    result = await _first_zone(hass)
     result = await _submit(
         hass,
         result,
@@ -428,27 +428,27 @@ async def test_room_with_an_external_thermostat_needs_no_sensors(hass) -> None:
     assert zone["thermostat"] == {"kind": "external_climate", "entity_id": "climate.office"}
 
 
-async def test_room_rejects_blank_names_and_missing_valves(hass) -> None:
-    """A room needs a name and at least one valve."""
-    result = await _first_room(hass)
+async def test_zone_rejects_blank_names_and_missing_valves(hass) -> None:
+    """A zone needs a name and at least one valve."""
+    result = await _first_zone(hass)
     result = await _submit(
         hass, result, {CONF_NAME: " ", "temperature_sensors": ["sensor.study"], "valves": []}
     )
 
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     assert result["errors"] == {CONF_NAME: "name_required", "base": "delivery_required"}
 
 
-async def test_room_rejects_hydronicus_entities(hass) -> None:
+async def test_zone_rejects_hydronicus_entities(hass) -> None:
     """Sensors and valves of this integration are refused, and so is its own thermostat."""
-    result = await _first_room(hass)
-    thermostat = await _first_room(hass, name="Second plant")
+    result = await _first_zone(hass)
+    thermostat = await _first_zone(hass, name="Second plant")
     # The pickers hide Hydronicus entities, so these appear after the forms are shown.
     own_sensor = _own_entity(hass, "sensor", "own_temperature")
     own_valve = _own_entity(hass, "switch", "own_valve")
     own_climate = _own_entity(hass, "climate", "own_thermostat")
 
-    result = await _submit(hass, result, _room("Study", own_sensor, own_valve))
+    result = await _submit(hass, result, _zone("Study", own_sensor, own_valve))
     assert result["errors"] == {"temperature_sensors": "own_entity", "valves": "own_entity"}
 
     result = await _submit(
@@ -463,27 +463,27 @@ async def test_room_rejects_hydronicus_entities(hass) -> None:
     assert result["errors"] == {"base": "thermostat_loop"}
 
 
-async def test_room_rejects_the_pump_entity_as_a_valve(hass) -> None:
-    """One entity controls one valve or pump; the room form points at its valves."""
-    result = await _first_room(hass)
-    result = await _submit(hass, result, _room("Study", "sensor.study", PUMP))
+async def test_zone_rejects_the_pump_entity_as_a_valve(hass) -> None:
+    """One entity controls one valve or pump; the zone form points at its valves."""
+    result = await _first_zone(hass)
+    result = await _submit(hass, result, _zone("Study", "sensor.study", PUMP))
 
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     assert result["errors"] == {"valves": "actuator_entity_in_use"}
     assert form_value(result, "valves") == [PUMP]
 
 
-async def test_room_rejects_a_valve_another_room_already_uses(hass) -> None:
-    """A valve entity of an earlier room is refused on the later room's form."""
-    result = await _first_room(hass)
+async def test_zone_rejects_a_valve_another_zone_already_uses(hass) -> None:
+    """A valve entity of an earlier zone is refused on the later zone's form."""
+    result = await _first_zone(hass)
     result = await _submit(
-        hass, result, _room("Study", "sensor.study", "switch.valve", add_another=True)
+        hass, result, _zone("Study", "sensor.study", "switch.valve", add_another=True)
     )
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     assert not result.get("errors")
 
-    result = await _submit(hass, result, _room("Hall", "sensor.hall", "switch.valve"))
-    assert result["step_id"] == "room"
+    result = await _submit(hass, result, _zone("Hall", "sensor.hall", "switch.valve"))
+    assert result["step_id"] == "zone"
     assert result["errors"] == {"valves": "actuator_entity_in_use"}
 
 
@@ -491,8 +491,8 @@ async def test_review_requires_confirming_a_pump_another_plant_binds(hass) -> No
     """Sharing an output with another Plant is a blocking warning."""
     await _create_by_import(hass, _fixture("manifold.yaml"))
 
-    result = await _first_room(hass, name="Second plant")
-    result = await _submit(hass, result, _room("Study", "sensor.study", "switch.study_valve"))
+    result = await _first_zone(hass, name="Second plant")
+    result = await _submit(hass, result, _zone("Study", "sensor.study", "switch.study_valve"))
 
     assert result["step_id"] == "review"
     warnings = result["description_placeholders"]["warnings"]
@@ -512,15 +512,15 @@ async def test_review_requires_confirming_a_pump_another_plant_binds(hass) -> No
 # --------------------------------------------------------------------------
 
 
-async def test_import_creates_the_plant_with_room_and_source_subentries(hass) -> None:
-    """An imported Plant has a room handle per room and a source handle per source."""
+async def test_import_creates_the_plant_with_zone_and_source_subentries(hass) -> None:
+    """An imported Plant has a zone handle per zone and a source handle per source."""
     document = {**_fixture("sources.yaml"), "id": FILE_PLANT_ID}
     result = await _import(hass, document)
 
     assert result["step_id"] == "import_review"
     placeholders = result["description_placeholders"]
     assert placeholders["name"] == "Sources"
-    assert placeholders["rooms"] == "- Living room"
+    assert placeholders["zones"] == "- Living room"
     assert "Living room is heated by Living loop." in placeholders["logic"]
     result = await _submit(
         hass, result, {"confirm": True} if "confirm" in form_fields(result) else {}
@@ -536,9 +536,9 @@ async def test_import_creates_the_plant_with_room_and_source_subentries(hass) ->
     assert "output_authorization" not in entry.data
     handles = _handles(entry)
     assert [(kind, title) for kind, _, title, _ in handles] == [
-        ("room", "Living room"),
         ("source", "Buffer"),
         ("source", "Heat pump"),
+        ("zone", "Living room"),
     ]
     assert entry.runtime_data.dry_run is True
 
@@ -560,7 +560,7 @@ async def test_import_equals_importing_its_own_export(hass, fixture: str) -> Non
 
 async def test_import_accepts_yaml_text(hass) -> None:
     """The object selector may submit the plant file as YAML text."""
-    text = (FIXTURES / "single_room.yaml").read_text(encoding="utf-8")
+    text = (FIXTURES / "single_zone.yaml").read_text(encoding="utf-8")
     result = await _import(hass, text)
 
     assert result["step_id"] == "import_review"
@@ -628,11 +628,11 @@ async def test_invalid_plant_file_shows_its_path(hass, fixture: str, path: str) 
 
 
 async def test_import_explains_typed_cooling_and_reference_errors(hass) -> None:
-    """Cooling and reference errors point at the room or loop that can fix them."""
+    """Cooling and reference errors point at the zone or loop that can fix them."""
     for fixture, path, error in (
-        ("cooling_reference.yaml", "rooms.living_room.loops.living_loop", "reference"),
-        ("cooling_observation.yaml", "rooms.living_room.humidity_sensors", "humidity"),
-        ("designated_reference.yaml", "rooms.living_room.temperature_sensors", "designated"),
+        ("cooling_reference.yaml", "zones.living_room.loops.living_loop", "reference"),
+        ("cooling_observation.yaml", "zones.living_room.humidity_sensors", "humidity"),
+        ("designated_reference.yaml", "zones.living_room.temperature_sensors", "designated"),
     ):
         result = await _import(hass, _fixture(f"invalid/{fixture}"))
         assert result["errors"] == {"base": "invalid_document"}
@@ -659,16 +659,16 @@ async def test_unreadable_plant_file_is_a_top_level_error(hass, document: Any) -
 async def test_import_refuses_a_hydronicus_entity(hass) -> None:
     """A Hydronicus entity bound in the file is reported with its path."""
     own_sensor = _own_entity(hass, "sensor", "own_temperature")
-    document = _fixture("single_room.yaml")
-    room = next(iter(document["rooms"].values()))
-    room["temperature_sensors"] = [own_sensor]
-    slug = next(iter(document["rooms"]))
+    document = _fixture("single_zone.yaml")
+    zone = next(iter(document["zones"].values()))
+    zone["temperature_sensors"] = [own_sensor]
+    slug = next(iter(document["zones"]))
 
     result = await _import(hass, document)
 
     assert result["errors"] == {"base": "document_own_entity"}
     assert result["description_placeholders"] == {
-        "path": f"rooms.{slug}.temperature_sensors.0",
+        "path": f"zones.{slug}.temperature_sensors.0",
         "entity_id": own_sensor,
     }
 
@@ -679,7 +679,7 @@ _SHARED_ID = "00000000-0000-4000-8000-0000000000c1"
 @pytest.mark.parametrize(
     ("first", "second"),
     [
-        pytest.param(("rooms", "living_room"), ("sources", "heat_pump"), id="room-and-source"),
+        pytest.param(("zones", "living_room"), ("sources", "heat_pump"), id="zone-and-source"),
         pytest.param(("pumps", "pump"), ("sources", "buffer"), id="pump-and-source"),
     ],
 )
@@ -705,7 +705,7 @@ async def test_import_refuses_one_id_for_two_objects(
 
 async def test_import_review_confirms_only_blocking_warnings(hass) -> None:
     """An unused pump never blocks an import; a shared pump needs confirming."""
-    document = _fixture("single_room.yaml")
+    document = _fixture("single_zone.yaml")
     document["pumps"]["spare_pump"] = "switch.spare_pump"
     result = await _import(hass, document)
 
@@ -740,14 +740,14 @@ async def test_imported_cooling_plant_persists_and_reloads(hass) -> None:
 
 async def test_plant_settings_cannot_disable_dry_run_without_loaded_runtime(hass) -> None:
     """Leaving Dry run requires a live runtime to own activation safety."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
+    entry = plant_entry(
+        {
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
             CONF_DRY_RUN: True,
         },
+        title="Hydronic plant",
+        source_handles=False,
     )
     entry.add_to_hass(hass)
 
@@ -777,14 +777,14 @@ async def test_plant_settings_cannot_disable_dry_run_without_loaded_runtime(hass
 
 async def test_plant_settings_can_enable_dry_run_without_loaded_runtime(hass) -> None:
     """Re-enabling Dry run is a safe persisted fallback when runtime is unloaded."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
+    entry = plant_entry(
+        {
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
             CONF_DRY_RUN: False,
         },
+        title="Hydronic plant",
+        source_handles=False,
     )
     entry.add_to_hass(hass)
 

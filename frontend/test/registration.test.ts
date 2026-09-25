@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const TAGS = ["hydronicus-plant-card", "hydronicus-room-card", "hydronicus-room-card-editor"];
-const CARD_TAGS = ["hydronicus-plant-card", "hydronicus-room-card"];
+const TAGS = ["hydronicus-plant-card", "hydronicus-zone-card", "hydronicus-zone-card-editor"];
+const CARD_TAGS = ["hydronicus-plant-card", "hydronicus-zone-card"];
 const nativeRegistry = window.customElements;
 
 /**
@@ -93,10 +93,10 @@ describe("C10 double loading", () => {
       expect(entries, tag).toHaveLength(1);
       expect(entries[0]).toMatchObject({ version: "0.0.0-test" });
     }
-    // The card picker sizes a row to its tallest preview, so only the Room card previews.
+    // The card picker sizes a row to its tallest preview, so only the Zone card previews.
     const preview = (tag: string) => window.customCards?.find((card) => card.type === tag)?.preview;
     expect(preview("hydronicus-plant-card")).toBe(false);
-    expect(preview("hydronicus-room-card")).toBe(true);
-    expect(window.customCards?.find((card) => card.type === "hydronicus-room-card")?.name).toBe("Hydronicus Room");
+    expect(preview("hydronicus-zone-card")).toBe(true);
+    expect(window.customCards?.find((card) => card.type === "hydronicus-zone-card")?.name).toBe("Hydronicus Zone");
   });
 });

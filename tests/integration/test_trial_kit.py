@@ -81,13 +81,13 @@ async def test_trial_package_provides_the_documented_entities(hass) -> None:
     await async_setup_trial_package(hass)
     state = state_of(hass)
 
-    for room in ("living_room", "bedroom"):
-        temperature = hass.states.get(f"sensor.hydronicus_trial_{room}_temperature")
+    for zone in ("living_room", "bedroom"):
+        temperature = hass.states.get(f"sensor.hydronicus_trial_{zone}_temperature")
         assert temperature is not None
         assert temperature.state == "21.0"
         assert temperature.attributes["device_class"] == "temperature"
         assert temperature.attributes["unit_of_measurement"] == "°C"
-        assert state(f"switch.hydronicus_trial_{room}_valve") == "off"
+        assert state(f"switch.hydronicus_trial_{zone}_valve") == "off"
     assert state("switch.hydronicus_trial_pump") == "off"
 
     bound = {
@@ -128,7 +128,7 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     # The loops are listed in file order, so the text is the same on every import.
     assert placeholders["warnings"] == (
         "- Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate "
-        "room thermostats cannot independently control heating and cooling through the same pump."
+        "zone thermostats cannot independently control heating and cooling through the same pump."
     )
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
     assert result["errors"] == {"base": "confirm_required"}
@@ -145,7 +145,7 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
         "Bedroom",
         "Living room",
     ]
-    assert state("sensor.trial_plant_topology_preview") == "2 rooms, 2 loops"
+    assert state("sensor.trial_plant_topology_preview") == "2 zones, 2 loops"
 
     await hass.services.async_call(
         "climate",

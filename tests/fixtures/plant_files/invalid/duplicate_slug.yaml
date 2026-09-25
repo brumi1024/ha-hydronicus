@@ -1,11 +1,11 @@
-# Valve slugs share one namespace across the Plant and every room.
+# Valve slugs share one namespace across the Plant and every zone.
 hydronicus: 1
 name: Duplicate slug
 pumps:
   pump: switch.pump
 valves:
   bedroom_valve: switch.hall_valve
-rooms:
+zones:
   bedroom:
     temperature_sensors: [sensor.bedroom_temperature]
     valves:

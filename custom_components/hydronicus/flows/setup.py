@@ -1,7 +1,7 @@
 """Config flow steps that create a new Plant: guided setup and plant file import.
 
-Guided setup asks for the Plant and its one pump, then one form per room, and
-reviews the result. Import reads a whole plant file. Both build version 3 data
+Guided setup asks for the Plant and its one pump, then one form per zone, and
+reviews the result. Import reads a whole plant file. Both build stored data
 with the graph edit API, so every new Plant starts in Dry run.
 """
 
@@ -33,7 +33,7 @@ from ..core.plant_document import PlantDocumentError, import_plant_document
 from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
     canonical_id,
-    data_with_room,
+    data_with_zone,
     effective_plant_from_data,
     exclusive_output_entity_ids,
     new_plant_data,
@@ -53,7 +53,7 @@ from .common import (
     warnings_to_confirm,
     with_submitted_values,
 )
-from .room_form import graph_errors, room_draft_from_form, room_form_errors, room_form_schema
+from .zone_form import graph_errors, zone_draft_from_form, zone_form_errors, zone_form_schema
 
 CONF_ADD_ANOTHER: Final = "add_another"
 CONF_CONFIRM: Final = "confirm"
@@ -81,12 +81,12 @@ def _guided_schema() -> vol.Schema:
     )
 
 
-def _room_schema() -> vol.Schema:
-    """Return the room form: room basics with the implied pump, and ``add_another``.
+def _zone_schema() -> vol.Schema:
+    """Return the zone form: zone basics with the implied pump, and ``add_another``.
 
     A Plant being set up has one pump and no shared loops, so neither is asked for.
     """
-    return room_form_schema(pumps=(), shared_loops=()).extend(
+    return zone_form_schema(pumps=(), shared_loops=()).extend(
         {vol.Optional(CONF_ADD_ANOTHER, default=False): selector.BooleanSelector()}
     )
 
@@ -101,21 +101,21 @@ def _import_schema() -> vol.Schema:
     return vol.Schema({vol.Optional(CONF_DOCUMENT): selector.ObjectSelector()})
 
 
-def _room_names(data: Mapping[str, Any]) -> list[str]:
-    """Return the room names of Plant data in the order they were added."""
+def _zone_names(data: Mapping[str, Any]) -> list[str]:
+    """Return the zone names of Plant data in the order they were added."""
     return [str(zone.get(CONF_NAME, "")) for zone in topology_copy(data)[CONF_ZONES]]
 
 
-def _room_lines(data: Mapping[str, Any]) -> str:
-    """List the rooms of Plant data in the order they were added."""
-    return "\n".join(f"- {name}" for name in _room_names(data)) or "- None"
+def _zone_lines(data: Mapping[str, Any]) -> str:
+    """List the zones of Plant data in the order they were added."""
+    return "\n".join(f"- {name}" for name in _zone_names(data)) or "- None"
 
 
-def _rooms_so_far(data: Mapping[str, Any]) -> str:
-    """List the rooms guided setup has added, or nothing before the first room."""
-    if not (names := _room_names(data)):
+def _zones_so_far(data: Mapping[str, Any]) -> str:
+    """List the zones guided setup has added, or nothing before the first zone."""
+    if not (names := _zone_names(data)):
         return ""
-    return "\n\nRooms added so far:\n" + "\n".join(f"- {name}" for name in names)
+    return "\n\nZones added so far:\n" + "\n".join(f"- {name}" for name in names)
 
 
 def _logic_lines(compiled: CompiledPlant) -> str:
@@ -161,14 +161,14 @@ class SetupSteps(ConfigFlowBase):
             errors=errors,
             description_placeholders={
                 **placeholders,
-                "rooms": _room_lines(self._data),
+                "zones": _zone_lines(self._data),
                 "logic": _logic_lines(compiled),
                 "warnings": warning_text(compiled, sharing) or "- None",
             },
         )
 
     async def _async_create(self) -> config_entries.ConfigFlowResult:
-        """Create the entry with a room handle per room and a source handle per source."""
+        """Create the entry with a zone handle per zone and a source handle per source."""
         await self.async_set_unique_id(str(self._data[CONF_PLANT_ID]))
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
@@ -211,49 +211,49 @@ class SetupSteps(ConfigFlowBase):
                     name=str(user_input[CONF_NAME]).strip(),
                     plant_id=str(uuid4()),
                     topology={CONF_PUMPS: [pump]},
-                    ownership=PlantOwnership(room_objects={}),
+                    ownership=PlantOwnership(zone_objects={}),
                 )
-                return await self.async_step_room()
+                return await self.async_step_zone()
         return self.async_show_form(
             step_id="guided",
             data_schema=with_submitted_values(self, _guided_schema(), user_input),
             errors=errors,
         )
 
-    async def async_step_room(
+    async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Add one room with its own loop on the Plant's pump, which may also cool it."""
+        """Add one zone with its own loop on the Plant's pump, which may also cool it."""
         plant = effective_plant_from_data(self._data)
-        schema = _room_schema()
+        schema = _zone_schema()
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
-            form_errors, placeholders = room_form_errors(self.hass, user_input, plant)
+            form_errors, placeholders = zone_form_errors(self.hass, user_input, plant)
             errors.update(form_errors)
             if not errors:
-                draft = room_draft_from_form(user_input, plant=plant, existing=None)
+                draft = zone_draft_from_form(user_input, plant=plant, existing=None)
                 try:
-                    data = data_with_room(self._data, draft)
+                    data = data_with_zone(self._data, draft)
                 except GRAPH_EDIT_ERRORS as error:
                     graph, placeholders = graph_errors(error, draft, frozenset(schema.schema))
                     errors.update(graph)
                 else:
                     self._data = data
                     if user_input.get(CONF_ADD_ANOTHER, False):
-                        return await self.async_step_room()
+                        return await self.async_step_zone()
                     return await self.async_step_review()
         return self.async_show_form(
-            step_id="room",
+            step_id="zone",
             data_schema=with_submitted_values(self, schema, user_input),
             errors=errors,
-            description_placeholders={**placeholders, "rooms": _rooms_so_far(self._data)},
+            description_placeholders={**placeholders, "zones": _zones_so_far(self._data)},
         )
 
     async def async_step_review(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Review the rooms and warnings, then create the Plant."""
+        """Review the zones and warnings, then create the Plant."""
         return await self._async_review("review", user_input, {})
 
     # ------------------------------------------------------------------

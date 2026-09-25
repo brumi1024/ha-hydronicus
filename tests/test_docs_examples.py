@@ -123,8 +123,8 @@ def test_trial_plant_file_imports() -> None:
     ("document", "path"),
     [
         pytest.param(
-            {"hydronicus": 1, "name": "Flat", "rooms": {"Living room": {}}},
-            "rooms.Living room",
+            {"hydronicus": 1, "name": "Flat", "zones": {"Living room": {}}},
+            "zones.Living room",
             id="invalid_slug",
         ),
         pytest.param(
@@ -132,7 +132,7 @@ def test_trial_plant_file_imports() -> None:
                 "hydronicus": 1,
                 "name": "Flat",
                 "pumps": {"pump": "switch.pump"},
-                "rooms": {
+                "zones": {
                     "bedroom": {
                         "temperature_sensors": ["sensor.bedroom_temperature"],
                         "loops": {
@@ -141,7 +141,7 @@ def test_trial_plant_file_imports() -> None:
                     }
                 },
             },
-            "rooms.bedroom.loops.bedroom_loop.pump",
+            "zones.bedroom.loops.bedroom_loop.pump",
             id="unknown_pump",
         ),
     ],
@@ -192,13 +192,13 @@ def test_export_slugs_match_the_reference() -> None:
         name="Plant",
         plant_id=PLANT_ID,
         topology=topology,
-        ownership=PlantOwnership(room_objects={}),
+        ownership=PlantOwnership(zone_objects={}),
     )
 
     assert list(document["pumps"]) == ["pump_2nd_floor_pump"]
     assert list(document["valves"]) == ["arkely_valve", "arkely_valve_2", "valve"]
     assert list(document["loops"]) == ["arkely_loop"]
-    assert list(document["rooms"]) == ["arkely"]
+    assert list(document["zones"]) == ["arkely"]
     reference = PLANT_FILE_REFERENCE.read_text(encoding="utf-8")
     for slug in ("arkely", "pump_2nd_floor_pump", "arkely_valve_2"):
         assert f"`{slug}`" in reference

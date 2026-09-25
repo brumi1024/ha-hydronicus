@@ -2,7 +2,7 @@ hydronicus: 1
 name: Cooling
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     thermostat:
       initial_target_temperature: 22

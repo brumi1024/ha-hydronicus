@@ -2,7 +2,7 @@ hydronicus: 1
 name: Manifold
 pumps:
   manifold_pump: switch.manifold_pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     loops:

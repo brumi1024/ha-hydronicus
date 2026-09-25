@@ -85,7 +85,7 @@ Do not use a Dry run result to authorize physical control.
 ## Cooling and condensation
 
 Cooling requires different evidence from heating.
-Room temperature alone cannot establish a safe cooling request.
+Zone temperature alone cannot establish a safe cooling request.
 
 Condensation risk depends on humidity, dew point, supply or surface temperature, sensor freshness, circuit compatibility, and physical protection.
 Hydronicus calculates these conditions and, outside Dry run, opens cooling valves and starts pumps only while every one of them is satisfied.

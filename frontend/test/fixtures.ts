@@ -17,7 +17,7 @@ export function makeZone(overrides: Partial<ZoneSnapshot> = {}): ZoneSnapshot {
       preset_modes: ["comfort", "eco"],
       hvac_mode: "heat",
       hvac_modes: ["off", "heat"],
-      explanation: "Hydronicus owns this Room's thermostat.",
+      explanation: "Hydronicus owns this Zone's thermostat.",
     },
     demand: true,
     phase: "heating",

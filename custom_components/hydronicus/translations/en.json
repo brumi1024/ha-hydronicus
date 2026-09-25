@@ -9,13 +9,13 @@
           "import_plant": "Import a plant file"
         },
         "menu_option_descriptions": {
-          "guided": "Name the Plant, choose its pump, and add its rooms one by one.",
+          "guided": "Name the Plant, choose its pump, and add its zones one by one.",
           "import_plant": "Rebuild a Plant, with the same entity IDs, from a plant file."
         }
       },
       "guided": {
         "title": "Name the Plant",
-        "description": "Choose the circulation pump that the loops of every room share. Add more pumps, shared loops, and sources later in Plant settings or through the plant file.",
+        "description": "Choose the circulation pump that the loops of every zone share. Add more pumps, shared loops, and sources later in Plant settings or through the plant file.",
         "data": {
           "name": "Plant name",
           "pump_entity": "Pump entity"
@@ -37,29 +37,29 @@
           }
         }
       },
-      "room": {
-        "title": "Add a room",
-        "description": "A room has its thermostat, its sensors, and its own loop on the Plant's pump. Open Cooling to let that loop cool too.{rooms}",
+      "zone": {
+        "title": "Add a zone",
+        "description": "A zone has its thermostat, its sensors, and its own loop on the Plant's pump. Open Cooling to let that loop cool too.{zones}",
         "data": {
-          "name": "Room name",
+          "name": "Zone name",
           "temperature_sensors": "Temperature sensors",
           "external_climate_entity": "Existing climate thermostat",
           "valves": "Loop valves",
-          "add_another": "Add another room"
+          "add_another": "Add another zone"
         },
         "data_description": {
-          "name": "Shown as the name of the room thermostat and its entities.",
-          "temperature_sensors": "Room temperature sensors combined into the room temperature. Required unless an existing climate thermostat owns the room.",
-          "external_climate_entity": "Optional. When set, this climate entity owns demand for the room, and Hydronicus only reads it and never commands it.",
-          "valves": "Switches or valves of the room's own loop. Hydronicus creates the loop and names it after the room.",
-          "add_another": "Show this form again for the next room. Leave it off to review the Plant."
+          "name": "Shown as the name of the zone thermostat and its entities.",
+          "temperature_sensors": "Zone temperature sensors combined into the zone temperature. Required unless an existing climate thermostat owns the zone.",
+          "external_climate_entity": "Optional. When set, this climate entity owns demand for the zone, and Hydronicus only reads it and never commands it.",
+          "valves": "Switches or valves of the zone's own loop. Hydronicus creates the loop and names it after the zone.",
+          "add_another": "Show this form again for the next zone. Leave it off to review the Plant."
         },
         "sections": {
           "cooling": {
             "name": "Cooling",
-            "description": "Let the room's own loop cool too. Cooling needs Loop valves, humidity sensors, and a supply or surface temperature sensor for condensation protection.",
+            "description": "Let the zone's own loop cool too. Cooling needs Loop valves, humidity sensors, and a supply or surface temperature sensor for condensation protection.",
             "data": {
-              "cooling_enabled": "Cool this room",
+              "cooling_enabled": "Cool this zone",
               "humidity_sensors": "Humidity sensors",
               "supply_temperature_sensor": "Supply temperature sensor",
               "surface_temperature_sensor": "Surface temperature sensor",
@@ -67,7 +67,7 @@
             },
             "data_description": {
               "cooling_enabled": "Enable cooling on the loop created from Loop valves. A shared loop cools only when the plant file enables it.",
-              "humidity_sensors": "Room humidity sensors, used for the dew point. Required when cooling is on.",
+              "humidity_sensors": "Zone humidity sensors, used for the dew point. Required when cooling is on.",
               "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection. Set this or a surface temperature sensor when cooling is on.",
               "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection. Set this or a supply temperature sensor when cooling is on.",
               "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point."
@@ -77,7 +77,7 @@
       },
       "review": {
         "title": "Review the Plant",
-        "description": "Rooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
+        "description": "Zones:\n{zones}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -97,7 +97,7 @@
       },
       "import_review": {
         "title": "Review the imported Plant",
-        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
+        "description": "Plant {name}\n\nZones:\n{zones}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -109,21 +109,21 @@
     "error": {
       "name_required": "A name is required.",
       "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
-      "temperature_sensors_required": "Select at least one temperature sensor for a room that Hydronicus controls.",
+      "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls.",
       "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
       "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
-      "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every room this loop serves. Add them first, or turn cooling off.",
+      "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every zone this loop serves. Add them first, or turn cooling off.",
       "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
       "confirm_required": "Confirm that you understand these warnings before saving.",
       "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
       "invalid_document": "The plant file is not valid at {path}: {error}",
       "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the Plant back into itself.",
-      "delivery_required": "Choose at least one valve for the room's loop.",
+      "delivery_required": "Choose at least one valve for the zone's loop.",
       "pump_required": "Choose the pump for this loop.",
-      "temperature_required_for_cooling": "Loops with cooling need at least one temperature sensor in each room they serve, even when an existing thermostat owns the room.",
-      "humidity_required_for_cooling": "Loops with cooling need at least one humidity sensor in each room they serve.",
-      "invalid_room": "The room cannot be saved: {error}",
-      "cooling_requires_room_loop": "Cooling from this form applies to the room's own loop. Choose Loop valves, or leave cooling off."
+      "temperature_required_for_cooling": "Loops with cooling need at least one temperature sensor in each zone they serve, even when an existing thermostat owns the zone.",
+      "humidity_required_for_cooling": "Loops with cooling need at least one humidity sensor in each zone they serve.",
+      "invalid_zone": "The zone cannot be saved: {error}",
+      "cooling_requires_zone_loop": "Cooling from this form applies to the zone's own loop. Choose Loop valves, or leave cooling off."
     },
     "abort": {
       "already_configured": "This Plant is already configured.",
@@ -131,18 +131,18 @@
     }
   },
   "config_subentries": {
-    "room": {
-      "entry_type": "Room",
+    "zone": {
+      "entry_type": "Zone",
       "initiate_flow": {
-        "user": "Add room"
+        "user": "Add zone"
       },
-      "title": "Room",
+      "title": "Zone",
       "step": {
         "user": {
-          "title": "Add a room",
-          "description": "A room has its thermostat, its sensors, and the loops that heat it. Choose valves to give the room its own loop, or choose shared loops of the Plant. Open Cooling to let the room's own loop cool too. Saving a room returns the Plant to Dry run.",
+          "title": "Add a zone",
+          "description": "A zone has its thermostat, its sensors, and the loops that heat it. Choose valves to give the zone its own loop, or choose shared loops of the Plant. Open Cooling to let the zone's own loop cool too. Saving a zone returns the Plant to Dry run.",
           "data": {
-            "name": "Room name",
+            "name": "Zone name",
             "temperature_sensors": "Temperature sensors",
             "external_climate_entity": "Existing climate thermostat",
             "valves": "Loop valves",
@@ -150,19 +150,19 @@
             "shared_loops": "Shared loops"
           },
           "data_description": {
-            "name": "Shown as the name of the room thermostat and its entities.",
-            "temperature_sensors": "Room temperature sensors combined into the room temperature. Required unless an existing climate thermostat owns the room.",
-            "external_climate_entity": "Optional. When set, this climate entity owns demand for the room, and Hydronicus only reads it and never commands it.",
-            "valves": "Switches or valves of the room's own loop. Hydronicus creates the loop and names it after the room.",
-            "pump": "The pump that circulates water through the room's loop.",
-            "shared_loops": "Loops of the Plant that also deliver heat to this room. They are edited only through the plant file."
+            "name": "Shown as the name of the zone thermostat and its entities.",
+            "temperature_sensors": "Zone temperature sensors combined into the zone temperature. Required unless an existing climate thermostat owns the zone.",
+            "external_climate_entity": "Optional. When set, this climate entity owns demand for the zone, and Hydronicus only reads it and never commands it.",
+            "valves": "Switches or valves of the zone's own loop. Hydronicus creates the loop and names it after the zone.",
+            "pump": "The pump that circulates water through the zone's loop.",
+            "shared_loops": "Loops of the Plant that also deliver heat to this zone. They are edited only through the plant file."
           },
           "sections": {
             "cooling": {
               "name": "Cooling",
-              "description": "Let the room's own loop cool too. Cooling needs Loop valves, humidity sensors, and a supply or surface temperature sensor for condensation protection.",
+              "description": "Let the zone's own loop cool too. Cooling needs Loop valves, humidity sensors, and a supply or surface temperature sensor for condensation protection.",
               "data": {
-                "cooling_enabled": "Cool this room",
+                "cooling_enabled": "Cool this zone",
                 "humidity_sensors": "Humidity sensors",
                 "supply_temperature_sensor": "Supply temperature sensor",
                 "surface_temperature_sensor": "Surface temperature sensor",
@@ -170,7 +170,7 @@
               },
               "data_description": {
                 "cooling_enabled": "Enable cooling on the loop created from Loop valves. A shared loop cools only when the plant file enables it.",
-                "humidity_sensors": "Room humidity sensors, used for the dew point. Required when cooling is on.",
+                "humidity_sensors": "Zone humidity sensors, used for the dew point. Required when cooling is on.",
                 "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection. Set this or a surface temperature sensor when cooling is on.",
                 "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection. Set this or a supply temperature sensor when cooling is on.",
                 "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point."
@@ -179,35 +179,35 @@
           }
         },
         "reconfigure": {
-          "title": "Edit {room}",
-          "description": "Choose what to change in {room}. Saving a change returns the Plant to Dry run.",
+          "title": "Edit {zone}",
+          "description": "Choose what to change in {zone}. Saving a change returns the Plant to Dry run.",
           "menu_options": {
-            "room": "Name, thermostat owner, and sensors",
+            "zone": "Name, thermostat owner, and sensors",
             "thermostat": "Thermostat settings",
             "sensors": "Sensor aggregation and humidity",
             "add_loop": "Add a loop",
             "edit_loop": "Edit or remove a loop"
           }
         },
-        "room": {
-          "title": "Edit room basics",
-          "description": "Change the room name, who owns its demand, its temperature sensors, and the shared loops that serve it. Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.",
+        "zone": {
+          "title": "Edit zone basics",
+          "description": "Change the zone name, who owns its demand, its temperature sensors, and the shared loops that serve it. Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.",
           "data": {
-            "name": "Room name",
+            "name": "Zone name",
             "temperature_sensors": "Temperature sensors",
             "external_climate_entity": "Existing climate thermostat",
             "shared_loops": "Shared loops"
           },
           "data_description": {
-            "name": "Shown as the name of the room thermostat and its entities.",
-            "temperature_sensors": "Room temperature sensors combined into the room temperature. Required unless an existing climate thermostat owns the room.",
-            "external_climate_entity": "Optional. When set, this climate entity owns demand for the room, and Hydronicus only reads it and never commands it.",
-            "shared_loops": "Loops of the Plant that also deliver heat to this room. They are edited only through the plant file."
+            "name": "Shown as the name of the zone thermostat and its entities.",
+            "temperature_sensors": "Zone temperature sensors combined into the zone temperature. Required unless an existing climate thermostat owns the zone.",
+            "external_climate_entity": "Optional. When set, this climate entity owns demand for the zone, and Hydronicus only reads it and never commands it.",
+            "shared_loops": "Loops of the Plant that also deliver heat to this zone. They are edited only through the plant file."
           }
         },
         "thermostat": {
           "title": "Edit thermostat settings",
-          "description": "Configure how the Hydronicus thermostat of this room turns demand on and off.",
+          "description": "Configure how the Hydronicus thermostat of this zone turns demand on and off.",
           "data": {
             "heating_start_delta": "Heating start hysteresis",
             "heating_stop_delta": "Heating stop hysteresis",
@@ -218,8 +218,8 @@
             "away": "Away preset target"
           },
           "data_description": {
-            "heating_start_delta": "Heating starts when the room temperature falls this far below the target.",
-            "heating_stop_delta": "Heating stops when the room temperature rises this far above the target.",
+            "heating_start_delta": "Heating starts when the zone temperature falls this far below the target.",
+            "heating_stop_delta": "Heating stops when the zone temperature rises this far above the target.",
             "minimum_active_duration_seconds": "Once demand starts, it is held for at least this long. Use 0 to disable.",
             "minimum_idle_duration_seconds": "Once demand stops, it stays off for at least this long. Use 0 to disable.",
             "comfort": "Optional target temperature for the comfort preset.",
@@ -229,35 +229,35 @@
           "sections": {
             "cooling": {
               "name": "Cooling",
-              "description": "Hysteresis used when the room is in cooling mode.",
+              "description": "Hysteresis used when the zone is in cooling mode.",
               "data": {
                 "cooling_start_delta": "Cooling start hysteresis",
                 "cooling_stop_delta": "Cooling stop hysteresis"
               },
               "data_description": {
-                "cooling_start_delta": "Cooling starts when the room temperature rises this far above the target.",
-                "cooling_stop_delta": "Cooling stops when the room temperature falls this far below the target."
+                "cooling_start_delta": "Cooling starts when the zone temperature rises this far above the target.",
+                "cooling_stop_delta": "Cooling stops when the zone temperature falls this far below the target."
               }
             }
           }
         },
         "sensors": {
           "title": "Edit sensors",
-          "description": "Choose how temperature readings are combined and which humidity sensors the room uses.",
+          "description": "Choose how temperature readings are combined and which humidity sensors the zone uses.",
           "data": {
             "temperature_aggregation": "Temperature aggregation",
             "humidity_sensors": "Humidity sensors",
             "configure_sensor_metadata": "Edit sensor metadata"
           },
           "data_description": {
-            "temperature_aggregation": "How readings from several temperature sensors are combined into one room temperature.",
-            "humidity_sensors": "Optional room humidity sensors, used for the dew point when cooling.",
+            "temperature_aggregation": "How readings from several temperature sensors are combined into one zone temperature.",
+            "humidity_sensors": "Optional zone humidity sensors, used for the dew point when cooling.",
             "configure_sensor_metadata": "Opens one extra form per temperature sensor to set its weight, calibration offset, and freshness limit."
           }
         },
         "sensor_metadata": {
           "title": "Edit temperature sensor",
-          "description": "Configure {sensor} explicitly. A required sensor blocks the room when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
+          "description": "Configure {sensor} explicitly. A required sensor blocks the zone when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
           "data": {
             "sensor_entity": "Temperature sensor",
             "required": "Required sensor",
@@ -268,11 +268,11 @@
           },
           "data_description": {
             "sensor_entity": "The sensor these settings apply to.",
-            "required": "A required sensor that is stale or unavailable blocks the room. An optional one is left out of the aggregate instead.",
+            "required": "A required sensor that is stale or unavailable blocks the zone. An optional one is left out of the aggregate instead.",
             "weight": "Relative weight of this sensor in the weighted mean.",
             "calibration_offset": "Added to every reading from this sensor before aggregation.",
             "max_age_seconds": "A reading older than this is treated as stale.",
-            "designated_reference": "Used alone when the room aggregation is set to designated reference."
+            "designated_reference": "Used alone when the zone aggregation is set to designated reference."
           }
         },
         "sensor_policy": {
@@ -282,22 +282,22 @@
             "temperature_aggregation": "Temperature aggregation"
           },
           "data_description": {
-            "temperature_aggregation": "How readings from several temperature sensors are combined into one room temperature."
+            "temperature_aggregation": "How readings from several temperature sensors are combined into one zone temperature."
           }
         },
         "edit_loop": {
           "title": "Choose a loop",
-          "description": "Choose the loop of this room to edit or remove.",
+          "description": "Choose the loop of this zone to edit or remove.",
           "data": {
             "loop": "Loop"
           },
           "data_description": {
-            "loop": "One of the loops that belong to this room."
+            "loop": "One of the loops that belong to this zone."
           }
         },
         "loop": {
           "title": "Configure a loop",
-          "description": "A loop of {room} is a water path through its valves and one pump. Every chosen valve must open before the pump may run.",
+          "description": "A loop of {zone} is a water path through its valves and one pump. Every chosen valve must open before the pump may run.",
           "data": {
             "name": "Loop name",
             "valves": "Valves",
@@ -309,12 +309,12 @@
           },
           "data_description": {
             "name": "Shown as the name of this loop.",
-            "valves": "Switches or valves that belong to this room. A new entity becomes a new valve, and a removed one is deleted unless another loop of the room still uses it.",
+            "valves": "Switches or valves that belong to this zone. A new entity becomes a new valve, and a removed one is deleted unless another loop of the zone still uses it.",
             "shared_valves": "Valves of the Plant that this loop also needs open. They are edited only through the plant file.",
             "pump": "The pump that circulates water through this loop.",
-            "valve_opening_time_seconds": "How long this loop's room valves need to open before the pump may start.",
-            "configure_valve_feedback": "Opens one extra form per room valve of this loop to set its readiness and position feedback.",
-            "remove_loop": "Removes the loop, and the room valves that no other loop of the room uses."
+            "valve_opening_time_seconds": "How long this loop's zone valves need to open before the pump may start.",
+            "configure_valve_feedback": "Opens one extra form per zone valve of this loop to set its readiness and position feedback.",
+            "remove_loop": "Removes the loop, and the zone valves that no other loop of the zone uses."
           },
           "sections": {
             "cooling": {
@@ -354,20 +354,20 @@
           }
         },
         "review": {
-          "title": "Review room warnings",
+          "title": "Review zone warnings",
           "description": "Review these warnings before saving:\n{warnings}",
           "data": {
             "confirm": "I understand these warnings"
           },
           "data_description": {
-            "confirm": "Required to save a room that has the warnings listed above."
+            "confirm": "Required to save a zone that has the warnings listed above."
           }
         }
       },
       "error": {
         "name_required": "A name is required.",
-        "temperature_sensors_required": "Select at least one temperature sensor for a room that Hydronicus controls.",
-        "delivery_required": "Choose valves for the room's own loop, or at least one shared loop.",
+        "temperature_sensors_required": "Select at least one temperature sensor for a zone that Hydronicus controls.",
+        "delivery_required": "Choose valves for the zone's own loop, or at least one shared loop.",
         "pump_required": "Choose the pump for this loop.",
         "valves_required": "Select at least one valve.",
         "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
@@ -375,19 +375,19 @@
         "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
         "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
         "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
-        "temperature_required_for_cooling": "Loops with cooling need at least one temperature sensor in each room they serve, even when an existing thermostat owns the room.",
-        "humidity_required_for_cooling": "Loops with cooling need at least one humidity sensor in each room they serve.",
+        "temperature_required_for_cooling": "Loops with cooling need at least one temperature sensor in each zone they serve, even when an existing thermostat owns the zone.",
+        "humidity_required_for_cooling": "Loops with cooling need at least one humidity sensor in each zone they serve.",
         "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
-        "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every room this loop serves. Add them first, or turn cooling off.",
+        "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every zone this loop serves. Add them first, or turn cooling off.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
         "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit again after the shutdown finishes.",
-        "invalid_room": "The room cannot be saved: {error}",
-        "cooling_requires_room_loop": "Cooling from this form applies to the room's own loop. Choose Loop valves, or leave cooling off."
+        "invalid_zone": "The zone cannot be saved: {error}",
+        "cooling_requires_zone_loop": "Cooling from this form applies to the zone's own loop. Choose Loop valves, or leave cooling off."
       },
       "abort": {
-        "no_pumps": "The Plant has no pump yet. Add a pump before adding a room or a loop.",
+        "no_pumps": "The Plant has no pump yet. Add a pump before adding a zone or a loop.",
         "already_configured": "This object is already configured.",
-        "subentry_removed": "This room was removed while it was being edited.",
+        "subentry_removed": "This zone was removed while it was being edited.",
         "reconfigure_successful": "The configuration was updated."
       }
     },
@@ -480,7 +480,7 @@
     "step": {
       "init": {
         "title": "Plant settings",
-        "description": "Choose what to change in {plant}. Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.",
+        "description": "Choose what to change in {plant}. Every change to zones, loops, valves, or pumps returns the Plant to Dry run.",
         "menu_options": {
           "dry_run": "Dry run",
           "add_pump": "Add a pump",
@@ -801,7 +801,7 @@
         },
         "abort": {
           "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid sensor is saved for {object_name}.",
-          "subentry_not_found": "The room or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
         }
       }
     },
@@ -820,7 +820,7 @@
         },
         "abort": {
           "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid feedback entity is saved for {object_name}.",
-          "subentry_not_found": "The room or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
         }
       }
     },
@@ -854,7 +854,7 @@
         },
         "abort": {
           "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid entity is saved for {object_name}.",
-          "subentry_not_found": "The room or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
         }
       }
     },
@@ -875,7 +875,7 @@
     },
     "missing_thermostat_binding": {
       "title": "Missing thermostat for {object_name}",
-      "description": "In Plant {plant}, the {binding} is missing or renamed, so the demand of the room is held fail-closed. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the thermostat: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+      "description": "In Plant {plant}, the {binding} is missing or renamed, so the demand of the zone is held fail-closed. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the thermostat: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_thermostat_binding_fixable": {
       "title": "Missing thermostat for {object_name}",
@@ -883,12 +883,12 @@
         "step": {
           "confirm": {
             "title": "Missing thermostat for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the demand of the room is held fail-closed. Select Submit to edit {owner}, choose the current climate entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+            "description": "In Plant {plant}, the {binding} is missing or renamed, so the demand of the zone is held fail-closed. Select Submit to edit {owner}, choose the current climate entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
           }
         },
         "abort": {
           "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid climate entity is saved for {object_name}.",
-          "subentry_not_found": "The room or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
         }
       }
     },
@@ -902,13 +902,13 @@
       "message": "The stored configuration of Plant {plant} cannot be loaded safely: {error} Reconfigure or remove the affected objects, then reload the integration."
     },
     "invalid_target_temperature": {
-      "message": "The room target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
+      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
     },
     "output_authorization_mismatch": {
       "message": "Leaving Dry run for Plant {plant} requires authorization for the exact current outputs. Review the outputs and confirm again."
     },
     "preset_not_configured": {
-      "message": "The preset {preset_mode} is not configured for room {zone}."
+      "message": "The preset {preset_mode} is not configured for zone {zone}."
     },
     "runtime_not_started": {
       "message": "Plant {plant} is not running. Wait until the integration has finished loading and try again."
@@ -917,10 +917,10 @@
       "message": "The source selector command for {entity_id} has no option to select."
     },
     "unknown_zone": {
-      "message": "Room {zone_id} is not a Hydronicus thermostat room of Plant {plant}."
+      "message": "Zone {zone_id} is not a Hydronicus thermostat zone of Plant {plant}."
     },
     "unsupported_hvac_mode": {
-      "message": "The HVAC mode {hvac_mode} is not supported by this room thermostat."
+      "message": "The HVAC mode {hvac_mode} is not supported by this zone thermostat."
     },
     "unsupported_plant_mode": {
       "message": "The Plant mode {mode} is not supported."

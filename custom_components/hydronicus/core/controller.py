@@ -356,7 +356,7 @@ def _zone_demand(
 ) -> tuple[bool, str]:
     """Apply heating hysteresis to one zone without timing side effects."""
     if temperature is None:
-        return False, "Blocked: the room has no usable aggregate temperature."
+        return False, "Blocked: the zone has no usable aggregate temperature."
     if temperature <= target - start_delta:
         return True, f"Heating requested: {temperature:.1f} is below {target - start_delta:.1f}."
     if temperature >= target + stop_delta:
@@ -376,7 +376,7 @@ def _cooling_zone_demand(
 ) -> tuple[bool, str]:
     """Apply explicit cooling hysteresis to one zone."""
     if temperature is None:
-        return False, "Blocked: the room has no usable aggregate temperature for cooling."
+        return False, "Blocked: the zone has no usable aggregate temperature for cooling."
     if temperature >= target + start_delta:
         return True, f"Cooling requested: {temperature:.1f} is above {target + start_delta:.1f}."
     if temperature <= target - stop_delta:
@@ -546,7 +546,7 @@ def _cooling_interlocks(
     if not routes:
         return (
             False,
-            "Cooling idle: no cooling-enabled loop serves this room.",
+            "Cooling idle: no cooling-enabled loop serves this zone.",
             (),
             None,
             None,
@@ -2190,7 +2190,7 @@ def _evaluate_heating_zones(
                 value=None,
                 explanation=(
                     "The external thermostat temperature is diagnostic only; "
-                    "add a room temperature sensor for cooling safety."
+                    "add a zone temperature sensor for cooling safety."
                 ),
             )
         )
@@ -2289,7 +2289,7 @@ def _prevent_zone_dual_demand(heating: _HeatingEvaluation, cooling: _CoolingEval
     for zone_id in sorted(heating.zone_demands):
         if not heating.zone_demands.get(zone_id) or not cooling.zone_demands.get(zone_id):
             continue
-        reason = "Cooling blocked: this room already has an active heating demand."
+        reason = "Cooling blocked: this zone already has an active heating demand."
         prior = cooling.zone_decisions[zone_id]
         cooling.zone_demands[zone_id] = False
         cooling.zone_reasons[zone_id] = reason
@@ -2455,7 +2455,7 @@ def _filter_degraded_routes(
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
-                f"Blocked: every delivery route for room {zone.name} uses an unresolved "
+                f"Blocked: every delivery route for zone {zone.name} uses an unresolved "
                 "actuator or feedback binding."
             )
             prior = heating.zone_decisions[zone_id]
@@ -2487,7 +2487,7 @@ def _filter_degraded_routes(
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
-                f"Blocked: every cooling delivery route for room {zone.name} uses an "
+                f"Blocked: every cooling delivery route for zone {zone.name} uses an "
                 "unresolved actuator or feedback binding."
             )
             prior = cooling.zone_decisions[zone_id]
@@ -2768,14 +2768,14 @@ def _index_requested_routes(
     heating_routes: tuple[DeliveryRoute, ...],
     cooling_routes: tuple[DeliveryRoute, ...],
 ) -> tuple[set[str], dict[str, list[str]]]:
-    """Index the rooms requesting each circuit, once each, in stable route order."""
+    """Index the zones requesting each circuit, once each, in stable route order."""
     requested_circuits = {route.circuit_id for route in (*heating_routes, *cooling_routes)}
-    room_names_by_circuit: dict[str, list[str]] = defaultdict(list)
+    zone_names_by_circuit: dict[str, list[str]] = defaultdict(list)
     for route in (*heating_routes, *cooling_routes):
         name = plant.zones[route.zone_id].name
-        if name not in room_names_by_circuit[route.circuit_id]:
-            room_names_by_circuit[route.circuit_id].append(name)
-    return requested_circuits, room_names_by_circuit
+        if name not in zone_names_by_circuit[route.circuit_id]:
+            zone_names_by_circuit[route.circuit_id].append(name)
+    return requested_circuits, zone_names_by_circuit
 
 
 @dataclass(frozen=True, slots=True)
@@ -2972,16 +2972,16 @@ def _plan_valves(
             consumers[valve_id].add(circuit_id)
 
     cooling_consumers: dict[str, set[str]] = defaultdict(set)
-    cooling_rooms: dict[str, list[str]] = defaultdict(list)
+    cooling_zones: dict[str, list[str]] = defaultdict(list)
     for route in cooling_routes:
         circuit = plant.circuits[route.circuit_id]
-        room_name = plant.zones[route.zone_id].name
-        if room_name not in cooling_rooms[circuit.id]:
-            cooling_rooms[circuit.id].append(room_name)
+        zone_name = plant.zones[route.zone_id].name
+        if zone_name not in cooling_zones[circuit.id]:
+            cooling_zones[circuit.id].append(zone_name)
         for valve_id in circuit.valve_ids:
             cooling_consumers[valve_id].add(circuit.id)
-    for circuit_id, room_names in cooling_rooms.items():
-        cooling.circuit_reasons[circuit_id] = f"Cooling requested by {', '.join(room_names)}."
+    for circuit_id, zone_names in cooling_zones.items():
+        cooling.circuit_reasons[circuit_id] = f"Cooling requested by {', '.join(zone_names)}."
 
     feedback_expected = {
         valve_id: "open" if consumers.get(valve_id) else "closed" for valve_id in plant.valves
@@ -3255,7 +3255,7 @@ def _assemble_evaluation(
     mode_conflicts: tuple[ModeConflict, ...],
     mode_routing: _ModeRouting,
     requested_circuits: set[str],
-    room_names_by_circuit: Mapping[str, list[str]],
+    zone_names_by_circuit: Mapping[str, list[str]],
     valve_plan: _ValvePlan,
     pump_plan: _PumpPlan,
 ) -> Evaluation:
@@ -3351,14 +3351,14 @@ def _assemble_evaluation(
                 for valve_id in plant.circuits[circuit_id].valve_ids
             )
             else "Ready: the valves are open for "
-            + ", ".join(room_names_by_circuit[circuit_id])
+            + ", ".join(zone_names_by_circuit[circuit_id])
             + "."
             if circuit_id in pump_plan.ready_circuit_ids
             else "Waiting for the valves to open for "
-            + ", ".join(room_names_by_circuit[circuit_id])
+            + ", ".join(zone_names_by_circuit[circuit_id])
             + "."
             if circuit_id in requested_circuits
-            else "Idle: no room currently requests this loop."
+            else "Idle: no zone currently requests this loop."
         )
         for circuit_id in sorted(plant.circuits)
     }
@@ -3493,7 +3493,7 @@ def evaluate(
         cooling,
         conflict_arbitration.mode_conflicts,
     )
-    requested_circuits, room_names_by_circuit = _index_requested_routes(
+    requested_circuits, zone_names_by_circuit = _index_requested_routes(
         plant,
         mode_routing.heating_routes,
         mode_routing.cooling_routes,
@@ -3527,7 +3527,7 @@ def evaluate(
         mode_conflicts=conflict_arbitration.mode_conflicts,
         mode_routing=mode_routing,
         requested_circuits=requested_circuits,
-        room_names_by_circuit=room_names_by_circuit,
+        zone_names_by_circuit=zone_names_by_circuit,
         valve_plan=valve_plan,
         pump_plan=pump_plan,
     )

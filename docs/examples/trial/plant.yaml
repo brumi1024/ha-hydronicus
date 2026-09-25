@@ -1,11 +1,11 @@
-# Hydronicus trial kit: two rooms on one manifold pump.
+# Hydronicus trial kit: two zones on one manifold pump.
 # It binds the entities of package.yaml.
 # Import it with Add integration, Hydronicus, Import a plant file.
 hydronicus: 1
 name: Trial plant
 pumps:
   circulation_pump: switch.hydronicus_trial_pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.hydronicus_trial_living_room_temperature]
     loops:

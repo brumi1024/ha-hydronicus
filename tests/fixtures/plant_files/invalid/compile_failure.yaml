@@ -3,7 +3,7 @@ hydronicus: 1
 name: Compile failure
 pumps:
   pump: switch.pump
-rooms:
+zones:
   bedroom:
     thermostat:
       initial_target_temperature: 99

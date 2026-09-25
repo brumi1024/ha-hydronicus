@@ -22,12 +22,12 @@ from tests.integration.plant_fixtures import (
     MANIFOLD_PUMP_ENTITY,
     PLANT_ID,
     manifold_entry,
-    manifold_rooms,
     manifold_topology,
+    manifold_zones,
     plant_data,
 )
 
-LIVING, BEDROOM = manifold_rooms(("Living room", "Bedroom"))
+LIVING, BEDROOM = manifold_zones(("Living room", "Bedroom"))
 SOURCE_ID = "00000000-0000-4000-8000-000600000001"
 BOILER = {
     "id": SOURCE_ID,
@@ -38,9 +38,9 @@ BOILER = {
 
 
 async def _loaded(hass):
-    for room in (LIVING, BEDROOM):
-        hass.states.async_set(room.temperature_sensor, "18.0")
-        hass.states.async_set(room.valve_entity, "off")
+    for zone in (LIVING, BEDROOM):
+        hass.states.async_set(zone.temperature_sensor, "18.0")
+        hass.states.async_set(zone.valve_entity, "off")
     hass.states.async_set(MANIFOLD_PUMP_ENTITY, "off")
     entry = manifold_entry(sources=[BOILER])
     entry.add_to_hass(hass)
@@ -92,7 +92,7 @@ async def test_action_and_dialog_return_the_same_plant_file(hass) -> None:
 
 
 async def test_exported_plant_file_rebuilds_an_identical_plant(hass) -> None:
-    """Importing the export reproduces topology, ownership, and room and source handles."""
+    """Importing the export reproduces topology, ownership, and zone and source handles."""
     entry = await _loaded(hass)
 
     document = (await _export(hass, entry.entry_id))["document"]
@@ -102,7 +102,7 @@ async def test_exported_plant_file_rebuilds_an_identical_plant(hass) -> None:
     assert imported.plant_id == PLANT_ID
     assert rebuilt["name"] == entry.data["name"]
     assert _canonical(rebuilt[CONF_TOPOLOGY]) == _canonical(entry.data[CONF_TOPOLOGY])
-    assert rebuilt["room_objects"] == entry.data["room_objects"]
+    assert rebuilt["zone_objects"] == entry.data["zone_objects"]
     assert sorted(subentries_for(rebuilt), key=lambda handle: handle["unique_id"]) == sorted(
         (
             {
@@ -126,7 +126,7 @@ async def test_action_exports_an_unloaded_plant(hass) -> None:
     response = await _export(hass, entry.entry_id)
 
     assert response["document"]["name"] == "Hydronic plant"
-    assert set(response["document"]["rooms"]) == {"living_room", "bedroom"}
+    assert set(response["document"]["zones"]) == {"living_room", "bedroom"}
 
 
 async def test_action_refuses_an_unknown_config_entry(hass) -> None:

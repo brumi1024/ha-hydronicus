@@ -19,12 +19,12 @@ from custom_components.hydronicus.const import (
     CONF_SOURCE_PRIORITY,
     CONF_SOURCE_TEMPERATURE_ENTITY,
     CONF_SOURCE_TYPE,
-    DOMAIN,
     SUBENTRY_TYPE_SOURCE,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import subentry_draft
 from tests.integration.flow_forms import form_fields, form_value, frontend_submission
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -36,7 +36,7 @@ SELECTOR_ID = "00000000-0000-4000-8000-000000000007"
 
 
 def _source_subentries(entry: MockConfigEntry) -> list:
-    """Return the source handles; the migrated Plant also has one room handle."""
+    """Return the source handles; the Plant also has one zone handle."""
     return [
         item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_SOURCE
     ]
@@ -44,10 +44,8 @@ def _source_subentries(entry: MockConfigEntry) -> list:
 
 def _entry() -> MockConfigEntry:
     """Return a synthetic active-heating topology with no configured sources."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
+    return plant_entry(
+        {
             "name": "Hydronic plant",
             "plant_id": PLANT_ID,
             "dry_run": True,
@@ -87,6 +85,8 @@ def _entry() -> MockConfigEntry:
                 "routes": [{"id": ROUTE_ID, "zone_id": ZONE_ID, "circuit_id": CIRCUIT_ID}],
             },
         },
+        title="Hydronic plant",
+        source_handles=False,
     )
 
 

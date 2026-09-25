@@ -228,19 +228,19 @@ def _configuration_shape(runtime: HydronicRuntime, references: _References) -> d
 def _owner(
     runtime: HydronicRuntime, references: _References, zone_id: str | None
 ) -> dict[str, str | None]:
-    """Name the room or the Plant that owns an object.
+    """Name the zone or the Plant that owns an object.
 
-    A room title is its zone name, which diagnostics redact, so a room is named
-    by the opaque reference of its zone.
+    A zone title is the zone name, which diagnostics redact, so a zone is named
+    by its opaque reference.
     """
     if zone_id is None:
         return {"kind": "plant", "reference": references.ref("plant", runtime.plant.id)}
-    return {"kind": "room", "reference": references.ref("zone", zone_id)}
+    return {"kind": "zone", "reference": references.ref("zone", zone_id)}
 
 
 def _configuration_objects(runtime: HydronicRuntime, references: _References) -> dict[str, object]:
     """Return the non-secret configuration needed to understand the topology."""
-    room_objects = runtime.ownership.room_objects
+    zone_objects = runtime.ownership.zone_objects
     zones = []
     for zone_id, zone in sorted(runtime.plant.zones.items()):
         zones.append(
@@ -272,7 +272,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
             {
                 "reference": references.ref("circuit", circuit_id),
                 "name": _REDACTED_NAME,
-                "owner": _owner(runtime, references, room_objects.get(circuit_id)),
+                "owner": _owner(runtime, references, zone_objects.get(circuit_id)),
                 "valve_references": [
                     references.ref("valve", valve_id) for valve_id in circuit.valve_ids
                 ],
@@ -303,7 +303,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                 {
                     "reference": references.ref("valve", actuator_id),
                     "kind": "valve",
-                    "owner": _owner(runtime, references, room_objects.get(actuator_id)),
+                    "owner": _owner(runtime, references, zone_objects.get(actuator_id)),
                     "readiness_feedback_configured": valve.readiness_entity_id is not None,
                     "position_feedback_configured": valve.position_entity_id is not None,
                 }

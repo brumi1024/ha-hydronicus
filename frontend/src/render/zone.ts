@@ -4,10 +4,10 @@ import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, hvac
 import type { ZoneSnapshot } from "../types";
 import type { RenderContext } from "./context";
 
-export interface RoomOptions {
+export interface ZoneOptions {
   /**
-   * The level of the Room's heading: 4 inside the Plant card, below its
-   * Plant and Rooms headings, and 2 when the Room is a card of its own.
+   * The level of the Zone's heading: 4 inside the Plant card, below its
+   * Plant and Zones headings, and 2 when the Zone is a card of its own.
    */
   headingLevel: 2 | 4;
 }
@@ -34,8 +34,8 @@ function choosePreset(context: RenderContext, zone: ZoneSnapshot, event: Event):
   context.call(actionForPreset(zone, (event.target as HTMLSelectElement).value));
 }
 
-/** One Room tile with its thermostat state, diagnostics, and controls. */
-export function renderRoom(context: RenderContext, zone: ZoneSnapshot, options: RoomOptions): TemplateResult {
+/** One Zone tile with its thermostat state, diagnostics, and controls. */
+export function renderZone(context: RenderContext, zone: ZoneSnapshot, options: ZoneOptions): TemplateResult {
   const thermostat = zone.thermostat;
   const internal = thermostat.kind === "hydronicus";
   const demandKind = zoneDemandKind(zone);
@@ -50,7 +50,7 @@ export function renderRoom(context: RenderContext, zone: ZoneSnapshot, options: 
   const presets = zonePresets(zone);
   const hvacModes = zoneHvacModes(zone);
   const modeLabel = thermostat.hvac_mode ? hvacModeLabel(localize, thermostat.hvac_mode) : null;
-  // An Off thermostat reads as Off rather than as an idle Room.
+  // An Off thermostat reads as Off rather than as an idle Zone.
   const phase = off && !zone.blocked ? (modeLabel ?? "Off") : sentenceLabel(zone.phase);
   const demandNote = hasDemand ? `${demandKind === "cooling" ? "Cooling" : "Heating"} demand active` : off ? "Thermostat off" : "No demand";
   const headingId = `zone-${zone.id}`;
@@ -58,16 +58,16 @@ export function renderRoom(context: RenderContext, zone: ZoneSnapshot, options: 
     ? html`<button type="button" class="link" aria-haspopup="dialog" title="Show thermostat details" @click=${() => context.moreInfo(controlEntity)}>${zone.name}</button>`
     : zone.name;
   const heading = options.headingLevel === 2
-    ? html`<h2 class="zone-title" part="room-title" id=${headingId}>${name}</h2>`
-    : html`<h4 class="zone-title" part="room-title" id=${headingId}>${name}</h4>`;
-  return html`<article class="zone" part="room" data-phase=${zone.phase} data-hvac-mode=${thermostat.hvac_mode ?? "unknown"} data-demand=${String(hasDemand)} data-demand-kind=${demandKind} data-blocked=${String(zone.blocked)} aria-labelledby=${headingId}>
+    ? html`<h2 class="zone-title" part="zone-title" id=${headingId}>${name}</h2>`
+    : html`<h4 class="zone-title" part="zone-title" id=${headingId}>${name}</h4>`;
+  return html`<article class="zone" part="zone" data-phase=${zone.phase} data-hvac-mode=${thermostat.hvac_mode ?? "unknown"} data-demand=${String(hasDemand)} data-demand-kind=${demandKind} data-blocked=${String(zone.blocked)} aria-labelledby=${headingId}>
     <div class="row"><div>${heading}<p class="meta zone-owner">${internal ? "Hydronicus thermostat" : `External thermostat · read-only${modeLabel ? ` · ${modeLabel}` : ""}`}</p></div><span class=${`phase${zone.blocked ? " state blocked" : ""}${off ? " off" : ""}`} part="badge">${phase}</span></div>
     <div class="temperature-panel">
       ${temperature(context, thermostat.current_temperature, "Current", "metric")}
       ${temperature(context, thermostat.target_temperature, "Target", "metric target")}
     </div>
     <p class="meta zone-note" dir="auto">${internal ? demandNote : `${demandNote} · ${thermostat.explanation}`}</p>
-    <ul class="diagnostic-list" aria-label="Room diagnostics">
+    <ul class="diagnostic-list" aria-label="Zone diagnostics">
       <li part="chip" class="diagnostic-chip" dir="auto">${formatNumber(zone.sensor_status.usable, locale, 0)} sensor${zone.sensor_status.usable === 1 ? "" : "s"} ready</li>
       ${zone.sensor_status.optional_excluded ? html`<li part="chip" class="diagnostic-chip warning" dir="auto">${formatNumber(zone.sensor_status.optional_excluded, locale, 0)} optional excluded</li>` : nothing}
       ${zone.sensor_status.required_blocking ? html`<li part="chip" class="diagnostic-chip danger" dir="auto">${formatNumber(zone.sensor_status.required_blocking, locale, 0)} required blocked</li>` : nothing}
@@ -76,7 +76,7 @@ export function renderRoom(context: RenderContext, zone: ZoneSnapshot, options: 
     </ul>
     ${thermostat.preset && thermostat.preset !== "none" ? html`<p class="meta zone-note" dir="auto">Preset: ${sentenceLabel(thermostat.preset)}</p>` : nothing}
     ${zone.blocked_reason ? html`<p class="meta zone-note" dir="auto">${zone.blocked_reason}</p>` : nothing}
-    ${zone.coupling_group_ids.length ? html`<p class="meta coupling-note" dir="auto">Coupled delivery - this Room shares hydraulic equipment.</p>` : nothing}
+    ${zone.coupling_group_ids.length ? html`<p class="meta coupling-note" dir="auto">Coupled delivery - this Zone shares hydraulic equipment.</p>` : nothing}
     ${internal
       ? html`${hvacModes.length
             ? html`<div class="hvac-modes" part="control" role="group" aria-label=${`${zone.name} HVAC mode`}>${hvacModes.map((mode) => html`<button type="button" class="hvac-mode" part="segment" data-mode=${mode} aria-pressed=${String(mode === thermostat.hvac_mode)} ?disabled=${!controlEntity} @click=${() => chooseHvacMode(context, zone, mode)}>${hvacModeLabel(localize, mode)}</button>`)}</div>`

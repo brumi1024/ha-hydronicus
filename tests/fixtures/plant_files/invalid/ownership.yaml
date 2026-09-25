@@ -1,9 +1,9 @@
-# A private valve that no loop of its room uses breaks ownership rule R6.
+# A private valve that no loop of its zone uses breaks ownership rule R6.
 hydronicus: 1
 name: Unused private valve
 pumps:
   pump: switch.pump
-rooms:
+zones:
   bedroom:
     temperature_sensors: [sensor.bedroom_temperature]
     valves:

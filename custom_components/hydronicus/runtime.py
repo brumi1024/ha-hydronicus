@@ -106,9 +106,9 @@ class HydronicRuntime:
     name: str
     dry_run: bool
     plant: CompiledPlant
-    # Zone, room-owned circuit and valve, and source ids -> owning config subentry id.
+    # Zone, zone-owned circuit and valve, and source ids -> owning config subentry id.
     object_subentry_ids: Mapping[str, str] = field(default_factory=dict)
-    ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(room_objects={}))
+    ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(zone_objects={}))
     diagnostics_include_actuator_details: bool = False
     plant_device_id: str | None = None
     # Entity platform domain -> unique IDs that platform provided in this setup.
@@ -1877,7 +1877,7 @@ def _bound_state(hass: HomeAssistant, entity_id: str) -> State | None:
     """Return the state of a bound entity, or None for an entity of this integration.
 
     A Plant never reads a Hydronicus entity as an observation or actuator. Entity IDs
-    follow room names, so a room's Temperature can take the ID of a room sensor that
+    follow zone names, so a zone's Temperature can take the ID of a room sensor that
     did not exist yet, and reading it would feed the Plant's output back into itself.
     """
     registry_entry = er.async_get(hass).async_get(entity_id)

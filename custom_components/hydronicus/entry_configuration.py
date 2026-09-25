@@ -1,7 +1,7 @@
 """Own the persisted Plant graph behind small Home Assistant subentry handles.
 
-Config entry version 3 keeps the complete graph in the parent entry. A ``room``
-subentry is a handle for one zone, and through ``room_objects`` for that room's
+Config entry version 4 keeps the complete graph in the parent entry. A ``zone``
+subentry is a handle for one zone, and through ``zone_objects`` for that zone's
 private loops and valves; a ``source`` subentry is a handle for one source.
 Every other object belongs to the Plant. Removing a handle removes exactly what
 it owns, and deletion-closed ownership keeps the remaining graph valid.
@@ -28,24 +28,24 @@ from .const import (
     CONF_OUTPUT_AUTHORIZATION,
     CONF_PLANT_ID,
     CONF_PUMPS,
-    CONF_ROOM_OBJECTS,
     CONF_ROUTES,
     CONF_SOURCES,
     CONF_SUBENTRY_OBJECTS,
     CONF_TOPOLOGY,
     CONF_VALVES,
+    CONF_ZONE_OBJECTS,
     CONF_ZONES,
-    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
+    SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
 from .core.model import CompiledPlant, PlantConfiguration
-from .core.ownership import OwnershipError, PlantOwnership, validate_ownership, without_room
+from .core.ownership import OwnershipError, PlantOwnership, validate_ownership, without_zone
 from .core.topology import TopologyValidationError, compile_topology
 
-SUPPORTED_SUBENTRY_TYPES = frozenset({SUBENTRY_TYPE_ROOM, SUBENTRY_TYPE_SOURCE})
+SUPPORTED_SUBENTRY_TYPES = frozenset({SUBENTRY_TYPE_ZONE, SUBENTRY_TYPE_SOURCE})
 _COLLECTION_BY_SUBENTRY_TYPE = {
-    SUBENTRY_TYPE_ROOM: CONF_ZONES,
+    SUBENTRY_TYPE_ZONE: CONF_ZONES,
     SUBENTRY_TYPE_SOURCE: CONF_SOURCES,
 }
 _TOPOLOGY_COLLECTIONS = (
@@ -58,7 +58,7 @@ _TOPOLOGY_COLLECTIONS = (
 )
 # Collections of objects that own an id, and the word the plant file uses for each.
 _OBJECT_KINDS = (
-    (CONF_ZONES, "room"),
+    (CONF_ZONES, "zone"),
     (CONF_CIRCUITS, "loop"),
     (CONF_VALVES, "valve"),
     (CONF_PUMPS, "pump"),
@@ -81,11 +81,11 @@ class ImportedPlantLike(Protocol):
 
     @property
     def topology(self) -> Mapping[str, Any]:
-        """Return the stored version 3 topology collections."""
+        """Return the stored topology collections."""
 
     @property
     def ownership(self) -> PlantOwnership:
-        """Return the imported room ownership."""
+        """Return the imported zone ownership."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,13 +95,13 @@ class EffectivePlant:
     configuration: PlantConfiguration
     ownership: PlantOwnership
     compiled: CompiledPlant
-    # Zone, room-owned circuit and valve, and source ids -> owning subentry id.
+    # Zone, zone-owned circuit and valve, and source ids -> owning subentry id.
     object_subentry_ids: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
-class RoomDraft:
-    """Everything one room owns, as stored records."""
+class ZoneDraft:
+    """Everything one zone owns, as stored records."""
 
     zone: dict[str, Any]
     circuits: list[dict[str, Any]]
@@ -148,7 +148,7 @@ def runtime_configuration_fingerprint(entry: Any) -> str:
         ),
         CONF_TOPOLOGY: topology_copy(entry.data),
         CONF_SUBENTRY_OBJECTS: subentry_objects(entry.data),
-        CONF_ROOM_OBJECTS: room_objects(entry.data),
+        CONF_ZONE_OBJECTS: zone_objects(entry.data),
         "subentries": handles,
     }
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -205,7 +205,7 @@ def topology_copy(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def subentry_objects(data: Mapping[str, Any]) -> dict[str, str]:
-    """Return the stored object id -> handle type map of every room and source handle."""
+    """Return the stored object id -> handle type map of every zone and source handle."""
     raw_handles = data.get(CONF_SUBENTRY_OBJECTS, {})
     if not isinstance(raw_handles, Mapping):
         raise StoredTopologyError(f"Stored field {CONF_SUBENTRY_OBJECTS!r} must be an object.")
@@ -221,20 +221,20 @@ def subentry_objects(data: Mapping[str, Any]) -> dict[str, str]:
     return handles
 
 
-def room_objects(data: Mapping[str, Any]) -> dict[str, str]:
+def zone_objects(data: Mapping[str, Any]) -> dict[str, str]:
     """Return the stored private circuit or valve id -> owning zone id map."""
-    raw_owners = data.get(CONF_ROOM_OBJECTS, {})
+    raw_owners = data.get(CONF_ZONE_OBJECTS, {})
     if not isinstance(raw_owners, Mapping):
-        raise StoredTopologyError(f"Stored field {CONF_ROOM_OBJECTS!r} must be an object.")
+        raise StoredTopologyError(f"Stored field {CONF_ZONE_OBJECTS!r} must be an object.")
     return {
-        _uuid(object_id, "Room-owned object id"): _uuid(zone_id, "Owning zone id")
+        _uuid(object_id, "Zone-owned object id"): _uuid(zone_id, "Owning zone id")
         for object_id, zone_id in raw_owners.items()
     }
 
 
 def plant_ownership(data: Mapping[str, Any]) -> PlantOwnership:
-    """Return the stored room ownership of one Plant."""
-    return PlantOwnership(room_objects=room_objects(data))
+    """Return the stored zone ownership of one Plant."""
+    return PlantOwnership(zone_objects=zone_objects(data))
 
 
 def records(topology: Mapping[str, Any], collection: str) -> list[dict[str, Any]]:
@@ -271,9 +271,9 @@ def replace_record(
 
 
 def _all_handles(topology: Mapping[str, Any]) -> dict[str, str]:
-    """Give every zone a room handle and every source a source handle."""
+    """Give every zone a zone handle and every source a source handle."""
     handles = {
-        canonical_id(zone.get("id")): SUBENTRY_TYPE_ROOM for zone in records(topology, CONF_ZONES)
+        canonical_id(zone.get("id")): SUBENTRY_TYPE_ZONE for zone in records(topology, CONF_ZONES)
     }
     handles.update(
         {
@@ -285,7 +285,7 @@ def _all_handles(topology: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _validated(data: Mapping[str, Any]) -> tuple[PlantConfiguration, PlantOwnership, CompiledPlant]:
-    """Decode, check ownership and room handles, and compile one stored graph."""
+    """Decode, check ownership and zone handles, and compile one stored graph."""
     configuration = plant_configuration_from_entry_data(data)
     ownership = plant_ownership(data)
     validate_ownership(configuration, ownership)
@@ -293,14 +293,14 @@ def _validated(data: Mapping[str, Any]) -> tuple[PlantConfiguration, PlantOwners
     zone_ids = {zone.id for zone in configuration.zones}
     source_ids = {source.id for source in configuration.sources}
     for object_id, subentry_type in handles.items():
-        if subentry_type == SUBENTRY_TYPE_ROOM and object_id not in zone_ids:
-            raise StoredTopologyError(f"Room handle {object_id} does not name a stored zone.")
+        if subentry_type == SUBENTRY_TYPE_ZONE and object_id not in zone_ids:
+            raise StoredTopologyError(f"Zone handle {object_id} does not name a stored zone.")
         if subentry_type == SUBENTRY_TYPE_SOURCE and object_id not in source_ids:
             raise StoredTopologyError(f"Source handle {object_id} does not name a stored source.")
     if unhandled := sorted(
-        zone_id for zone_id in zone_ids if handles.get(zone_id) != SUBENTRY_TYPE_ROOM
+        zone_id for zone_id in zone_ids if handles.get(zone_id) != SUBENTRY_TYPE_ZONE
     ):
-        raise StoredTopologyError("Zones without a room handle: " + ", ".join(unhandled) + ".")
+        raise StoredTopologyError("Zones without a zone handle: " + ", ".join(unhandled) + ".")
     return configuration, ownership, compile_topology(configuration)
 
 
@@ -360,7 +360,7 @@ def effective_plant(entry: Any) -> EffectivePlant:
         )
     owners = dict(present)
     owners.update(
-        {object_id: present[zone_id] for object_id, zone_id in plant.ownership.room_objects.items()}
+        {object_id: present[zone_id] for object_id, zone_id in plant.ownership.zone_objects.items()}
     )
     return EffectivePlant(
         configuration=plant.configuration,
@@ -380,7 +380,7 @@ def _finalized(data: dict[str, Any]) -> dict[str, Any]:
 def new_plant_data(
     *, name: str, plant_id: str, topology: Mapping[str, Any], ownership: PlantOwnership
 ) -> dict[str, Any]:
-    """Return version 3 data for a new Plant, with a handle for every zone and source."""
+    """Return stored data for a new Plant, with a handle for every zone and source."""
     stored_topology = topology_copy({CONF_TOPOLOGY: topology})
     return _finalized(
         {
@@ -389,16 +389,16 @@ def new_plant_data(
             CONF_DRY_RUN: True,
             CONF_TOPOLOGY: stored_topology,
             CONF_SUBENTRY_OBJECTS: _all_handles(stored_topology),
-            CONF_ROOM_OBJECTS: dict(ownership.room_objects),
+            CONF_ZONE_OBJECTS: dict(ownership.zone_objects),
         }
     )
 
 
-def room_draft(data: Mapping[str, Any], zone_id: str) -> RoomDraft:
-    """Return the stored records one room owns."""
+def zone_draft(data: Mapping[str, Any], zone_id: str) -> ZoneDraft:
+    """Return the stored records one zone owns."""
     topology = topology_copy(data)
-    owners = room_objects(data)
-    zone_id = _uuid(zone_id, "Room zone id")
+    owners = zone_objects(data)
+    zone_id = _uuid(zone_id, "Zone id")
 
     def private(collection: str) -> list[dict[str, Any]]:
         return [
@@ -407,7 +407,7 @@ def room_draft(data: Mapping[str, Any], zone_id: str) -> RoomDraft:
             if owners.get(canonical_id(record.get("id"))) == zone_id
         ]
 
-    return RoomDraft(
+    return ZoneDraft(
         zone=_record_by_id(topology, CONF_ZONES, zone_id),
         circuits=private(CONF_CIRCUITS),
         valves=private(CONF_VALVES),
@@ -425,17 +425,17 @@ def _merged(
     drafted: Iterable[Mapping[str, Any]],
     collection: str,
 ) -> list[dict[str, Any]]:
-    """Replace a room's records in place, drop the ones it no longer has, append new ones."""
+    """Replace a zone's records in place, drop the ones it no longer has, append new ones."""
     new_by_id: dict[str, dict[str, Any]] = {}
     for record in drafted:
-        object_id = record_object_id(record, f"Room {collection} record")
+        object_id = record_object_id(record, f"Zone {collection} record")
         if object_id in new_by_id:
-            raise StoredTopologyError(f"Room {collection} repeat id {object_id}.")
+            raise StoredTopologyError(f"Zone {collection} repeat id {object_id}.")
         new_by_id[object_id] = deepcopy(dict(record))
     stored_ids = {canonical_id(record.get("id")) for record in stored}
     if taken := sorted((set(new_by_id) & stored_ids) - replaceable_ids):
         raise StoredTopologyError(
-            f"Room {collection} " + ", ".join(taken) + " belong to the Plant or another room."
+            f"Zone {collection} " + ", ".join(taken) + " belong to the Plant or another zone."
         )
     merged: list[dict[str, Any]] = []
     for record in stored:
@@ -448,15 +448,15 @@ def _merged(
     return merged
 
 
-def data_with_room(data: Mapping[str, Any], draft: RoomDraft) -> dict[str, Any]:
-    """Insert a room, or replace everything the room with this zone id owns."""
-    zone_id = record_object_id(draft.zone, "Room zone")
+def data_with_zone(data: Mapping[str, Any], draft: ZoneDraft) -> dict[str, Any]:
+    """Insert a zone, or replace everything the zone with this zone id owns."""
+    zone_id = record_object_id(draft.zone, "Zone")
     for route in draft.routes:
-        if _uuid(_required(route, "zone_id", "Room route"), "Room route zone id") != zone_id:
-            raise StoredTopologyError("Every room route must start at the room's zone.")
+        if _uuid(_required(route, "zone_id", "Zone route"), "Zone route zone id") != zone_id:
+            raise StoredTopologyError("Every zone route must start at its zone.")
     updated = deepcopy(dict(data))
     topology = topology_copy(updated)
-    owners = room_objects(updated)
+    owners = zone_objects(updated)
     private_ids = {object_id for object_id, owner in owners.items() if owner == zone_id}
     replaceable = {
         CONF_ZONES: {zone_id},
@@ -480,12 +480,12 @@ def data_with_room(data: Mapping[str, Any], draft: RoomDraft) -> dict[str, Any]:
         )
     owners = {object_id: owner for object_id, owner in owners.items() if owner != zone_id}
     for record in (*draft.circuits, *draft.valves):
-        owners[record_object_id(record, "Room record")] = zone_id
+        owners[record_object_id(record, "Zone record")] = zone_id
     handles = subentry_objects(updated)
-    handles[zone_id] = SUBENTRY_TYPE_ROOM
+    handles[zone_id] = SUBENTRY_TYPE_ZONE
     updated[CONF_TOPOLOGY] = topology
     updated[CONF_SUBENTRY_OBJECTS] = handles
-    updated[CONF_ROOM_OBJECTS] = owners
+    updated[CONF_ZONE_OBJECTS] = owners
     return _finalized(updated)
 
 
@@ -547,7 +547,7 @@ def object_ids(data: Mapping[str, Any]) -> set[str]:
 def data_with_plant(data: Mapping[str, Any], imported: ImportedPlantLike) -> dict[str, Any]:
     """Replace the name, topology, and ownership, giving every zone and source a handle.
 
-    An object id keeps its kind: a room, loop, valve, pump, or source cannot take
+    An object id keeps its kind: a zone, loop, valve, pump, or source cannot take
     the id of an object of another kind, even one the file removes, because the
     handles and registrations of that id belong to the old object.
     """
@@ -567,12 +567,12 @@ def data_with_plant(data: Mapping[str, Any], imported: ImportedPlantLike) -> dic
     updated[CONF_NAME] = imported.name
     updated[CONF_TOPOLOGY] = topology
     updated[CONF_SUBENTRY_OBJECTS] = _all_handles(topology)
-    updated[CONF_ROOM_OBJECTS] = dict(imported.ownership.room_objects)
+    updated[CONF_ZONE_OBJECTS] = dict(imported.ownership.zone_objects)
     return _finalized(updated)
 
 
 def subentries_for(data: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return the room and source handles of stored data, for ``async_create_entry``."""
+    """Return the zone and source handles of stored data, for ``async_create_entry``."""
     topology = topology_copy(data)
     handles: list[dict[str, Any]] = []
     for object_id, subentry_type in subentry_objects(data).items():
@@ -613,7 +613,7 @@ def subentry_sync(entry: Any, data: Mapping[str, Any]) -> SubentrySync:
 
 
 def subentry_draft(entry: Any, subentry: Any) -> dict[str, Any]:
-    """Return the stored record behind one room or source handle."""
+    """Return the stored record behind one zone or source handle."""
     subentry_type = str(subentry.subentry_type)
     if subentry_type not in SUPPORTED_SUBENTRY_TYPES:
         raise StoredTopologyError(f"Unsupported config subentry type {subentry_type!r}.")
@@ -624,9 +624,9 @@ def subentry_draft(entry: Any, subentry: Any) -> dict[str, Any]:
     )
 
 
-def _data_without_room(data: Mapping[str, Any], zone_id: str) -> dict[str, Any]:
-    """Remove one room closure from stored data, keeping the order of the rest."""
-    remaining, ownership = without_room(
+def _data_without_zone(data: Mapping[str, Any], zone_id: str) -> dict[str, Any]:
+    """Remove one zone closure from stored data, keeping the order of the rest."""
+    remaining, ownership = without_zone(
         plant_configuration_from_entry_data(data), plant_ownership(data), zone_id
     )
     kept_ids = {
@@ -644,7 +644,7 @@ def _data_without_room(data: Mapping[str, Any], zone_id: str) -> dict[str, Any]:
             if canonical_id(record.get("id")) in object_ids
         ]
     updated[CONF_TOPOLOGY] = topology
-    updated[CONF_ROOM_OBJECTS] = dict(ownership.room_objects)
+    updated[CONF_ZONE_OBJECTS] = dict(ownership.zone_objects)
     return updated
 
 
@@ -661,7 +661,7 @@ def _data_without_source(data: Mapping[str, Any], source_id: str) -> dict[str, A
 
 
 def reconcile_removed_subentries(entry: Any) -> dict[str, Any] | None:
-    """Remove what each vanished room or source handle owned, or return ``None``."""
+    """Remove what each vanished zone or source handle owned, or return ``None``."""
     handles = subentry_objects(entry.data)
     present = _present_handles(entry, handles)
     missing = [object_id for object_id in handles if object_id not in present]
@@ -670,8 +670,8 @@ def reconcile_removed_subentries(entry: Any) -> dict[str, Any] | None:
     data = deepcopy(dict(entry.data))
     try:
         for object_id in missing:
-            if handles[object_id] == SUBENTRY_TYPE_ROOM:
-                data = _data_without_room(data, object_id)
+            if handles[object_id] == SUBENTRY_TYPE_ZONE:
+                data = _data_without_zone(data, object_id)
             else:
                 data = _data_without_source(data, object_id)
             del handles[object_id]

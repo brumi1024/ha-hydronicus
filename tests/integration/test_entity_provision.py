@@ -13,30 +13,35 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import CONF_TOPOLOGY, DOMAIN
+from custom_components.hydronicus.const import (
+    CONF_TOPOLOGY,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+)
 from tests.integration.plant_fixtures import (
     MANIFOLD_PUMP_ENTITY,
     MANIFOLD_PUMP_ID,
     PLANT_ID,
-    manifold_rooms,
     manifold_topology,
+    manifold_zones,
     plant_data,
     plant_entry,
-    room_subentry,
+    zone_subentry,
 )
 
-LIVING, BEDROOM = manifold_rooms(("Living room", "Bedroom"))
+LIVING, BEDROOM = manifold_zones(("Living room", "Bedroom"))
 LIVING_HUMIDITY = "sensor.living_room_humidity"
 LIVING_SUPPLY = "sensor.living_room_supply"
 
-ROOM_COOLING_ENTITIES = (
+ZONE_COOLING_ENTITIES = (
     ("binary_sensor", "cooling_demand"),
     ("binary_sensor", "cooling_blocked"),
     ("sensor", "cooling_blocked_reason"),
     ("sensor", "dew_point"),
     ("sensor", "condensation_margin"),
 )
-ROOM_HEATING_ENTITIES = (
+ZONE_HEATING_ENTITIES = (
     ("climate", "climate"),
     ("binary_sensor", "demand"),
     ("binary_sensor", "blocked"),
@@ -64,9 +69,9 @@ def _topology(*, living_cools: bool) -> dict[str, Any]:
 
 
 def _set_states(hass) -> None:
-    for room in (LIVING, BEDROOM):
-        hass.states.async_set(room.temperature_sensor, "22.0")
-        hass.states.async_set(room.valve_entity, "off")
+    for zone in (LIVING, BEDROOM):
+        hass.states.async_set(zone.temperature_sensor, "22.0")
+        hass.states.async_set(zone.valve_entity, "off")
     hass.states.async_set(LIVING_HUMIDITY, "50.0")
     hass.states.async_set(LIVING_SUPPLY, "18.0")
     hass.states.async_set(MANIFOLD_PUMP_ENTITY, "off")
@@ -87,7 +92,7 @@ def _registered(hass, domain: str, unique_id: str) -> er.RegistryEntry | None:
     return registry.async_get(entity_id) if entity_id is not None else None
 
 
-def _room_entities(zone_id: str, entities: tuple[tuple[str, str], ...]) -> list[tuple[str, str]]:
+def _zone_entities(zone_id: str, entities: tuple[tuple[str, str], ...]) -> list[tuple[str, str]]:
     return [(domain, f"{PLANT_ID}_{zone_id}_{suffix}") for domain, suffix in entities]
 
 
@@ -100,16 +105,16 @@ async def _set_living_cooling(hass, entry: MockConfigEntry, *, enabled: bool) ->
     assert entry.state is ConfigEntryState.LOADED
 
 
-async def test_cooling_entities_exist_only_for_rooms_that_can_cool(hass) -> None:
-    """A room gets cooling entities exactly when its thermostat offers cool modes."""
+async def test_cooling_entities_exist_only_for_zones_that_can_cool(hass) -> None:
+    """A zone gets cooling entities exactly when its thermostat offers cool modes."""
     await _setup(hass)
 
-    for domain, unique_id in _room_entities(LIVING.zone_id, ROOM_COOLING_ENTITIES):
+    for domain, unique_id in _zone_entities(LIVING.zone_id, ZONE_COOLING_ENTITIES):
         assert _registered(hass, domain, unique_id) is not None, unique_id
-    for domain, unique_id in _room_entities(BEDROOM.zone_id, ROOM_COOLING_ENTITIES):
+    for domain, unique_id in _zone_entities(BEDROOM.zone_id, ZONE_COOLING_ENTITIES):
         assert _registered(hass, domain, unique_id) is None, unique_id
     for zone_id in (LIVING.zone_id, BEDROOM.zone_id):
-        for domain, unique_id in _room_entities(zone_id, ROOM_HEATING_ENTITIES):
+        for domain, unique_id in _zone_entities(zone_id, ZONE_HEATING_ENTITIES):
             assert _registered(hass, domain, unique_id) is not None, unique_id
 
     assert HVACMode.COOL in hass.states.get("climate.living_room").attributes["hvac_modes"]
@@ -129,7 +134,7 @@ async def test_source_entities_exist_only_for_a_plant_with_a_source(hass) -> Non
 
 
 async def test_topology_devices_take_the_object_name_alone(hass) -> None:
-    """Room and equipment devices drop the Plant name, and the Plant device keeps it."""
+    """Zone and equipment devices drop the Plant name, and the Plant device keeps it."""
     entry = await _setup(hass)
     devices = dr.async_get(hass)
 
@@ -150,8 +155,8 @@ async def test_turning_cooling_off_removes_only_the_cooling_entities(hass) -> No
     """A reload removes the entities nothing provides and keeps every other registration."""
     entry = await _setup(hass)
     registry = er.async_get(hass)
-    living_subentry = room_subentry(entry, LIVING.zone_id).subentry_id
-    # A user customization on a room entity that stays must survive the cleanup.
+    living_subentry = zone_subentry(entry, LIVING.zone_id).subentry_id
+    # A user customization on a zone entity that stays must survive the cleanup.
     demand = _registered(hass, "binary_sensor", f"{PLANT_ID}_{LIVING.zone_id}_demand")
     assert demand is not None
     registry.async_update_entity(demand.entity_id, name="Living heat call")
@@ -159,12 +164,12 @@ async def test_turning_cooling_off_removes_only_the_cooling_entities(hass) -> No
         registry_entry.entity_id: registry_entry.id
         for registry_entry in er.async_entries_for_config_entry(registry, entry.entry_id)
         if not registry_entry.unique_id.endswith(
-            tuple(f"_{suffix}" for _domain, suffix in ROOM_COOLING_ENTITIES)
+            tuple(f"_{suffix}" for _domain, suffix in ZONE_COOLING_ENTITIES)
         )
     }
     cooling = [
         _registered(hass, domain, unique_id)
-        for domain, unique_id in _room_entities(LIVING.zone_id, ROOM_COOLING_ENTITIES)
+        for domain, unique_id in _zone_entities(LIVING.zone_id, ZONE_COOLING_ENTITIES)
     ]
     assert all(
         registry_entry is not None and registry_entry.config_subentry_id == living_subentry
@@ -192,26 +197,32 @@ async def test_turning_cooling_off_removes_only_the_cooling_entities(hass) -> No
 
     # Turning cooling back on provides the cooling entities again.
     await _set_living_cooling(hass, entry, enabled=True)
-    for domain, unique_id in _room_entities(LIVING.zone_id, ROOM_COOLING_ENTITIES):
+    for domain, unique_id in _zone_entities(LIVING.zone_id, ZONE_COOLING_ENTITIES):
         registry_entry = _registered(hass, domain, unique_id)
         assert registry_entry is not None, unique_id
         assert registry_entry.config_subentry_id == living_subentry
 
 
-async def test_setup_removes_stale_entries_of_the_parent_and_of_room_subentries(hass) -> None:
+async def test_setup_removes_stale_entries_of_the_parent_and_of_zone_subentries(hass) -> None:
     """Stale registrations from an earlier graph go at setup, wherever they were owned."""
     _set_states(hass)
     entry = plant_entry(plant_data(_topology(living_cools=False)))
     entry.add_to_hass(hass)
-    other = MockConfigEntry(domain=DOMAIN, title="Other plant", data={})
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
+        title="Other plant",
+        data={},
+    )
     other.add_to_hass(hass)
     registry = er.async_get(hass)
-    stale_room = registry.async_get_or_create(
+    stale_zone = registry.async_get_or_create(
         "binary_sensor",
         DOMAIN,
         f"{PLANT_ID}_{BEDROOM.zone_id}_cooling_demand",
         config_entry=entry,
-        config_subentry_id=room_subentry(entry, BEDROOM.zone_id).subentry_id,
+        config_subentry_id=zone_subentry(entry, BEDROOM.zone_id).subentry_id,
     )
     stale_plant = registry.async_get_or_create(
         "sensor", DOMAIN, f"{PLANT_ID}_source_dwell", config_entry=entry
@@ -223,7 +234,7 @@ async def test_setup_removes_stale_entries_of_the_parent_and_of_room_subentries(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert registry.async_get(stale_room.entity_id) is None
+    assert registry.async_get(stale_zone.entity_id) is None
     assert registry.async_get(stale_plant.entity_id) is None
     assert registry.async_get(foreign.entity_id) is not None
 
@@ -266,10 +277,10 @@ async def test_a_platform_that_fails_to_set_up_keeps_its_registrations(hass) -> 
     assert hass.states.get("climate.living_room") is not None
 
 
-async def test_a_room_never_reads_its_own_entity_as_an_observation(hass) -> None:
-    """A room sensor that takes a missing sensor's entity ID is not read back."""
-    for room in (LIVING, BEDROOM):
-        hass.states.async_set(room.valve_entity, "off")
+async def test_a_zone_never_reads_its_own_entity_as_an_observation(hass) -> None:
+    """A zone sensor that takes a missing sensor's entity ID is not read back."""
+    for zone in (LIVING, BEDROOM):
+        hass.states.async_set(zone.valve_entity, "off")
     hass.states.async_set(BEDROOM.temperature_sensor, "22.0")
     hass.states.async_set(MANIFOLD_PUMP_ENTITY, "off")
     # Bind Living room to the entity ID its own Combined temperature will claim.
@@ -284,7 +295,7 @@ async def test_a_room_never_reads_its_own_entity_as_an_observation(hass) -> None
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    # The bound sensor did not exist, so the room's own sensor took its entity ID.
+    # The bound sensor did not exist, so the zone's own sensor took its entity ID.
     own = _registered(hass, "sensor", f"{PLANT_ID}_{LIVING.zone_id}_aggregate_temperature")
     assert own is not None
     assert own.entity_id == own_entity_id

@@ -217,7 +217,7 @@ export const cardStyles = css`
   .zone { position: relative; overflow: hidden; transition: border-color 220ms ease, background-color 220ms ease; }
   .zone::before { content: ""; position: absolute; inset-block-start: 0; inset-inline: 0; block-size: 2px; background: var(--_hy-state); opacity: 0; transform: scaleX(0.35); transform-origin: var(--_hy-inline-start); transition: opacity 220ms ease, transform 380ms ease; }
   .zone[data-demand="true"]::before { opacity: 0.9; transform: scaleX(1); }
-  /* A Room without demand is idle, whatever the Plant around it is doing. */
+  /* A Zone without demand is idle, whatever the Plant around it is doing. */
   .zone[data-demand-kind="none"] { --_hy-state: var(--_hy-idle); }
   .zone[data-demand-kind="heating"] { --_hy-state: var(--_hy-heating); }
   .zone[data-demand-kind="cooling"] { --_hy-state: var(--_hy-cooling); }
@@ -262,7 +262,7 @@ export const cardStyles = css`
   .path-head { justify-content: space-between; flex-wrap: wrap; }
   .path-heading { display: flex; align-items: center; gap: 0.42rem; min-inline-size: 0; }
   .path-heading::before { content: ""; flex: 0 0 auto; inline-size: 0.43rem; block-size: 0.43rem; border-radius: 50%; background: color-mix(in srgb, var(--_hy-text-muted) 55%, transparent); }
-  /* A path takes the colour of its own Room's demand. */
+  /* A path takes the colour of its own Zone's demand. */
   .path[data-demand-kind="heating"] { --_hy-state: var(--_hy-heating); }
   .path[data-demand-kind="cooling"] { --_hy-state: var(--_hy-cooling); }
   .path[data-flowing="true"] .path-heading::before { background: var(--_hy-state); animation: hydronicus-pulse 2.4s ease-out infinite; }
@@ -305,12 +305,12 @@ export const cardStyles = css`
   .operation[data-result="failed"] .operation-marker, .operation[data-result="timed_out"] .operation-marker { background: var(--_hy-danger); }
   .operation-copy { min-inline-size: 0; }
   .empty-state { padding: 0.8rem; border: 1px dashed var(--_hy-line); border-radius: var(--_hy-radius-inner); text-align: center; }
-  /* A Room card is the Room tile itself: the card frame replaces the tile's. */
-  ha-card.room-card { padding: 0; }
-  ha-card.room-card > .zone { border: 0; border-radius: inherit; box-shadow: none; }
-  ha-card.room-card > .zone:not([data-demand="true"]) { background: transparent; }
-  ha-card.room-card.compact > .zone { padding: 0.55rem; }
-  ha-card.room-card > .notice, ha-card.room-card > .action-error { margin-block-start: 0.72rem; margin-inline: 0.72rem; }
+  /* A Zone card is the Zone tile itself: the card frame replaces the tile's. */
+  ha-card.zone-card { padding: 0; }
+  ha-card.zone-card > .zone { border: 0; border-radius: inherit; box-shadow: none; }
+  ha-card.zone-card > .zone:not([data-demand="true"]) { background: transparent; }
+  ha-card.zone-card.compact > .zone { padding: 0.55rem; }
+  ha-card.zone-card > .notice, ha-card.zone-card > .action-error { margin-block-start: 0.72rem; margin-inline: 0.72rem; }
   h2.zone-title { font-size: var(--ha-font-size-m, 0.9rem); }
   .state-card { display: grid; gap: 0.6rem; }
   .loading-card { min-block-size: 12rem; }

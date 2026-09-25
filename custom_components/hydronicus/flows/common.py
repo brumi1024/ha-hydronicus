@@ -411,7 +411,7 @@ def warnings_to_confirm(compiled: CompiledPlant, before: CompiledPlant | None) -
     """Return the warnings a save must confirm: the ones this change introduces.
 
     A warning names its code and equipment. One the Plant already had before the
-    change was confirmed when it appeared, so editing a room of a manifold does
+    change was confirmed when it appeared, so editing a zone of a manifold does
     not ask about the shared pump again. Without a previous Plant, every warning
     other than unused equipment is new.
     """

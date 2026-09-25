@@ -655,7 +655,7 @@ class CompiledPlant:
     def zone_can_cool(self, zone_id: str) -> bool:
         """Return whether an enabled Delivery Route leads the Zone to a cooling Circuit.
 
-        This is the one notion of a room that can cool: its thermostat offers
+        This is the one notion of a zone that can cool: its thermostat offers
         cool modes and its cooling entities exist exactly when this holds.
         """
         return any(

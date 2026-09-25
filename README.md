@@ -9,7 +9,7 @@
 </p>
 
 Hydronicus is a Home Assistant custom integration for describing hydronic heating and cooling plants as explicit topologies.
-It models rooms (comfort zones), loops (hydraulic circuits), delivery routes, valves, pumps, and the decisions that connect them.
+It models zones, loops (hydraulic circuits), delivery routes, valves, pumps, and the decisions that connect them.
 
 ## Current status
 
@@ -31,16 +31,16 @@ The current implementation includes:
 
 - HACS custom-repository installation.
 - One Home Assistant config entry per Plant.
-- Guided setup that creates a Plant with its pump and one room per form, and plant file import that rebuilds a Plant with the same entity IDs.
-- Room subentries: each room owns its thermostat, its sensors, and its private loops and valves, and can use shared loops of the Plant.
+- Guided setup that creates a Plant with its pump and one zone per form, and plant file import that rebuilds a Plant with the same entity IDs.
+- Zone subentries: each zone owns its thermostat, its sensors, and its private loops and valves, and can use shared loops of the Plant.
 - Plant settings for Dry run, pumps, showing the plant file, and editing the whole Plant as a plant file.
 - The `hydronicus.export_plant` action, which returns the plant file of a Plant.
 - Required and optional temperature sensors with freshness limits and calibration offsets.
 - Mean, median, minimum, maximum, designated-reference, and weighted-mean aggregation.
-- One thermostat owner per room: a Hydronicus thermostat or an existing Home Assistant climate entity.
+- One thermostat owner per zone: a Hydronicus thermostat or an existing Home Assistant climate entity.
 - Hydronicus-owned comfort, eco, and away preset targets.
 - Configurable Hydronicus thermostat hysteresis plus minimum active and idle durations.
-- Several rooms per loop and several loops per room.
+- Several zones per loop and several loops per zone.
 - Shared valve and pump modeling with active-consumer tracking.
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
 - Cooling condensation diagnostics and Dry run source recommendations.
@@ -77,10 +77,10 @@ Do not bind a Dry run test to equipment that must not be observed or controlled 
 
 The trial kit in [docs/examples/trial](docs/examples/trial) provides everything a first test needs:
 
-- [package.yaml](docs/examples/trial/package.yaml) is a Home Assistant package with synthetic entities for two rooms and one pump.
+- [package.yaml](docs/examples/trial/package.yaml) is a Home Assistant package with synthetic entities for two zones and one pump.
 - [plant.yaml](docs/examples/trial/plant.yaml) is a plant file bound to those entities.
 
-Each room gets a temperature sensor driven by an `input_number`, and each valve and the pump are template switches backed by an `input_boolean`.
+Each zone gets a temperature sensor driven by an `input_number`, and each valve and the pump are template switches backed by an `input_boolean`.
 Because every actuator is backed by a helper, the helper's history shows any command that reached it.
 
 ### Load the trial package
@@ -97,7 +97,7 @@ Because every actuator is backed by a helper, the helper's history shows any com
 3. Restart Home Assistant.
 
 The package creates `sensor.hydronicus_trial_living_room_temperature`, `sensor.hydronicus_trial_bedroom_temperature`, `switch.hydronicus_trial_living_room_valve`, `switch.hydronicus_trial_bedroom_valve`, and `switch.hydronicus_trial_pump`.
-Both room temperatures start at 21 °C.
+Both zone temperatures start at 21 °C.
 See [Home Assistant's packages documentation](https://www.home-assistant.io/docs/configuration/packages/) if your configuration already uses packages.
 
 ### Create the Plant
@@ -115,15 +115,15 @@ To use guided setup:
 
 1. Choose **Guided setup**.
 2. In **Name the Plant**, enter `Trial plant` as the **Plant name**, choose `switch.hydronicus_trial_pump` as the **Pump entity**, and submit.
-3. In **Add a room**, enter `Living room` as the **Room name**, choose `sensor.hydronicus_trial_living_room_temperature` under **Temperature sensors** and `switch.hydronicus_trial_living_room_valve` under **Loop valves**, turn on **Add another room**, and submit.
-4. In the next **Add a room** form, enter `Bedroom` with `sensor.hydronicus_trial_bedroom_temperature` and `switch.hydronicus_trial_bedroom_valve`, leave **Add another room** off, and submit.
+3. In **Add a zone**, enter `Living room` as the **Zone name**, choose `sensor.hydronicus_trial_living_room_temperature` under **Temperature sensors** and `switch.hydronicus_trial_living_room_valve` under **Loop valves**, turn on **Add another zone**, and submit.
+4. In the next **Add a zone** form, enter `Bedroom` with `sensor.hydronicus_trial_bedroom_temperature` and `switch.hydronicus_trial_bedroom_valve`, leave **Add another zone** off, and submit.
 5. Continue with the review below.
 
-Guided setup names each room's loop after the room, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
+Guided setup names each zone's loop after the zone, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
 The plant file uses the same names, which is why both paths create the same entity IDs.
 
-The review lists the two rooms and how they connect, such as `Bedroom is heated by Bedroom loop.`
-It also lists one warning, `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; ...`, because separate room thermostats cannot control loops on one pump independently.
+The review lists the two zones and how they connect, such as `Bedroom is heated by Bedroom loop.`
+It also lists one warning, `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; ...`, because separate zone thermostats cannot control loops on one pump independently.
 That is expected for a manifold, so turn on **I understand these warnings** and submit.
 The new Plant starts in Dry run.
 
@@ -142,7 +142,7 @@ Changing a Hydronicus climate target changes the calculated demand and the lates
 If Dry run is turned off in an isolated test, heating and cooling valve and pump operations can execute after the configured confirmation.
 Source-selector operations remain proposed and do not execute.
 
-See [configuration and simulation](docs/configuration.md) for rooms, loops, and Plant settings, [the plant file reference](docs/plant-file.md) for the file format, and [troubleshooting](docs/troubleshooting.md) if the flow or entities do not behave as expected.
+See [configuration and simulation](docs/configuration.md) for zones, loops, and Plant settings, [the plant file reference](docs/plant-file.md) for the file format, and [troubleshooting](docs/troubleshooting.md) if the flow or entities do not behave as expected.
 
 ## Dry run boundary
 
@@ -157,29 +157,29 @@ Keep real equipment outside the actuator path until the exact staged scope has h
 ## Supported topology
 
 Hydronicus uses explicit objects and relationships.
-The UI speaks of rooms and loops; the model underneath speaks of Comfort Zones and Hydraulic Circuits.
+The UI speaks of zones and loops; the model underneath speaks of Zones and Hydraulic Circuits.
 
 - A Plant owns the complete topology and runtime state.
-- A room is one Comfort Zone with its thermostat, its observations, its Delivery Routes, and its private loops and valves.
-- One room thermostat owns target, preset, mode, hysteresis, and demand semantics.
+- A zone is the space one thermostat controls, with its observations, its Delivery Routes, and its private loops and valves.
+- One zone thermostat owns target, preset, mode, hysteresis, and demand semantics.
 - A loop is a Hydraulic Circuit: a water path through one or more valves and one pump.
-- A Delivery Route connects one room to one loop.
-- Plant equipment, owned by the Plant rather than a room, includes every pump, shared valves, shared loops, sources, and the source selector.
+- A Delivery Route connects one zone to one loop.
+- Plant equipment, owned by the Plant rather than a zone, includes every pump, shared valves, shared loops, sources, and the source selector.
 - A valve can be required by more than one loop.
 - A pump can serve more than one loop.
 
-Every object belongs to the Plant or to exactly one room, and a room never depends on another room's objects.
-Deleting a room therefore removes exactly that room and always leaves a valid Plant.
+Every object belongs to the Plant or to exactly one zone, and a zone never depends on another zone's objects.
+Deleting a zone therefore removes exactly that zone and always leaves a valid Plant.
 
-Independent branches, shared pumps, shared valves, and one room routed to several loops can be represented.
-Rooms, their private loops and valves, pumps, and Dry run are edited in the UI; shared loops, shared valves, and the source selector are edited through the [plant file](docs/plant-file.md).
+Independent branches, shared pumps, shared valves, and one zone routed to several loops can be represented.
+Zones, their private loops and valves, pumps, and Dry run are edited in the UI; shared loops, shared valves, and the source selector are edited through the [plant file](docs/plant-file.md).
 Sharing a valve or another hydraulically coupled component does not create independent physical control.
 
 Read [how Hydronicus works](docs/how-it-works.md) before mapping an existing plant.
 
 ## Thermostat ownership
 
-Each room has exactly one thermostat owner.
+Each zone has exactly one thermostat owner.
 
 A Hydronicus thermostat is a published climate entity with restored target, preset, and HVAC mode state.
 
@@ -223,8 +223,8 @@ Remove credentials, tokens, private addresses, and household-specific entity det
 ## Documentation
 
 - [How Hydronicus works](docs/how-it-works.md) explains the model, evaluation cycle, shared equipment, and exact control boundary.
-- [Lovelace cards](docs/lovelace.md) documents automatic card loading, removal of the old manual resource, the Plant card and its sections, the Room card, dashboards built from pieces, the presentation contract, and responsive layout.
-- [Configuration and simulation](docs/configuration.md) walks through guided setup, rooms, loops, and Plant settings.
+- [Lovelace cards](docs/lovelace.md) documents automatic card loading, removal of the old manual resource, the Plant card and its sections, the Zone card, dashboards built from pieces, the presentation contract, and responsive layout.
+- [Configuration and simulation](docs/configuration.md) walks through guided setup, zones, loops, and Plant settings.
 - [Plant file](docs/plant-file.md) is the reference for importing, exporting, and editing a whole Plant as YAML.
 - [Safety limits](docs/safety.md) separates software coordination from physical protection.
 - [Troubleshooting](docs/troubleshooting.md) covers setup, observations, explanations, Repairs, and diagnostics.

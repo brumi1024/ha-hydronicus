@@ -35,8 +35,8 @@ from ..const import (
     CONF_VALVES,
     CONF_ZONES,
     DEFAULT_PUMP_OVERRUN,
-    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
+    SUBENTRY_TYPE_ZONE,
 )
 from ..core.configuration import StoredTopologyError
 from ..core.model import CompiledPlant
@@ -54,12 +54,12 @@ from ..entry_configuration import (
     invalidate_output_authorization,
     object_ids,
     output_authorization,
-    room_objects,
     subentry_sync,
     topology_copy,
+    zone_objects,
 )
-from ..migration import async_move_object_registrations, async_remove_object_registrations
 from ..plant_file import first_own_entity, parsed_plant_file, plant_file, plant_file_yaml
+from ..registrations import async_move_object_registrations, async_remove_object_registrations
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
     SECTION_FEEDBACK,
@@ -96,7 +96,7 @@ _PUMP_FEEDBACK: Final = (
 )
 # Graph collections and the word the review's change list uses for their objects.
 _CHANGE_KINDS: Final = (
-    (CONF_ZONES, "room"),
+    (CONF_ZONES, "zone"),
     (CONF_CIRCUITS, "loop"),
     (CONF_VALVES, "valve"),
     (CONF_PUMPS, "pump"),
@@ -198,7 +198,7 @@ def _signature(data: Mapping[str, Any]) -> tuple[Any, ...]:
         data.get(CONF_NAME),
         json.dumps(collections, sort_keys=True),
         json.dumps(topology.get(_SOURCE_SELECTOR), sort_keys=True),
-        room_objects(data),
+        zone_objects(data),
     )
 
 
@@ -215,7 +215,7 @@ def _plant_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
     if before.get(CONF_NAME) != after.get(CONF_NAME):
         lines.append(f"Renames the Plant from {before.get(CONF_NAME)} to {after.get(CONF_NAME)}")
     old_topology, new_topology = topology_copy(before), topology_copy(after)
-    old_owners, new_owners = room_objects(before), room_objects(after)
+    old_owners, new_owners = zone_objects(before), zone_objects(after)
     old_zones = {canonical_id(zone.get("id")): zone for zone in old_topology[CONF_ZONES]}
     new_zones = {canonical_id(zone.get("id")): zone for zone in new_topology[CONF_ZONES]}
     for collection, kind in _CHANGE_KINDS:
@@ -242,7 +242,7 @@ def _plant_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
                 lines.append(f"Moves {kind} {new_name} from {old_owner} to {new_owner}")
     for zone_id in old_zones.keys() & new_zones.keys():
         if _routes_of(old_topology, zone_id) != _routes_of(new_topology, zone_id):
-            lines.append(f"Changes the loops of room {new_zones[zone_id].get(CONF_NAME)}")
+            lines.append(f"Changes the loops of zone {new_zones[zone_id].get(CONF_NAME)}")
     old_selector = old_topology.get(_SOURCE_SELECTOR)
     new_selector = new_topology.get(_SOURCE_SELECTOR)
     if old_selector is None and new_selector is not None:
@@ -275,15 +275,15 @@ def _handle_owners(
     owners: dict[str, str | None] = {}
     for zone in topology[CONF_ZONES]:
         zone_id = canonical_id(zone.get("id"))
-        owners[zone_id] = handles.get((SUBENTRY_TYPE_ROOM, zone_id))
+        owners[zone_id] = handles.get((SUBENTRY_TYPE_ZONE, zone_id))
     for collection in (CONF_CIRCUITS, CONF_VALVES, CONF_PUMPS):
         for record in topology[collection]:
             owners[canonical_id(record.get("id"))] = None
     for source in topology[CONF_SOURCES]:
         source_id = canonical_id(source.get("id"))
         owners[source_id] = handles.get((SUBENTRY_TYPE_SOURCE, source_id))
-    for object_id, zone_id in room_objects(data).items():
-        owners[object_id] = handles.get((SUBENTRY_TYPE_ROOM, zone_id))
+    for object_id, zone_id in zone_objects(data).items():
+        owners[object_id] = handles.get((SUBENTRY_TYPE_ZONE, zone_id))
     return owners
 
 

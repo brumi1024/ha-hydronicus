@@ -1,4 +1,4 @@
-# Hydronicus trial kit: synthetic entities for two rooms and one pump.
+# Hydronicus trial kit: synthetic entities for two zones and one pump.
 # Load it as a Home Assistant package in a disposable or staging instance.
 # Every valve and pump is a template switch backed by an input_boolean, so any
 # command sent to it shows up in the input_boolean's history.

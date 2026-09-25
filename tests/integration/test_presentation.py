@@ -6,9 +6,14 @@ import json
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.const import (
+    CONF_DRY_RUN,
+    CONF_NAME,
+    CONF_PLANT_ID,
+)
 from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.presentation import PRESENTATION_SCHEMA_VERSION
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_A = "00000000-0000-4000-8000-000000000002"
@@ -23,10 +28,8 @@ ROUTE_B = "00000000-0000-4000-8000-000000000009"
 
 def _entry() -> MockConfigEntry:
     """Create a generic two-Zone shared-actuator Plant."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Synthetic Plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "Synthetic Plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: True,
@@ -84,6 +87,8 @@ def _entry() -> MockConfigEntry:
                 ],
             },
         },
+        title="Synthetic Plant",
+        source_handles=False,
     )
 
 
@@ -183,4 +188,4 @@ async def test_presentation_carries_thermostat_hvac_mode_and_modes(hass) -> None
     assert thermostats[ZONE_A]["hvac_mode"] == "heat"
     assert thermostats[ZONE_B]["hvac_mode"] == "off"
     assert thermostats[ZONE_A]["hvac_modes"] == ["off", "heat"]
-    assert thermostats[ZONE_A]["explanation"] == "Hydronicus owns this room's digital thermostat."
+    assert thermostats[ZONE_A]["explanation"] == "Hydronicus owns this zone's digital thermostat."

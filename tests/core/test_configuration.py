@@ -326,7 +326,7 @@ def test_rejects_missing_required_persisted_topology_field() -> None:
 
 def test_rejects_predecessor_zone_thermostat_fields() -> None:
     """The fresh-install contract has no decoder for flat thermostat fields."""
-    with pytest.raises(StoredTopologyError, match="room thermostat uses unsupported fields"):
+    with pytest.raises(StoredTopologyError, match="zone thermostat uses unsupported fields"):
         plant_configuration_from_entry_data(
             {
                 "plant_id": PLANT_ID,

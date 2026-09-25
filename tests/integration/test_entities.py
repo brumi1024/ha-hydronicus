@@ -32,6 +32,7 @@ from custom_components.hydronicus.core.model import (
     SourceSelectionPhase,
     ThermostatHvacMode,
 )
+from tests.integration.plant_fixtures import plant_entry
 
 INTEGRATION = Path(__file__).parents[2] / "custom_components" / "hydronicus"
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
@@ -42,17 +43,15 @@ CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 SOURCE_ID = "00000000-0000-4000-8000-000000000007"
 CLIMATE = "climate.living"
-# The room sensor already holds sensor.living_temperature, so the room's own
+# The room sensor already holds sensor.living_temperature, so the zone's own
 # Temperature entity takes the next free entity ID.
 TEMPERATURE = "sensor.living_combined_temperature"
 
 
 def _entry() -> MockConfigEntry:
     """Return one Dry run plant that creates every Hydronicus entity type."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: True,
@@ -109,6 +108,8 @@ def _entry() -> MockConfigEntry:
                 ],
             },
         },
+        title="Hydronic plant",
+        source_handles=False,
     )
 
 
@@ -490,7 +491,7 @@ async def test_climate_omits_humidity_for_zones_without_humidity_sensors(hass) -
     del data["topology"]["zones"][0]["humidity_sensor_metadata"]
     # Cooling requires humidity, so this zone is heating only.
     data["topology"]["circuits"][0][CONF_COOLING_ENABLED] = False
-    entry = MockConfigEntry(domain=DOMAIN, title="Hydronic plant", data=data)
+    entry = plant_entry(data, title="Hydronic plant", source_handles=False)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()

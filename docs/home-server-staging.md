@@ -25,7 +25,7 @@ Then perform the applicable staging checks:
 
 1. Synchronize the integration directory and restart Home Assistant or reload the integration as appropriate.
 2. Confirm Home Assistant starts without integration or translation errors.
-3. Create a Plant with guided setup or by importing a plant file, such as the trial kit's `docs/examples/trial/plant.yaml`, then add, edit, and delete the affected rooms, loops, and pumps, apply an edited plant file, and reload the Plant.
+3. Create a Plant with guided setup or by importing a plant file, such as the trial kit's `docs/examples/trial/plant.yaml`, then add, edit, and delete the affected zones, loops, and pumps, apply an edited plant file, and reload the Plant.
 4. Confirm entity IDs, unique IDs, topology preview, and diagnostics match the configured synthetic Plant, and that exporting the plant file and importing it into a fresh instance keeps every entity ID.
 5. Drive the synthetic sensor values through the chunk's named scenario.
 6. Confirm the visible explanations and virtual actuator sequence match the automated scenario.

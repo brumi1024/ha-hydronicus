@@ -3,7 +3,7 @@ import { HydronicusCardElement } from "./card-base";
 import { configForm, shownSections, stubConfig, validateConfig, type ConfigForm } from "./config";
 import { actionForSafeShutdown, plantVisualState } from "./logic";
 import type { RenderContext } from "./render/context";
-import { renderAlerts, renderBoundary, renderEquipment, renderExplanations, renderHeader, renderOperations, renderPaths, renderRooms } from "./render/plant";
+import { renderAlerts, renderBoundary, renderEquipment, renderExplanations, renderHeader, renderOperations, renderPaths, renderZones } from "./render/plant";
 import { renderActionError, renderState, renderStreamNotice, renderUnservedPlant, showableSnapshot } from "./render/state";
 import type { PlantState } from "./store";
 import type { HomeAssistantLike, PlantCardConfig, PlantSection, PlantSnapshot } from "./types";
@@ -11,7 +11,7 @@ import type { HomeAssistantLike, PlantCardConfig, PlantSection, PlantSnapshot } 
 const HOLD_MS = 1_200;
 const EYEBROW = "Hydronicus Plant";
 /** Sections whose items fill a grid or a wide track, so the card spans the section. */
-const WIDE_SECTIONS: readonly PlantSection[] = ["rooms", "paths", "equipment"];
+const WIDE_SECTIONS: readonly PlantSection[] = ["zones", "paths", "equipment"];
 
 /** Masonry height in 50 px units of each section, estimated from its items. */
 function sectionSize(section: PlantSection, snapshot: PlantSnapshot): number {
@@ -22,7 +22,7 @@ function sectionSize(section: PlantSection, snapshot: PlantSnapshot): number {
       const alerts = Math.min(snapshot.alerts.length, 3);
       return alerts ? 1 + alerts : 0;
     }
-    case "rooms":
+    case "zones":
       return 1 + Math.max(1, snapshot.zones.length) * 5;
     case "paths":
       return snapshot.delivery_paths.length ? 1 + snapshot.delivery_paths.length * 3 : 0;
@@ -82,7 +82,7 @@ export class HydronicusPlantCard extends HydronicusCardElement {
 
   getGridOptions() {
     // No rows: the Sections grid then sizes the card to its content height.
-    // Without a Room grid, path track, or equipment list the card fits half
+    // Without a Zone grid, path track, or equipment list the card fits half
     // a section, like other summary cards.
     const wide = shownSections(this._config).some((section) => WIDE_SECTIONS.includes(section));
     return wide ? { columns: 12, min_columns: 6 } : { columns: 6, min_columns: 4 };
@@ -125,8 +125,8 @@ export class HydronicusPlantCard extends HydronicusCardElement {
           ${renderBoundary(snapshot)}`;
       case "alerts":
         return renderAlerts(context, snapshot);
-      case "rooms":
-        return renderRooms(context, snapshot);
+      case "zones":
+        return renderZones(context, snapshot);
       case "paths":
         return renderPaths(snapshot);
       case "equipment":

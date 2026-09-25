@@ -1,9 +1,9 @@
-"""Builders for version 3 Plant config entries with room and source subentries.
+"""Builders for version 4 Plant config entries with zone and source subentries.
 
-Tests describe a Plant by its stored topology. These builders derive room
-ownership the way migration does, give every zone a room handle and every
-source a source handle, and create a ``MockConfigEntry`` whose subentries match,
-with deterministic subentry ids so tests can name them.
+Tests describe a Plant by its stored topology. These builders derive zone
+ownership, give every zone a zone handle and every source a source handle, and
+create a ``MockConfigEntry`` whose subentries match, with deterministic subentry
+ids so tests can name them.
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    CONF_ROOM_OBJECTS,
     CONF_SUBENTRY_OBJECTS,
     CONF_TOPOLOGY,
+    CONF_ZONE_OBJECTS,
     CONFIG_ENTRY_MINOR_VERSION,
     CONFIG_ENTRY_VERSION,
     DOMAIN,
-    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
+    SUBENTRY_TYPE_ZONE,
 )
 from custom_components.hydronicus.core.configuration import plant_configuration_from_entry_data
 from custom_components.hydronicus.core.ownership import derive_ownership
@@ -44,19 +44,19 @@ def subentry_id_for(object_id: str) -> str:
     return f"handle-{object_id}"
 
 
-def with_room_handles(data: Mapping[str, Any], *, source_handles: bool = True) -> dict[str, Any]:
-    """Add derived room ownership and handles to stored data that has none.
+def with_zone_handles(data: Mapping[str, Any], *, source_handles: bool = True) -> dict[str, Any]:
+    """Add derived zone ownership and handles to stored data that has none.
 
     Everything else, including Dry run and output authorization, stays as given,
     so a live test Plant stays live.
     """
     updated = deepcopy(dict(data))
     topology = updated.get(CONF_TOPOLOGY, {})
-    if CONF_ROOM_OBJECTS not in updated:
+    if CONF_ZONE_OBJECTS not in updated:
         configuration = plant_configuration_from_entry_data(updated)
-        updated[CONF_ROOM_OBJECTS] = dict(derive_ownership(configuration).room_objects)
+        updated[CONF_ZONE_OBJECTS] = dict(derive_ownership(configuration).zone_objects)
     if CONF_SUBENTRY_OBJECTS not in updated or not updated[CONF_SUBENTRY_OBJECTS]:
-        handles = {str(zone["id"]): SUBENTRY_TYPE_ROOM for zone in topology.get("zones", [])}
+        handles = {str(zone["id"]): SUBENTRY_TYPE_ZONE for zone in topology.get("zones", [])}
         if source_handles:
             handles.update(
                 {str(source["id"]): SUBENTRY_TYPE_SOURCE for source in topology.get("sources", [])}
@@ -72,7 +72,7 @@ def plant_data(
     plant_id: str = PLANT_ID,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    """Return validated version 3 data with derived ownership, authorized when live."""
+    """Return validated version 4 data with derived ownership, authorized when live."""
     configuration = plant_configuration_from_entry_data(
         {CONF_PLANT_ID: plant_id, CONF_TOPOLOGY: topology}
     )
@@ -100,8 +100,8 @@ def plant_entry(
     source_handles: bool = True,
     **kwargs: Any,
 ) -> MockConfigEntry:
-    """Return a version 3 entry for stored data, adding room handles when it has none."""
-    stored = with_room_handles(data, source_handles=source_handles)
+    """Return a version 4 entry for stored data, adding zone handles when it has none."""
+    stored = with_zone_handles(data, source_handles=source_handles)
     return MockConfigEntry(
         domain=DOMAIN,
         title=title if title is not None else str(stored.get(CONF_NAME, "Hydronic plant")),
@@ -114,8 +114,8 @@ def plant_entry(
 
 
 @dataclass(frozen=True, slots=True)
-class RoomIds:
-    """The stored ids of one room built by ``manifold_topology``."""
+class ZoneIds:
+    """The stored ids of one zone built by ``manifold_topology``."""
 
     zone_id: str
     circuit_id: str
@@ -129,13 +129,13 @@ def _uuid(group: int, index: int) -> str:
     return f"00000000-0000-4000-8000-{group:04d}{index:08d}"
 
 
-def manifold_rooms(names: Sequence[str]) -> list[RoomIds]:
-    """Return deterministic ids and entities for rooms on one manifold."""
-    rooms = []
+def manifold_zones(names: Sequence[str]) -> list[ZoneIds]:
+    """Return deterministic ids and entities for zones on one manifold."""
+    zones = []
     for index, name in enumerate(names, 1):
         slug = name.lower().replace(" ", "_")
-        rooms.append(
-            RoomIds(
+        zones.append(
+            ZoneIds(
                 zone_id=_uuid(1, index),
                 circuit_id=_uuid(2, index),
                 valve_id=_uuid(3, index),
@@ -144,7 +144,7 @@ def manifold_rooms(names: Sequence[str]) -> list[RoomIds]:
                 valve_entity=f"switch.{slug}_valve",
             )
         )
-    return rooms
+    return zones
 
 
 MANIFOLD_PUMP_ID = _uuid(5, 1)
@@ -156,26 +156,26 @@ def manifold_topology(
     *,
     sources: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Return rooms that each own a loop and valve, sharing one Plant pump."""
-    rooms = manifold_rooms(names)
+    """Return zones that each own a loop and valve, sharing one Plant pump."""
+    zones = manifold_zones(names)
     return {
         "zones": [
             {
-                "id": room.zone_id,
+                "id": zone.zone_id,
                 "name": name,
                 "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
-                "temperature_sensor_metadata": [{"entity_id": room.temperature_sensor}],
+                "temperature_sensor_metadata": [{"entity_id": zone.temperature_sensor}],
             }
-            for name, room in zip(names, rooms, strict=True)
+            for name, zone in zip(names, zones, strict=True)
         ],
         "valves": [
             {
-                "id": room.valve_id,
+                "id": zone.valve_id,
                 "name": f"{name} loop valve",
-                "entity_id": room.valve_entity,
+                "entity_id": zone.valve_entity,
                 "opening_time_seconds": 0.0,
             }
-            for name, room in zip(names, rooms, strict=True)
+            for name, zone in zip(names, zones, strict=True)
         ],
         "pumps": [
             {
@@ -187,16 +187,16 @@ def manifold_topology(
         ],
         "circuits": [
             {
-                "id": room.circuit_id,
+                "id": zone.circuit_id,
                 "name": f"{name} loop",
-                "valve_ids": [room.valve_id],
+                "valve_ids": [zone.valve_id],
                 "pump_id": MANIFOLD_PUMP_ID,
             }
-            for name, room in zip(names, rooms, strict=True)
+            for name, zone in zip(names, zones, strict=True)
         ],
         "routes": [
-            {"id": room.route_id, "zone_id": room.zone_id, "circuit_id": room.circuit_id}
-            for room in rooms
+            {"id": zone.route_id, "zone_id": zone.zone_id, "circuit_id": zone.circuit_id}
+            for zone in zones
         ],
         "sources": [deepcopy(dict(source)) for source in sources],
     }
@@ -209,17 +209,17 @@ def manifold_entry(
     sources: Iterable[Mapping[str, Any]] = (),
     **kwargs: Any,
 ) -> MockConfigEntry:
-    """Return a version 3 manifold entry with one room subentry per room."""
+    """Return a version 4 manifold entry with one zone subentry per zone."""
     data = plant_data(manifold_topology(names, sources=sources), dry_run=dry_run)
     return plant_entry(data, **kwargs)
 
 
-def room_subentry(entry: MockConfigEntry, zone_id: str) -> Any:
-    """Return the room subentry of one zone."""
+def zone_subentry(entry: MockConfigEntry, zone_id: str) -> Any:
+    """Return the zone subentry of one zone."""
     return next(
         subentry
         for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_TYPE_ROOM and subentry.unique_id == zone_id
+        if subentry.subentry_type == SUBENTRY_TYPE_ZONE and subentry.unique_id == zone_id
     )
 
 

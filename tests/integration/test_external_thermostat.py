@@ -9,12 +9,18 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.const import (
+    CONF_DRY_RUN,
+    CONF_NAME,
+    CONF_PLANT_ID,
+    DOMAIN,
+)
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.websocket import (
     _filter_snapshot_for_user,
     _readable_entity_ids,
 )
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000101"
 ZONE_ID = "00000000-0000-4000-8000-000000000102"
@@ -45,10 +51,8 @@ def _entry(*, internal: bool = False) -> MockConfigEntry:
             [{"entity_id": "sensor.internal_room"}] if internal else []
         ),
     }
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="External thermostat plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "External thermostat plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: True,
@@ -67,6 +71,8 @@ def _entry(*, internal: bool = False) -> MockConfigEntry:
                 "routes": [{"id": ROUTE_ID, "zone_id": ZONE_ID, "circuit_id": CIRCUIT_ID}],
             },
         },
+        title="External thermostat plant",
+        source_handles=False,
     )
 
 

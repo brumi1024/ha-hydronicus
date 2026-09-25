@@ -27,7 +27,6 @@ from .entry_configuration import (
     runtime_configuration_fingerprint,
 )
 from .frontend import async_register_frontend
-from .migration import async_migrate_1_1_to_2_0, async_migrate_2_0_to_3_0
 from .output_ownership import (
     async_create_output_conflict_issue,
     async_schedule_output_review,
@@ -126,23 +125,21 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate stored Hydronicus config entries before runtime setup.
+    """Refuse a config entry of another storage version, which is never migrated.
 
-    Version 1.1 chains through 2.0 to 3.0 in one call, and every step is safe to
-    repeat, so a restart during migration resumes to the same result.
+    Home Assistant calls this only when the stored version differs from the
+    current one. An older entry comes from an earlier development version, so the
+    Plant has to be set up again; a newer one comes from a later release.
     """
-    if entry.version > CONFIG_ENTRY_VERSION or (
-        entry.version == CONFIG_ENTRY_VERSION and entry.minor_version > CONFIG_ENTRY_MINOR_VERSION
-    ):
-        return False
-    try:
-        if entry.version == 1 and entry.minor_version <= 1:
-            async_migrate_1_1_to_2_0(hass, entry)
-        if entry.version == 2 and entry.minor_version == 0:
-            async_migrate_2_0_to_3_0(hass, entry)
-    except GRAPH_EDIT_ERRORS:
-        _LOGGER.exception("Could not migrate Hydronicus Plant %s", entry.entry_id)
-        return False
+    if entry.version < CONFIG_ENTRY_VERSION:
+        _LOGGER.error(
+            "Hydronicus Plant %s was created by an earlier development version "
+            "(config entry version %s.%s) and cannot be migrated; remove it and set the "
+            "Plant up again",
+            entry.title,
+            entry.version,
+            entry.minor_version,
+        )
     return entry.version == CONFIG_ENTRY_VERSION and (
         entry.minor_version == CONFIG_ENTRY_MINOR_VERSION
     )

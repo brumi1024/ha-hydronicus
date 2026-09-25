@@ -2,7 +2,7 @@ hydronicus: 1
 name: Big room
 pumps:
   pump: switch.pump
-rooms:
+zones:
   hall:
     temperature_sensors: [sensor.hall_temperature]
     valves:

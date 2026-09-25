@@ -1,6 +1,6 @@
 """Hypothesis strategies for valid Plant configurations of many shapes.
 
-The strategies draw stored version 3 topology records, the form persisted in a
+The strategies draw stored version 4 topology records, the form persisted in a
 config entry, and decode them with the real decoder, so tests can use either the
 stored records or the typed configuration. Every drawn Plant compiles.
 """

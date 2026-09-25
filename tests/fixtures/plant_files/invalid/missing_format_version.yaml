@@ -1,7 +1,7 @@
 name: Missing format version
 pumps:
   pump: switch.pump
-rooms:
+zones:
   bedroom:
     temperature_sensors: [sensor.bedroom_temperature]
     loops:

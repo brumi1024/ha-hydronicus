@@ -29,36 +29,32 @@ Run the narrowest relevant target while developing and run `make verify` before 
 The pre-commit hook applies Ruff formatting to every changed Python file.
 The CI format check covers the same complete source tree.
 
-## Canonical configuration and migration
+## Canonical configuration
 
-Config-entry version 3 and minor version 0 are the supported persisted contract.
+Config-entry version 4 and minor version 0 are the supported persisted contract.
 The parent config entry owns one complete UUID-backed graph in `topology`, including every Zone, Circuit, Delivery Route, Valve, Pump, Source, and the source selector.
-`room_objects` maps every room-owned Circuit and Valve to its owning Zone, and every other object belongs to the Plant, as `core/ownership.py` defines.
+`zone_objects` maps every zone-owned Circuit and Valve to its owning Zone, and every other object belongs to the Plant, as `core/ownership.py` defines.
 `subentry_objects` records which graph objects are exposed through Home Assistant config subentries.
-Each Zone has exactly one `room` subentry, and a source may have one `source` subentry; each subentry is only a stable ownership handle containing `{"id": "<object UUID>"}`.
+Each Zone has exactly one `zone` subentry, and a source may have one `source` subentry; each subentry is only a stable ownership handle containing `{"id": "<object UUID>"}`.
 No topology field is duplicated between the parent graph and a subentry.
-Ownership is deletion-closed: removing a room subentry removes exactly its room closure through `without_room` and always leaves a graph that validates and compiles.
-Guided setup, plant file import and edits, room and pump edits, and deletion build the proposed complete graph through the graph edit API in `entry_configuration.py`, which validates ownership and compiles it before it is persisted.
-If Home Assistant removes a subentry while a Plant is active, Hydronicus completes the ordered transition to Dry run against the old graph before deleting that room or source from the parent graph.
+Ownership is deletion-closed: removing a zone subentry removes exactly its zone closure through `without_zone` and always leaves a graph that validates and compiles.
+Guided setup, plant file import and edits, zone and pump edits, and deletion build the proposed complete graph through the graph edit API in `entry_configuration.py`, which validates ownership and compiles it before it is persisted.
+If Home Assistant removes a subentry while a Plant is active, Hydronicus completes the ordered transition to Dry run against the old graph before deleting that zone or source from the parent graph.
 If the shutdown cannot complete, the parent graph and active runtime are retained and the failure is logged.
 Zone observations use typed temperature and humidity metadata collections rather than parallel legacy representations.
 
 The plant file in `core/plant_document.py` is the portable form of the same graph, documented for users in [the plant file reference](plant-file.md).
 It maps slugs to objects, derives missing IDs with `uuid5` from the Plant ID and the slug, and exports the canonical form with every ID written, so an export and import round trip keeps every object ID and entity ID.
 
-Version 2.0 entries are migrated to version 3.0 before runtime setup, and version 1.1 entries chain through version 2.0 in the same call.
-The version 3 migration first completes version 2 removals of objects whose handles were deleted while the entry was unloaded, then derives ownership, adds room subentries, moves entity and device registrations to their new owners, removes the legacy `zone`, `circuit`, and `actuator` subentries, and writes version 3.0 data last.
-Every step is idempotent, so repeating migration after an interruption resumes to the same result.
-Migration keeps every entity unique ID, entity ID, entity registry customization, and device identifier, invalidates output authorization, and returns the Plant to Dry run.
-The migration is one way; rolling back means restoring a Home Assistant backup.
+Entries of earlier development versions, below version 4, are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
 Do not add speculative schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
 
 ## Architecture boundaries
 
 `custom_components/hydronicus/core/configuration.py` decodes only the canonical persisted objects into typed domain values.
-`custom_components/hydronicus/core/ownership.py` assigns every graph object to the Plant or to one room so that removing a room always leaves a valid graph.
-`custom_components/hydronicus/entry_configuration.py` owns graph mutation, room and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
-`custom_components/hydronicus/migration.py` migrates stored config entries, moves entity and device registrations between subentries, and removes the registrations of objects a graph edit drops.
+`custom_components/hydronicus/core/ownership.py` assigns every graph object to the Plant or to one zone so that removing a zone always leaves a valid graph.
+`custom_components/hydronicus/entry_configuration.py` owns graph mutation, zone and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
+`custom_components/hydronicus/registrations.py` moves entity and device registrations between subentries when a graph edit changes an object's owner, and removes the registrations of objects a graph edit drops.
 `custom_components/hydronicus/config_flow.py` composes the flow step modules in `custom_components/hydronicus/flows/`.
 `custom_components/hydronicus/core/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
 `custom_components/hydronicus/core/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.

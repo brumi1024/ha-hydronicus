@@ -2,7 +2,7 @@ hydronicus: 1
 name: External
 pumps:
   pump: switch.pump
-rooms:
+zones:
   bedroom:
     thermostat: climate.bedroom
     loops:

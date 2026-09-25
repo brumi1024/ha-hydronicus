@@ -11,10 +11,10 @@ from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    DOMAIN,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -81,7 +81,7 @@ def _entry(*, detailed_actuators: bool = False) -> MockConfigEntry:
     }
     if detailed_actuators:
         data[CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS] = True
-    return MockConfigEntry(domain=DOMAIN, title="Private Solymar Plant", data=data)
+    return plant_entry(data, title="Private Solymar Plant", source_handles=False)
 
 
 async def test_downloadable_diagnostics_are_deterministic_and_redacted(hass) -> None:
@@ -212,8 +212,8 @@ async def test_verbose_actuator_entities_are_opt_in(hass) -> None:
     assert hass.states.get("sensor.private_manifold_valve_feedback_reason") is None
 
 
-async def test_diagnostics_name_the_owner_of_every_object_without_room_titles(hass) -> None:
-    """Each object names its room, by opaque zone reference, or the Plant."""
+async def test_diagnostics_name_the_owner_of_every_object_without_zone_titles(hass) -> None:
+    """Each object names its zone, by opaque zone reference, or the Plant."""
     hass.states.async_set("sensor.private_bedroom_temperature", "18.0")
     hass.states.async_set("switch.private_manifold_valve", "off")
     hass.states.async_set("switch.private_plant_pump", "off")
@@ -224,14 +224,14 @@ async def test_diagnostics_name_the_owner_of_every_object_without_room_titles(ha
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
 
     relationships = diagnostics["compiled_topology"]["relationships"]
-    room = {"kind": "room", "reference": "zone-1"}
+    zone = {"kind": "zone", "reference": "zone-1"}
     plant = {"kind": "plant", "reference": "plant-1"}
-    assert [zone["owner"] for zone in relationships["zones"]] == [room]
-    assert [circuit["owner"] for circuit in relationships["circuits"]] == [room, room]
-    assert [route["owner"] for route in relationships["routes"]] == [room, room]
-    assert [valve["owner"] for valve in relationships["actuators"]["valves"]] == [room]
+    assert [zone["owner"] for zone in relationships["zones"]] == [zone]
+    assert [circuit["owner"] for circuit in relationships["circuits"]] == [zone, zone]
+    assert [route["owner"] for route in relationships["routes"]] == [zone, zone]
+    assert [valve["owner"] for valve in relationships["actuators"]["valves"]] == [zone]
     assert [pump["owner"] for pump in relationships["actuators"]["pumps"]] == [plant]
-    # The room title is the zone name, which diagnostics keep redacted.
-    (room_subentry,) = entry.subentries.values()
-    assert room_subentry.title == "Bedroom near the nursery"
-    assert room_subentry.title not in json.dumps(diagnostics)
+    # The zone title is the zone name, which diagnostics keep redacted.
+    (zone_subentry,) = entry.subentries.values()
+    assert zone_subentry.title == "Bedroom near the nursery"
+    assert zone_subentry.title not in json.dumps(diagnostics)

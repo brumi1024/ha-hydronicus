@@ -3,7 +3,7 @@ import { formatNumber } from "../format";
 import { actionForMode, alertTitle, boundaryClass, boundaryLabel, isFlowingState, nodeKindLabel, operationLabel, prioritizedAlerts, sentenceLabel, sourceSummary, stateLabel, zoneDemandKind } from "../logic";
 import type { PlantSnapshot } from "../types";
 import type { RenderContext } from "./context";
-import { renderRoom } from "./room";
+import { renderZone } from "./zone";
 
 const MODES = ["auto", "idle", "heating", "cooling"];
 
@@ -72,15 +72,15 @@ export function renderAlerts(context: RenderContext, snapshot: PlantSnapshot): R
   })}</section>`;
 }
 
-export function renderRooms(context: RenderContext, snapshot: PlantSnapshot): TemplateResult {
-  return html`<section part="section" aria-labelledby="hydronicus-zones"><div class="section-head"><div class="section-kicker"><h3 part="section-title" id="hydronicus-zones">Rooms</h3></div><span class="meta" dir="auto">${formatNumber(snapshot.zones.length, context.locale, 0)} visible</span></div><div class="zone-grid">${snapshot.zones.length ? snapshot.zones.map((zone) => renderRoom(context, zone, { headingLevel: 4 })) : html`<p class="muted empty-state" dir="auto">No Rooms are visible for this Plant.</p>`}</div></section>`;
+export function renderZones(context: RenderContext, snapshot: PlantSnapshot): TemplateResult {
+  return html`<section part="section" aria-labelledby="hydronicus-zones"><div class="section-head"><div class="section-kicker"><h3 part="section-title" id="hydronicus-zones">Zones</h3></div><span class="meta" dir="auto">${formatNumber(snapshot.zones.length, context.locale, 0)} visible</span></div><div class="zone-grid">${snapshot.zones.length ? snapshot.zones.map((zone) => renderZone(context, zone, { headingLevel: 4 })) : html`<p class="muted empty-state" dir="auto">No Zones are visible for this Plant.</p>`}</div></section>`;
 }
 
 export function renderPaths(snapshot: PlantSnapshot): Rendered {
   if (!snapshot.delivery_paths.length) return nothing;
-  return html`<section part="section" aria-labelledby="hydronicus-paths"><div class="section-head"><div class="section-kicker"><h3 part="section-title" id="hydronicus-paths">Hydraulic Flow</h3></div><span class="meta" dir="auto">Room → Loop → Valve → Pump → Source</span></div><div class="path-list">${snapshot.delivery_paths.map((path) => {
+  return html`<section part="section" aria-labelledby="hydronicus-paths"><div class="section-head"><div class="section-kicker"><h3 part="section-title" id="hydronicus-paths">Hydraulic Flow</h3></div><span class="meta" dir="auto">Zone → Loop → Valve → Pump → Source</span></div><div class="path-list">${snapshot.delivery_paths.map((path) => {
     const zone = snapshot.zones.find((candidate) => candidate.id === path.zone_id);
-    // A path takes the colour of its own Room's demand, not the Plant's.
+    // A path takes the colour of its own Zone's demand, not the Plant's.
     return html`<article class="path" part="path" data-status=${path.status} data-flowing=${String(isFlowingState(path.status))} data-demand-kind=${zoneDemandKind(zone)}>
     <div class="path-head"><div class="path-heading"><strong>${zone?.name ?? path.zone_id}</strong></div><div class="status-line"><span class="state ${path.status}" part="badge">${sentenceLabel(path.status)}</span>${path.coupled ? html`<span class="meta">shares equipment</span>` : nothing}</div></div>
     <ol class="path-track" aria-label="Ordered hydraulic delivery path">${path.nodes.map((node, index) => html`<li class="path-step">${index ? html`<span class="flow-link" aria-hidden="true"></span>` : nothing}<span class="node" part="node" data-kind=${node.kind} data-state=${node.state} data-flowing=${String(isFlowingState(node.state))}><span class="node-kind">${nodeKindLabel(node.kind)}</span><span class="node-name">${node.name}</span><span class="node-state">${sentenceLabel(node.state)}</span></span></li>`)}</ol>

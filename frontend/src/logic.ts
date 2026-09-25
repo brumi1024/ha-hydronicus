@@ -70,8 +70,8 @@ export function plantVisualState(
   return "idle";
 }
 
-/** A Room card's presentation state, from its own demand and blocking. */
-export function roomVisualState(zone: Pick<ZoneSnapshot, "blocked" | "demand" | "cooling">): PlantVisualState {
+/** A Zone card's presentation state, from its own demand and blocking. */
+export function zoneVisualState(zone: Pick<ZoneSnapshot, "blocked" | "demand" | "cooling">): PlantVisualState {
   if (zone.blocked) return "attention";
   if (zone.cooling.demand) return "cooling";
   if (zone.demand) return "heating";
@@ -82,7 +82,7 @@ export function isFlowingState(state: string): boolean {
   return FLOWING_STATES.has(state.toLowerCase());
 }
 
-/** What a Room is asking for: cooling, heating, or nothing. */
+/** What a Zone is asking for: cooling, heating, or nothing. */
 export function zoneDemandKind(zone: Pick<ZoneSnapshot, "demand" | "cooling"> | undefined): "cooling" | "heating" | "none" {
   if (!zone) return "none";
   return zone.cooling.demand ? "cooling" : zone.demand ? "heating" : "none";
@@ -187,7 +187,7 @@ export function hvacModeLabel(localize: ((key: string) => string) | undefined, m
 }
 
 /**
- * The HVAC modes the card offers for a Room: exactly the modes its
+ * The HVAC modes the card offers for a Zone: exactly the modes its
  * Hydronicus climate entity supports, and none for an external thermostat.
  */
 export function zoneHvacModes(zone: ZoneSnapshot): string[] {
@@ -223,7 +223,7 @@ export function sourceSummary(snapshot: Pick<PlantSnapshot, "plant" | "sources">
 }
 
 const NODE_KIND_LABELS: Record<string, string> = {
-  zone: "Room",
+  zone: "Zone",
   circuit: "Loop",
 };
 
@@ -232,7 +232,7 @@ const ALERT_LABELS: Record<string, string> = {
   plant_unavailable: "Plant unavailable",
   binding_unavailable: "Entity unavailable",
   zone_sensor_blocked: "Sensor blocked",
-  zone_mode_blocked: "Room blocked",
+  zone_mode_blocked: "Zone blocked",
   cooling_blocked: "Cooling blocked",
   actuator_mismatch: "Equipment mismatch",
   actuator_blocked: "Equipment blocked",

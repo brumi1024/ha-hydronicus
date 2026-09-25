@@ -7,7 +7,7 @@ const zone: ZoneSnapshot = {
   thermostat: {
     kind: "hydronicus", state: "available", control_entity_id: "climate.hydronic_living_room",
     current_temperature: 20, target_temperature: 21, preset: "comfort", preset_modes: ["comfort", "eco"], hvac_mode: "heat", hvac_modes: ["off", "heat"],
-    explanation: "Hydronicus owns this Room's thermostat.",
+    explanation: "Hydronicus owns this Zone's thermostat.",
   },
   demand: true, phase: "heating", blocked: false, blocked_reason: null,
   sensor_status: { usable: 1, optional_excluded: 0, required_blocking: 0 },
@@ -95,7 +95,7 @@ describe("Hydronicus presentation logic", () => {
         preset_modes: [],
         hvac_mode: "heat",
         hvac_modes: [],
-        explanation: "External thermostat owns this Room.",
+        explanation: "External thermostat owns this Zone.",
       },
     };
 
@@ -130,10 +130,10 @@ describe("Hydronicus presentation logic", () => {
   });
 });
 
-describe("Room HVAC modes", () => {
+describe("Zone HVAC modes", () => {
   const coolingZone: ZoneSnapshot = { ...zone, thermostat: { ...zone.thermostat, hvac_mode: "off", hvac_modes: ["off", "heat", "cool", "heat_cool"] } };
 
-  it("offers exactly the modes the Room's climate entity supports", () => {
+  it("offers exactly the modes the Zone's climate entity supports", () => {
     expect(zoneHvacModes(zone)).toEqual(["off", "heat"]);
     expect(zoneHvacModes(coolingZone)).toEqual(["off", "heat", "cool", "heat_cool"]);
   });
@@ -150,7 +150,7 @@ describe("Room HVAC modes", () => {
     expect(actionForHvacMode(external, "heat")).toBeNull();
   });
 
-  it("names what a Room is asking for, with cooling before heating", () => {
+  it("names what a Zone is asking for, with cooling before heating", () => {
     expect(zoneDemandKind(zone)).toBe("heating");
     expect(zoneDemandKind({ ...zone, demand: false })).toBe("none");
     expect(zoneDemandKind({ ...zone, cooling: { ...zone.cooling, demand: true } })).toBe("cooling");
@@ -182,20 +182,20 @@ describe("Header summaries", () => {
     expect(sourceSummary(idle)).toBe("None active · recommended Boiler");
   });
 
-  it("names path nodes with the Room and Loop vocabulary", () => {
-    expect(["zone", "circuit", "valve", "pump", "source"].map(nodeKindLabel)).toEqual(["Room", "Loop", "Valve", "Pump", "Source"]);
+  it("names path nodes with the Zone and Loop vocabulary", () => {
+    expect(["zone", "circuit", "valve", "pump", "source"].map(nodeKindLabel)).toEqual(["Zone", "Loop", "Valve", "Pump", "Source"]);
   });
 });
 
 describe("Alert titles", () => {
-  it("names the room or equipment and uses a readable label", () => {
+  it("names the zone or equipment and uses a readable label", () => {
     expect(alertTitle({ code: "zone_sensor_blocked", scope: "zone-1", name: "Living" })).toBe("Living · Sensor blocked");
     expect(alertTitle({ code: "actuator_mismatch", scope: "valve-1", name: "Living loop valve" })).toBe("Living loop valve · Equipment mismatch");
   });
 
   it("leaves the Plant name out of Plant alerts and falls back without a name", () => {
     expect(alertTitle({ code: "binding_unavailable", scope: "plant", name: "Hydronic plant" })).toBe("Entity unavailable");
-    expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Room blocked");
+    expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Zone blocked");
     expect(alertTitle({ code: "something_new", scope: "plant" })).toBe("Something new");
   });
 });
