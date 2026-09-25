@@ -42,12 +42,16 @@ EXTERNAL_LABELS = frozenset(
     {
         "Actions",
         "Add integration",
+        "Area",
+        "Area settings",
+        "Areas, labels & zones",
         "Configure",
         "Custom repositories",
         "Devices & services",
         "Diagnostic",
         "Download diagnostics",
         "Hydronicus",
+        "Humidity sensor",
         "Hydronicus Plant",
         "Integration",
         "Integrations",
@@ -58,6 +62,7 @@ EXTERNAL_LABELS = frozenset(
         "Submit",
         "System",
         "Tools",
+        "Unknown area selected",
     }
 )
 _YAML_BLOCK = re.compile(r"^```yaml\n(.*?)^```", re.MULTILINE | re.DOTALL)

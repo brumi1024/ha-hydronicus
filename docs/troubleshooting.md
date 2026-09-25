@@ -33,7 +33,7 @@ First confirm whether a Plant with the same repository installation already exis
 ### A setup form cannot select an entity
 
 The **Pump entity** of guided setup and the pump form expects a `switch` entity.
-The zone form's **Extra temperature sensors** expect `sensor` entities, and **Existing climate thermostat** expects one `climate` entity.
+The zone form's **Areas** lists the Home Assistant areas, **Extra temperature sensors** expect `sensor` entities, and **Existing climate thermostat** expects one `climate` entity.
 **Loop valves** and the loop form's **Valves** expect `switch` or `valve` entities.
 Confirm that the synthetic entities have the expected domain and are visible in Home Assistant.
 Temperature pickers list only sensors with the `temperature` device class, and humidity pickers list only sensors with the `humidity` device class.
@@ -81,6 +81,64 @@ Review the selected sensor, valve, and pump entities.
 Confirm that the loop and Delivery Route references are complete and that no object was removed while a relationship still points to it.
 Hydronicus rejects inconsistent graphs, and a zone that no enabled Delivery Route leaves, rather than guessing a relationship.
 A loop, valve, or pump that no enabled Delivery Route reaches is accepted, reported as unused equipment, and never requested.
+
+## Areas
+
+### The zone form stops with a missing temperature reading
+
+The error `A zone that Hydronicus controls needs a temperature reading.` appears on **Areas** when none of the chosen areas names a temperature sensor and no extra temperature sensor is chosen.
+Choose a temperature sensor in the settings of one of the areas, or add an extra temperature sensor, and submit again.
+An existing climate thermostat does not need one, unless the zone cools.
+
+### An empty zone name is refused
+
+An empty **Zone name** takes the name of the one chosen area, or of the floor that every chosen area is on.
+Areas on different floors, or without a floor, have no common name, so the form asks for one.
+
+### The area settings do not offer the sensor
+
+Home Assistant's area settings offer only the sensors that belong to the area, and the currently chosen one.
+Open the sensor's entity settings and set its **Area**, or put its device in the area, then open the area settings again.
+Only sensors with the `temperature` device class appear as a temperature sensor, and only `humidity` sensors as a humidity sensor.
+
+### The zone does not follow the area's sensor
+
+Open the zone's **Combined temperature** sensor in **Settings > Tools > States** and check its `areas` attribute, which lists the sensors each area resolves to, and `usable_sensor_ids`.
+Choosing another sensor in the area settings reloads every Plant that covers the area, once; the attribute shows the new sensor after that reload.
+If it does not, check that the zone covers that area in the zone's **Name, areas, thermostat owner, and sensors** step.
+A sensor listed in `excluded_optional_sensor_ids` was stale or unavailable, and an area temperature is optional by default, so the zone used its other readings.
+
+### A zone covers a missing area
+
+The repair `Zone Bedroom covers a missing area` means an area the zone covers was deleted.
+The zone gets no reading from it, and the rest of its areas and sensors keep working.
+Select **Submit** in the repair to open the zone's edit menu, choose **Name, areas, thermostat owner, and sensors**, remove the entry shown as **Unknown area selected**, and save.
+Creating an area with the same ID also clears the repair, and Home Assistant gives a new area the ID made from its first name, such as `kids_room` for `Kids room`.
+The zone card shows a missing area by its ID, with dashes for its readings, until the area is removed.
+
+### A zone has no temperature sensor
+
+The repair `Zone Bedroom has no temperature sensor` means that none of the zone's areas names a temperature sensor that Hydronicus can follow, and the zone has no extra temperature sensor.
+The zone is blocked and neither heats nor cools, and its card shows `Blocked: no usable temperature sensors remain.`
+Choose a temperature sensor in the settings of one of its areas, or select **Submit** in the repair to add an extra temperature sensor or another area.
+
+### An area names a Hydronicus sensor
+
+The repair `Area Bedroom names a Hydronicus sensor` means that the area settings name a sensor that Hydronicus provides, such as a zone's **Combined temperature**.
+Following it would feed the Plant back into itself, so every zone that covers the area ignores it, and each of those zones reports it.
+A zone device that Hydronicus put in the area makes its **Combined temperature** appear in the area's sensor list, which is the usual way this happens.
+Open the area settings and choose a sensor that measures the room.
+
+### A repair says an area sensor is missing
+
+Home Assistant does not update an area's sensors when the sensor's entity ID is renamed, so the area still names the old ID.
+The repair `Missing area sensor for Bedroom` names the area; open its area settings, choose the sensor under its new ID, and save.
+The repair clears as soon as the sensor is available again.
+
+### A repair or card shows an old area name
+
+Renaming an area changes no sensor, so it does not reload the Plant.
+Repairs and the cards keep the old name until the Plant reloads for another reason, such as an edit or a Home Assistant restart.
 
 ## Unavailable or invalid sensors
 
@@ -226,7 +284,8 @@ Useful checks include:
 5. Redact tokens, credentials, hostnames, private addresses, and household-specific entity details.
 
 Download redacted diagnostics from the Hydronicus config entry or device page before filing an issue.
-Hydronicus also creates Repairs issues for unresolved configured entity bindings and removes them after the binding is restored.
+Diagnostics count each zone's areas, the area sensors it follows, its missing areas, and the Hydronicus sensors its areas name, without the area or sensor names.
+Hydronicus also creates Repairs issues for unresolved configured entity bindings and for the [area problems](#areas) of zones, and removes them once the problem is gone.
 Each repair names the Plant and the entity it misses, such as `the switch bound to Bedroom loop valve`.
 A repair for a zone's binding opens that zone's edit menu, and a repair for a pump opens the Plant settings.
 A repair for a shared loop, a shared valve, or the source selector cannot open a form; edit the binding with **Edit plant file** in the Plant settings, or restore the original entity.

@@ -95,6 +95,8 @@ The Zone card shows the same Zone tile as the Plant card, with the same HVAC mod
 A Zone that covers two or more Home Assistant areas shows one line per area below its temperatures, with the area's temperature and, when any of its areas names a humidity sensor, humidity.
 A dash stands for a reading the controller could not use, such as a stale one, and for a sensor the area does not name.
 Selecting an area's name opens the more-info dialog of the temperature sensor the area names, or of its humidity sensor when it names no temperature sensor.
+The lines follow the zone's area order, and a Zone over one area shows no area lines, because its temperatures are that area's.
+An area that no longer exists shows its ID with dashes until it is removed from the Zone, and a renamed area keeps its old name until the Plant reloads.
 It shows the same loading, unavailable, not found, no access, and reconnecting states as the Plant card.
 When the Plant snapshot has no Zone with that id, the card shows Zone not found.
 The snapshot leaves out Zones you may not read, so a Zone you have no access to also shows Zone not found.
@@ -147,7 +149,7 @@ The card says Loop where the snapshot and the core code say Circuit.
 The header shows the Plant name, operational status, requested mode, and execution boundary.
 It adds the active mode only when an explicit requested mode is not active yet, for example during a changeover.
 It shows the active and recommended source only when the Plant has sources.
-The Zones section shows thermostat ownership, the HVAC mode, current and target temperatures when available, presets for Hydronicus thermostats, heating or cooling demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
+The Zones section shows thermostat ownership, the HVAC mode, current and target temperatures when available, one line per area for a Zone over several areas, presets for Hydronicus thermostats, heating or cooling demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
 A Zone whose thermostat is off shows Off instead of an idle phase.
 The Hydraulic Flow section renders the ordered Zone to Loop to Valve to Pump to Source route.
 The Equipment section shows each valve and pump with the Loops that currently use it.
@@ -209,6 +211,7 @@ A Plant card that shows none of the `zones`, `paths`, and `equipment` sections s
 A Zone card spans half a section by default, like a thermostat card, at least four columns, and its height follows its content.
 In the masonry view the Plant card reports a height estimate based on the Zones, paths, equipment, alerts, and operations it shows.
 The card uses a responsive Zone grid, horizontally scrollable hydraulic paths, and controls that collapse for narrow layouts.
+In a narrow Zone tile, such as two Zone cards side by side on a phone, the preset select moves below the target buttons rather than shrinking.
 A hydraulic path is a compact chain from the start of its row, with short connectors at any card width.
 Each path takes the heating or cooling color of its own Zone's demand.
 The `comfortable` and `compact` density values provide a readable default and a denser dashboard option.

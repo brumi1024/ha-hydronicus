@@ -31,7 +31,9 @@ The current implementation includes:
 
 - HACS custom-repository installation.
 - One Home Assistant config entry per Plant.
-- Guided setup that creates a Plant with its pump and one zone per form, and plant file import that rebuilds a Plant with the same entity IDs.
+- Guided setup that creates a Plant with its pump and asks how the home is zoned: one zone for the whole home, one zone per Home Assistant area, or areas grouped into zones.
+- Plant file import that rebuilds a Plant with the same entity IDs.
+- Zones that cover Home Assistant areas and follow the temperature and humidity sensors each area names, with Repairs when an area disappears, names no usable sensor, or names a Hydronicus sensor.
 - Zone subentries: each zone owns its thermostat, its sensors, and its private loops and valves, and can use shared loops of the Plant.
 - Plant settings for Dry run, pumps, showing the plant file, and editing the whole Plant as a plant file.
 - The `hydronicus.export_plant` action, which returns the plant file of a Plant.
@@ -79,6 +81,7 @@ The trial kit in [docs/examples/trial](docs/examples/trial) provides everything 
 
 - [package.yaml](docs/examples/trial/package.yaml) is a Home Assistant package with synthetic entities for two zones and one pump.
 - [plant.yaml](docs/examples/trial/plant.yaml) is a plant file bound to those entities.
+- [plant-areas.yaml](docs/examples/trial/plant-areas.yaml) is the same Plant, with zones that follow two Home Assistant areas instead of naming their sensors.
 
 Each zone gets a temperature sensor driven by an `input_number`, and each valve and the pump are template switches backed by an `input_boolean`.
 Because every actuator is backed by a helper, the helper's history shows any command that reached it.
@@ -104,6 +107,7 @@ See [Home Assistant's packages documentation](https://www.home-assistant.io/docs
 
 Open **Settings > Devices & services > Add integration** and search for **Hydronicus**.
 Either import the trial plant file or build the same Plant with guided setup; both give the same Plant and the same entity IDs.
+The [areas variant](#follow-home-assistant-areas) below builds it once more from Home Assistant areas.
 
 To import the plant file:
 
@@ -122,6 +126,31 @@ To use guided setup:
 
 Guided setup names each zone's loop after the zone, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
 The plant file uses the same names, which is why both paths create the same entity IDs.
+
+### Follow Home Assistant areas
+
+A zone can cover Home Assistant areas and follow the temperature sensor that each area names, so a sensor is chosen once, in the area settings.
+A package cannot create areas, so this variant starts with two areas made in the UI:
+
+1. Open **Settings > Areas, labels & zones** and create the areas `Living room` and `Bedroom`.
+2. Open `sensor.hydronicus_trial_living_room_temperature`, open its settings, set its **Area** to `Living room`, and update it.
+   Do the same for `sensor.hydronicus_trial_bedroom_temperature` and `Bedroom`.
+   The area settings offer only the sensors that belong to the area, which is why this step comes first.
+3. Open the `Living room` area, choose **Area settings** in its three-dot menu, choose the trial living room temperature under **Temperature sensor**, and save.
+   Do the same for `Bedroom`.
+
+Then either import [plant-areas.yaml](docs/examples/trial/plant-areas.yaml) as above, or use guided setup:
+
+1. In **How is your home zoned?**, choose **One zone per area**.
+2. In **Choose the areas**, keep `Bedroom` and `Living room`, and submit.
+3. The next **Add a zone** form reads `Zone 1 of 2: Bedroom.` and is prefilled with the name and the area.
+   Choose `switch.hydronicus_trial_bedroom_valve` under **Loop valves** and submit.
+4. In the second form, for `Living room`, choose `switch.hydronicus_trial_living_room_valve` and submit.
+
+The review lists the same shared pump warning, and the Plant has the same entity IDs as before, such as `climate.bedroom`.
+Each zone device is placed in its area.
+The zone's **Combined temperature** sensor lists the areas and the sensors they resolve to in its `areas` attribute.
+Change the sensor in an area's settings and the Plant follows it after a reload that happens by itself.
 
 The review lists the two zones and how they connect, such as `Bedroom is heated by Bedroom loop.`
 It also lists one warning, `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; ...`, because separate zone thermostats cannot control loops on one pump independently.
@@ -162,6 +191,7 @@ The UI speaks of zones and loops; the model underneath speaks of Zones and Hydra
 
 - A Plant owns the complete topology and runtime state.
 - A zone is the space one thermostat controls, with its observations, its Delivery Routes, and its private loops and valves.
+- A zone covers zero or more Home Assistant areas, usually one per room, and follows the temperature and humidity sensors that each area names.
 - One zone thermostat owns target, preset, mode, hysteresis, and demand semantics.
 - A loop is a Hydraulic Circuit: a water path through one or more valves and one pump.
 - A Delivery Route connects one zone to one loop.

@@ -3,8 +3,9 @@
 This guide describes how to create a Plant, add and edit zones and loops, and change the Plant settings.
 It uses synthetic Home Assistant entities so that a first test cannot operate real equipment.
 
-The UI and this guide speak of zones and loops.
-A zone is the space one thermostat controls, with its sensors and its private loops and valves.
+The UI and this guide speak of zones, areas, and loops.
+A zone is the space one thermostat controls, with its areas, its sensors, and its private loops and valves.
+An area is a Home Assistant area, usually one room, and a zone covers zero or more of them.
 A loop is one Hydraulic Circuit: a water path through one or more valves and one pump.
 Pumps, shared valves, shared loops, sources, and the source selector are Plant equipment, owned by the Plant rather than by a zone.
 
@@ -17,11 +18,12 @@ Hydronicus needs these entity types:
 
 | Purpose | Accepted entity type | Trial kit entity |
 | --- | --- | --- |
-| Zone temperature | `sensor` with the `temperature` device class | `sensor.hydronicus_trial_bedroom_temperature` |
+| Zone temperature | `sensor` with the `temperature` device class, named by an area or chosen directly | `sensor.hydronicus_trial_bedroom_temperature` |
+| Zone humidity, for cooling | `sensor` with the `humidity` device class, named by an area or chosen directly | None |
 | Valve actuator | `switch` or `valve` | `switch.hydronicus_trial_bedroom_valve` |
 | Pump actuator | `switch` | `switch.hydronicus_trial_pump` |
 
-The quickest start is the [trial kit](examples/trial): a Home Assistant package with synthetic entities for two zones and one pump, and a plant file bound to them.
+The quickest start is the [trial kit](examples/trial): a Home Assistant package with synthetic entities for two zones and one pump, a plant file bound to them, and a variant whose zones follow two Home Assistant areas.
 The README's [first simulated Plant](../README.md#first-simulated-plant) shows how to load the package and create the Plant from it.
 
 Home Assistant Template helpers can also create sensors and switches through the UI.
@@ -89,6 +91,49 @@ The Plant is created in Dry run, with one zone entry per zone and one source ent
 An invalid file keeps the form open and names the path of the problem, such as `zones.bedroom.loops.bedroom_loop.pump`.
 See [the plant file reference](plant-file.md) for the format, the IDs, and the errors.
 
+## Areas
+
+Home Assistant lets each area name the sensor that represents its temperature and the one that represents its humidity.
+Set them in **Settings > Areas, labels & zones**: open the area, choose **Area settings** in its three-dot menu, and choose the **Temperature sensor** and the **Humidity sensor**.
+The area settings offer only the sensors that belong to the area, so first set the sensor's **Area** in its entity settings, or put its device in the area.
+
+A zone that covers an area follows the sensors the area names, as long as the area names them:
+
+- When the Plant loads, each zone takes the temperature sensor and the humidity sensor that each of its areas names, after the extra sensors of the zone.
+- Choosing another sensor in an area's settings, clearing one, removing a covered area, or creating an area with a covered ID reloads every Plant that covers the area, once, and the Plant then follows the new choice.
+  A change to an area that no zone covers, or one that leaves the named sensors as they were, such as a new name or icon, reloads nothing.
+- Renaming an area changes no sensor, so it does not reload the Plant; Repairs and the cards keep the old name until the Plant reloads for another reason.
+- Renaming a sensor's entity ID does not update the area, because Home Assistant keeps the old ID in the area settings.
+  The zone then misses that sensor, and a repair asks you to choose the sensor again in the area settings.
+- An area that is missing or names no sensor adds no reading, and a Plant always loads whatever the areas name.
+- An area sensor that Hydronicus itself provides, such as a zone's **Combined temperature**, is ignored, because it would feed the Plant back into itself, and a repair names it.
+- When an extra sensor of the zone is the same entity as an area's sensor, it counts once, with the settings of the extra sensor, and as the designated reference if either of them is marked as one.
+
+The **Combined temperature** sensor of a zone lists its areas with the temperature and humidity sensors they resolve to in its `areas` attribute, and its `usable_sensor_ids` attribute shows which readings the zone used.
+
+An area has four settings in each zone that covers it.
+In the zone's **Areas, sensor aggregation, and humidity** step, **Edit sensor metadata** opens one **Edit area settings** form per area, after the forms of the extra temperature sensors:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| **Required sensor** | Off | A required area temperature that is stale or unavailable blocks the zone; an optional one is left out of the aggregate. |
+| **Aggregation weight** | 1 | The weight of the area's temperature in the weighted mean. |
+| **Maximum age** | 1800 seconds | A reading older than this is stale. |
+| **Designated reference area** | Off | The area's temperature is used alone by designated reference aggregation. |
+
+The settings apply to the area's temperature sensor.
+An area temperature is optional by default, so one flat battery in a zone of five rooms does not stop heating the other four.
+An area's humidity sensor is always required, with the area's maximum age, because an unobserved humid room is where a cooled floor condenses.
+
+A zone that covers exactly one existing area puts its device in that area when Hydronicus creates the device, so the thermostat shows up in the area.
+The device moves into the area after its entities are registered, so their entity IDs do not repeat the area name, such as `climate.bedroom` rather than `climate.bedroom_bedroom`.
+Moving the device later is your choice, and Hydronicus does not move it back.
+A zone over several areas leaves its device unassigned, because a device has one area.
+A zone device in an area puts the zone's entities in the area too, so the area settings then offer the zone's **Combined temperature** as a temperature sensor; do not choose it, because the zone ignores it.
+
+An area may be covered by several zones, for example a hall between two floors.
+Its sensors then count in each of them, and the review mentions it without asking for a confirmation.
+
 ## Zones
 
 Every zone appears as a **Zone** entry under the Plant, and **Add zone** adds another.
@@ -126,7 +171,7 @@ Hydronicus does not infer the external integration's actuator or support externa
 Open the zone's **Reconfigure** action to reach the zone's edit menu, titled with the zone name, such as `Edit Bedroom`, with these options:
 
 - **Name, areas, thermostat owner, and sensors** changes the **Zone name**, the **Areas**, the **Existing climate thermostat**, the **Extra temperature sensors**, and the **Shared loops**.
-  An area that no longer exists stays listed, so it can be removed here.
+  An area that no longer exists stays listed as **Unknown area selected**, so it can be removed here.
   Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.
 - **Thermostat settings** appears for a Hydronicus thermostat and sets the **Heating start hysteresis**, **Heating stop hysteresis**, **Minimum active duration**, **Minimum idle duration**, the **Comfort preset target**, **Eco preset target**, and **Away preset target**, and the **Cooling** hysteresis.
 - **Areas, sensor aggregation, and humidity** sets the **Areas**, the **Extra humidity sensors**, and the **Temperature aggregation**, and **Edit sensor metadata** opens one form per extra temperature sensor, then one per area.
@@ -139,8 +184,8 @@ When the Plant is outside Dry run, Hydronicus completes the ordered transition t
 
 ### Sensors and aggregation
 
-Selected temperature sensors are required by default.
-Turn on **Edit sensor metadata** to set each sensor's **Required sensor**, **Aggregation weight**, **Calibration offset**, **Maximum age**, and **Designated reference sensor** status.
+Extra temperature sensors are required by default, and areas are optional by default.
+Turn on **Edit sensor metadata** to set each extra sensor's **Required sensor**, **Aggregation weight**, **Calibration offset**, **Maximum age**, and **Designated reference sensor** status, and then each area's settings described in [Areas](#areas).
 An unusable required sensor blocks the zone immediately.
 An unusable optional sensor is excluded and reported, but the zone still blocks if no usable observation remains.
 
@@ -150,8 +195,8 @@ An unusable optional sensor is excluded and reported, but the zone still blocks 
 - **Median** selects the middle value after sorting the readings.
 - **Heating-oriented minimum** uses the lowest reading.
 - **Cooling-oriented maximum** uses the highest reading, which suits zones that cool.
-- **Designated reference** uses the one sensor marked as the reference.
-- **Weighted mean** applies the positive weights set in the sensor metadata.
+- **Designated reference** uses the one sensor or area marked as the reference.
+- **Weighted mean** applies the positive weights set in the sensor and area metadata.
 
 Designated reference and weighted mean depend on per-sensor metadata, so choose them in **Choose sensor aggregation** after completing **Edit sensor metadata**.
 
@@ -221,13 +266,14 @@ After setup, Hydronicus exposes entities associated with the Plant.
 Each zone, valve, pump, and source is a device named after the object alone, under the Plant device that carries the Plant name.
 Entity IDs come from those device names, so the trial Plant has entities such as `climate.bedroom`, `binary_sensor.bedroom_heating_demand`, and `binary_sensor.bedroom_loop_valve_requested`, while Plant-wide entities such as `select.trial_plant_requested_mode` keep the Plant name.
 The zone's combined temperature is `sensor.bedroom_combined_temperature`, so it does not take the entity ID of a room sensor such as `sensor.bedroom_temperature`.
+A zone device that Hydronicus puts in its area keeps the same entity IDs, because the area is set after the entities are registered.
 If an entity ID is already taken, Home Assistant adds a suffix such as `_2`.
 
 The useful states for a first simulation are:
 
 - The zone climate entity, which reports the aggregate current temperature and target.
 - The zone **Heating demand** binary sensor, which reports the calculated virtual heat demand.
-- The zone **Combined temperature** sensor, which reports the aggregate the controller uses and identifies usable and excluded observations in its attributes.
+- The zone **Combined temperature** sensor, which reports the aggregate the controller uses, identifies usable and excluded observations in its attributes, and lists the sensors its areas resolve to.
 - The valve requested and pump requested binary sensors, which report virtual requests.
 
 Explanations and reasons are diagnostic entities, listed under **Diagnostic** on the device page:
@@ -331,7 +377,8 @@ Before accepting a simulated Plant, check all of the following:
 - Every temperature sensor is numeric and available.
 - Every temperature sensor reports `°C`, `°F`, `K`, or a Celsius value without a unit.
 - Every reading falls inside its [plausible range](#plausible-observation-ranges).
-- Every selected sensor belongs to the intended test configuration.
+- Every selected sensor, and every sensor a covered area names, belongs to the intended test configuration.
+- Every covered area names the temperature sensor you expect, and a zone that cools has a humidity sensor in each of its areas.
 - Each zone has at least one enabled loop.
 - Each loop has a valid valve path and pump.
 - Shared equipment is intentional and documented for the test.

@@ -1,6 +1,6 @@
 # Plant file
 
-A plant file describes one whole Plant in YAML: its pumps, zones, loops, valves, sources, and source selector.
+A plant file describes one whole Plant in YAML: its pumps, zones and the Home Assistant areas they cover, loops, valves, sources, and source selector.
 It is the portable form of a Plant.
 Exporting a Plant and importing the file rebuilds it with the same object IDs, and therefore the same entity IDs, on any Home Assistant instance.
 
@@ -160,13 +160,14 @@ Zones connect to it through their `shared_loops`.
 
 ## Zones
 
-A zone is the space one thermostat controls, with its thermostat, its sensors, and its loops:
+A zone is the space one thermostat controls, with its thermostat, its areas, its sensors, and its loops:
 
 | Field | Value |
 | --- | --- |
 | `thermostat` | The zone's thermostat. Defaults to a Hydronicus thermostat with default settings. |
-| `temperature_sensors` | A list of entity IDs or sensor mappings. Required for a Hydronicus thermostat. |
-| `humidity_sensors` | A list of entity IDs or sensor mappings, used for the dew point when cooling. |
+| `areas` | A list of Home Assistant areas the zone covers, each an area ID or an area mapping. See [Areas](#areas). |
+| `temperature_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas. A Hydronicus thermostat needs a temperature sensor or an area. |
+| `humidity_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas, used for the dew point when cooling. |
 | `temperature_aggregation` | `mean`, `median`, `minimum`, `maximum`, `designated_reference`, or `weighted_mean`. Defaults to `mean`. |
 | `valves` | Slug to private valve of the zone. |
 | `loops` | Slug to private loop of the zone. |
@@ -196,12 +197,66 @@ A sensor is either an entity ID or a mapping of the stored sensor fields:
 | --- | --- |
 | `entity_id` | Required. |
 | `required` | A required sensor that is stale or unavailable blocks the zone. Defaults to `true`. |
-| `designated_reference` | Used alone by `designated_reference` aggregation. Exactly one sensor must set it for that policy. |
+| `designated_reference` | Used alone by `designated_reference` aggregation. Exactly one sensor or area must set it for that policy. |
 | `weight` | Relative weight in `weighted_mean` aggregation. |
 | `calibration_offset` | Added to every reading before aggregation. |
 | `max_age_seconds` | A reading older than this is stale. |
 
 Items of `shared_loops` are loop slugs, or mappings with `loop` and the optional `route_id` and `route_enabled`.
+
+### Areas
+
+An item of `areas` is the ID of a Home Assistant area, or a mapping of `area` and the area's settings in this zone:
+
+| Field | Value |
+| --- | --- |
+| `area` | Required in a mapping. The area ID, such as `living_room`. |
+| `required` | A required area temperature that is stale or unavailable blocks the zone. Defaults to `false`. |
+| `designated_reference` | The area's temperature is used alone by `designated_reference` aggregation. Defaults to `false`. |
+| `weight` | Relative weight in `weighted_mean` aggregation. Defaults to 1. |
+| `max_age_seconds` | A reading older than this is stale. Defaults to 1800. |
+
+An area ID is the ID Home Assistant gave the area when it was created, which is its first name in lowercase with underscores, such as `living_room` for `Living room`; renaming the area keeps its ID.
+Each area appears at most once in a zone, and the same area may appear in several zones.
+
+The file names only the area, never its sensors.
+The zone follows the temperature sensor and the humidity sensor that the area names in its Home Assistant area settings, so the same file works on another instance whose areas name other sensors.
+The settings apply to the area's temperature sensor, and the area's humidity sensor is always required, with the area's `max_age_seconds`.
+[Areas](configuration.md#areas) in the configuration guide describes how a zone follows them.
+
+This file has a ground floor zone over three areas, with the dining room as its reference:
+
+```yaml
+hydronicus: 1
+name: Home
+pumps:
+  pump: switch.manifold_pump
+zones:
+  ground_floor:
+    areas:
+      - living_room
+      - area: kitchen
+        weight: 0.5
+      - area: dining_room
+        designated_reference: true
+    temperature_aggregation: designated_reference
+    loops:
+      ground_floor_loop:
+        valves: [switch.ground_floor_valve]
+        pump: pump
+```
+
+The review checks the areas against the Home Assistant instance you import into:
+
+| Review warning | Needs a confirmation |
+| --- | --- |
+| An area that does not exist, such as `Zone Ground floor covers area study, which does not exist in Home Assistant, so it adds no reading until an area with this ID is created.` | Yes |
+| An area without a humidity sensor in a zone that a cooling loop serves | Yes |
+| An area without a temperature sensor | No |
+| An area that several zones cover | No |
+
+A missing area needs a confirmation, like an entity that does not exist yet, so a file can move to an instance whose areas you create afterwards.
+A Hydronicus thermostat over missing areas alone has no reading, so it stays blocked until an area names a temperature sensor, and a repair says so.
 
 This file uses the long forms: sensor metadata, thermostat settings, a zone valve with feedback, and an external thermostat.
 
@@ -392,6 +447,7 @@ An object with a new slug and no `id` is a new object, and an object whose `id` 
 Export writes the canonical form of a Plant:
 
 - every object in its long form, with explicit `id` and `name`, and every route with its `route_id`;
+- every area as its bare ID when every setting has its default, and as a mapping otherwise;
 - `route_enabled` only when it is `false`;
 - the stored fields exactly as stored, with collections sorted by slug;
 - slugs made from names.
@@ -454,11 +510,12 @@ Typical problems and where they are reported:
 | Unknown valve, loop, or pump slug | The reference. |
 | A zone valve used by another zone's loop, or by a shared loop | The reference. |
 | A zone without an enabled loop | The zone. |
-| A Hydronicus thermostat without temperature sensors | The zone's `temperature_sensors`. |
+| A Hydronicus thermostat without temperature sensors or areas | The zone's `temperature_sensors`. |
+| An area item that is neither an area ID nor a mapping with `area`, or an area listed twice in one zone | That item of `areas`, such as `zones.ground_floor.areas.1`. |
 | The same valve or pump entity bound twice | The second binding of that entity. |
 | Cooling without a supply or surface reference | The loop. |
-| Cooling without zone temperature or humidity sensors | The zone's `temperature_sensors` or `humidity_sensors`. |
-| Designated reference without exactly one reference sensor | The zone's `temperature_sensors`. |
+| Cooling without a zone temperature or humidity sensor, where an area counts as both | The zone's `temperature_sensors` or `humidity_sensors`. |
+| Designated reference without exactly one reference sensor or area | The zone's `temperature_sensors`. |
 
 A file that binds an entity provided by Hydronicus itself is refused with the path of that binding, because it would feed the Plant back into itself.
 An edited file identical to the current Plant stops with **The plant file matches the current Plant, so nothing was changed.**

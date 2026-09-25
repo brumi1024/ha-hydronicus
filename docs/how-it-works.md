@@ -14,6 +14,7 @@ A Plant contains the complete coordinated installation.
 The UI speaks of zones and loops, and the controller underneath uses the terms in brackets.
 
 - A zone is the space one thermostat controls, with an identity, its observations, and its topology relationships.
+- An area is a Home Assistant area, usually one room; a zone covers zero or more areas, and an area may be covered by several zones.
 - A zone thermostat owns target state and demand semantics for exactly one zone.
 - A loop (Hydraulic Circuit) represents one hydraulic delivery path through one or more valves and one pump.
 - A Delivery Route connects a zone to a loop.
@@ -45,6 +46,31 @@ A zone that no enabled route leaves is still an error, because it could never re
 Each zone is a Home Assistant config subentry, so its devices and entities are grouped under it and removed with it.
 Zones, their private loops and valves, pumps, and Dry run are edited in the UI.
 Shared loops, shared valves, and the source selector are edited through the [plant file](plant-file.md), which describes the whole Plant as YAML for import, export, and editing.
+
+## Areas and observations
+
+A zone's temperature and humidity observations come from two places: the extra sensors chosen for the zone, and the sensors that its areas name in their Home Assistant area settings.
+Home Assistant defines those area sensors as the ones that represent the area, which is the reading a thermostat needs, so a sensor is chosen once, in the area settings, and replacing a dead sensor takes one edit.
+
+When a Plant loads, the adapter resolves every covered area to the sensors it names and hands them to the controller as ordinary observations, after the zone's extra sensors.
+The controller aggregates them exactly like extra sensors and does not know which came from an area.
+An area temperature is optional by default and an area humidity is always required, as described in [Areas](configuration.md#areas).
+
+```text
+area settings in Home Assistant -> resolved area sensors --+
+                                                           +-> zone observations -> aggregation
+extra sensors of the zone ---------------------------------+
+```
+
+The resolution is part of the Plant's configuration fingerprint.
+A change to a covered area that changes the resolved sensors, or removes or creates a covered area, reloads the Plant once through the same coalesced reload as a configuration edit, and a change that resolves to the same sensors reloads nothing.
+A reload is a command-free lifecycle boundary, so following an area never switches equipment by itself.
+
+Resolution never makes a Plant fail to load.
+Structural rules, such as a Hydronicus thermostat needing a temperature source, count an area as a source whatever it names today.
+An area that is missing or names no sensor adds nothing, and a zone left without a usable reading is blocked by the same fail-closed aggregation as a zone whose sensors are unavailable.
+An area sensor that Hydronicus itself provides is dropped, because it would feed the Plant back into itself.
+Each of these cases has a Repair, described below.
 
 ## The evaluation cycle
 
@@ -178,7 +204,14 @@ The model does not infer water temperature, capacity, balancing, or manufacturer
 
 The integration publishes Hydronicus climate targets, aggregate temperatures, heating and cooling demand, blocked states and reasons, virtual valve and pump requests, source recommendations, topology summaries, and decision explanations.
 
-Repairs identify configured entity bindings that are missing or unresolved.
+Repairs identify configured entity bindings that are missing or unresolved, and the area problems of zones:
+
+- `Zone {zone} covers a missing area` appears when a covered area no longer exists, and opens the zone's edit menu so the area can be removed.
+- `Zone {zone} has no temperature sensor` appears when no area of a zone with a Hydronicus thermostat names a temperature sensor it can follow and the zone has no extra one, so the zone is blocked; it opens the zone's edit menu.
+- `Area {area} names a Hydronicus sensor` is a warning without a form: choose another sensor in the area settings.
+- `Missing area sensor for {zone}` appears when an area names a sensor that does not exist, for example after its entity ID was renamed, and asks you to choose the sensor again in the area settings.
+
+Each of them clears itself once the problem is gone.
 A missing binding of a zone, its private loops, or its private valves opens that zone's reconfigure flow, and a source with its own entry opens that source.
 A missing pump binding opens the Plant settings.
 A missing binding of a shared loop, a shared valve, a source without its own entry, or the source selector cannot be fixed in a form, and the repair tells you to edit the plant file.

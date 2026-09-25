@@ -2,6 +2,8 @@
 # Load it as a Home Assistant package in a disposable or staging instance.
 # Every valve and pump is a template switch backed by an input_boolean, so any
 # command sent to it shows up in the input_boolean's history.
+# Areas live in the Home Assistant area registry, not in a package, so the
+# README shows how to create them for plant-areas.yaml.
 # These entities are not a substitute for physical safety controls.
 
 input_number:

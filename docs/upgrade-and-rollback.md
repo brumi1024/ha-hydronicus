@@ -12,10 +12,13 @@ After the update:
 
 1. Remove the Plant under **Settings > Devices & services > Hydronicus**.
 2. Rename the top-level `rooms` key of the exported plant file to `zones`.
-3. Add the Hydronicus integration again, choose **Import a plant file**, and paste the file.
+3. Optionally, give each zone an `areas` list of the Home Assistant areas it covers, as described in [the plant file reference](plant-file.md#areas).
+   A zone then follows the sensors those areas name, in addition to the sensors the file lists.
+4. Add the Hydronicus integration again, choose **Import a plant file**, and paste the file.
 
 The imported Plant keeps the object IDs of the file, and therefore the unique IDs of its entities.
 Review its entity IDs afterwards, because entity settings you changed on the removed Plant belonged to that Plant.
+Areas can also be added later in each zone's edit menu.
 Without an exported plant file, set the Plant up again with guided setup.
 Every Plant starts in Dry run, so review its outputs before you leave Dry run again.
 
