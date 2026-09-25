@@ -146,15 +146,17 @@ def _import_schema() -> vol.Schema:
 def _zone_descriptions(hass: HomeAssistant, data: Mapping[str, Any]) -> list[str]:
     """Describe each zone of Plant data, in the order they were added, with its areas.
 
-    A zone over areas reads like ``Ground floor: Kitchen and Hall``, and a zone
-    without areas is its name alone.
+    A zone over areas reads like ``Ground floor, covering areas Kitchen and
+    Hall``, which stays readable when a zone is named after its one area, and a
+    zone without areas is its name alone.
     """
     resolution = resolve_area_sensors(hass, covered_area_ids(data))
     descriptions = []
     for zone in topology_copy(data)[CONF_ZONES]:
         name = str(zone.get(CONF_NAME, ""))
         areas = [resolution.name(area_id) for area_id in area_ids(zone.get(CONF_AREAS))]
-        descriptions.append(f"{name}: {listed(areas)}" if areas else name)
+        noun = "area" if len(areas) == 1 else "areas"
+        descriptions.append(f"{name}, covering {noun} {listed(areas)}" if areas else name)
     return descriptions
 
 

@@ -71,7 +71,7 @@ Guided setup takes one menu, one Plant form, a zoning menu, one form per zone, a
    From the second zone on, the form lists the zones added so far, with their areas.
 5. **Review the Plant** lists the zones, how they connect, and the warnings, including area warnings such as an area that several zones cover.
 
-Under Zones, the review shows each zone with the areas it covers, such as `Ground floor: Kitchen and Hall`, and a zone without areas by its name alone.
+Under Zones, the review shows each zone with the areas it covers, such as `Ground floor, covering areas Kitchen and Hall`, and a zone without areas by its name alone.
 Under How it connects, the review shows one line per loop and one per zone, such as `Bedroom loop opens Bedroom loop valve, then starts Circulation pump.` and `Bedroom is heated by Bedroom loop.`
 A zone whose loop cools reads `Bedroom is heated and cooled by Bedroom loop.`
 When the zones share the pump, the review warns that the shared pump limits independent control, and lists it under Warnings only.

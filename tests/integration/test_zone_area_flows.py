@@ -203,6 +203,9 @@ async def test_per_area_setup_opens_one_prefilled_zone_form_per_area(hass, home)
     result = await _submit(hass, result, {**study, "temperature_sensors": ["sensor.study_probe"]})
 
     assert result["step_id"] == "review"
+    assert result["description_placeholders"]["zones"] == (
+        "- Kitchen, covering area Kitchen\n- Study, covering area Study"
+    )
     assert (
         "Area Study of zone Study has no temperature sensor"
         in (result["description_placeholders"]["warnings"])
@@ -236,7 +239,7 @@ async def test_grouped_setup_names_zones_after_their_floor_and_reviews_shared_ar
 
     assert result["step_id"] == "zone"
     assert result["description_placeholders"]["zones"] == (
-        "\n\nZones added so far:\n- Ground floor: Kitchen and Hall"
+        "\n\nZones added so far:\n- Ground floor, covering areas Kitchen and Hall"
     )
     mixed = {"areas": ["hall", "bedroom"], "valves": ["switch.hall_valve"]}
     result = await _submit(hass, result, mixed)
@@ -247,7 +250,8 @@ async def test_grouped_setup_names_zones_after_their_floor_and_reviews_shared_ar
     assert result["step_id"] == "review"
     # The review names the areas each zone covers.
     assert result["description_placeholders"]["zones"] == (
-        "- Ground floor: Kitchen and Hall\n- Stairwell: Hall and Bedroom"
+        "- Ground floor, covering areas Kitchen and Hall\n"
+        "- Stairwell, covering areas Hall and Bedroom"
     )
     assert (
         "Area Hall is covered by zones Ground floor and Stairwell"
