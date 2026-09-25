@@ -62,7 +62,6 @@ EXTERNAL_LABELS = frozenset(
         "Submit",
         "System",
         "Tools",
-        "Unknown area selected",
     }
 )
 _YAML_BLOCK = re.compile(r"^```yaml\n(.*?)^```", re.MULTILINE | re.DOTALL)

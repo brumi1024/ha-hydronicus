@@ -22,7 +22,12 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 
-from ..areas import names_temperature_sensor, zone_name_for_areas
+from ..areas import (
+    area_names,
+    names_temperature_sensor,
+    resolve_area_sensors,
+    zone_name_for_areas,
+)
 from ..const import (
     CONF_AREA_ID,
     CONF_AREAS,
@@ -104,6 +109,7 @@ from .common import (
     collapsed_section,
     flatten_sections,
     is_hydronicus_owned,
+    listed,
     max_age_selector,
     name_selector,
     number,
@@ -128,9 +134,53 @@ def valve_entity_selector() -> selector.EntitySelector:
     )
 
 
-def area_selector() -> selector.AreaSelector:
-    """Return the picker for the Home Assistant areas a zone covers."""
-    return selector.AreaSelector(selector.AreaSelectorConfig(multiple=True))
+def area_selector(hass: HomeAssistant, shown: Iterable[str] = ()) -> selector.SelectSelector:
+    """Return the checkbox list of the Home Assistant areas a zone can cover.
+
+    Home Assistant's area selector shows its label only on the empty field that
+    adds an area, below the chosen areas, so the chosen areas would have no
+    heading. A checkbox list shows its label above the areas, like the other
+    fields. An area in ``shown`` that no longer exists stays listed by the name
+    it last had, so the user sees which area it is and can clear it.
+    """
+    options = [
+        selector.SelectOptionDict(value=area_id, label=name) for area_id, name in area_names(hass)
+    ]
+    resolution = resolve_area_sensors(hass, shown)
+    options.extend(
+        selector.SelectOptionDict(
+            value=area_id, label=f"{resolution.name(area_id)} (no longer exists)"
+        )
+        for area_id in resolution.missing_area_ids
+    )
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options, multiple=True, mode=selector.SelectSelectorMode.LIST
+        )
+    )
+
+
+def missing_areas_text(hass: HomeAssistant, area_ids: Iterable[str]) -> str:
+    """Name the areas of a zone that no longer exist, for a form description.
+
+    It is empty when every area exists, and otherwise starts a new paragraph.
+    """
+    resolution = resolve_area_sensors(hass, area_ids)
+    if not (missing := resolution.missing_area_ids):
+        return ""
+    names = listed([resolution.name(area_id) for area_id in missing])
+    recreate = listed([resolution.recreate_name(area_id) for area_id in missing])
+    if len(missing) == 1:
+        return (
+            f"\n\nArea {names} no longer exists in Home Assistant, so the zone gets no "
+            f"reading from it. Clear it under Areas, or create an area named {recreate} to "
+            "bring it back."
+        )
+    return (
+        f"\n\nAreas {names} no longer exist in Home Assistant, so the zone gets no readings "
+        f"from them. Clear them under Areas, or create areas named {recreate} to bring them "
+        "back."
+    )
 
 
 def _suggested(key: str, defaults: Mapping[str, Any], *, required: bool = False) -> vol.Marker:
@@ -168,6 +218,7 @@ def _cooling_input(user_input: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def zone_form_schema(
+    hass: HomeAssistant,
     *,
     pumps: Sequence[selector.SelectOptionDict],
     shared_loops: Sequence[selector.SelectOptionDict],
@@ -187,7 +238,7 @@ def zone_form_schema(
     schema: dict[Any, Any] = {
         # An empty name takes the name of the areas, which zone_form_errors checks.
         _suggested(CONF_NAME, defaults): name_selector(),
-        _suggested(CONF_AREAS, defaults): area_selector(),
+        _suggested(CONF_AREAS, defaults): area_selector(hass, defaults.get(CONF_AREAS) or ()),
         _suggested(CONF_TEMPERATURE_SENSORS, defaults): sensor_selector(
             SensorDeviceClass.TEMPERATURE, multiple=True
         ),
@@ -1024,6 +1075,7 @@ def sensor_policy_schema(zone_draft: Mapping[str, Any]) -> vol.Schema:
 
 
 def zone_schema(
+    hass: HomeAssistant,
     defaults: Mapping[str, Any] | None = None,
     *,
     thermostat_kind: str = THERMOSTAT_KIND_HYDRONICUS,
@@ -1035,7 +1087,9 @@ def zone_schema(
         thermostat_defaults = {}
     schema: dict[Any, Any] = {
         vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): name_selector(),
-        _suggested(CONF_AREAS, {CONF_AREAS: area_ids(defaults.get(CONF_AREAS))}): (area_selector()),
+        _suggested(CONF_AREAS, {CONF_AREAS: area_ids(defaults.get(CONF_AREAS))}): area_selector(
+            hass, area_ids(defaults.get(CONF_AREAS))
+        ),
         (vol.Required if thermostat_kind == THERMOSTAT_KIND_HYDRONICUS else vol.Optional)(
             CONF_TEMPERATURE_SENSORS,
             default=zone_temperature_sensor_defaults(defaults),

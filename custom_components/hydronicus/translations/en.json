@@ -221,7 +221,7 @@
         },
         "zone": {
           "title": "Edit zone basics",
-          "description": "Change the zone name, its areas, who owns its demand, its extra temperature sensors, and the shared loops that serve it. Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.",
+          "description": "Change the zone name, its areas, who owns its demand, its extra temperature sensors, and the shared loops that serve it. Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.{missing_areas}",
           "data": {
             "name": "Zone name",
             "areas": "Areas",
@@ -275,7 +275,7 @@
         },
         "sensors": {
           "title": "Edit sensors",
-          "description": "Choose the areas the zone covers, the humidity sensors it uses besides them, and how temperature readings are combined.",
+          "description": "Choose the areas the zone covers, the humidity sensors it uses besides them, and how temperature readings are combined.{missing_areas}",
           "data": {
             "areas": "Areas",
             "temperature_aggregation": "Temperature aggregation",

@@ -94,11 +94,13 @@ from .common import (
 )
 from .zone_form import (
     CONF_PUMP,
+    area_ids,
     area_metadata_record,
     area_metadata_schema,
     areas_for,
     cooling_reference_fields,
     graph_errors,
+    missing_areas_text,
     new_route,
     new_valves,
     pump_options,
@@ -319,7 +321,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         schema = zone_form_schema(
-            pumps=pump_options(plant), shared_loops=shared_loop_options(plant)
+            self.hass, pumps=pump_options(plant), shared_loops=shared_loop_options(plant)
         )
         if user_input is not None:
             form_errors, placeholders = zone_form_errors(self.hass, user_input, plant)
@@ -372,6 +374,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         plant = effective_plant(entry)
         current = self._stored_zone()
         schema = zone_form_schema(
+            self.hass,
             pumps=(),
             shared_loops=shared_loop_options(plant),
             defaults=zone_form_defaults(current),
@@ -397,7 +400,12 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             step_id="zone",
             data_schema=with_submitted_values(self, schema, user_input),
             errors=errors,
-            description_placeholders=placeholders,
+            description_placeholders={
+                **placeholders,
+                "missing_areas": missing_areas_text(
+                    self.hass, area_ids(current.zone.get(CONF_AREAS))
+                ),
+            },
         )
 
     async def async_step_thermostat(
@@ -405,7 +413,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     ) -> config_entries.SubentryFlowResult:
         """Change the Hydronicus thermostat settings."""
         current = self._stored_zone()
-        schema = _picked(zone_schema(current.zone), _THERMOSTAT_FIELDS)
+        schema = _picked(zone_schema(self.hass, current.zone), _THERMOSTAT_FIELDS)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
@@ -453,7 +461,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     ) -> config_entries.SubentryFlowResult:
         """Change the areas, aggregation, and humidity sensors, or edit sensor metadata."""
         current = self._stored_zone()
-        schema = _picked(zone_schema(current.zone), _SENSOR_FIELDS)
+        schema = _picked(zone_schema(self.hass, current.zone), _SENSOR_FIELDS)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
@@ -507,7 +515,12 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             step_id="sensors",
             data_schema=with_submitted_values(self, schema, user_input),
             errors=errors,
-            description_placeholders=placeholders,
+            description_placeholders={
+                **placeholders,
+                "missing_areas": missing_areas_text(
+                    self.hass, area_ids(current.zone.get(CONF_AREAS))
+                ),
+            },
         )
 
     async def async_step_sensor_metadata(

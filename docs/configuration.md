@@ -55,7 +55,7 @@ Guided setup takes one menu, one Plant form, a zoning menu, one form per zone, a
 4. In **Add a zone**, describe one zone:
    - **Zone name** names the zone's thermostat and entities.
      Left empty, it takes the name of the one chosen area, or of the floor that every chosen area is on.
-   - **Areas** are the Home Assistant areas the zone covers, and the zone follows the temperature and humidity sensors that each area names in its area settings.
+   - **Areas** lists every Home Assistant area with a checkbox; the checked areas are the ones the zone covers, and the zone follows the temperature and humidity sensors that each area names in its area settings.
    - **Extra temperature sensors** are sensors outside the areas, such as a floor probe, and are combined with the areas into the zone temperature.
      A zone that Hydronicus controls needs a temperature reading from an area or an extra sensor.
    - **Existing climate thermostat** is optional; when set, that climate entity owns the zone's demand, and the temperature sensors become optional.
@@ -172,7 +172,7 @@ Hydronicus does not infer the external integration's actuator or support externa
 Open the zone's **Reconfigure** action to reach the zone's edit menu, titled with the zone name, such as `Edit Bedroom`, with these options:
 
 - **Name, areas, thermostat owner, and sensors** changes the **Zone name**, the **Areas**, the **Existing climate thermostat**, the **Extra temperature sensors**, and the **Shared loops**.
-  An area that no longer exists stays listed as **Unknown area selected**, so it can be removed here.
+  An area that no longer exists stays listed by the name it last had, followed by `(no longer exists)`, and the form's description names it, so it can be cleared here.
   Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.
 - **Thermostat settings** appears for a Hydronicus thermostat and sets the **Heating start hysteresis**, **Heating stop hysteresis**, **Minimum active duration**, **Minimum idle duration**, the **Comfort preset target**, **Eco preset target**, and **Away preset target**, and the **Cooling** hysteresis.
 - **Areas, sensor aggregation, and humidity** sets the **Areas**, the **Extra humidity sensors**, and the **Temperature aggregation**, and **Edit sensor metadata** opens one form per extra temperature sensor, then one per area.

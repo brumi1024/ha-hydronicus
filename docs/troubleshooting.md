@@ -113,7 +113,8 @@ A sensor listed in `excluded_optional_sensor_ids` was stale or unavailable, and 
 The repair `Home, zone Bedroom: missing area Kids room` means an area that zone Bedroom of Plant Home covers was deleted.
 Every area repair names its Plant and zone first, because several Plants can have zones and areas with the same names.
 The zone gets no reading from the area, and the rest of its areas and sensors keep working.
-Select **Submit** in the repair to open the zone's edit menu, choose **Name, areas, thermostat owner, and sensors**, remove the entry shown as **Unknown area selected**, and save.
+Select **Submit** in the repair to open the zone's edit menu, choose **Name, areas, thermostat owner, and sensors**, clear the area listed as `Kids room (no longer exists)` under **Areas**, and save.
+The form's description names the missing area too.
 Creating the area again also clears the repair, but Home Assistant makes a new area's ID from its name and offers no way to choose the ID.
 The repair therefore names the area to create, such as `Kids room` for the ID `kids_room`, and you can rename the area afterwards without changing its ID.
 The repair and the zone card show a missing area by the name it last had, or by a name spelled from its ID after Home Assistant restarts, and the card marks it Missing until the area is removed.

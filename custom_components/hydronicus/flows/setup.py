@@ -105,13 +105,15 @@ def _guided_schema() -> vol.Schema:
     )
 
 
-def _zone_schema(defaults: Mapping[str, Any], *, add_another: bool) -> vol.Schema:
+def _zone_schema(
+    hass: HomeAssistant, defaults: Mapping[str, Any], *, add_another: bool
+) -> vol.Schema:
     """Return the zone form: zone basics with the implied pump, and ``add_another``.
 
     A Plant being set up has one pump and no shared loops, so neither is asked for.
     Only grouping areas into zones asks whether another zone follows.
     """
-    schema = zone_form_schema(pumps=(), shared_loops=(), defaults=defaults)
+    schema = zone_form_schema(hass, pumps=(), shared_loops=(), defaults=defaults)
     if not add_another:
         return schema
     return schema.extend(
@@ -119,10 +121,14 @@ def _zone_schema(defaults: Mapping[str, Any], *, add_another: bool) -> vol.Schem
     )
 
 
-def _areas_schema(areas: list[str]) -> vol.Schema:
+def _areas_schema(hass: HomeAssistant, areas: list[str]) -> vol.Schema:
     """Return the form that chooses the areas that each get their own zone."""
     return vol.Schema(
-        {vol.Optional(CONF_AREAS, description={"suggested_value": areas or None}): area_selector()}
+        {
+            vol.Optional(CONF_AREAS, description={"suggested_value": areas or None}): (
+                area_selector(hass)
+            )
+        }
     )
 
 
@@ -307,7 +313,7 @@ class SetupSteps(ConfigFlowBase):
             errors[CONF_AREAS] = "areas_required"
         return self.async_show_form(
             step_id="zoning_per_area",
-            data_schema=_areas_schema(areas_with_temperature_sensor(self.hass)),
+            data_schema=_areas_schema(self.hass, areas_with_temperature_sensor(self.hass)),
             errors=errors,
         )
 
@@ -336,7 +342,7 @@ class SetupSteps(ConfigFlowBase):
         """Add one zone with its own loop on the Plant's pump, which may also cool it."""
         plant = effective_plant_from_data(self._data)
         defaults, progress = self._zone_defaults()
-        schema = _zone_schema(defaults, add_another=self._zoning == ZONING_GROUPED)
+        schema = _zone_schema(self.hass, defaults, add_another=self._zoning == ZONING_GROUPED)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:

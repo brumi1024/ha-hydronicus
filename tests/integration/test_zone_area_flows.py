@@ -350,7 +350,21 @@ async def test_the_zone_form_asks_for_areas_after_the_name(hass, home) -> None:
         "cooling.surface_temperature_sensor",
         "cooling.condensation_margin",
     ]
-    assert fields["areas"]["selector"]["area"]["multiple"] is True
+    # A checkbox list shows its label as a heading, which Home Assistant's area
+    # selector shows only on its empty add field, below the chosen areas.
+    assert fields["areas"]["selector"]["select"] == {
+        "options": [
+            {"value": "bedroom", "label": "Bedroom"},
+            {"value": "hall", "label": "Hall"},
+            {"value": "kitchen", "label": "Kitchen"},
+            {"value": "loft", "label": "Loft"},
+            {"value": "study", "label": "Study"},
+        ],
+        "multiple": True,
+        "mode": "list",
+        "custom_value": False,
+        "sort": False,
+    }
     # The name may stay empty when areas give it.
     assert fields[CONF_NAME]["required"] is False
 
@@ -518,8 +532,15 @@ async def test_the_zone_step_edits_areas_and_removes_a_missing_one(hass, home) -
         "temperature_sensors",
         "external_climate_entity",
     ]
-    # The missing area stays visible, so the user can see and remove it.
+    # The missing area stays visible by name, so the user can see and remove it.
     assert form_value(result, "areas") == ["attic", "kitchen"]
+    assert {"value": "attic", "label": "Attic (no longer exists)"} in (
+        form_fields(result)["areas"]["selector"]["select"]["options"]
+    )
+    assert result["description_placeholders"]["missing_areas"] == (
+        "\n\nArea Attic no longer exists in Home Assistant, so the zone gets no reading "
+        "from it. Clear it under Areas, or create an area named Attic to bring it back."
+    )
     result = await _confirmed(hass, await _configure(hass, result, frontend_submission(result)))
     assert result["reason"] == "reconfigure_successful"
     assert _stored_zone(entry, GROUND.zone_id)["areas"] == [
@@ -542,6 +563,11 @@ async def test_the_zone_step_edits_areas_and_removes_a_missing_one(hass, home) -
         {"area_id": "hall"},
     ]
     assert "zone_area_missing" not in _area_issue_keys(hass)
+    result = await _menu(hass, entry, GROUND.zone_id, "zone")
+    assert result["description_placeholders"]["missing_areas"] == ""
+    assert "attic" not in [
+        option["value"] for option in form_fields(result)["areas"]["selector"]["select"]["options"]
+    ]
 
 
 async def test_the_zone_step_needs_a_temperature_source_for_a_hydronicus_thermostat(
@@ -634,6 +660,7 @@ async def test_the_sensors_step_names_a_missing_area_in_its_settings(hass, home)
     entry = await _setup(hass, plant_entry(plant_data(_area_topology([{"area_id": "attic"}]))))
 
     result = await _menu(hass, entry, GROUND.zone_id, "sensors")
+    assert "Area Attic no longer exists" in result["description_placeholders"]["missing_areas"]
     result = await _configure(
         hass, result, {**frontend_submission(result), "configure_sensor_metadata": True}
     )

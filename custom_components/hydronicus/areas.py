@@ -190,6 +190,12 @@ def names_temperature_sensor(hass: HomeAssistant, area_ids: Iterable[str]) -> bo
     return any(sensors.temperature_entity_id for sensors in resolution.area_sensors.values())
 
 
+def area_names(hass: HomeAssistant) -> list[tuple[str, str]]:
+    """Return the ID and name of every Home Assistant area, by name."""
+    areas = sorted(ar.async_get(hass).async_list_areas(), key=lambda area: area.name.casefold())
+    return [(area.id, area.name) for area in areas]
+
+
 def areas_with_temperature_sensor(hass: HomeAssistant) -> list[str]:
     """Return every area that names a temperature sensor a zone can follow, by name."""
     areas = sorted(ar.async_get(hass).async_list_areas(), key=lambda area: area.name.casefold())
