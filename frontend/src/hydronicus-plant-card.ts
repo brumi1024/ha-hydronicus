@@ -2,7 +2,7 @@ import { ContextConsumer, createContext } from "@lit/context";
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { configForm, plantDirectory, stubConfig, validateConfig, type ConfigForm } from "./config";
 import { CELSIUS, formatNumber, formatTemperature, formatTemperatureDelta, targetStep, temperatureUnit, type TemperatureUnit } from "./format";
-import { actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, isFlowingState, operationLabel, parseSnapshot, phaseLabel, plantVisualState, prioritizedAlerts, stateLabel, zonePresets, type ActionCall } from "./logic";
+import { actionForHvacMode, actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryClass, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, operationLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sentenceLabel, sourceSummary, stateLabel, zoneHvacModes, zonePresets, type ActionCall } from "./logic";
 import { errorMessage, PlantStream, type StreamStatus } from "./stream";
 import { cardStyles } from "./styles";
 import type {
@@ -33,10 +33,6 @@ const configContext = createContext<HassConfigContextValue>("hassConfig");
 const internationalizationContext = createContext<HassInternationalizationContextValue>("hassInternationalization");
 
 type ContextSource = "connection" | "api" | "config" | "i18n";
-
-function boundaryClass(mode: string): string {
-  return mode.replaceAll("_", "-");
-}
 
 function retryText(delayMs: number): string {
   return `Retrying in ${Math.round(delayMs / 1000)} s.`;
@@ -271,7 +267,7 @@ export class HydronicusPlantCard extends LitElement {
       ${this._actionError ? html`<div class="action-error" role="alert"><span dir="auto">${this._actionError}</span><button type="button" @click=${this._dismissActionError}>Dismiss</button></div>` : nothing}
       <div class="boundary" role="status">
         <span class="boundary-orb" aria-hidden="true"></span>
-        <p class="boundary-copy" dir="auto"><span class="control-label">Execution boundary</span><strong>${snapshot.plant.execution_boundary.message || `${phaseLabel(snapshot.plant.execution_boundary.mode)} execution boundary is active.`}</strong></p>
+        <p class="boundary-copy" dir="auto"><span class="control-label">Execution boundary</span><strong>${snapshot.plant.execution_boundary.message || `${boundaryLabel(snapshot.plant.execution_boundary)} execution boundary is active.`}</strong></p>
       </div>
       ${this._renderAlerts(snapshot)}
       ${this._renderZones(snapshot)}
@@ -313,6 +309,7 @@ export class HydronicusPlantCard extends LitElement {
     const boundary = plant.execution_boundary;
     const modeEntity = snapshot.controls.requested_mode;
     const modes = MODES.includes(plant.requested_mode) ? MODES : [...MODES, plant.requested_mode];
+    const source = sourceSummary(snapshot);
     return html`<header class="header">
       <div class="plant-heading">
         <span class="plant-mark" aria-hidden="true"></span>
@@ -321,14 +318,14 @@ export class HydronicusPlantCard extends LitElement {
           <h2 class="plant-title">${modeEntity ? html`<button type="button" class="link" aria-haspopup="dialog" title="Show Plant mode details" @click=${() => this._moreInfo(modeEntity)}>${plant.name}</button>` : plant.name}</h2>
           <div class="status-line">
             <span class="status-primary"><span class="status-dot" aria-hidden="true"></span>${stateLabel(this._localize, "sensor.controller_status", plant.status)}</span>
-            <span class="meta mode-detail">Requested ${stateLabel(this._localize, "select.requested_mode", plant.requested_mode)} · active ${stateLabel(this._localize, "sensor.operating_mode", plant.active_mode)}</span>
+            <span class="meta mode-detail">${this._modeDetail(snapshot)}</span>
           </div>
-          <p class="meta source-line" dir="auto"><strong>Source</strong> ${plant.source.active_name ?? "none active"} · recommended ${plant.source.recommended_name ?? "none"}</p>
+          ${source === null ? nothing : html`<p class="meta source-line" dir="auto"><strong>Source</strong> ${source}</p>`}
           <p class="meta" dir="auto">${plant.controller.mode_explanation || "The controller is starting."}</p>
         </div>
       </div>
       <div class="controls">
-        <span class="badge ${boundaryClass(boundary.mode)}"><span class="visually-hidden">Execution boundary: </span>${phaseLabel(boundary.mode)}</span>
+        <span class="badge ${boundaryClass(boundary)}"><span class="visually-hidden">Execution boundary: </span>${boundaryLabel(boundary)}</span>
         <label class="mode-control"><span class="control-label">Mode</span><select aria-label="Requested Plant mode" data-value=${plant.requested_mode} ?disabled=${!modeEntity} @change=${this._modeChanged}>
           ${modes.map((mode) => html`<option value=${mode}>${stateLabel(this._localize, "select.requested_mode", mode)}</option>`)}
         </select></label>
@@ -337,9 +334,22 @@ export class HydronicusPlantCard extends LitElement {
     </header>`;
   }
 
+  /**
+   * The requested Plant mode, plus the active mode when it differs from an
+   * explicit request, for example while a changeover is still pending.
+   */
+  private _modeDetail(snapshot: PlantSnapshot): string {
+    const plant = snapshot.plant;
+    const requested = `Mode ${stateLabel(this._localize, "select.requested_mode", plant.requested_mode)}`;
+    if (plant.requested_mode === "auto" || plant.requested_mode === plant.active_mode) return requested;
+    return `${requested} · now ${stateLabel(this._localize, "sensor.operating_mode", plant.active_mode)}`;
+  }
+
   private _renderShutdown(snapshot: PlantSnapshot) {
     const disabled = !snapshot.controls.safe_shutdown;
-    return html`<button type="button" class=${`shutdown ${this._holdingShutdown ? "is-holding" : ""}`} ?disabled=${disabled} aria-describedby="shutdown-hint"
+    // In Dry run nothing executes, so the action stays available but quiet.
+    const quiet = snapshot.plant.execution_boundary.dry_run;
+    return html`<button type="button" class=${`shutdown${quiet ? " quiet" : ""}${this._holdingShutdown ? " is-holding" : ""}`} ?disabled=${disabled} aria-describedby="shutdown-hint"
         @pointerdown=${this._pointerHoldStart} @pointerup=${this._clearHold} @pointerleave=${this._clearHold} @pointercancel=${this._clearHold} @lostpointercapture=${this._clearHold}
         @keydown=${this._keyHoldStart} @keyup=${this._keyHoldEnd} @blur=${this._clearHold} @contextmenu=${this._preventContextMenu}>
         <span class="button-label">Safe shutdown</span>
@@ -353,12 +363,12 @@ export class HydronicusPlantCard extends LitElement {
     if (!alerts.length) return nothing;
     return html`<section aria-labelledby="hydronicus-alerts"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-alerts">Alerts</h3></div><span class="meta" dir="auto">${formatNumber(alerts.length, this._locale, 0)}</span></div>${alerts.slice(0, 3).map((alert) => {
       const urgent = alert.severity === "error" || alert.severity === "critical";
-      return html`<p class="alert ${urgent ? "error" : ""}" data-severity=${alert.severity} dir="auto"><strong>${phaseLabel(alert.code)}</strong><span> · ${alert.message}</span></p>`;
+      return html`<p class="alert ${urgent ? "error" : ""}" data-severity=${alert.severity} dir="auto"><strong>${sentenceLabel(alert.code)}</strong><span> · ${alert.message}</span></p>`;
     })}</section>`;
   }
 
   private _renderZones(snapshot: PlantSnapshot) {
-    return html`<section aria-labelledby="hydronicus-zones"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-zones">Comfort Zones</h3></div><span class="meta" dir="auto">${formatNumber(snapshot.zones.length, this._locale, 0)} visible</span></div><div class="zone-grid">${snapshot.zones.length ? snapshot.zones.map((zone) => this._renderZone(zone)) : html`<p class="muted empty-state" dir="auto">No visible Zones are configured for this Plant.</p>`}</div></section>`;
+    return html`<section aria-labelledby="hydronicus-zones"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-zones">Rooms</h3></div><span class="meta" dir="auto">${formatNumber(snapshot.zones.length, this._locale, 0)} visible</span></div><div class="zone-grid">${snapshot.zones.length ? snapshot.zones.map((zone) => this._renderZone(zone)) : html`<p class="muted empty-state" dir="auto">No Rooms are visible for this Plant.</p>`}</div></section>`;
   }
 
   private _temperature(celsius: number | null, label: string, className: string) {
@@ -372,7 +382,9 @@ export class HydronicusPlantCard extends LitElement {
   private _renderZone(zone: ZoneSnapshot) {
     const thermostat = zone.thermostat;
     const internal = thermostat.kind === "hydronicus";
-    const hasDemand = zone.demand || zone.cooling.demand;
+    const demandKind = zone.cooling.demand ? "cooling" : zone.demand ? "heating" : "none";
+    const hasDemand = demandKind !== "none";
+    const off = thermostat.hvac_mode === "off";
     const unit = this._unit;
     const step = formatNumber(targetStep(unit), this._locale, unit === CELSIUS ? 1 : 0);
     const controlEntity = thermostat.control_entity_id;
@@ -380,51 +392,59 @@ export class HydronicusPlantCard extends LitElement {
     // A thermostat without preset support offers only "none"; choosing
     // anything would fail, so the control is hidden.
     const presets = zonePresets(zone);
-    return html`<article class="zone" data-phase=${zone.phase} data-demand=${String(hasDemand)} data-blocked=${String(zone.blocked)} aria-labelledby=${`zone-${zone.id}`}>
-      <div class="row"><div><h4 class="zone-title" id=${`zone-${zone.id}`}>${controlEntity ? html`<button type="button" class="link" aria-haspopup="dialog" title="Show thermostat details" @click=${() => this._moreInfo(controlEntity)}>${zone.name}</button>` : zone.name}</h4><p class="meta zone-owner">${internal ? "Hydronicus thermostat" : "External thermostat · read-only"}</p></div><span class="phase ${zone.blocked ? "state blocked" : ""}">${phaseLabel(zone.phase)}</span></div>
+    const hvacModes = zoneHvacModes(zone);
+    const modeLabel = thermostat.hvac_mode ? hvacModeLabel(this._localize, thermostat.hvac_mode) : null;
+    // An Off thermostat reads as Off rather than as an idle Room.
+    const phase = off && !zone.blocked ? (modeLabel ?? "Off") : sentenceLabel(zone.phase);
+    const demandNote = hasDemand ? `${demandKind === "cooling" ? "Cooling" : "Heating"} demand active` : off ? "Thermostat off" : "No demand";
+    return html`<article class="zone" data-phase=${zone.phase} data-hvac-mode=${thermostat.hvac_mode ?? "unknown"} data-demand=${String(hasDemand)} data-demand-kind=${demandKind} data-blocked=${String(zone.blocked)} aria-labelledby=${`zone-${zone.id}`}>
+      <div class="row"><div><h4 class="zone-title" id=${`zone-${zone.id}`}>${controlEntity ? html`<button type="button" class="link" aria-haspopup="dialog" title="Show thermostat details" @click=${() => this._moreInfo(controlEntity)}>${zone.name}</button>` : zone.name}</h4><p class="meta zone-owner">${internal ? "Hydronicus thermostat" : `External thermostat · read-only${modeLabel ? ` · ${modeLabel}` : ""}`}</p></div><span class=${`phase${zone.blocked ? " state blocked" : ""}${off ? " off" : ""}`}>${phase}</span></div>
       <div class="temperature-panel">
         ${this._temperature(thermostat.current_temperature, "Current", "metric")}
         ${this._temperature(thermostat.target_temperature, "Target", "metric target")}
       </div>
-      <p class="meta zone-note" dir="auto">${hasDemand ? `${zone.cooling.demand ? "Cooling" : "Heating"} demand active` : "No demand"} · ${thermostat.explanation}</p>
-      <ul class="diagnostic-list" aria-label="Zone diagnostics">
+      <p class="meta zone-note" dir="auto">${internal ? demandNote : `${demandNote} · ${thermostat.explanation}`}</p>
+      <ul class="diagnostic-list" aria-label="Room diagnostics">
         <li class="diagnostic-chip" dir="auto">${formatNumber(zone.sensor_status.usable, this._locale, 0)} sensor${zone.sensor_status.usable === 1 ? "" : "s"} ready</li>
         ${zone.sensor_status.optional_excluded ? html`<li class="diagnostic-chip warning" dir="auto">${formatNumber(zone.sensor_status.optional_excluded, this._locale, 0)} optional excluded</li>` : nothing}
         ${zone.sensor_status.required_blocking ? html`<li class="diagnostic-chip danger" dir="auto">${formatNumber(zone.sensor_status.required_blocking, this._locale, 0)} required blocked</li>` : nothing}
         ${zone.cooling.dew_point === null ? nothing : html`<li class="diagnostic-chip" dir="auto">Dew point ${formatTemperature(zone.cooling.dew_point, unit, this._locale)} ${unit}</li>`}
         ${zone.cooling.condensation_margin === null ? nothing : html`<li class="diagnostic-chip ${zone.cooling.blocked ? "danger" : ""}" dir="auto">Margin ${formatTemperatureDelta(zone.cooling.condensation_margin, unit, this._locale)} ${unit}</li>`}
       </ul>
-      ${thermostat.preset && thermostat.preset !== "none" ? html`<p class="meta zone-note" dir="auto">Preset: ${phaseLabel(thermostat.preset)}</p>` : nothing}
+      ${thermostat.preset && thermostat.preset !== "none" ? html`<p class="meta zone-note" dir="auto">Preset: ${sentenceLabel(thermostat.preset)}</p>` : nothing}
       ${zone.blocked_reason ? html`<p class="meta zone-note" dir="auto">${zone.blocked_reason}</p>` : nothing}
-      ${zone.coupling_group_ids.length ? html`<p class="meta coupling-note" dir="auto">Coupled delivery - this Zone shares hydraulic equipment.</p>` : nothing}
+      ${zone.coupling_group_ids.length ? html`<p class="meta coupling-note" dir="auto">Coupled delivery - this Room shares hydraulic equipment.</p>` : nothing}
       ${internal
-        ? html`<div class="zone-actions">
-            <button type="button" dir="ltr" ?disabled=${!canAdjust} aria-label=${`Decrease ${zone.name} target by ${step} ${unit}`} @click=${() => this._adjustZone(zone, -1)}>−${step}</button>
-            <button type="button" dir="ltr" ?disabled=${!canAdjust} aria-label=${`Increase ${zone.name} target by ${step} ${unit}`} @click=${() => this._adjustZone(zone, 1)}>+${step}</button>
-            ${presets.length
-              ? html`<select class="preset" data-value=${thermostat.preset ?? "none"} aria-label=${`${zone.name} preset`} ?disabled=${!controlEntity} @change=${(event: Event) => this._presetChanged(zone, event)}>${["none", ...presets].map((preset) => html`<option value=${preset}>${phaseLabel(preset)}</option>`)}</select>`
+        ? html`${hvacModes.length
+              ? html`<div class="hvac-modes" role="group" aria-label=${`${zone.name} HVAC mode`}>${hvacModes.map((mode) => html`<button type="button" class="hvac-mode" data-mode=${mode} aria-pressed=${String(mode === thermostat.hvac_mode)} ?disabled=${!controlEntity} @click=${() => this._hvacModeChosen(zone, mode)}>${hvacModeLabel(this._localize, mode)}</button>`)}</div>`
               : nothing}
-          </div>`
+            <div class="zone-actions">
+              <button type="button" dir="ltr" ?disabled=${!canAdjust} aria-label=${`Decrease ${zone.name} target by ${step} ${unit}`} @click=${() => this._adjustZone(zone, -1)}>−${step}</button>
+              <button type="button" dir="ltr" ?disabled=${!canAdjust} aria-label=${`Increase ${zone.name} target by ${step} ${unit}`} @click=${() => this._adjustZone(zone, 1)}>+${step}</button>
+              ${presets.length
+                ? html`<select class="preset" data-value=${thermostat.preset ?? "none"} aria-label=${`${zone.name} preset`} ?disabled=${!controlEntity} @change=${(event: Event) => this._presetChanged(zone, event)}>${["none", ...presets].map((preset) => html`<option value=${preset}>${sentenceLabel(preset)}</option>`)}</select>`
+                : nothing}
+            </div>`
         : html`<p class="meta" dir="auto">Adjust this thermostat in its owning Home Assistant integration.</p>`}
     </article>`;
   }
 
   private _renderPaths(snapshot: PlantSnapshot) {
     if (!snapshot.delivery_paths.length) return nothing;
-    return html`<section aria-labelledby="hydronicus-paths"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-paths">Hydraulic Flow</h3></div><span class="meta" dir="auto">Zone → Circuit → Valve → Pump → Source</span></div><div class="path-list">${snapshot.delivery_paths.map((path) => html`<article class="path" data-status=${path.status} data-flowing=${String(isFlowingState(path.status))}>
-      <div class="path-head"><div class="path-heading"><strong>${snapshot.zones.find((zone) => zone.id === path.zone_id)?.name ?? path.zone_id}</strong></div><div class="status-line"><span class="state ${path.status}">${phaseLabel(path.status)}</span>${path.coupled ? html`<span class="meta">coupled</span>` : nothing}</div></div>
-      <ol class="path-track" aria-label="Ordered hydraulic delivery path">${path.nodes.map((node, index) => html`<li class="path-step">${index ? html`<span class="flow-link" aria-hidden="true"></span>` : nothing}<span class="node" data-kind=${node.kind} data-state=${node.state} data-flowing=${String(isFlowingState(node.state))}><span class="node-kind">${phaseLabel(node.kind)}</span><span class="node-name">${node.name}</span><span class="node-state">${phaseLabel(node.state)}</span></span></li>`)}</ol>
+    return html`<section aria-labelledby="hydronicus-paths"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-paths">Hydraulic Flow</h3></div><span class="meta" dir="auto">Room → Loop → Valve → Pump → Source</span></div><div class="path-list">${snapshot.delivery_paths.map((path) => html`<article class="path" data-status=${path.status} data-flowing=${String(isFlowingState(path.status))}>
+      <div class="path-head"><div class="path-heading"><strong>${snapshot.zones.find((zone) => zone.id === path.zone_id)?.name ?? path.zone_id}</strong></div><div class="status-line"><span class="state ${path.status}">${sentenceLabel(path.status)}</span>${path.coupled ? html`<span class="meta">shares equipment</span>` : nothing}</div></div>
+      <ol class="path-track" aria-label="Ordered hydraulic delivery path">${path.nodes.map((node, index) => html`<li class="path-step">${index ? html`<span class="flow-link" aria-hidden="true"></span>` : nothing}<span class="node" data-kind=${node.kind} data-state=${node.state} data-flowing=${String(isFlowingState(node.state))}><span class="node-kind">${nodeKindLabel(node.kind)}</span><span class="node-name">${node.name}</span><span class="node-state">${sentenceLabel(node.state)}</span></span></li>`)}</ol>
       ${path.problem ? html`<p class="meta path-problem" dir="auto">${path.problem}</p>` : nothing}
     </article>`)}</div></section>`;
   }
 
   private _renderActuators(snapshot: PlantSnapshot) {
     if (!snapshot.actuators.length) return nothing;
-    return html`<section aria-labelledby="hydronicus-actuators"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-actuators">Actuator Ownership</h3></div><span class="meta" dir="auto">Shared consumers stay visible</span></div><div class="actuator-list">${snapshot.actuators.map((actuator) => html`<article class="actuator" data-state=${actuator.state}><div class="row"><strong>${actuator.name}</strong><span class="state actuator-state ${actuator.state}">${phaseLabel(actuator.state)}</span></div><p class="meta" dir="auto">${phaseLabel(actuator.kind)} · ${actuator.reason ?? "No additional explanation."}</p>${actuator.active_consumers.length ? html`<ul class="consumer-list" aria-label="Active circuit consumers">${actuator.active_consumers.map((consumer) => html`<li class="consumer-chip"><strong>${consumer.name}</strong> · ${consumer.id}</li>`)}</ul>` : html`<p class="meta zone-note" dir="auto">No active circuit consumers.</p>`}</article>`)}</div></section>`;
+    return html`<section aria-labelledby="hydronicus-actuators"><div class="section-head"><div class="section-kicker"><h3 id="hydronicus-actuators">Equipment</h3></div><span class="meta" dir="auto">Loops using each valve and pump</span></div><div class="actuator-list">${snapshot.actuators.map((actuator) => html`<article class="actuator" data-state=${actuator.state}><div class="row"><strong>${actuator.name}</strong><span class="state actuator-state ${actuator.state}">${sentenceLabel(actuator.state)}</span></div><p class="meta" dir="auto">${sentenceLabel(actuator.kind)} · ${actuator.reason ?? "No additional explanation."}</p>${actuator.active_consumers.length ? html`<ul class="consumer-list" aria-label="Loops using this equipment">${actuator.active_consumers.map((consumer) => html`<li class="consumer-chip" title=${consumer.id}><strong>${consumer.name}</strong></li>`)}</ul>` : html`<p class="meta zone-note" dir="auto">No loop is using this right now.</p>`}</article>`)}</div></section>`;
   }
 
   private _renderExplanations(snapshot: PlantSnapshot) {
-    return html`<section><details><summary>Controller explanations</summary>${snapshot.explanations.map((step) => html`<div class="operation"><span class="operation-marker" aria-hidden="true"></span><p class="operation-copy" dir="auto"><strong>${phaseLabel(step.scope)}</strong> · ${step.message}</p></div>`)}</details></section>`;
+    return html`<section><details><summary>Controller explanations</summary>${snapshot.explanations.map((step) => html`<div class="operation"><span class="operation-marker" aria-hidden="true"></span><p class="operation-copy" dir="auto"><strong>${nodeKindLabel(step.scope)}</strong> · ${step.message}</p></div>`)}</details></section>`;
   }
 
   private _renderOperations(snapshot: PlantSnapshot) {
@@ -469,6 +489,11 @@ export class HydronicusPlantCard extends LitElement {
   private _adjustZone(zone: ZoneSnapshot, direction: 1 | -1): void {
     const target = adjustTarget(zone, direction, this._unit);
     if (target !== null) this._call(actionForTarget(zone, target));
+  }
+
+  private _hvacModeChosen(zone: ZoneSnapshot, mode: string): void {
+    if (mode === zone.thermostat.hvac_mode) return;
+    this._call(actionForHvacMode(zone, mode));
   }
 
   private _presetChanged(zone: ZoneSnapshot, event: Event): void {

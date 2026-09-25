@@ -314,6 +314,153 @@ describe("Zone presets", () => {
   });
 });
 
+describe("Room HVAC mode", () => {
+  function modeButtons(card: CardElement): HTMLButtonElement[] {
+    return [...root(card).querySelectorAll<HTMLButtonElement>(".hvac-modes button")];
+  }
+
+  it("shows an Off Room as Off and turns heating on with one tap", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone({ demand: false, phase: "idle" });
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, hvac_mode: "off" } }] }));
+
+    const group = root(card).querySelector(".hvac-modes");
+    expect(group?.getAttribute("role")).toBe("group");
+    expect(group?.getAttribute("aria-label")).toBe("Living room HVAC mode");
+    const buttons = modeButtons(card);
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(["Off", "Heat"]);
+    expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+    expect(root(card).querySelector(".zone .phase")?.textContent?.trim()).toBe("Off");
+    expect(root(card).querySelector(".zone-note")?.textContent).toContain("Thermostat off");
+
+    buttons[0].click();
+    buttons[1].click();
+    await settle(card);
+
+    // Choosing the current mode sends nothing.
+    expect(hass.calls).toEqual([
+      { domain: "climate", service: "set_hvac_mode", data: { entity_id: "climate.hydronic_living_room", hvac_mode: "heat" }, notifyOnError: false },
+    ]);
+  });
+
+  it("offers cooling modes only when the Room's climate entity supports them", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone();
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, hvac_mode: "cool", hvac_modes: ["off", "heat", "cool", "heat_cool"] } }] }));
+
+    expect(modeButtons(card).map((button) => button.dataset.mode)).toEqual(["off", "heat", "cool", "heat_cool"]);
+    expect(root(card).querySelector(".hvac-mode[aria-pressed='true']")?.textContent?.trim()).toBe("Cool");
+  });
+
+  it("keeps an external thermostat read-only and shows its mode", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone();
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, kind: "external_climate", control_entity_id: null, hvac_mode: "heat", hvac_modes: [] } }] }));
+
+    expect(root(card).querySelector(".hvac-modes")).toBeNull();
+    expect(root(card).querySelector(".zone-owner")?.textContent).toContain("External thermostat · read-only · Heat");
+  });
+
+  it("disables the mode control when the climate entity is hidden", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone();
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, control_entity_id: null } }] }));
+
+    expect(modeButtons(card).every((button) => button.disabled)).toBe(true);
+  });
+});
+
+describe("Header", () => {
+  it("hides the source line when the Plant has no sources", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection);
+
+    expect(root(card).querySelector(".source-line")).toBeNull();
+    expect(text(card)).not.toContain("recommended");
+  });
+
+  it("shows the source line when the Plant has sources", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot({ sources: [{ id: "boiler" }] });
+    snapshot.plant.source = { active_id: "boiler", active_name: "Boiler", recommended_id: "heat-pump", recommended_name: "Heat pump" };
+    await deliver(card, hass.connection, snapshot);
+
+    expect(root(card).querySelector(".source-line")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Source Boiler · recommended Heat pump");
+  });
+
+  it("reads the requested mode naturally", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot();
+    await deliver(card, hass.connection, makeSnapshot({ plant: { ...snapshot.plant, status: "idle", requested_mode: "auto", active_mode: "idle" } }));
+
+    expect(root(card).querySelector(".mode-detail")?.textContent?.trim()).toBe("Mode Auto");
+  });
+
+  it("labels the boundary in sentence case and keeps safe shutdown available but quiet in Dry run", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection);
+
+    expect(root(card).querySelector(".badge")?.textContent).toContain("Dry run");
+    const shutdown = root(card).querySelector<HTMLButtonElement>("button.shutdown");
+    expect(shutdown?.classList.contains("quiet")).toBe(true);
+    expect(shutdown?.disabled).toBe(false);
+    expect(shutdown?.getAttribute("aria-describedby")).toBe("shutdown-hint");
+  });
+
+  it("marks outputs as live when nothing is forced to shadow", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot();
+    const message = "Control enabled - heating and cooling outputs may execute.";
+    await deliver(card, hass.connection, makeSnapshot({ plant: { ...snapshot.plant, execution_boundary: { mode: "mixed", dry_run: false, forced_shadow: [], message } } }));
+
+    expect(root(card).querySelector(".badge.live")?.textContent).toContain("Live");
+    expect(root(card).querySelector(".boundary-copy")?.textContent).toContain(message);
+    expect(root(card).querySelector("button.shutdown")?.classList.contains("quiet")).toBe(false);
+  });
+});
+
+describe("Room and Loop wording", () => {
+  it("uses Room and Loop instead of Zone and Circuit", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot({
+      zones: [makeZone({ coupling_group_ids: ["group-1"] })],
+      delivery_paths: [{ id: "p", zone_id: "zone-1", circuit_id: "c", status: "active", problem: null, coupled: true, nodes: [{ kind: "zone", id: "zone-1", name: "Living room", state: "active" }, { kind: "circuit", id: "c", name: "Floor loop", state: "active" }] }],
+      actuators: [
+        { id: "a", name: "Pump", kind: "pump", state: "idle", requested: null, observed: "off", ready: true, blocked: false, mismatch: false, reason: "Waiting.", active_consumers: [] },
+        { id: "b", name: "Valve", kind: "valve", state: "open", requested: null, observed: "on", ready: true, blocked: false, mismatch: false, reason: null, active_consumers: [{ id: "c", name: "Floor loop" }] },
+      ],
+    });
+    await deliver(card, hass.connection, snapshot);
+
+    const content = text(card);
+    for (const phrase of ["Rooms", "Room → Loop → Valve → Pump → Source", "Equipment", "No loop is using this right now.", "this Room shares hydraulic equipment"]) {
+      expect(content).toContain(phrase);
+    }
+    expect([...root(card).querySelectorAll(".node-kind")].map((node) => node.textContent)).toEqual(["Room", "Loop"]);
+    expect(root(card).querySelector(".consumer-list")?.getAttribute("aria-label")).toBe("Loops using this equipment");
+    expect(root(card).querySelector(".diagnostic-list")?.getAttribute("aria-label")).toBe("Room diagnostics");
+    expect(content).not.toMatch(/\bZones?\b|\bCircuits?\b|circuit consumers|Actuator Ownership/);
+  });
+
+  it("uses Room wording for an empty Plant", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, makeSnapshot({ zones: [] }));
+
+    expect(text(card)).toContain("No Rooms are visible for this Plant.");
+  });
+});
+
 describe("Translated states", () => {
   const TRANSLATIONS: Record<string, string> = {
     "component.hydronicus.entity.sensor.controller_status.state.heating": "Heizen (Status)",
@@ -347,7 +494,7 @@ describe("Translated states", () => {
     const snapshot = makeSnapshot();
     await deliver(card, hass.connection, makeSnapshot({ plant: { ...snapshot.plant, status: "safe_shutdown" } }));
 
-    expect(root(card).querySelector(".status-primary")?.textContent).toContain("safe shutdown");
+    expect(root(card).querySelector(".status-primary")?.textContent).toContain("Safe shutdown");
   });
 });
 
