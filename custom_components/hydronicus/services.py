@@ -17,17 +17,19 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_register_admin_service
 
 from .const import DOMAIN
-from .plant_file import plant_file
+from .core.plant_file import PlantFileError, dump_yaml, export_plant
+from .storage import plant_from_entry
 
 SERVICE_EXPORT_PLANT: Final = "export_plant"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
 ATTR_DOCUMENT: Final = "document"
+ATTR_YAML: Final = "yaml"
 
 _EXPORT_PLANT_SCHEMA: Final = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
 
 
 async def _async_export_plant(call: ServiceCall) -> ServiceResponse:
-    """Return the plant file of one Plant."""
+    """Return the format 2 plant file of one Plant, which imports as the same Plant."""
     entry_id = call.data[ATTR_CONFIG_ENTRY_ID]
     entry = call.hass.config_entries.async_get_entry(entry_id)
     if entry is None or entry.domain != DOMAIN:
@@ -37,14 +39,14 @@ async def _async_export_plant(call: ServiceCall) -> ServiceResponse:
             translation_placeholders={"config_entry_id": entry_id},
         )
     try:
-        document = plant_file(entry.data)
-    except ValueError as error:
+        document = export_plant(plant_from_entry(entry))
+    except PlantFileError as error:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
-            translation_key="invalid_stored_graph",
+            translation_key="invalid_plant",
             translation_placeholders={"plant": entry.title, "error": str(error)},
         ) from error
-    return {ATTR_DOCUMENT: document}
+    return {ATTR_DOCUMENT: document, ATTR_YAML: dump_yaml(document)}
 
 
 @callback

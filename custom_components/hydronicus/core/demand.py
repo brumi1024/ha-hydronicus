@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from math import fsum, isfinite, log
 from typing import Final
 
-from .model import Aggregation, DigitalThermostat, Mode, Preset, Zone
+from .model import Aggregation, Demand, DigitalThermostat, Mode, Preset, Zone
 
 type Reached = Callable[[float], bool]
 
@@ -74,16 +74,6 @@ class DemandState:
     mode: Mode
     on: bool
     since: float
-
-
-@dataclass(frozen=True, slots=True)
-class Demand:
-    """A zone's request: on or off in a thermostat mode, with a level from 0 to 1."""
-
-    mode: Mode
-    on: bool
-    level: float
-    reason: str
 
 
 def external_action(hvac_action: str | None, hvac_mode: str | None) -> Mode | None:

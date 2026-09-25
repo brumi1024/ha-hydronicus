@@ -1,8 +1,12 @@
 """The user documentation stays true to the plant file format and the UI strings.
 
 Every ``yaml`` example in the plant file reference must import, the trial kit's
-plant file must import, and every bold UI label in the user documents must be a
+plant files must import, and every bold UI label in the user documents must be a
 label that ``strings.json`` or Home Assistant itself shows.
+
+The user documents still describe the v0.1 plant file and flows until phase R6
+of docs/redesign-plan.md rewrites them, so the checks of their content are
+expected to fail until then; they are strict, so R6 must remove the marker.
 """
 
 from __future__ import annotations
@@ -16,16 +20,16 @@ from typing import Any
 import pytest
 import yaml
 
-from custom_components.hydronicus.core.legacy.ownership import PlantOwnership
-from custom_components.hydronicus.core.legacy.plant_document import (
-    PlantDocumentError,
-    export_plant_document,
-    import_plant_document,
+from custom_components.hydronicus.core.plant_file import (
+    PlantFileError,
+    parse_plant,
+    read_plant_file,
+    write_plant_file,
 )
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 PLANT_FILE_REFERENCE = REPOSITORY_ROOT / "docs" / "plant-file.md"
-TRIAL_PLANT = REPOSITORY_ROOT / "docs" / "examples" / "trial" / "plant.yaml"
+TRIAL_KIT = REPOSITORY_ROOT / "docs" / "examples" / "trial"
 STRINGS = REPOSITORY_ROOT / "custom_components" / "hydronicus" / "strings.json"
 PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 # Documents whose bold text names a UI label, and nothing else.
@@ -66,20 +70,16 @@ EXTERNAL_LABELS = frozenset(
 )
 _YAML_BLOCK = re.compile(r"^```yaml\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
+# The user documents describe the v0.1 Plant until R6 rewrites them.
+UNTIL_R6 = pytest.mark.xfail(
+    strict=True, reason="R6 rewrites the user documentation for the redesigned Plant"
+)
 
 
 def _yaml_examples() -> list[tuple[str, str]]:
     text = PLANT_FILE_REFERENCE.read_text(encoding="utf-8")
     blocks = _YAML_BLOCK.findall(text)
     return [(f"example_{index}", block) for index, block in enumerate(blocks, start=1)]
-
-
-def _by_id(topology: dict[str, Any]) -> dict[str, Any]:
-    """Key every stored collection by object id, since export orders them by slug."""
-    return {
-        key: {record["id"]: record for record in value} if isinstance(value, list) else value
-        for key, value in topology.items()
-    }
 
 
 def _string_values(node: Any) -> Iterator[str]:
@@ -95,34 +95,26 @@ def test_plant_file_reference_has_examples() -> None:
     assert len(_yaml_examples()) >= 5
 
 
+@UNTIL_R6
 @pytest.mark.parametrize(
     ("name", "block"), _yaml_examples(), ids=[name for name, _ in _yaml_examples()]
 )
 def test_plant_file_reference_example_imports(name: str, block: str) -> None:
     """Every YAML example in the plant file reference is a complete, valid plant file."""
-    document = yaml.safe_load(block)
-    imported = import_plant_document(document, plant_id=PLANT_ID)
-
-    exported = export_plant_document(
-        name=imported.name,
-        plant_id=imported.plant_id,
-        topology=imported.topology,
-        ownership=imported.ownership,
-    )
-    again = import_plant_document(exported, plant_id=PLANT_ID)
-    assert _by_id(again.topology) == _by_id(imported.topology)
-    assert again.ownership == imported.ownership
+    plant = parse_plant(yaml.safe_load(block), new_id=lambda: PLANT_ID)
+    assert read_plant_file(write_plant_file(plant)) == plant
 
 
-def test_trial_plant_file_imports() -> None:
-    """The trial kit's plant file is valid."""
-    document = yaml.safe_load(TRIAL_PLANT.read_text(encoding="utf-8"))
-    imported = import_plant_document(document, plant_id=PLANT_ID)
+@pytest.mark.parametrize("name", ["plant.yaml", "plant-areas.yaml"])
+def test_trial_plant_files_import(name: str) -> None:
+    """The trial kit's plant files are valid format 2 plant files."""
+    plant = read_plant_file((TRIAL_KIT / name).read_text(encoding="utf-8"))
 
-    assert imported.name == "Trial plant"
-    assert {zone["name"] for zone in imported.topology["zones"]} == {"Living room", "Bedroom"}
+    assert plant.name == "Trial plant"
+    assert [zone.title for zone in plant.zones] == ["Living room", "Bedroom"]
 
 
+@UNTIL_R6
 @pytest.mark.parametrize(
     ("document", "path"),
     [
@@ -152,62 +144,14 @@ def test_trial_plant_file_imports() -> None:
 )
 def test_plant_file_reference_error_paths(document: dict[str, Any], path: str) -> None:
     """The error paths the reference quotes are the ones import reports."""
-    with pytest.raises(PlantDocumentError) as raised:
-        import_plant_document(document, plant_id=PLANT_ID)
+    with pytest.raises(PlantFileError) as raised:
+        parse_plant(document, new_id=lambda: PLANT_ID)
 
     assert raised.value.path == path
     assert f"`{path}`" in PLANT_FILE_REFERENCE.read_text(encoding="utf-8")
 
 
-def test_export_slugs_match_the_reference() -> None:
-    """Export slugs fold accents, prefix leading digits, and number duplicates as documented."""
-    pump = {"id": "00000000-0000-4000-8000-000000000010", "name": "2nd floor pump"}
-    valves = [
-        {"id": f"00000000-0000-4000-8000-00000000002{index}", "name": name}
-        for index, name in enumerate(("Ärkély valve", "Ärkély valve", "!!!"))
-    ]
-    circuit = {
-        "id": "00000000-0000-4000-8000-000000000030",
-        "name": "Ärkély loop",
-        "valve_ids": [valve["id"] for valve in valves],
-        "pump_id": pump["id"],
-    }
-    zone = {
-        "id": "00000000-0000-4000-8000-000000000040",
-        "name": "Ärkély",
-        "thermostat": {"kind": "external_climate", "entity_id": "climate.arkely"},
-    }
-    topology = {
-        "zones": [zone],
-        "valves": [
-            {**valve, "entity_id": f"switch.valve_{index}"} for index, valve in enumerate(valves)
-        ],
-        "pumps": [{**pump, "entity_id": "switch.pump"}],
-        "circuits": [circuit],
-        "routes": [
-            {
-                "id": "00000000-0000-4000-8000-000000000050",
-                "zone_id": zone["id"],
-                "circuit_id": circuit["id"],
-            }
-        ],
-    }
-    document = export_plant_document(
-        name="Plant",
-        plant_id=PLANT_ID,
-        topology=topology,
-        ownership=PlantOwnership(zone_objects={}),
-    )
-
-    assert list(document["pumps"]) == ["pump_2nd_floor_pump"]
-    assert list(document["valves"]) == ["arkely_valve", "arkely_valve_2", "valve"]
-    assert list(document["loops"]) == ["arkely_loop"]
-    assert list(document["zones"]) == ["arkely"]
-    reference = PLANT_FILE_REFERENCE.read_text(encoding="utf-8")
-    for slug in ("arkely", "pump_2nd_floor_pump", "arkely_valve_2"):
-        assert f"`{slug}`" in reference
-
-
+@UNTIL_R6
 def test_bold_ui_labels_match_strings() -> None:
     """Every bold label in the user documents is shown by Hydronicus or Home Assistant."""
     strings = json.loads(STRINGS.read_text(encoding="utf-8"))

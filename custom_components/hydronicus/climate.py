@@ -1,15 +1,17 @@
-"""Shadow-mode climate entities for configured comfort zones."""
+"""The digital thermostat of a zone (decision 9).
+
+It owns the zone's target, preset, and mode, restores them across restarts, and
+reports the zone's demand as its action. The exact Celsius target is persisted
+beside the restored state, because the display unit may round it.
+"""
 
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any, cast
+from typing import Any, Final
 
 from homeassistant.components.climate import (
     ATTR_TEMPERATURE,
-    PRESET_AWAY,
-    PRESET_COMFORT,
-    PRESET_ECO,
     PRESET_NONE,
     ClimateEntity,
     ClimateEntityFeature,
@@ -18,266 +20,219 @@ from homeassistant.components.climate import (
 )
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoredExtraData, RestoreEntity
 from homeassistant.util.unit_conversion import TemperatureConverter
 
-from . import HydronicConfigEntry
-from .const import DEFAULT_TARGET_TEMPERATURE
-from .core.legacy.model import (
-    MAX_ZONE_TARGET_TEMPERATURE,
-    MIN_ZONE_TARGET_TEMPERATURE,
-    HydronicusThermostatConfig,
-    ThermostatHvacMode,
-    ZoneRuntime,
-)
-from .core.legacy.topology import thermostat_hvac_modes
-from .entity_device import topology_device_info
-from .entity_registration import async_add_plant_entities
-from .runtime import HydronicRuntime
-from .zone_area import zone_climate_unique_id
+from . import HydronicusConfigEntry
+from .const import DOMAIN
+from .core.model import DigitalThermostat, Mode, Preset, Zone
+from .core.step import DigitalThermostatState
+from .entity import HydronicusEntity, async_add_plant_entities, zone_device, zone_unique_id
+from .runtime import PlantRuntime, ZoneReadings
 
-# The runtime serializes thermostat changes under its own operation lock.
+# The runtime evaluates thermostat changes itself.
 PARALLEL_UPDATES = 0
 
-_LAST_ACTIVE_HVAC_MODE = "last_active_hvac_mode"
-# The display unit may round the setpoint (whole degrees Fahrenheit), so the exact
-# Celsius target is persisted beside it and preferred on restore.
-_TARGET_TEMPERATURE_CELSIUS = "target_temperature_celsius"
-_BASE_FEATURES = (
+MIN_TARGET: Final = 5.0
+MAX_TARGET: Final = 35.0
+_LAST_ACTIVE_HVAC_MODE: Final = "last_active_hvac_mode"
+_TARGET_TEMPERATURE_CELSIUS: Final = "target_temperature_celsius"
+_BASE_FEATURES: Final = (
     ClimateEntityFeature.TARGET_TEMPERATURE
     | ClimateEntityFeature.TURN_ON
     | ClimateEntityFeature.TURN_OFF
 )
 
 
-class ZoneClimate(ClimateEntity, RestoreEntity):
-    """A Hydronicus-owned digital thermostat for one Zone."""
+class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
+    """A Hydronicus-owned digital thermostat for one zone."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
-    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
-    _attr_supported_features = _BASE_FEATURES
+    # No name: the thermostat is the zone device's main feature and takes its name.
+    _attr_name = None
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_min_temp = MIN_ZONE_TARGET_TEMPERATURE
-    _attr_max_temp = MAX_ZONE_TARGET_TEMPERATURE
+    _attr_min_temp = MIN_TARGET
+    _attr_max_temp = MAX_TARGET
     _attr_target_temperature_step = 0.5
 
-    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
-        """Bind the entity to one zone in the runtime topology."""
-        self._entry = entry
-        runtime = entry.runtime_data
-        self._zone_id = zone_id
-        self._attr_unique_id = zone_climate_unique_id(runtime.plant_id, zone_id)
-        # No name or translation key: the thermostat is the Zone device's main
-        # feature and takes the device name, as before.
-        self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
-        self._attr_hvac_modes = [
-            HVACMode(mode.value) for mode in thermostat_hvac_modes(runtime.plant, zone_id)
-        ]
-        if self._configured_preset_modes:
-            self._attr_supported_features = _BASE_FEATURES | ClimateEntityFeature.PRESET_MODE
-        self._has_humidity_sensors = bool(runtime.plant.zones[zone_id].humidity_sensors)
-        # The mode turn_on restores; kept beside the zone mode in restore state.
-        self._last_active_hvac_mode = HVACMode.HEAT
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after a config-entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
+    def __init__(self, runtime: PlantRuntime, zone: Zone, config: DigitalThermostat) -> None:
+        super().__init__(
+            runtime,
+            zone_unique_id(runtime.plant.id, zone.slug, "climate"),
+            zone_device(runtime, zone),
+        )
+        self._zone = zone.slug
+        self._config = config
+        self._attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
+        if zone.cools:
+            self._attr_hvac_modes.append(HVACMode.COOL)
+        self._attr_preset_modes = [preset.value for preset, _ in config.presets]
+        self._attr_supported_features = _BASE_FEATURES
+        if self._attr_preset_modes:
+            self._attr_preset_modes.append(PRESET_NONE)
+            self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
+        self._has_humidity = bool(zone.humidity or zone.areas)
+        self._thermostat = DigitalThermostatState(Mode.OFF, config.target)
+        # The mode turn_on restores, kept beside the zone mode in the restore state.
+        self._last_active = HVACMode.HEAT
 
     async def async_added_to_hass(self) -> None:
-        """Restore mutable thermostat state, then subscribe to evaluations."""
+        """Restore the target, preset, and mode, then hand them to the runtime."""
         await super().async_added_to_hass()
-        zone = self._runtime.plant.zones[self._zone_id]
-        assert isinstance(zone.thermostat, HydronicusThermostatConfig)
-        target = zone.thermostat.initial_target_temperature
-        preset = zone.thermostat.initial_preset
-        mode = ThermostatHvacMode.OFF
         extra: dict[str, Any] = {}
         if (extra_data := await self.async_get_last_extra_data()) is not None:
             extra = extra_data.as_dict()
-            self._remember_active_mode(extra.get(_LAST_ACTIVE_HVAC_MODE))
+            self._remember_active(extra.get(_LAST_ACTIVE_HVAC_MODE))
         last_state = await self.async_get_last_state()
         if last_state is not None:
-            target = DEFAULT_TARGET_TEMPERATURE
-            preset = PRESET_NONE
-            restored_target = _usable_target(extra.get(_TARGET_TEMPERATURE_CELSIUS))
-            if restored_target is None:
-                # Data from older versions only has the attribute in the display unit.
-                with suppress(TypeError, ValueError):
-                    restored_target = _usable_target(
+            target = _usable_target(extra.get(_TARGET_TEMPERATURE_CELSIUS))
+            if target is None:
+                with suppress(KeyError, TypeError, ValueError):
+                    target = _usable_target(
                         TemperatureConverter.convert(
-                            float(last_state.attributes.get(ATTR_TEMPERATURE)),
+                            float(last_state.attributes[ATTR_TEMPERATURE]),
                             self.hass.config.units.temperature_unit,
                             UnitOfTemperature.CELSIUS,
                         )
                     )
-            if restored_target is not None:
-                target = restored_target
-            restored_preset = str(last_state.attributes.get("preset_mode", PRESET_NONE)).lower()
-            if restored_preset == PRESET_NONE or restored_preset in self._configured_preset_modes:
-                preset = restored_preset
-            try:
-                restored_mode = ThermostatHvacMode(last_state.state)
-                if HVACMode(restored_mode.value) in self.hvac_modes:
-                    mode = restored_mode
-            except ValueError:
-                pass
-            self._remember_active_mode(mode.value)
-        await self._runtime.async_restore_zone_thermostat(
-            self._zone_id,
-            target_temperature=target,
-            preset=preset,
-            hvac_mode=mode,
-            hass=self.hass,
-        )
-        self.async_on_remove(self._runtime.async_add_listener(self._async_handle_runtime_update))
+            preset = str(last_state.attributes.get("preset_mode", PRESET_NONE)).lower()
+            mode = Mode.OFF
+            with suppress(ValueError):
+                if HVACMode(last_state.state) in self.hvac_modes:
+                    mode = Mode(last_state.state)
+            self._thermostat = DigitalThermostatState(
+                mode,
+                self._config.target if target is None else target,
+                Preset(preset)
+                if preset in (self._attr_preset_modes or ()) and preset != PRESET_NONE
+                else None,
+            )
+            self._remember_active(mode.value)
+        self.runtime.restore_thermostat(self._zone, self._thermostat)
 
-    @callback
-    def _async_handle_runtime_update(self) -> None:
-        """Track the last active mode, whoever set it, then publish the new state."""
-        self._remember_active_mode(self._runtime.zone_hvac_modes[self._zone_id].value)
-        self.async_write_ha_state()
-
-    def _remember_active_mode(self, value: object) -> None:
-        """Remember a mode this thermostat supports as the one turn_on restores."""
-        try:
+    def _remember_active(self, value: object) -> None:
+        with suppress(ValueError):
             mode = HVACMode(str(value))
-        except ValueError:
-            return
-        if mode is not HVACMode.OFF and mode in self.hvac_modes:
-            self._last_active_hvac_mode = mode
+            if mode is not HVACMode.OFF and mode in self.hvac_modes:
+                self._last_active = mode
 
     @property
     def extra_restore_state_data(self) -> ExtraStoredData:
-        """Persist the mode turn_on restores and the exact Celsius setpoint."""
         return RestoredExtraData(
             {
-                _LAST_ACTIVE_HVAC_MODE: self._last_active_hvac_mode.value,
-                _TARGET_TEMPERATURE_CELSIUS: self._runtime.zone_target_temperatures.get(
-                    self._zone_id
-                ),
+                _LAST_ACTIVE_HVAC_MODE: self._last_active.value,
+                _TARGET_TEMPERATURE_CELSIUS: self._thermostat.target,
             }
         )
 
     @property
-    def current_humidity(self) -> float | None:
-        """Return the highest usable zone humidity, which the cooling dew point uses."""
-        if not self._has_humidity_sensors:
-            return None
-        decision = self._runtime.cooling_zone_decision(self._zone_id)
-        if decision is None or decision.humidity_aggregation is None:
-            return None
-        return decision.humidity_aggregation.value
+    def _readings(self) -> ZoneReadings:
+        return self.runtime.zone_readings.get(self._zone, ZoneReadings())
 
     @property
     def current_temperature(self) -> float | None:
-        """Return the current aggregate zone temperature."""
-        return self._runtime.zone_current_temperature(self._zone_id)
+        return self._readings.temperature
+
+    @property
+    def current_humidity(self) -> float | None:
+        return self._readings.humidity if self._has_humidity else None
 
     @property
     def target_temperature(self) -> float:
-        """Return the current persisted or in-session zone target."""
-        return self._runtime.zone_target_temperatures[self._zone_id]
+        thermostat = self._thermostat
+        if thermostat.preset is not None:
+            return self._config.preset_targets.get(thermostat.preset, thermostat.target)
+        return thermostat.target
 
     @property
-    def _configured_preset_modes(self) -> list[str]:
-        """Return configured standard presets in a stable Home Assistant order."""
-        zone = self._runtime.plant.zones[self._zone_id]
-        return [
-            preset
-            for preset in (PRESET_COMFORT, PRESET_ECO, PRESET_AWAY)
-            if preset in zone.preset_targets
-        ]
-
-    @property
-    def preset_modes(self) -> list[str]:
-        """Expose only presets that have a configured target temperature."""
-        return self._configured_preset_modes
-
-    @property
-    def preset_mode(self) -> str:
-        """Return the persisted active preset or the standard manual value."""
-        return cast(str, self._runtime.zone_preset_modes.get(self._zone_id, PRESET_NONE))
+    def preset_mode(self) -> str | None:
+        if not self._attr_preset_modes:
+            return None
+        preset = self._thermostat.preset
+        return PRESET_NONE if preset is None else preset.value
 
     @property
     def hvac_mode(self) -> HVACMode:
-        """Expose this thermostat's runtime mode, independent of the Plant constraint."""
-        return HVACMode(self._runtime.zone_hvac_modes[self._zone_id].value)
+        return HVACMode(self._thermostat.hvac_mode.value)
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        """Expose active or idle shadow heating demand."""
-        if self._runtime.evaluation is None:
+        desired = self.runtime.desired
+        if desired is None:
             return None
-        if self.hvac_mode is HVACMode.OFF:
+        if self._thermostat.hvac_mode is Mode.OFF:
             return HVACAction.OFF
-        if self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False):
-            return HVACAction.COOLING
-        if self._runtime.runtime_state.zone_runtime.get(self._zone_id, ZoneRuntime()).demand:
-            return HVACAction.HEATING
-        return HVACAction.IDLE
+        demand = desired.demands.get(self._zone)
+        if demand is None or not demand.on:
+            return HVACAction.IDLE
+        return HVACAction.HEATING if demand.mode is Mode.HEAT else HVACAction.COOLING
+
+    @callback
+    def _set(self, thermostat: DigitalThermostatState) -> None:
+        self._thermostat = thermostat
+        self.runtime.set_thermostat(self._zone, thermostat)
+        self._published = None
+        self.async_write_ha_state()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Persist a new target and immediately recalculate shadow demand."""
+        """Set a manual target in Celsius, which leaves any preset."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
-        await self._runtime.async_set_zone_target_temperature(
-            self._zone_id, float(temperature), hass=self.hass
-        )
+        target = _usable_target(float(temperature))
+        if target is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_target_temperature",
+                translation_placeholders={
+                    "temperature": str(temperature),
+                    "minimum": str(MIN_TARGET),
+                    "maximum": str(MAX_TARGET),
+                },
+            )
+        self._set(DigitalThermostatState(self._thermostat.hvac_mode, target))
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
-        """Persist the selected preset and recalculate shadow demand immediately."""
-        await self._runtime.async_set_zone_preset_mode(self._zone_id, preset_mode, hass=self.hass)
+        preset = None if preset_mode == PRESET_NONE else Preset(preset_mode)
+        self._set(
+            DigitalThermostatState(self._thermostat.hvac_mode, self._thermostat.target, preset)
+        )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        """Change only this Zone's thermostat mode.
-
-        The climate base class has already rejected modes outside hvac_modes with
-        a translated error, and every exposed mode is a thermostat mode.
-        """
-        self._remember_active_mode(hvac_mode)
-        await self._runtime.async_set_zone_hvac_mode(
-            self._zone_id, ThermostatHvacMode(hvac_mode.value), hass=self.hass
+        """Change only this zone's thermostat mode."""
+        self._remember_active(hvac_mode)
+        thermostat = self._thermostat
+        self._set(
+            DigitalThermostatState(Mode(hvac_mode.value), thermostat.target, thermostat.preset)
         )
 
     async def async_turn_on(self) -> None:
-        """Restore the last active mode instead of guessing heat_cool."""
-        await self.async_set_hvac_mode(self._last_active_hvac_mode)
+        await self.async_set_hvac_mode(self._last_active)
 
     async def async_turn_off(self) -> None:
-        """Turn only this Zone's thermostat off."""
         await self.async_set_hvac_mode(HVACMode.OFF)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: HydronicConfigEntry,
+    entry: HydronicusConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add one climate entity for every configured comfort zone."""
     runtime = entry.runtime_data
-    parent_entities: list[ZoneClimate] = []
-    subentry_entities: dict[str, list[ZoneClimate]] = {}
-    for zone in runtime.plant.zones.values():
-        if not isinstance(zone.thermostat, HydronicusThermostatConfig):
-            continue
-        entity = ZoneClimate(entry, zone.id, zone.name)
-        if subentry_id := runtime.subentry_id_for(zone.id):
-            subentry_entities.setdefault(subentry_id, []).append(entity)
-        else:
-            parent_entities.append(entity)
-    async_add_plant_entities(
-        runtime, "climate", async_add_entities, parent_entities, subentry_entities
-    )
+    entities: list[tuple[str | None, Entity]] = [
+        (zone.slug, ZoneClimate(runtime, zone, zone.thermostat))
+        for zone in runtime.plant.zones
+        if isinstance(zone.thermostat, DigitalThermostat)
+    ]
+    async_add_plant_entities(runtime, "climate", async_add_entities, entities)
 
 
 def _usable_target(value: object) -> float | None:
-    """Return a restored Celsius setpoint inside the thermostat range, or None."""
+    """Return a Celsius target inside the thermostat range, or None."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    if not MIN_ZONE_TARGET_TEMPERATURE <= value <= MAX_ZONE_TARGET_TEMPERATURE:
+    if not MIN_TARGET <= value <= MAX_TARGET:
         return None
     return float(value)

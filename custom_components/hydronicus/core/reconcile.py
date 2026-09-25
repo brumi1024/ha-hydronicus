@@ -63,6 +63,8 @@ __all__ = [
     "backoff",
     "reconcile",
     "step_view",
+    "target_from_dict",
+    "target_to_dict",
 ]
 
 BACKOFF_MIN: Final = 10.0
@@ -103,7 +105,7 @@ class ReconcileState:
         return {
             "attempts": {
                 entity: {
-                    "target": _target_to_dict(attempt.target),
+                    "target": target_to_dict(attempt.target),
                     "count": attempt.count,
                     "sent_at": attempt.sent_at,
                 }
@@ -118,7 +120,7 @@ class ReconcileState:
         return cls(
             attempts={
                 entity: Attempt(
-                    target=_target_from_dict(value["target"]),
+                    target=target_from_dict(value["target"]),
                     count=int(value["count"]),
                     sent_at=float(value["sent_at"]),
                 )
@@ -296,7 +298,8 @@ def step_view(observations: Observations, state: ReconcileState) -> Observations
 # Persistence
 
 
-def _target_to_dict(target: OutputTarget) -> dict[str, Any]:
+def target_to_dict(target: OutputTarget) -> dict[str, Any]:
+    """Return JSON-friendly data for a target, which ``target_from_dict`` reads back."""
     match target:
         case SwitchTarget(on=on):
             return {"on": on}
@@ -306,7 +309,7 @@ def _target_to_dict(target: OutputTarget) -> dict[str, Any]:
             return {"value": value}
 
 
-def _target_from_dict(data: Mapping[str, Any]) -> OutputTarget:
+def target_from_dict(data: Mapping[str, Any]) -> OutputTarget:
     if "on" in data:
         return SwitchTarget(bool(data["on"]))
     if "option" in data:

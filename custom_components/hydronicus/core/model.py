@@ -10,7 +10,7 @@ and a missing name reads as the slug in words.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
@@ -369,6 +369,16 @@ type OutputTarget = SwitchTarget | OptionTarget | ValueTarget
 
 
 @dataclass(frozen=True, slots=True)
+class Demand:
+    """A zone's request: on or off in a thermostat mode, with a level from 0 to 1."""
+
+    mode: Mode
+    on: bool
+    level: float
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class Desired:
     """What every output should be now, computed by each evaluation."""
 
@@ -381,3 +391,5 @@ class Desired:
     flow_setpoint: float | None
     # Why, per zone, loop, and output.
     reasons: Mapping[str, str]
+    # Each zone's demand, by zone slug, which the entities publish with its level.
+    demands: Mapping[str, Demand] = field(default_factory=dict)

@@ -2,10 +2,11 @@
 # It needs the areas Living room and Bedroom, each naming its trial temperature
 # sensor in its area settings, as the README describes.
 # Import it with Add integration, Hydronicus, Import a plant file.
-hydronicus: 1
+hydronicus: 2
 name: Trial plant
 pumps:
-  circulation_pump: switch.hydronicus_trial_pump
+  circulation_pump:
+    switch: switch.hydronicus_trial_pump
 zones:
   living_room:
     areas: [living_room]

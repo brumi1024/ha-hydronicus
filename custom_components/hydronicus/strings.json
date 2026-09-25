@@ -2,1053 +2,135 @@
   "config": {
     "step": {
       "user": {
-        "title": "Create a Hydronicus Plant",
-        "description": "Set up a new Plant step by step, or import a plant file exported from another Plant. Every new Plant starts in Dry run, which calculates the real plan without controlling equipment.",
-        "menu_options": {
-          "guided": "Guided setup",
-          "import_plant": "Import a plant file"
-        },
-        "menu_option_descriptions": {
-          "guided": "Name the Plant, choose its pump, and set up its zones from your Home Assistant areas.",
-          "import_plant": "Rebuild a Plant, with the same entity IDs, from a plant file."
-        }
-      },
-      "guided": {
-        "title": "Name the Plant",
-        "description": "Choose the circulation pump that the loops of every zone share. Add more pumps, shared loops, and sources later in Plant settings or through the plant file.",
-        "data": {
-          "name": "Plant name",
-          "pump_entity": "Pump entity"
-        },
-        "data_description": {
-          "name": "Names the Plant, its device, and its Plant-wide entities.",
-          "pump_entity": "The switch that runs the circulation pump."
-        },
-        "sections": {
-          "pump_options": {
-            "name": "Pump options",
-            "description": "How the pump behaves after heating demand ends.",
-            "data": {
-              "overrun_seconds": "Pump overrun"
-            },
-            "data_description": {
-              "overrun_seconds": "How long the pump keeps running after heating demand ends, before the valves close. Cooling stops the pump without overrun."
-            }
-          }
-        }
-      },
-      "zoning": {
-        "title": "How is your home zoned?",
-        "description": "A zone is the space one thermostat controls. It covers Home Assistant areas and follows the temperature and humidity sensors that each area names in its area settings. Every answer ends in the zone form, where you choose the valves.",
-        "menu_options": {
-          "zoning_whole_home": "One zone for the whole home",
-          "zoning_per_area": "One zone per area",
-          "zoning_grouped": "Group areas into zones"
-        },
-        "menu_option_descriptions": {
-          "zoning_whole_home": "One thermostat controls the whole home, over every area that names a temperature sensor.",
-          "zoning_per_area": "Each chosen area gets a zone and a thermostat of its own, named after the area.",
-          "zoning_grouped": "Add zones one by one, each over the areas you group into it, such as one zone per floor."
-        }
-      },
-      "zoning_per_area": {
-        "title": "Choose the areas",
-        "description": "Each chosen area gets a zone of its own. The next forms add them one by one, each prefilled with its area.",
-        "data": {
-          "areas": "Areas"
-        },
-        "data_description": {
-          "areas": "Starts with every area that names a temperature sensor in its area settings."
-        }
-      },
-      "zone": {
-        "title": "Add a zone",
-        "description": "A zone has its thermostat, its areas, its sensors, and its own loop on the Plant's pump. Open Cooling to let that loop cool too.{progress}{zones}",
-        "data": {
-          "name": "Zone name",
-          "areas": "Areas",
-          "temperature_sensors": "Extra temperature sensors",
-          "external_climate_entity": "Existing climate thermostat",
-          "valves": "Loop valves",
-          "add_another": "Add another zone"
-        },
-        "data_description": {
-          "name": "Shown as the name of the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
-          "areas": "Home Assistant areas this zone covers. The zone follows the temperature and humidity sensors that each area names in its area settings.",
-          "temperature_sensors": "Temperature sensors outside the chosen areas, such as a floor probe. A zone that Hydronicus controls needs one unless a chosen area names a temperature sensor.",
-          "external_climate_entity": "Optional. When set, this climate entity owns demand for the zone, and Hydronicus only reads it and never commands it.",
-          "valves": "Switches or valves of the zone's own loop. Hydronicus creates the loop and names it after the zone.",
-          "add_another": "Show this form again for the next zone. Leave it off to review the Plant."
-        },
-        "sections": {
-          "cooling": {
-            "name": "Cooling",
-            "description": "Let the zone's own loop cool too. Cooling needs Loop valves, a humidity sensor or an area, and a supply or surface temperature sensor for condensation protection.",
-            "data": {
-              "cooling_enabled": "Cool this zone",
-              "humidity_sensors": "Extra humidity sensors",
-              "supply_temperature_sensor": "Supply temperature sensor",
-              "surface_temperature_sensor": "Surface temperature sensor",
-              "condensation_margin": "Condensation margin"
-            },
-            "data_description": {
-              "cooling_enabled": "Enable cooling on the loop created from Loop valves. A shared loop cools only when the plant file enables it.",
-              "humidity_sensors": "Humidity sensors outside the chosen areas, used for the dew point. When cooling is on, the zone needs one or an area.",
-              "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection. Set this or a surface temperature sensor when cooling is on.",
-              "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection. Set this or a supply temperature sensor when cooling is on.",
-              "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point."
-            }
-          }
-        }
-      },
-      "review": {
-        "title": "Review the Plant",
-        "description": "Zones:\n{zones}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
-        "data": {
-          "confirm": "I understand these warnings"
-        },
-        "data_description": {
-          "confirm": "Required to create a Plant that has the warnings listed above."
-        }
-      },
-      "import_plant": {
         "title": "Import a plant file",
-        "description": "Paste a plant file. Objects keep the ids the file gives them, so an exported Plant is rebuilt with the same entity IDs. The next step shows the Plant before anything is created.",
+        "description": "Paste a Hydronicus plant file, format 2. It describes the whole Plant: its source, pumps, plant loops, and zones with their loops. The new Plant starts with no output armed and Control equipment off, so it commands nothing until you arm its outputs and turn Control equipment on.",
         "data": {
-          "document": "Plant file"
+          "plant_file": "Plant file"
         },
         "data_description": {
-          "document": "Required. Paste the plant file in YAML, as Plant settings or the export action show it."
-        }
-      },
-      "import_review": {
-        "title": "Review the imported Plant",
-        "description": "Plant {name}\n\nZones:\n{zones}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
-        "data": {
-          "confirm": "I understand these warnings"
-        },
-        "data_description": {
-          "confirm": "Required to create a Plant that has the warnings listed above."
+          "plant_file": "The YAML of the plant file. The Export plant file action returns it for an existing Plant."
         }
       }
     },
     "error": {
-      "name_required": "A name is required.",
-      "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
-      "zone_name_required": "Enter a Zone name. It can stay empty only when the chosen areas give one: a single area, or areas that are all on one floor.",
-      "no_temperature_source": "A zone that Hydronicus controls needs a temperature reading. Choose an area that names a temperature sensor in its area settings, or add an extra temperature sensor.",
-      "areas_required": "Choose at least one area.",
-      "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
-      "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
-      "cooling_requires_zone_observations": "Cooling needs a temperature source and a humidity source, a sensor or an area, in every zone this loop serves. Add them first, or turn cooling off.",
-      "designated_reference_count": "Mark exactly one temperature sensor or area as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
-      "confirm_required": "Confirm that you understand these warnings before saving.",
-      "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
-      "invalid_document": "The plant file is not valid at {path}: {error}",
-      "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the Plant back into itself.",
-      "delivery_required": "Choose at least one valve for the zone's loop.",
-      "pump_required": "Choose the pump for this loop.",
-      "temperature_required_for_cooling": "Loops with cooling need a temperature sensor or an area in each zone they serve, even when an existing thermostat owns the zone.",
-      "humidity_required_for_cooling": "Loops with cooling need a humidity sensor or an area in each zone they serve.",
-      "invalid_zone": "The zone cannot be saved: {error}",
-      "cooling_requires_zone_loop": "Cooling from this form applies to the zone's own loop. Choose Loop valves, or leave cooling off."
+      "invalid_plant_file": "The plant file is not valid. {error}",
+      "own_entity": "The plant file binds an entity that Hydronicus provides, which would feed the Plant back into itself. {error}",
+      "output_bound_elsewhere": "The plant file binds an output that another Plant already controls; an output belongs to one Plant. {error}"
     },
     "abort": {
-      "already_configured": "This Plant is already configured.",
+      "already_configured": "This Plant is already set up. Remove it first to import its plant file again.",
       "already_in_progress": "A setup flow for this Plant is already in progress."
-    }
-  },
-  "config_subentries": {
-    "zone": {
-      "entry_type": "Zone",
-      "initiate_flow": {
-        "user": "Add zone"
-      },
-      "title": "Zone",
-      "step": {
-        "user": {
-          "title": "Add a zone",
-          "description": "A zone has its thermostat, its areas, its sensors, and the loops that heat it. Choose valves to give the zone its own loop, or choose shared loops of the Plant. Open Cooling to let the zone's own loop cool too. Saving a zone returns the Plant to Dry run.",
-          "data": {
-            "name": "Zone name",
-            "areas": "Areas",
-            "temperature_sensors": "Extra temperature sensors",
-            "external_climate_entity": "Existing climate thermostat",
-            "valves": "Loop valves",
-            "pump": "Pump",
-            "shared_loops": "Shared loops"
-          },
-          "data_description": {
-            "name": "Shown as the name of the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
-            "areas": "Home Assistant areas this zone covers. The zone follows the temperature and humidity sensors that each area names in its area settings.",
-            "temperature_sensors": "Temperature sensors outside the chosen areas, such as a floor probe. A zone that Hydronicus controls needs one unless a chosen area names a temperature sensor.",
-            "external_climate_entity": "Optional. When set, this climate entity owns demand for the zone, and Hydronicus only reads it and never commands it.",
-            "valves": "Switches or valves of the zone's own loop. Hydronicus creates the loop and names it after the zone.",
-            "pump": "The pump that circulates water through the zone's loop.",
-            "shared_loops": "Loops of the Plant that also deliver heat to this zone. They are edited only through the plant file."
-          },
-          "sections": {
-            "cooling": {
-              "name": "Cooling",
-              "description": "Let the zone's own loop cool too. Cooling needs Loop valves, a humidity sensor or an area, and a supply or surface temperature sensor for condensation protection.",
-              "data": {
-                "cooling_enabled": "Cool this zone",
-                "humidity_sensors": "Extra humidity sensors",
-                "supply_temperature_sensor": "Supply temperature sensor",
-                "surface_temperature_sensor": "Surface temperature sensor",
-                "condensation_margin": "Condensation margin"
-              },
-              "data_description": {
-                "cooling_enabled": "Enable cooling on the loop created from Loop valves. A shared loop cools only when the plant file enables it.",
-                "humidity_sensors": "Humidity sensors outside the chosen areas, used for the dew point. When cooling is on, the zone needs one or an area.",
-                "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection. Set this or a surface temperature sensor when cooling is on.",
-                "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection. Set this or a supply temperature sensor when cooling is on.",
-                "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point."
-              }
-            }
-          }
-        },
-        "reconfigure": {
-          "title": "Edit {zone}",
-          "description": "Choose what to change in {zone}. Saving a change returns the Plant to Dry run.",
-          "menu_options": {
-            "zone": "Name, areas, thermostat owner, and sensors",
-            "thermostat": "Thermostat settings",
-            "sensors": "Areas, sensor aggregation, and humidity",
-            "add_loop": "Add a loop",
-            "edit_loop": "Edit or remove a loop"
-          }
-        },
-        "zone": {
-          "title": "Edit zone basics",
-          "description": "Change the zone name, its areas, who owns its demand, its extra temperature sensors, and the shared loops that serve it. Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.{missing_areas}",
-          "data": {
-            "name": "Zone name",
-            "areas": "Areas",
-            "temperature_sensors": "Extra temperature sensors",
-            "external_climate_entity": "Existing climate thermostat",
-            "shared_loops": "Shared loops"
-          },
-          "data_description": {
-            "name": "Shown as the name of the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
-            "areas": "Home Assistant areas this zone covers. The zone follows the temperature and humidity sensors that each area names in its area settings.",
-            "temperature_sensors": "Temperature sensors outside the chosen areas, such as a floor probe. A zone that Hydronicus controls needs one unless a chosen area names a temperature sensor.",
-            "external_climate_entity": "Optional. When set, this climate entity owns demand for the zone, and Hydronicus only reads it and never commands it.",
-            "shared_loops": "Loops of the Plant that also deliver heat to this zone. They are edited only through the plant file."
-          }
-        },
-        "thermostat": {
-          "title": "Edit thermostat settings",
-          "description": "Configure how the Hydronicus thermostat of this zone turns demand on and off.",
-          "data": {
-            "heating_start_delta": "Heating start hysteresis",
-            "heating_stop_delta": "Heating stop hysteresis",
-            "minimum_active_duration_seconds": "Minimum active duration",
-            "minimum_idle_duration_seconds": "Minimum idle duration",
-            "comfort": "Comfort preset target",
-            "eco": "Eco preset target",
-            "away": "Away preset target"
-          },
-          "data_description": {
-            "heating_start_delta": "Heating starts when the zone temperature falls this far below the target.",
-            "heating_stop_delta": "Heating stops when the zone temperature rises this far above the target.",
-            "minimum_active_duration_seconds": "Once demand starts, it is held for at least this long. Use 0 to disable.",
-            "minimum_idle_duration_seconds": "Once demand stops, it stays off for at least this long. Use 0 to disable.",
-            "comfort": "Optional target temperature for the comfort preset.",
-            "eco": "Optional target temperature for the eco preset.",
-            "away": "Optional target temperature for the away preset."
-          },
-          "sections": {
-            "cooling": {
-              "name": "Cooling",
-              "description": "Hysteresis used when the zone is in cooling mode.",
-              "data": {
-                "cooling_start_delta": "Cooling start hysteresis",
-                "cooling_stop_delta": "Cooling stop hysteresis"
-              },
-              "data_description": {
-                "cooling_start_delta": "Cooling starts when the zone temperature rises this far above the target.",
-                "cooling_stop_delta": "Cooling stops when the zone temperature falls this far below the target."
-              }
-            }
-          }
-        },
-        "sensors": {
-          "title": "Edit sensors",
-          "description": "Choose the areas the zone covers, the humidity sensors it uses besides them, and how temperature readings are combined.{missing_areas}",
-          "data": {
-            "areas": "Areas",
-            "temperature_aggregation": "Temperature aggregation",
-            "humidity_sensors": "Extra humidity sensors",
-            "configure_sensor_metadata": "Edit sensor metadata"
-          },
-          "data_description": {
-            "areas": "Home Assistant areas this zone covers. The zone follows the temperature and humidity sensors that each area names in its area settings.",
-            "temperature_aggregation": "How the readings of the extra temperature sensors and the areas are combined into one zone temperature.",
-            "humidity_sensors": "Optional humidity sensors outside the chosen areas, used for the dew point when cooling.",
-            "configure_sensor_metadata": "Opens one extra form per extra temperature sensor, then one per area, to set weights, freshness limits, and the designated reference."
-          }
-        },
-        "sensor_metadata": {
-          "title": "Edit temperature sensor",
-          "description": "Configure {sensor} explicitly. A required sensor blocks the zone when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
-          "data": {
-            "sensor_entity": "Temperature sensor",
-            "required": "Required sensor",
-            "weight": "Aggregation weight",
-            "calibration_offset": "Calibration offset",
-            "max_age_seconds": "Maximum age",
-            "designated_reference": "Designated reference sensor"
-          },
-          "data_description": {
-            "sensor_entity": "The sensor these settings apply to.",
-            "required": "A required sensor that is stale or unavailable blocks the zone. An optional one is left out of the aggregate instead.",
-            "weight": "Relative weight of this sensor in the weighted mean.",
-            "calibration_offset": "Added to every reading from this sensor before aggregation.",
-            "max_age_seconds": "A reading older than this is treated as stale.",
-            "designated_reference": "Used alone when the zone aggregation is set to designated reference."
-          }
-        },
-        "area_metadata": {
-          "title": "Edit area settings",
-          "description": "Settings for area {area} in this zone.\n\nTemperature sensor: {temperature_sensor}\nHumidity sensor: {humidity_sensor}\n\nThe settings apply to the area's temperature sensor. The area's humidity sensor is always required and uses the same maximum age. The area settings in Home Assistant choose the sensors.",
-          "data": {
-            "required": "Required sensor",
-            "weight": "Aggregation weight",
-            "max_age_seconds": "Maximum age",
-            "designated_reference": "Designated reference area"
-          },
-          "data_description": {
-            "required": "A required temperature sensor that is stale or unavailable blocks the zone. An optional one, the default for an area, is left out of the aggregate instead.",
-            "weight": "Relative weight of this area's temperature in the weighted mean.",
-            "max_age_seconds": "A reading older than this is treated as stale.",
-            "designated_reference": "This area's temperature is used alone when the zone aggregation is set to designated reference."
-          }
-        },
-        "sensor_policy": {
-          "title": "Choose sensor aggregation",
-          "description": "Every extra temperature sensor and area has editable settings, so every aggregation policy is available.",
-          "data": {
-            "temperature_aggregation": "Temperature aggregation"
-          },
-          "data_description": {
-            "temperature_aggregation": "How the readings of the extra temperature sensors and the areas are combined into one zone temperature."
-          }
-        },
-        "edit_loop": {
-          "title": "Choose a loop",
-          "description": "Choose the loop of this zone to edit or remove.",
-          "data": {
-            "loop": "Loop"
-          },
-          "data_description": {
-            "loop": "One of the loops that belong to this zone."
-          }
-        },
-        "loop": {
-          "title": "Configure a loop",
-          "description": "A loop of {zone} is a water path through its valves and one pump. Every chosen valve must open before the pump may run.",
-          "data": {
-            "name": "Loop name",
-            "valves": "Valves",
-            "shared_valves": "Shared valves",
-            "pump": "Pump",
-            "valve_opening_time_seconds": "Valve opening time",
-            "configure_valve_feedback": "Edit valve feedback",
-            "remove_loop": "Remove this loop"
-          },
-          "data_description": {
-            "name": "Shown as the name of this loop.",
-            "valves": "Switches or valves that belong to this zone. A new entity becomes a new valve, and a removed one is deleted unless another loop of the zone still uses it.",
-            "shared_valves": "Valves of the Plant that this loop also needs open. They are edited only through the plant file.",
-            "pump": "The pump that circulates water through this loop.",
-            "valve_opening_time_seconds": "How long this loop's zone valves need to open before the pump may start.",
-            "configure_valve_feedback": "Opens one extra form per zone valve of this loop to set its readiness and position feedback.",
-            "remove_loop": "Removes the loop, and the zone valves that no other loop of the zone uses."
-          },
-          "sections": {
-            "cooling": {
-              "name": "Cooling",
-              "description": "Enable cooling and configure condensation protection for this loop.",
-              "data": {
-                "cooling_enabled": "Cooling enabled",
-                "supply_temperature_sensor": "Supply temperature reference",
-                "surface_temperature_sensor": "Surface temperature reference",
-                "condensation_margin": "Condensation margin",
-                "supply_temperature_max_age_seconds": "Supply reference maximum age",
-                "surface_temperature_max_age_seconds": "Surface reference maximum age"
-              },
-              "data_description": {
-                "cooling_enabled": "Allow this loop to deliver cooling. Cooling requires a supply or surface temperature reference.",
-                "supply_temperature_sensor": "Sensor for the loop supply water temperature, used for condensation protection.",
-                "surface_temperature_sensor": "Sensor for the floor or ceiling surface temperature, used for condensation protection.",
-                "condensation_margin": "Cooling is blocked when the reference temperature comes within this margin of the dew point.",
-                "supply_temperature_max_age_seconds": "A supply temperature reading older than this is treated as stale.",
-                "surface_temperature_max_age_seconds": "A surface temperature reading older than this is treated as stale."
-              }
-            }
-          }
-        },
-        "valve_details": {
-          "title": "Edit valve feedback",
-          "description": "Optional entities that confirm what {valve} ({entity}) is doing.",
-          "data": {
-            "readiness_entity_id": "Valve readiness feedback",
-            "position_feedback_entity": "Valve position feedback",
-            "position_feedback_max_age_seconds": "Valve position feedback maximum age"
-          },
-          "data_description": {
-            "readiness_entity_id": "Optional entity that reports the valve is fully open. When set, the pump waits for it.",
-            "position_feedback_entity": "Optional sensor that reports the measured valve position.",
-            "position_feedback_max_age_seconds": "Position feedback older than this is treated as stale."
-          }
-        },
-        "review": {
-          "title": "Review zone warnings",
-          "description": "Review these warnings before saving:\n{warnings}",
-          "data": {
-            "confirm": "I understand these warnings"
-          },
-          "data_description": {
-            "confirm": "Required to save a zone that has the warnings listed above."
-          }
-        }
-      },
-      "error": {
-        "name_required": "A name is required.",
-        "zone_name_required": "Enter a Zone name. It can stay empty only when the chosen areas give one: a single area, or areas that are all on one floor.",
-        "no_temperature_source": "A zone that Hydronicus controls needs a temperature reading. Choose an area that names a temperature sensor in its area settings, or add an extra temperature sensor.",
-        "delivery_required": "Choose valves for the zone's own loop, or at least one shared loop.",
-        "pump_required": "Choose the pump for this loop.",
-        "valves_required": "Select at least one valve.",
-        "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
-        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
-        "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
-        "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
-        "designated_reference_count": "Mark exactly one temperature sensor or area as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
-        "temperature_required_for_cooling": "Loops with cooling need a temperature sensor or an area in each zone they serve, even when an existing thermostat owns the zone.",
-        "humidity_required_for_cooling": "Loops with cooling need a humidity sensor or an area in each zone they serve.",
-        "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
-        "cooling_requires_zone_observations": "Cooling needs a temperature source and a humidity source, a sensor or an area, in every zone this loop serves. Add them first, or turn cooling off.",
-        "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit again after the shutdown finishes.",
-        "invalid_zone": "The zone cannot be saved: {error}",
-        "cooling_requires_zone_loop": "Cooling from this form applies to the zone's own loop. Choose Loop valves, or leave cooling off."
-      },
-      "abort": {
-        "no_pumps": "The Plant has no pump yet. Add a pump before adding a zone or a loop.",
-        "already_configured": "This object is already configured.",
-        "subentry_removed": "This zone was removed while it was being edited.",
-        "reconfigure_successful": "The configuration was updated."
-      }
-    },
-    "source": {
-      "entry_type": "Source",
-      "initiate_flow": {
-        "user": "Add source"
-      },
-      "title": "Source",
-      "step": {
-        "user": {
-          "title": "Add a heat source",
-          "description": "Configure source availability and stable priority for recommendation. Direct source demand can execute only outside Dry run and after a valid pump path exists.",
-          "data": {
-            "name": "Source name",
-            "source_type": "Source type",
-            "priority": "Priority",
-            "availability_entity": "Availability entity",
-            "source_demand_entity": "Source demand entity",
-            "temperature_entity": "Buffer temperature entity",
-            "minimum_temperature": "Minimum buffer temperature",
-            "maximum_age_seconds": "Maximum buffer temperature age",
-            "hysteresis": "Buffer threshold hysteresis"
-          },
-          "data_description": {
-            "name": "Shown as the name of this heat source.",
-            "source_type": "An external source is available when its availability entity says so. A buffer is also qualified by its temperature.",
-            "priority": "When several sources are available, the lowest number wins.",
-            "availability_entity": "Optional entity that reports whether the source can supply heat.",
-            "source_demand_entity": "Optional switch or valve that requests heat from the source. It is only commanded outside Dry run.",
-            "temperature_entity": "Sensor for the buffer temperature. Required for a temperature-qualified buffer.",
-            "minimum_temperature": "The buffer qualifies only at or above this temperature.",
-            "maximum_age_seconds": "A buffer temperature reading older than this is treated as stale.",
-            "hysteresis": "Once qualified, the buffer stays qualified until it falls this far below the minimum."
-          }
-        },
-        "reconfigure": {
-          "title": "Update heat source",
-          "description": "Change source availability, priority, or temperature qualification.",
-          "data": {
-            "name": "Source name",
-            "source_type": "Source type",
-            "priority": "Priority",
-            "availability_entity": "Availability entity",
-            "source_demand_entity": "Source demand entity",
-            "temperature_entity": "Buffer temperature entity",
-            "minimum_temperature": "Minimum buffer temperature",
-            "maximum_age_seconds": "Maximum buffer temperature age",
-            "hysteresis": "Buffer threshold hysteresis"
-          },
-          "data_description": {
-            "name": "Shown as the name of this heat source.",
-            "source_type": "An external source is available when its availability entity says so. A buffer is also qualified by its temperature.",
-            "priority": "When several sources are available, the lowest number wins.",
-            "availability_entity": "Optional entity that reports whether the source can supply heat.",
-            "source_demand_entity": "Optional switch or valve that requests heat from the source. It is only commanded outside Dry run.",
-            "temperature_entity": "Sensor for the buffer temperature. Required for a temperature-qualified buffer.",
-            "minimum_temperature": "The buffer qualifies only at or above this temperature.",
-            "maximum_age_seconds": "A buffer temperature reading older than this is treated as stale.",
-            "hysteresis": "Once qualified, the buffer stays qualified until it falls this far below the minimum."
-          }
-        },
-        "review": {
-          "title": "Review source warnings",
-          "description": "Review these warnings before saving:\n{warnings}",
-          "data": {
-            "confirm": "I understand these warnings"
-          },
-          "data_description": {
-            "confirm": "Required to save a source that has the warnings listed above."
-          }
-        }
-      },
-      "error": {
-        "name_required": "A source name is required.",
-        "invalid_source": "The source configuration is not valid.",
-        "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit again after the shutdown finishes.",
-        "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
-        "buffer_temperature_required": "A temperature-qualified buffer needs a temperature entity."
-      },
-      "abort": {
-        "already_configured": "This object is already configured.",
-        "subentry_removed": "This source was removed while it was being edited.",
-        "reconfigure_successful": "The configuration was updated."
-      }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Plant settings",
-        "description": "Choose what to change in {plant}. Every change to zones, loops, valves, or pumps returns the Plant to Dry run.",
-        "menu_options": {
-          "dry_run": "Dry run",
-          "add_pump": "Add a pump",
-          "edit_pump": "Edit or remove a pump",
-          "export_plant": "Show the plant file",
-          "edit_plant": "Edit plant file"
-        },
-        "menu_option_descriptions": {
-          "dry_run": "Turn Dry run on, or leave it after confirming the outputs.",
-          "add_pump": "Add a circulation pump that loops can use.",
-          "edit_pump": "Change a pump's entity, overrun, or feedback, or remove an unused pump.",
-          "export_plant": "Show this Plant as a plant file to back it up or rebuild it elsewhere.",
-          "edit_plant": "Edit the whole Plant as a plant file, including shared loops, shared valves, and sources."
-        }
-      },
-      "dry_run": {
-        "title": "Dry run",
-        "description": "Dry run calculates the real heating and cooling plan without service calls. Turn it off only after reviewing the configured outputs.",
-        "data": {
-          "dry_run": "Dry run"
-        },
-        "data_description": {
-          "dry_run": "When on, Hydronicus calculates the full plan but sends no commands to any actuator."
-        }
-      },
-      "dry_run_confirmation": {
-        "title": "Confirm equipment control",
-        "description": "Hydronicus will be allowed to control only these exact heating and cooling outputs when the plan permits them:\n{outputs}",
-        "data": {
-          "dry_run_confirmation": "I understand these outputs may be controlled"
-        },
-        "data_description": {
-          "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
-        }
-      },
-      "edit_pump": {
-        "title": "Edit a pump",
-        "description": "Choose the pump to change or remove.",
-        "data": {
-          "pump": "Pump"
-        },
-        "data_description": {
-          "pump": "The Plant pump to edit."
-        }
-      },
-      "pump": {
-        "title": "Pump",
-        "description": "A pump is Plant equipment that any loop can use. Saving returns the Plant to Dry run.",
-        "data": {
-          "name": "Pump name",
-          "entity_id": "Pump entity",
-          "overrun_seconds": "Pump overrun",
-          "remove_pump": "Remove this pump"
-        },
-        "data_description": {
-          "name": "Shown in the loop forms and in the plant file.",
-          "entity_id": "The switch that runs this circulation pump.",
-          "overrun_seconds": "How long the pump keeps running after heating demand ends, before the valves close. Cooling stops the pump without overrun.",
-          "remove_pump": "Remove the pump from the Plant. Only a pump that no loop uses can be removed."
-        },
-        "sections": {
-          "feedback": {
-            "name": "Feedback",
-            "description": "Optional entities that confirm what the pump is doing.",
-            "data": {
-              "power_feedback_entity": "Pump power feedback",
-              "power_feedback_max_age_seconds": "Pump power feedback maximum age",
-              "flow_feedback_entity": "Pump flow feedback",
-              "flow_feedback_max_age_seconds": "Pump flow feedback maximum age",
-              "fault_feedback_entity": "Pump fault feedback",
-              "fault_feedback_max_age_seconds": "Pump fault feedback maximum age"
-            },
-            "data_description": {
-              "power_feedback_entity": "Optional sensor that reports the pump power draw.",
-              "power_feedback_max_age_seconds": "Power feedback older than this is treated as stale.",
-              "flow_feedback_entity": "Optional sensor that reports the measured flow.",
-              "flow_feedback_max_age_seconds": "Flow feedback older than this is treated as stale.",
-              "fault_feedback_entity": "Optional binary sensor or sensor that reports a pump fault.",
-              "fault_feedback_max_age_seconds": "Fault feedback older than this is treated as stale."
-            }
-          }
-        }
-      },
-      "pump_review": {
-        "title": "Review pump warnings",
-        "description": "Review these warnings before saving the pump:\n{warnings}\n\nSaving returns the Plant to Dry run.",
-        "data": {
-          "confirm": "I understand these warnings"
-        },
-        "data_description": {
-          "confirm": "Required to save a pump that has the warnings listed above."
-        }
-      },
-      "edit_plant": {
-        "title": "Edit plant file",
-        "description": "Edit the whole Plant as a plant file. An object that keeps its id keeps its entities, and a new object without an id gets one from its slug. The next step lists the changes before anything is saved.",
-        "data": {
-          "document": "Plant file"
-        },
-        "data_description": {
-          "document": "Required. The plant file in YAML, starting with the current Plant."
-        }
-      },
-      "edit_plant_review": {
-        "title": "Review plant file changes",
-        "description": "Changes:\n{changes}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nApplying the plant file returns the Plant to Dry run.",
-        "data": {
-          "confirm": "I understand these warnings"
-        },
-        "data_description": {
-          "confirm": "Required to apply a plant file that has the warnings listed above."
-        }
-      }
-    },
-    "error": {
-      "name_required": "A name is required.",
-      "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
-      "dry_run_confirmation_required": "Confirm that the configured outputs may be controlled.",
-      "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit Dry run again after the shutdown finishes.",
-      "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
-      "outputs_changed": "The outputs changed since this form was shown. Review the updated list and confirm again.",
-      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live Plant. Turn on Dry run for {other_plant}, or bind different entities in this Plant, then try again.",
-      "confirm_required": "Confirm that you understand these warnings before saving.",
-      "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
-      "equipment_in_use": "This pump is still used by {users}. Move those loops to another pump before removing it.",
-      "invalid_pump": "The pump cannot be saved: {error}",
-      "invalid_document": "The plant file is not valid at {path}: {error}",
-      "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the Plant back into itself.",
-      "plant_id_mismatch": "This plant file belongs to another Plant. Remove its top-level id, or set it to this Plant's id, to apply it here.",
-      "plant_changed": "The Plant changed while you reviewed this plant file. Check the updated list of changes and submit again to apply it."
-    },
-    "abort": {
-      "settings_saved": "The Plant settings were saved.",
-      "plant_exported": "This is the plant file of the Plant. Copy it to back up the Plant or to rebuild it with the same entity IDs on another Home Assistant instance.\n\n{document}",
-      "plant_file_unavailable": "The stored Plant graph is not valid, so it has no plant file to show: {error} Replace it through Edit plant file, or restore a backup.",
-      "no_changes": "The plant file matches the current Plant, so nothing was changed."
-    }
-  },
-  "selector": {
-    "temperature_aggregation": {
-      "options": {
-        "mean": "Mean",
-        "median": "Median",
-        "minimum": "Heating-oriented minimum",
-        "maximum": "Cooling-oriented maximum",
-        "designated_reference": "Designated reference",
-        "weighted_mean": "Weighted mean"
-      }
-    },
-    "source_type": {
-      "options": {
-        "external": "External source",
-        "temperature_qualified_buffer": "Temperature-qualified buffer"
-      }
     }
   },
   "entity": {
     "binary_sensor": {
-      "dry_run": {
-        "name": "Dry run"
+      "heating_demand": {
+        "name": "Heating demand",
+        "state_attributes": {
+          "level": {
+            "name": "Level"
+          },
+          "reason": {
+            "name": "Reason"
+          }
+        }
       },
-      "mode_changeover_lockout": {
-        "name": "Mode changeover lockout"
+      "cooling_demand": {
+        "name": "Cooling demand",
+        "state_attributes": {
+          "level": {
+            "name": "Level"
+          },
+          "reason": {
+            "name": "Reason"
+          }
+        }
       },
-      "zone_demand": {
-        "name": "Heating demand"
+      "loop_flowing": {
+        "name": "{loop} flowing"
       },
-      "zone_blocked": {
-        "name": "Blocked"
-      },
-      "zone_cooling_demand": {
-        "name": "Cooling demand"
-      },
-      "zone_cooling_blocked": {
-        "name": "Cooling blocked"
-      },
-      "source_demand": {
-        "name": "Demand"
-      },
-      "source_available": {
-        "name": "Available"
-      },
-      "source_active": {
-        "name": "Active"
-      },
-      "source_blocked": {
-        "name": "Blocked"
-      },
-      "valve_requested": {
+      "source_requested": {
         "name": "Requested"
-      },
-      "pump_requested": {
-        "name": "Requested"
-      },
-      "actuator_mismatch": {
-        "name": "Mismatch"
-      },
-      "actuator_blocked": {
-        "name": "Blocked"
-      }
-    },
-    "button": {
-      "safe_shutdown": {
-        "name": "Safe shutdown"
       }
     },
     "select": {
-      "requested_mode": {
-        "name": "Requested mode",
+      "mode": {
+        "name": "Mode",
         "state": {
-          "auto": "Auto",
-          "idle": "Idle",
-          "heating": "Heating",
-          "cooling": "Cooling"
+          "off": "Off",
+          "heat": "Heat",
+          "cool": "Cool"
         }
       }
     },
     "sensor": {
-      "controller_status": {
-        "name": "Controller status",
+      "status": {
+        "name": "Status",
         "state": {
-          "stopped": "Stopped",
-          "safe_shutdown": "Safe shutdown",
-          "initializing": "Initializing",
-          "blocked": "Blocked",
-          "auto": "Auto",
+          "off": "Off",
           "idle": "Idle",
           "heating": "Heating",
-          "cooling": "Cooling"
+          "cooling": "Cooling",
+          "changing_over": "Changing over",
+          "degraded": "Degraded"
         }
       },
-      "reconciliation_status": {
-        "name": "Reconciliation status",
-        "state": {
-          "not_started": "Not started",
-          "changed": "Changed",
-          "unchanged": "Unchanged"
-        }
-      },
-      "topology_preview": {
-        "name": "Topology preview"
-      },
-      "operating_mode": {
-        "name": "Operating mode",
-        "state": {
-          "auto": "Auto",
-          "idle": "Idle",
-          "heating": "Heating",
-          "cooling": "Cooling"
-        }
-      },
-      "mode_changeover_explanation": {
-        "name": "Mode changeover explanation"
-      },
-      "active_source": {
-        "name": "Active source"
-      },
-      "source_changeover": {
-        "name": "Source changeover",
-        "state": {
-          "idle": "Idle",
-          "waiting_for_hydraulics": "Waiting for hydraulics",
-          "minimum_dwell": "Minimum dwell",
-          "releasing": "Releasing",
-          "breaking": "Breaking",
-          "selecting": "Selecting",
-          "active": "Active"
-        }
-      },
-      "source_dwell": {
-        "name": "Source dwell"
-      },
-      "recommended_source": {
-        "name": "Recommended source"
-      },
-      "source_recommendation": {
-        "name": "Source recommendation"
-      },
-      "source_blocked_reason": {
-        "name": "Blocked reason"
-      },
-      "zone_explanation": {
-        "name": "Explanation"
-      },
-      "zone_aggregate_temperature": {
+      "combined_temperature": {
         "name": "Combined temperature"
       },
-      "zone_blocked_reason": {
-        "name": "Blocked reason"
-      },
-      "zone_cooling_blocked_reason": {
-        "name": "Cooling blocked reason"
-      },
-      "zone_cooling_dew_point": {
-        "name": "Cooling dew point"
-      },
-      "zone_cooling_condensation_margin": {
-        "name": "Cooling condensation margin"
-      },
-      "actuator_feedback_reason": {
-        "name": "Feedback reason"
+      "dew_point": {
+        "name": "Dew point"
+      }
+    },
+    "switch": {
+      "control": {
+        "name": "Control equipment"
       }
     }
   },
   "issues": {
-    "missing_sensor_binding": {
-      "title": "Missing sensor for {object_name}",
-      "description": "In Plant {plant}, the {binding} is missing or renamed, so the heating or cooling path that depends on it is blocked. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    "invalid_plant": {
+      "title": "Plant {plant} is not valid",
+      "description": "The stored configuration of Plant {plant} is not a valid Plant, so Hydronicus does not run it and commands nothing: {error} This happens when a zone that the Plant still needs is removed, such as the zone of a pump's min-flow loop. Reconfigure the Plant with a plant file that fixes the problem, or remove it and import a corrected plant file."
     },
-    "missing_optional_sensor_binding": {
-      "title": "Missing sensor for {object_name}",
-      "description": "In Plant {plant}, the {binding} is missing or renamed. It is optional, so Hydronicus leaves it out instead of blocking control. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change or remove the binding, and apply the file. Alternatively, restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    "output_not_responding": {
+      "title": "{plant}: {entity_id} does not respond",
+      "description": "Plant {plant} asked {role} {entity_id} to change three times, and the change was never observed. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
     },
-    "missing_optional_sensor_binding_fixable": {
-      "title": "Missing sensor for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing sensor for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed. It is optional, so Hydronicus leaves it out instead of blocking control. Select Submit to edit {owner}, choose the current sensor or remove it, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid sensor is saved for {object_name}, or the sensor is removed.",
-          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
+    "outputs_awaiting_confirmation": {
+      "title": "{plant}: outputs awaiting confirmation",
+      "description": "Plant {plant} has outputs that are not armed: {entity_ids}. Hydronicus never commands an output until you confirm it, so the loops that need these outputs do not run, while the rest of the Plant keeps running. Arm the outputs once you have checked that each entity is the device the Plant expects."
     },
-    "missing_sensor_binding_fixable": {
-      "title": "Missing sensor for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing sensor for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the heating or cooling path that depends on it is blocked. Select Submit to edit {owner}, choose the current sensor, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid sensor is saved for {object_name}.",
-          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
+    "missing_binding": {
+      "title": "{plant}: {entity_id} does not exist",
+      "description": "Plant {plant} binds {entity_id} at {path} in its plant file, but Home Assistant has no such entity. Whatever needs it is blocked: a loop with a missing output does not run, and a zone with a missing required sensor does not call. Restore the entity or change the Plant to bind another one. The repair clears automatically once the entity exists."
     },
-    "missing_feedback_binding": {
-      "title": "Missing feedback for {object_name}",
-      "description": "In Plant {plant}, the {binding} is missing or renamed, so the loops that use {object_name} are held fail-closed. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the feedback entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
-    },
-    "missing_feedback_binding_fixable": {
-      "title": "Missing feedback for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing feedback for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the loops that use {object_name} are held fail-closed. Select Submit to edit {owner}, choose the current feedback entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid feedback entity is saved for {object_name}.",
-          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
-    },
-    "missing_feedback_binding_plant_settings": {
-      "title": "Missing feedback for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing feedback for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the loops that use {object_name} are held fail-closed. Select Submit to open the Plant settings, choose Edit or remove a pump, pick {object_name}, choose the current feedback entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "The Plant settings of {plant} are open. The repair clears after a valid feedback entity is saved for {object_name}.",
-          "subentry_not_found": "The Plant that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
-    },
-    "missing_actuator_binding": {
-      "title": "Missing actuator for {object_name}",
-      "description": "In Plant {plant}, the {binding} is missing or renamed, so the loops that use {object_name} are held fail-closed and no command is sent to it. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
-    },
-    "missing_actuator_binding_fixable": {
-      "title": "Missing actuator for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing actuator for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the loops that use {object_name} are held fail-closed and no command is sent to it. Select Submit to edit {owner}, choose the entity that now controls it, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid entity is saved for {object_name}.",
-          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
-    },
-    "missing_actuator_binding_plant_settings": {
-      "title": "Missing actuator for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing actuator for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the loops that use {object_name} are held fail-closed and no command is sent to it. Select Submit to open the Plant settings, choose Edit or remove a pump, pick {object_name}, choose the current pump entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "The Plant settings of {plant} are open. The repair clears after a valid pump entity is saved for {object_name}.",
-          "subentry_not_found": "The Plant that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
-    },
-    "missing_thermostat_binding": {
-      "title": "Missing thermostat for {object_name}",
-      "description": "In Plant {plant}, the {binding} is missing or renamed, so the demand of the zone is held fail-closed. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the thermostat: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
-    },
-    "missing_thermostat_binding_fixable": {
-      "title": "Missing thermostat for {object_name}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Missing thermostat for {object_name}",
-            "description": "In Plant {plant}, the {binding} is missing or renamed, so the demand of the zone is held fail-closed. Select Submit to edit {owner}, choose the current climate entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid climate entity is saved for {object_name}.",
-          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
-        }
-      }
-    },
-    "missing_area_sensor_binding": {
-      "title": "{plant}, zone {object_name}: missing {sensor} of area {area}",
-      "description": "In Plant {plant}, zone {object_name} follows the sensors of area {area}, and the {sensor} that the area names is missing or renamed. Renaming an entity does not update the area, so open the settings of area {area}, choose the current sensor, and save. The repair clears automatically as soon as the sensor is available again."
+    "missing_area_sensor": {
+      "title": "{plant}: area {area} names a missing sensor",
+      "description": "A zone of Plant {plant} covers area {area}, whose settings name {entity_id}, but Home Assistant has no such entity, so the area adds no reading. Home Assistant does not follow a renamed entity into the area settings. Open the settings of area {area} and choose the sensor again. The repair clears automatically once the area names an existing sensor."
     },
     "zone_area_missing": {
       "title": "{plant}, zone {zone}: missing area {area}",
-      "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Remove the area from the zone, or create an area named {recreate_name} again: Home Assistant makes a new area's ID from its name, and that name gives the ID {area_id} that the zone covers. You can rename the area afterwards. The repair clears automatically once the zone no longer covers a missing area."
-    },
-    "zone_area_missing_fixable": {
-      "title": "{plant}, zone {zone}: missing area {area}",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "{plant}, zone {zone}: missing area {area}",
-            "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Select Submit to edit {owner} and remove the area. Creating an area named {recreate_name} again also works, because that name gives the ID {area_id} that the zone covers; the repair clears automatically once the zone no longer covers a missing area."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears after the zone is saved without the missing area.",
-          "subentry_not_found": "The zone that covered this area no longer exists. If another zone still covers a missing area, a new repair appears."
-        }
-      }
+      "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Remove the area from the zone in its plant file, or create an area named {recreate_name} again: Home Assistant makes a new area's ID from its name, and that name gives the ID {area_id} that the zone covers. You can rename the area afterwards. The repair clears automatically once the zone no longer covers a missing area."
     },
     "zone_without_temperature_source": {
       "title": "{plant}, zone {zone}: no temperature sensor",
-      "description": "In Plant {plant}, zone {zone} covers {areas}, but the area settings name no temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Choose a temperature sensor in the area settings, or add a temperature sensor to the zone. The repair clears automatically once the zone has a temperature sensor."
-    },
-    "zone_without_temperature_source_fixable": {
-      "title": "{plant}, zone {zone}: no temperature sensor",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "{plant}, zone {zone}: no temperature sensor",
-            "description": "In Plant {plant}, zone {zone} covers {areas}, but the area settings name no temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Select Submit to edit {owner} and add a temperature sensor or another area. Choosing a temperature sensor in the area settings also works; the repair clears automatically once the zone has a temperature sensor."
-          }
-        },
-        "abort": {
-          "reconfigure_subentry": "{owner} is open for editing. The repair clears once the zone has a temperature sensor.",
-          "subentry_not_found": "The zone no longer exists. If another zone has no temperature sensor, a new repair appears."
-        }
-      }
+      "description": "In Plant {plant}, zone {zone} covers {areas}, but the area settings name no temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Choose a temperature sensor in the area settings, or add a temperature sensor to the zone in its plant file. The repair clears automatically once the zone has a temperature sensor."
     },
     "zone_area_self_feed": {
       "title": "{plant}, zone {zone}: area {area} names a Hydronicus sensor",
       "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
-    },
-    "output_conflict": {
-      "title": "{plant} is held in Dry run",
-      "description": "{plant} is set to run outside Dry run, but {other_plant} is already out of Dry run and controls {entities}. Two live Plants would fight over these entities, so Hydronicus holds {plant} in Dry run because {other_plant} is using the same outputs, and sends no commands from it. Its Dry run setting and confirmed outputs are kept. {plant} resumes automatically when the conflict is gone, for example when {other_plant} enters Dry run, is unloaded, or is removed. To end the conflict for good, bind different entities in one of the Plants, remove one of the Plants, or turn on Dry run for one of them."
     }
   },
   "exceptions": {
-    "invalid_stored_graph": {
-      "message": "The stored configuration of Plant {plant} cannot be loaded safely: {error} Reconfigure or remove the affected objects, then reload the integration."
-    },
-    "invalid_target_temperature": {
-      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
-    },
-    "output_authorization_mismatch": {
-      "message": "Leaving Dry run for Plant {plant} requires authorization for the exact current outputs. Review the outputs and confirm again."
-    },
-    "preset_not_configured": {
-      "message": "The preset {preset_mode} is not configured for zone {zone}."
-    },
-    "runtime_not_started": {
-      "message": "Plant {plant} is not running. Wait until the integration has finished loading and try again."
-    },
-    "selector_option_missing": {
-      "message": "The source selector command for {entity_id} has no option to select."
-    },
-    "unknown_zone": {
-      "message": "Zone {zone_id} is not a Hydronicus thermostat zone of Plant {plant}."
-    },
-    "unsupported_hvac_mode": {
-      "message": "The HVAC mode {hvac_mode} is not supported by this zone thermostat."
-    },
-    "unsupported_plant_mode": {
-      "message": "The Plant mode {mode} is not supported."
-    },
-    "unsupported_preset_mode": {
-      "message": "The preset {preset_mode} is not supported."
-    },
-    "output_conflict": {
-      "message": "Plant {plant} cannot leave Dry run because live Plant {other_plant} already controls {entities}. One actuator entity belongs to one live Plant."
+    "invalid_plant": {
+      "message": "The stored configuration of Plant {plant} is not a valid Plant: {error}"
     },
     "plant_not_found": {
       "message": "Config entry {config_entry_id} is not a Hydronicus Plant. Choose a Hydronicus Plant to export."
+    },
+    "invalid_target_temperature": {
+      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
     }
   },
   "services": {

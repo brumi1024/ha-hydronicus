@@ -386,7 +386,9 @@ class Sim:
         self._repairs = result.repairs
         self.store["state"] = json.dumps(state.to_dict())
         self.store["reconcile"] = json.dumps(result.state.to_dict())
-        runtime.seen_version = world.version
+        # A Dry run proposal counts as observed, so it is a change that evaluates again,
+        # as a live call's observed result would be.
+        runtime.seen_version = -1 if result.proposed else world.version
         calls = []
         for action in result.send:
             call = world.dispatch(action)

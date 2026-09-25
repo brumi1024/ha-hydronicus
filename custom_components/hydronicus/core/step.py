@@ -33,7 +33,6 @@ from typing import Any, Final
 
 from .demand import (
     AreaSensors,
-    Demand,
     DemandState,
     DigitalThermostatState,
     ExternalThermostatState,
@@ -47,6 +46,7 @@ from .demand import (
 )
 from .model import (
     DEFAULT_MAX_AGE,
+    Demand,
     Desired,
     Loop,
     MinFlow,
@@ -475,6 +475,7 @@ class _Evaluation:
             mode=mode,
             flow_setpoint=None,
             reasons=self.reasons,
+            demands=demands,
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None

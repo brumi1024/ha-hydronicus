@@ -1,47 +1,70 @@
-"""Config flow for Hydronicus."""
+"""Create a Plant by pasting its plant file.
+
+The plant file, format 2, is read and validated by ``core.plant_file`` and
+stored as the entry data plus one ``zone`` subentry per zone. A new Plant starts
+with nothing armed and Control equipment off (contract K6). The guided setup,
+the zone subentry flows, reconfigure, and Plant settings build on this flow.
+"""
 
 from __future__ import annotations
 
-from homeassistant import config_entries
-from homeassistant.core import callback
+from typing import Any, Final
 
-from .const import (
-    CONFIG_ENTRY_MINOR_VERSION,
-    CONFIG_ENTRY_VERSION,
-    DOMAIN,
-    SUBENTRY_TYPE_SOURCE,
-    SUBENTRY_TYPE_ZONE,
-)
-from .flows.common import OwnEntityPickerMixin
-from .flows.plant import PlantSettingsOptionsFlow
-from .flows.setup import SetupSteps
-from .flows.source import SourceSubentryFlowHandler
-from .flows.zone import ZoneSubentryFlowHandler
+import voluptuous as vol
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.helpers import selector
+
+from .bindings import output_bound_elsewhere, own_entity
+from .const import CONFIG_ENTRY_MINOR_VERSION, CONFIG_ENTRY_VERSION, DOMAIN
+from .core.plant_file import PlantFileError, read_plant_file
+from .storage import new_entry, new_options
+
+CONF_PLANT_FILE: Final = "plant_file"
 
 
-class HydronicClimateConfigFlow(  # type: ignore[call-arg]
-    OwnEntityPickerMixin, SetupSteps, config_entries.ConfigFlow, domain=DOMAIN
-):
-    """Handle creation of a hydronic plant config entry."""
+class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Set up a Plant from a plant file."""
 
     VERSION = CONFIG_ENTRY_VERSION
     MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
-    @staticmethod
-    @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> PlantSettingsOptionsFlow:
-        """Return Plant settings, which the Plant entry's Configure button opens."""
-        return PlantSettingsOptionsFlow()
-
-    @classmethod
-    @callback
-    def async_get_supported_subentry_types(
-        cls, config_entry: config_entries.ConfigEntry
-    ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """Return the handle types of a Plant: zones and sources."""
-        return {
-            SUBENTRY_TYPE_ZONE: ZoneSubentryFlowHandler,
-            SUBENTRY_TYPE_SOURCE: SourceSubentryFlowHandler,
-        }
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask for the plant file and create the Plant it describes."""
+        errors: dict[str, str] = {}
+        placeholders = {"error": ""}
+        text = ""
+        if user_input is not None:
+            text = str(user_input.get(CONF_PLANT_FILE, ""))
+            try:
+                plant = read_plant_file(text)
+            except PlantFileError as error:
+                errors["base"] = "invalid_plant_file"
+                placeholders["error"] = str(error)
+            else:
+                await self.async_set_unique_id(plant.id)
+                self._abort_if_unique_id_configured()
+                if (own := own_entity(self.hass, plant)) is not None:
+                    errors["base"] = "own_entity"
+                    placeholders["error"] = f"{own[0]}: {own[1]}"
+                elif (shared := output_bound_elsewhere(self.hass, plant)) is not None:
+                    errors["base"] = "output_bound_elsewhere"
+                    placeholders["error"] = (
+                        f"{shared.path}: {shared.entity_id} ({shared.other_plant})"
+                    )
+                else:
+                    data, subentries = new_entry(plant)
+                    return self.async_create_entry(
+                        title=plant.name, data=data, options=new_options(), subentries=subentries
+                    )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PLANT_FILE, default=text): selector.TextSelector(
+                        selector.TextSelectorConfig(multiline=True)
+                    )
+                }
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )

@@ -220,6 +220,16 @@ def test_a_calling_zone_opens_its_valve_then_runs_its_pump_then_asks_the_source(
     assert desired.outputs["switch.boiler"] == ON and state.source_changed == NOW
 
 
+def test_the_desired_state_reports_each_zone_demand_with_its_level() -> None:
+    plant = _plant(RADIATOR)
+    _, desired, _ = run(plant, observe(plant, temperatures={"room": 20.5}))
+    demand = desired.demands["room"]
+    assert demand.on and demand.mode is Mode.HEAT
+    assert demand.level == pytest.approx(0.5)
+    _, desired, _ = run(plant, observe(plant))
+    assert not desired.demands["room"].on and desired.demands["room"].level == 0.0
+
+
 def test_readiness_is_confirmed_by_a_sensor_and_kept_across_a_backward_clock_step() -> None:
     plant = read_plant_file(
         RADIATOR.replace(

@@ -1,207 +1,71 @@
 {
   "entity": {
     "binary_sensor": {
-      "dry_run": {
-        "default": "mdi:eye-outline",
-        "state": {
-          "on": "mdi:eye-outline",
-          "off": "mdi:eye-off-outline"
-        }
-      },
-      "mode_changeover_lockout": {
-        "default": "mdi:lock-clock",
-        "state": {
-          "on": "mdi:lock-clock",
-          "off": "mdi:lock-open-variant-outline"
-        }
-      },
-      "zone_demand": {
+      "heating_demand": {
         "default": "mdi:radiator",
         "state": {
           "on": "mdi:radiator",
           "off": "mdi:radiator-off"
         }
       },
-      "zone_blocked": {
-        "default": "mdi:alert-circle-outline",
-        "state": {
-          "on": "mdi:alert-circle-outline",
-          "off": "mdi:check-circle-outline"
-        }
-      },
-      "zone_cooling_demand": {
+      "cooling_demand": {
         "default": "mdi:snowflake",
         "state": {
           "on": "mdi:snowflake",
           "off": "mdi:snowflake-off"
         }
       },
-      "zone_cooling_blocked": {
-        "default": "mdi:water-alert-outline",
+      "loop_flowing": {
+        "default": "mdi:pipe",
         "state": {
-          "on": "mdi:water-alert-outline",
-          "off": "mdi:water-check-outline"
+          "on": "mdi:pipe",
+          "off": "mdi:pipe-disconnected"
         }
       },
-      "source_demand": {
-        "default": "mdi:fire",
-        "state": {
-          "on": "mdi:fire",
-          "off": "mdi:fire-off"
-        }
-      },
-      "source_available": {
-        "default": "mdi:check-circle-outline",
-        "state": {
-          "on": "mdi:check-circle-outline",
-          "off": "mdi:close-circle-outline"
-        }
-      },
-      "source_active": {
+      "source_requested": {
         "default": "mdi:heat-pump",
         "state": {
           "on": "mdi:heat-pump",
           "off": "mdi:heat-pump-outline"
         }
-      },
-      "source_blocked": {
-        "default": "mdi:source-branch-off",
-        "state": {
-          "on": "mdi:source-branch-off",
-          "off": "mdi:source-branch-check"
-        }
-      },
-      "valve_requested": {
-        "default": "mdi:valve-open",
-        "state": {
-          "on": "mdi:valve-open",
-          "off": "mdi:valve-closed"
-        }
-      },
-      "pump_requested": {
-        "default": "mdi:pump",
-        "state": {
-          "on": "mdi:pump",
-          "off": "mdi:pump-off"
-        }
-      },
-      "actuator_mismatch": {
-        "default": "mdi:alert-outline",
-        "state": {
-          "on": "mdi:alert-outline",
-          "off": "mdi:check"
-        }
-      },
-      "actuator_blocked": {
-        "default": "mdi:shield-alert-outline",
-        "state": {
-          "on": "mdi:shield-alert-outline",
-          "off": "mdi:shield-check-outline"
-        }
-      }
-    },
-    "button": {
-      "safe_shutdown": {
-        "default": "mdi:power-cycle"
       }
     },
     "select": {
-      "requested_mode": {
-        "default": "mdi:thermostat-auto",
+      "mode": {
+        "default": "mdi:thermostat",
         "state": {
-          "auto": "mdi:thermostat-auto",
-          "idle": "mdi:pause-circle-outline",
-          "heating": "mdi:fire",
-          "cooling": "mdi:snowflake"
+          "off": "mdi:power",
+          "heat": "mdi:fire",
+          "cool": "mdi:snowflake"
         }
       }
     },
     "sensor": {
-      "controller_status": {
-        "default": "mdi:state-machine",
+      "status": {
+        "default": "mdi:information-outline",
         "state": {
-          "stopped": "mdi:stop-circle-outline",
-          "safe_shutdown": "mdi:power-cycle",
-          "initializing": "mdi:timer-sand",
-          "blocked": "mdi:alert-octagon-outline",
-          "auto": "mdi:thermostat-auto",
-          "idle": "mdi:pause-circle-outline",
+          "off": "mdi:power",
+          "idle": "mdi:sleep",
           "heating": "mdi:fire",
-          "cooling": "mdi:snowflake"
+          "cooling": "mdi:snowflake",
+          "changing_over": "mdi:swap-horizontal",
+          "degraded": "mdi:alert-outline"
         }
       },
-      "reconciliation_status": {
-        "default": "mdi:sync-circle",
+      "combined_temperature": {
+        "default": "mdi:home-thermometer"
+      },
+      "dew_point": {
+        "default": "mdi:water-thermometer"
+      }
+    },
+    "switch": {
+      "control": {
+        "default": "mdi:power-plug",
         "state": {
-          "not_started": "mdi:sync-off",
-          "changed": "mdi:sync-alert"
+          "on": "mdi:power-plug",
+          "off": "mdi:power-plug-off"
         }
-      },
-      "topology_preview": {
-        "default": "mdi:graph-outline"
-      },
-      "operating_mode": {
-        "default": "mdi:state-machine",
-        "state": {
-          "auto": "mdi:thermostat-auto",
-          "idle": "mdi:pause-circle-outline",
-          "heating": "mdi:fire",
-          "cooling": "mdi:snowflake"
-        }
-      },
-      "mode_changeover_explanation": {
-        "default": "mdi:text-box-outline"
-      },
-      "active_source": {
-        "default": "mdi:heat-pump",
-        "state": {
-          "none": "mdi:heat-pump-outline"
-        }
-      },
-      "source_changeover": {
-        "default": "mdi:swap-horizontal-circle",
-        "state": {
-          "idle": "mdi:swap-horizontal-circle-outline",
-          "waiting_for_hydraulics": "mdi:timer-sand",
-          "minimum_dwell": "mdi:timer-lock-outline",
-          "active": "mdi:check-circle-outline"
-        }
-      },
-      "source_dwell": {
-        "default": "mdi:timer-lock-outline"
-      },
-      "recommended_source": {
-        "default": "mdi:fire-circle",
-        "state": {
-          "none": "mdi:fire-off"
-        }
-      },
-      "source_recommendation": {
-        "default": "mdi:text-box-check-outline"
-      },
-      "source_blocked_reason": {
-        "default": "mdi:source-branch-alert"
-      },
-      "zone_explanation": {
-        "default": "mdi:text-box-outline"
-      },
-      "zone_blocked_reason": {
-        "default": "mdi:alert-circle-outline",
-        "state": {
-          "none": "mdi:check-circle-outline"
-        }
-      },
-      "zone_cooling_blocked_reason": {
-        "default": "mdi:water-alert-outline",
-        "state": {
-          "none": "mdi:water-check-outline"
-        }
-      },
-      "zone_cooling_condensation_margin": {
-        "default": "mdi:thermometer-water"
-      },
-      "actuator_feedback_reason": {
-        "default": "mdi:information-outline"
       }
     }
   },

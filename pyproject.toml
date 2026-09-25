@@ -73,3 +73,8 @@ exclude_also = [
 ]
 fail_under = 90
 show_missing = true
+
+[[tool.mypy.overrides]]
+# The adapter is checked against Home Assistant's own type information.
+module = ["homeassistant", "homeassistant.*"]
+follow_imports = "silent"
