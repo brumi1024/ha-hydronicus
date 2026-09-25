@@ -47,6 +47,7 @@ from .common import (
     own_entity_errors,
     sensor_selector,
     shared_outputs,
+    sharing_messages,
     sharing_to_confirm,
     temperature_delta_selector,
     warning_text,
@@ -159,7 +160,7 @@ class SourceSubentryFlowHandler(
         sharing = shared_outputs(self.hass, entry.entry_id, data_with_source(entry.data, data))
         if not sharing_to_confirm(sharing, shared_outputs(self.hass, entry.entry_id, entry.data)):
             return ""
-        return warning_text(None, [shared.message for shared in sharing])
+        return warning_text(None, sharing_messages(sharing))
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

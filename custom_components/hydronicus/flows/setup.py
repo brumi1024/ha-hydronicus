@@ -59,6 +59,7 @@ from .common import (
     own_entity_errors,
     seconds_selector,
     shared_outputs,
+    sharing_messages,
     warning_review_schema,
     warning_text,
     warnings_to_confirm,
@@ -225,7 +226,7 @@ class SetupSteps(ConfigFlowBase):
                     compiled,
                     (
                         *(warning.message for warning in areas),
-                        *(shared.message for shared in sharing),
+                        *sharing_messages(sharing),
                     ),
                 )
                 or "- None",

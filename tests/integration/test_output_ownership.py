@@ -830,3 +830,39 @@ async def test_the_review_names_every_plant_that_binds_a_shared_output(hass: Hom
         if SHARED_PUMP in line
     ]
     assert "Plant 1 and Plant 3" in line
+
+
+async def test_outputs_bound_by_the_same_plants_share_one_review_line(
+    hass: HomeAssistant,
+) -> None:
+    """The review names the outputs that the same Plants bind together, not once per output."""
+    _record_switch_calls(hass)
+    await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_zone", live=False))
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "guided"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Second plant", CONF_PUMP_ENTITY: SHARED_PUMP}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "zoning_grouped"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Study",
+            CONF_TEMPERATURE_SENSORS: ["sensor.warm_zone"],
+            "valves": [SHARED_VALVE],
+        },
+    )
+
+    assert result["step_id"] == "review"
+    (line,) = [
+        line
+        for line in result["description_placeholders"]["warnings"].splitlines()
+        if "Plant 1" in line
+    ]
+    assert line.startswith(f"- {SHARED_PUMP} and {SHARED_VALVE} are already bound by Plant 1. ")
+    assert "Only one Plant that binds them can be out of Dry run at a time" in line

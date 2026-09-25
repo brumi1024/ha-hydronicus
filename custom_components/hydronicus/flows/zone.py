@@ -85,6 +85,7 @@ from .common import (
     own_entity_errors,
     seconds_selector,
     shared_outputs,
+    sharing_messages,
     sharing_to_confirm,
     topology_select,
     warning_review_schema,
@@ -239,7 +240,7 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 compiled,
                 (
                     *(warning.message for warning in areas),
-                    *(shared.message for shared in sharing),
+                    *sharing_messages(sharing),
                 ),
             )
             return self._review_form()

@@ -211,15 +211,22 @@ class SharedOutput:
     entity_id: str
     plants: tuple[str, ...]
 
-    @property
-    def message(self) -> str:
-        """Describe the sharing for a review step."""
-        return (
-            f"{self.entity_id} is already bound by {listed(self.plants)}. Only one Plant "
-            "that binds it can be out of Dry run at a time: while one is live, the others "
-            "cannot leave Dry run, and one stored out of Dry run is held in Dry run until "
-            "the conflict is gone."
+
+def sharing_messages(sharing: Iterable[SharedOutput]) -> tuple[str, ...]:
+    """Describe shared outputs for a review step, one sentence per set of other Plants."""
+    by_plants: dict[tuple[str, ...], list[str]] = {}
+    for shared in sharing:
+        by_plants.setdefault(shared.plants, []).append(shared.entity_id)
+    messages = []
+    for plants, entity_ids in by_plants.items():
+        several = len(entity_ids) > 1
+        messages.append(
+            f"{listed(entity_ids)} {'are' if several else 'is'} already bound by "
+            f"{listed(plants)}. Only one Plant that binds {'them' if several else 'it'} can "
+            "be out of Dry run at a time: while one is live, the others cannot leave Dry "
+            "run, and one stored out of Dry run is held in Dry run until the conflict is gone."
         )
+    return tuple(messages)
 
 
 def shared_outputs(

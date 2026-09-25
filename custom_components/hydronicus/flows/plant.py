@@ -76,6 +76,7 @@ from .common import (
     seconds_selector,
     sensor_selector,
     shared_outputs,
+    sharing_messages,
     sharing_to_confirm,
     topology_select,
     warning_review_schema,
@@ -583,7 +584,7 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
         if sharing_to_confirm(
             sharing, shared_outputs(self.hass, entry.entry_id, entry.data)
         ) or warnings_to_confirm(compiled, before):
-            return warning_text(compiled, [shared.message for shared in sharing])
+            return warning_text(compiled, sharing_messages(sharing))
         return ""
 
     async def _async_save_pump(self, entry: config_entries.ConfigEntry) -> bool:
@@ -775,7 +776,7 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
                     compiled,
                     (
                         *(warning.message for warning in areas),
-                        *(shared.message for shared in sharing),
+                        *sharing_messages(sharing),
                     ),
                 )
                 or "- None",
