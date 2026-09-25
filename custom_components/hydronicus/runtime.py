@@ -101,9 +101,15 @@ from .repairs import async_sync_area_repairs, async_sync_repairs
 _LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, repr=False)
 class HydronicRuntime:
-    """Runtime data retained for one configured plant."""
+    """Runtime data retained for one configured plant.
+
+    The repr names the Plant only. Home Assistant formats a listener's bound
+    method into its job name, and the runtime holds the removal partials of Home
+    Assistant's shared listener tables, so a generated repr would expand every
+    other Plant's runtime through them and grow without bound.
+    """
 
     plant_id: str
     name: str
@@ -155,6 +161,10 @@ class HydronicRuntime:
     last_reconciliation_changed_actuator_count: int = 0
     _last_publication_signature: str | None = None
     executor: ActuatorExecutor = field(init=False)
+
+    def __repr__(self) -> str:
+        """Name the Plant without expanding its state or listeners."""
+        return f"<HydronicRuntime {self.plant_id} {self.name!r}>"
 
     def __post_init__(self) -> None:
         """Create an executor whose state starts unknown until observed."""

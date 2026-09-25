@@ -422,3 +422,25 @@ async def test_setup_removes_the_closure_of_a_zone_deleted_while_unloaded(hass) 
     assert entry.data[CONF_DRY_RUN] is True
     assert CONF_OUTPUT_AUTHORIZATION not in entry.data
     assert set(entry.runtime_data.plant.zones) == {living.zone_id}
+
+
+async def test_a_runtime_listener_formats_as_a_short_name(hass) -> None:
+    # Home Assistant formats a listener into its job name, such as the
+    # "onetime listen" job of the stop listener. The runtime holds the removal
+    # partials of Home Assistant's shared listener tables, so a generated repr
+    # expanded every other Plant's runtime through them and, with a few Plants,
+    # a reload hung Home Assistant while it built a repr of many gigabytes.
+    first = manifold_entry()
+    second = plant_entry(dict(first.data, plant_id="00000000-0000-4000-8000-0000000000ff"))
+    for zone in manifold_zones(("Living room", "Bedroom")):
+        hass.states.async_set(zone.temperature_sensor, "20.0")
+    for entry in (first, second):
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    runtime = first.runtime_data
+    listener = str(runtime._async_handle_homeassistant_stop)
+    assert len(listener) < 300
+    assert runtime.plant_id in listener
+    assert runtime.name in repr(runtime)
