@@ -58,6 +58,7 @@ from .core.model import (
     ActuatorDiagnostic,
     ActuatorFeedback,
     AggregationResult,
+    AreaSensors,
     CompiledPlant,
     Evaluation,
     ExternalClimateThermostatConfig,
@@ -75,6 +76,7 @@ from .core.model import (
     RuntimeState,
     SafeShutdownPhase,
     SourceRecommendation,
+    TemperatureSensorMetadata,
     ThermostatHvacMode,
     ValveRuntime,
     ValveState,
@@ -613,6 +615,43 @@ class HydronicRuntime:
             }
             for area in zone.areas
         ]
+
+    def zone_areas(self, zone_id: str) -> list[dict[str, object]]:
+        """Return each area of a zone with its sensors and readings, in the zone's area order.
+
+        A reading is the value the controller used in its last evaluation, so a
+        sensor it judged unusable, such as a stale or unavailable one, reads None.
+        """
+        zone = self.plant.zones.get(zone_id)
+        if zone is None:
+            return []
+        heating = self.zone_decision(zone_id)
+        cooling = self.cooling_zone_decision(zone_id)
+        snapshot = self.snapshot
+        result: list[dict[str, object]] = []
+        for area in zone.areas:
+            sensors = self.area_resolution.area_sensors.get(area.area_id, AreaSensors())
+            result.append(
+                {
+                    "id": area.area_id,
+                    "name": self.area_resolution.name(area.area_id),
+                    "temperature": _used_reading(
+                        sensors.temperature_entity_id,
+                        heating.aggregation if heating is not None else None,
+                        zone.temperature_sensor_metadata,
+                        snapshot.temperatures if snapshot is not None else {},
+                    ),
+                    "humidity": _used_reading(
+                        sensors.humidity_entity_id,
+                        cooling.humidity_aggregation if cooling is not None else None,
+                        zone.humidity_sensor_metadata,
+                        snapshot.humidities if snapshot is not None else {},
+                    ),
+                    "temperature_entity_id": sensors.temperature_entity_id,
+                    "humidity_entity_id": sensors.humidity_entity_id,
+                }
+            )
+        return result
 
     def zone_aggregation(self, zone_id: str) -> AggregationResult | None:
         """Return the structured aggregate for a zone from the last evaluation."""
@@ -1687,6 +1726,9 @@ class HydronicRuntime:
                 self.last_reconciliation_status,
                 self.last_reconciliation_changed_actuator_count,
                 self._evaluation_publication_signature(),
+                # Area readings the zone's own value does not reveal, such as a
+                # sensor that is not the minimum of a minimum aggregation.
+                tuple((zone_id, self.zone_areas(zone_id)) for zone_id in sorted(self.plant.zones)),
                 tuple(sorted(self.executor.failure_states.items())),
                 self._execution_publication_signature(),
                 tuple(sorted(self.executor.reconciliations.items()))
@@ -1901,6 +1943,24 @@ class HydronicRuntime:
             and failure.operation.target_state
             in {ActuatorObservedState.ON, ActuatorObservedState.OPEN}
         )
+
+
+def _used_reading(
+    entity_id: str | None,
+    aggregation: AggregationResult | None,
+    metadata: tuple[TemperatureSensorMetadata, ...],
+    observations: Mapping[str, NumericObservation],
+) -> float | None:
+    """Return a sensor's calibrated reading when the aggregation judged it usable."""
+    if entity_id is None or aggregation is None or entity_id not in aggregation.usable_sensor_ids:
+        return None
+    observation = observations.get(entity_id)
+    if observation is None or observation.value is None:
+        return None
+    offset = next(
+        (sensor.calibration_offset for sensor in metadata if sensor.entity_id == entity_id), 0.0
+    )
+    return observation.value + offset
 
 
 def _stored_requested_mode(entry: Any) -> PlantMode:

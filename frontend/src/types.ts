@@ -40,10 +40,27 @@ export interface Alert {
   message: string;
 }
 
+/**
+ * One Home Assistant area a Zone covers. A reading is null when the area
+ * names no such sensor or the controller could not use its reading; a sensor
+ * id is null when the area names none or the user may not read it.
+ */
+export interface ZoneArea {
+  id: string;
+  name: string;
+  temperature: number | null;
+  /** Relative humidity in percent. */
+  humidity: number | null;
+  temperature_entity_id: string | null;
+  humidity_entity_id: string | null;
+}
+
 /** Every temperature in a snapshot is in degrees Celsius. */
 export interface ZoneSnapshot {
   id: string;
   name: string;
+  /** The areas the Zone covers, in the Zone's order. */
+  areas: ZoneArea[];
   thermostat: {
     kind: "hydronicus" | "external_climate";
     state: "available" | "blocked";

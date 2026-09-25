@@ -1,7 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { CELSIUS, formatNumber, formatTemperature, formatTemperatureDelta, targetStep } from "../format";
-import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, hvacModeLabel, sentenceLabel, zoneDemandKind, zoneHvacModes, zonePresets } from "../logic";
-import type { ZoneSnapshot } from "../types";
+import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, hvacModeLabel, sentenceLabel, zoneAreaLines, zoneDemandKind, zoneHvacModes, zonePresets } from "../logic";
+import type { ZoneArea, ZoneSnapshot } from "../types";
 import type { RenderContext } from "./context";
 
 export interface ZoneOptions {
@@ -18,6 +18,40 @@ function temperature(context: RenderContext, celsius: number | null, label: stri
     return html`<div class=${className} part="metric"><span class="metric-value">--</span><span class="metric-label">${label}<span class="visually-hidden"> unavailable</span></span></div>`;
   }
   return html`<div class=${className} part="metric"><span class="metric-value">${formatTemperature(celsius, unit, context.locale)}</span><span class="metric-unit">${unit}</span><span class="metric-label">${label}</span></div>`;
+}
+
+/**
+ * One reading of an area line. A dash stands for a reading the controller
+ * could not use and for a sensor the area does not name, which screen
+ * readers hear apart.
+ */
+function areaReading(value: string | null, unit: string, sensor: string | null, measurement: string): TemplateResult {
+  if (value === null) {
+    return html`<span class="area-value">--<span class="visually-hidden"> ${sensor ? `${measurement} unavailable` : `no ${measurement} sensor`}</span></span>`;
+  }
+  return html`<span class="area-value">${value}<span class="metric-unit">${unit}</span></span>`;
+}
+
+function renderArea(context: RenderContext, area: ZoneArea, humidity: boolean): TemplateResult {
+  const { unit, locale } = context;
+  // The area's temperature sensor opens, or its humidity sensor when the user sees only that.
+  const sensor = area.temperature_entity_id ?? area.humidity_entity_id;
+  const name = sensor
+    ? html`<button type="button" class="link" aria-haspopup="dialog" title=${`Show ${area.name} sensor details`} @click=${() => context.moreInfo(sensor)}>${area.name}</button>`
+    : area.name;
+  return html`<li class="area" part="area">
+    <span class="area-name" dir="auto">${name}</span>
+    ${areaReading(area.temperature === null ? null : formatTemperature(area.temperature, unit, locale), unit, area.temperature_entity_id, "temperature")}
+    ${humidity ? areaReading(area.humidity === null ? null : formatNumber(area.humidity, locale, 0), "%", area.humidity_entity_id, "humidity") : nothing}
+  </li>`;
+}
+
+/** One compact line per area, when the Zone covers several. */
+function renderAreas(context: RenderContext, zone: ZoneSnapshot): TemplateResult | typeof nothing {
+  const areas = zoneAreaLines(zone);
+  if (!areas.length) return nothing;
+  const humidity = areas.some((area) => area.humidity !== null || area.humidity_entity_id !== null);
+  return html`<ul class="area-list" data-humidity=${String(humidity)} aria-label="Areas">${areas.map((area) => renderArea(context, area, humidity))}</ul>`;
 }
 
 function adjust(context: RenderContext, zone: ZoneSnapshot, direction: 1 | -1): void {
@@ -66,6 +100,7 @@ export function renderZone(context: RenderContext, zone: ZoneSnapshot, options: 
       ${temperature(context, thermostat.current_temperature, "Current", "metric")}
       ${temperature(context, thermostat.target_temperature, "Target", "metric target")}
     </div>
+    ${renderAreas(context, zone)}
     <p class="meta zone-note" dir="auto">${internal ? demandNote : `${demandNote} · ${thermostat.explanation}`}</p>
     <ul class="diagnostic-list" aria-label="Zone diagnostics">
       <li part="chip" class="diagnostic-chip" dir="auto">${formatNumber(zone.sensor_status.usable, locale, 0)} sensor${zone.sensor_status.usable === 1 ? "" : "s"} ready</li>

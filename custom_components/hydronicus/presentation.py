@@ -237,6 +237,10 @@ def _zone_snapshots(
             {
                 "id": zone_id,
                 "name": zone.name,
+                # The sensors an area names in Home Assistant are household choices,
+                # not Plant bindings, so the card may open them; the stream still
+                # hides each one the user may not read.
+                "areas": runtime.zone_areas(zone_id),
                 "thermostat": {
                     "kind": zone.thermostat.kind.value,
                     "state": "available" if not blocked else "blocked",

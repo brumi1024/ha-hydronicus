@@ -195,6 +195,19 @@ export function zoneHvacModes(zone: ZoneSnapshot): string[] {
   return [...new Set(zone.thermostat.hvac_modes ?? [])];
 }
 
+/**
+ * The areas a Zone shows a line for: every area when it covers two or more,
+ * and none otherwise, because one area's reading is the Zone's own.
+ */
+export function zoneAreaLines(zone: Pick<ZoneSnapshot, "areas">): ZoneSnapshot["areas"] {
+  return zone.areas.length >= 2 ? zone.areas : [];
+}
+
+/** Masonry height in 50 px units of one Zone tile, with its area lines. */
+export function zoneTileSize(zone: Pick<ZoneSnapshot, "areas">): number {
+  return 5 + Math.ceil(zoneAreaLines(zone).length / 2);
+}
+
 /** The short badge label for the execution boundary. */
 export function boundaryLabel(boundary: PlantSnapshot["plant"]["execution_boundary"]): string {
   if (boundary.dry_run || boundary.mode === "dry_run") return "Dry run";

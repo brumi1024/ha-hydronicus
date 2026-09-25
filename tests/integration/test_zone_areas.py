@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -19,14 +20,17 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 from custom_components.hydronicus.areas import resolve_area_sensors
 from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
+from custom_components.hydronicus.websocket import WS_SUBSCRIBE_PLANT, ws_subscribe_plant
 from tests.integration.flow_forms import form_fields
 from tests.integration.plant_fixtures import (
+    PLANT_ID,
     manifold_topology,
     manifold_zones,
     plant_data,
     plant_entry,
     subentry_id_for,
 )
+from tests.integration.test_websocket import _Connection, _User
 
 GROUND, UPSTAIRS = manifold_zones(("Ground floor", "Upstairs"))
 
@@ -462,3 +466,140 @@ def _exported_document(result: Mapping[str, Any]) -> dict[str, Any]:
 
     text = result["description_placeholders"]["document"]
     return yaml.safe_load(text.removeprefix("```yaml\n").removesuffix("```"))
+
+
+# The zone card
+
+
+def _zone_snapshot(hass, entry: MockConfigEntry, zone_id: str) -> dict[str, Any]:
+    snapshot = entry.runtime_data.presentation_snapshot(hass)
+    return next(zone for zone in snapshot["zones"] if zone["id"] == zone_id)
+
+
+async def test_the_zone_snapshot_lists_each_area_in_zone_order(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["hall", "study", "kitchen", "attic"]))
+
+    assert _zone_snapshot(hass, entry, GROUND.zone_id)["areas"] == [
+        {
+            "id": "hall",
+            "name": "Hall",
+            "temperature": 22.0,
+            "humidity": 50.0,
+            "temperature_entity_id": "sensor.hall_temperature",
+            "humidity_entity_id": "sensor.hall_humidity",
+        },
+        # An area that names no sensor, and an area that does not exist, read nothing.
+        {
+            "id": "study",
+            "name": "Study",
+            "temperature": None,
+            "humidity": None,
+            "temperature_entity_id": None,
+            "humidity_entity_id": None,
+        },
+        {
+            "id": "kitchen",
+            "name": "Kitchen",
+            "temperature": 20.0,
+            "humidity": 45.0,
+            "temperature_entity_id": "sensor.kitchen_temperature",
+            "humidity_entity_id": "sensor.kitchen_humidity",
+        },
+        {
+            "id": "attic",
+            "name": "attic",
+            "temperature": None,
+            "humidity": None,
+            "temperature_entity_id": None,
+            "humidity_entity_id": None,
+        },
+    ]
+    assert _zone_snapshot(hass, entry, UPSTAIRS.zone_id)["areas"] == []
+
+
+async def test_an_unusable_area_reading_is_null_and_keeps_its_sensor(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["kitchen", "hall"]))
+
+    hass.states.async_set("sensor.hall_temperature", "unavailable")
+    hass.states.async_set("sensor.kitchen_humidity", "unknown")
+    await hass.async_block_till_done()
+
+    kitchen, hall = _zone_snapshot(hass, entry, GROUND.zone_id)["areas"]
+    assert (kitchen["temperature"], kitchen["humidity"]) == (20.0, None)
+    assert kitchen["humidity_entity_id"] == "sensor.kitchen_humidity"
+    assert (hall["temperature"], hall["humidity"]) == (None, 50.0)
+    assert hall["temperature_entity_id"] == "sensor.hall_temperature"
+
+
+async def test_an_area_reading_is_calibrated_like_the_zone_uses_it(hass, home) -> None:
+    topology = _topology(["kitchen", "hall"], ground_sensors=True)
+    topology["zones"][0]["temperature_sensor_metadata"] = [
+        {"entity_id": "sensor.kitchen_temperature", "calibration_offset": -0.5}
+    ]
+    entry = await _loaded(hass, topology)
+
+    kitchen, hall = _zone_snapshot(hass, entry, GROUND.zone_id)["areas"]
+    assert kitchen["temperature"] == 19.5
+    assert hall["temperature"] == 22.0
+
+
+async def test_an_area_reading_change_is_published_when_the_zone_value_holds(hass, home) -> None:
+    """Subscribers hear of a new area reading even when the zone's own value holds."""
+    topology = _topology(["kitchen", "hall"])
+    topology["zones"][0]["temperature_aggregation"] = "minimum"
+    entry = await _loaded(hass, topology)
+    runtime = entry.runtime_data
+    published: list[None] = []
+    runtime.async_add_listener(lambda: published.append(None))
+    runtime._notify_listeners_if_changed()
+    published.clear()
+
+    hall = runtime.snapshot.temperatures["sensor.hall_temperature"]
+    runtime.snapshot = replace(
+        runtime.snapshot,
+        temperatures={
+            **runtime.snapshot.temperatures,
+            "sensor.hall_temperature": replace(hall, value=23.0),
+        },
+    )
+    runtime._notify_listeners_if_changed()
+
+    assert published == [None]
+    assert runtime.zone_current_temperature(GROUND.zone_id) == 20.0
+    assert _zone_snapshot(hass, entry, GROUND.zone_id)["areas"][1]["temperature"] == 23.0
+
+
+async def test_the_stream_hides_area_sensors_the_user_may_not_read(hass, home) -> None:
+    """A readable zone keeps its area readings, but only readable sensors are named."""
+    entry = await _loaded(hass, _topology(["kitchen", "hall"]))
+    entities = entry.runtime_data.presentation_entities(hass)
+    readable = {
+        entities[f"zone:{GROUND.zone_id}"],
+        "sensor.kitchen_temperature",
+        "sensor.hall_humidity",
+    }
+
+    class _Permissions:
+        def check_entity(self, entity_id: str, _permission: str) -> bool:
+            return entity_id in readable
+
+    connection = _Connection(_User(_Permissions()))
+    await ws_subscribe_plant.__wrapped__(  # type: ignore[attr-defined]
+        hass,
+        connection,
+        {"id": 1, "type": WS_SUBSCRIBE_PLANT, "plant_id": PLANT_ID},
+    )
+
+    (zone,) = connection.results[0][1]["snapshot"]["zones"]
+    assert [
+        (
+            area["temperature"],
+            area["humidity"],
+            area["temperature_entity_id"],
+            area["humidity_entity_id"],
+        )
+        for area in zone["areas"]
+    ] == [
+        (20.0, 45.0, "sensor.kitchen_temperature", None),
+        (22.0, 50.0, None, "sensor.hall_humidity"),
+    ]

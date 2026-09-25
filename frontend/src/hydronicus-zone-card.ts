@@ -1,7 +1,7 @@
 import { html, type TemplateResult } from "lit";
 import { HydronicusCardElement } from "./card-base";
 import { validateZoneConfig, ZONE_EDITOR_TAG, zoneStubConfig } from "./config";
-import { zoneVisualState } from "./logic";
+import { zoneTileSize, zoneVisualState } from "./logic";
 import { renderActionError, renderState, renderStreamNotice, renderUnservedPlant, showableSnapshot } from "./render/state";
 import { renderZone } from "./render/zone";
 import type { HomeAssistantLike, ZoneCardConfig } from "./types";
@@ -47,7 +47,8 @@ export class HydronicusZoneCard extends HydronicusCardElement {
 
   /** Masonry height in 50 px units, like one Zone in the Plant card. */
   getCardSize(): number {
-    return 5;
+    const zone = this._plant.snapshot?.zones.find((candidate) => candidate.id === this._config?.zone);
+    return zone ? zoneTileSize(zone) : 5;
   }
 
   getGridOptions() {

@@ -236,6 +236,15 @@ export const cardStyles = css`
   .metric-value { font-size: clamp(1.22rem, 5cqi, 1.6rem); font-weight: 600; letter-spacing: -0.02em; }
   .metric-unit { margin-inline-start: 0.15rem; color: var(--_hy-text-muted); font-size: 0.75rem; }
   .metric-label { display: block; margin-block-start: 0.06rem; color: var(--_hy-text-muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  /* One compact line per area: a name that shortens, then readings in aligned columns. */
+  .area-list { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.75rem; margin-block-end: 0.3rem; font-size: var(--ha-font-size-s, 0.8rem); line-height: 1.45; }
+  .area-list[data-humidity="true"] { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .area { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding-block: 0.2rem; border-block-start: 1px solid color-mix(in srgb, var(--_hy-line) 60%, transparent); }
+  .area:first-child { border-block-start: 0; }
+  ha-card.compact .area { padding-block: 0.1rem; }
+  .area-name { min-inline-size: 0; overflow: hidden; color: var(--_hy-text-muted); text-overflow: ellipsis; white-space: nowrap; }
+  .area-name button.link { max-inline-size: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .area-value { text-align: end; white-space: nowrap; }
   .zone-note { margin-block-start: 0.28rem; }
   .diagnostic-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-block-start: 0.45rem; }
   .diagnostic-chip { border: 1px solid var(--_hy-line); border-radius: 999px; padding: 0.2rem 0.45rem; color: var(--_hy-text-muted); font-size: 0.7rem; }

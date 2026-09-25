@@ -119,10 +119,12 @@ class PlantSubscription:
         if not _has_read_access(allowed):
             self.revoke(STATUS_UNAUTHORIZED)
             return
+        full = runtime.presentation_snapshot(self.hass, control_entities=entities)
         snapshot = _filter_snapshot_for_user(
-            runtime.presentation_snapshot(self.hass, control_entities=entities),
+            full,
             entities,
             allowed,
+            _readable_area_sensor_ids(self.connection.user, full),
         )
         self.send_snapshot(snapshot)
 
@@ -248,10 +250,12 @@ async def ws_subscribe_plant(
         allowed = _readable_entity_ids(connection.user, entities)
         if not _has_read_access(allowed):
             raise Unauthorized()
+        full = runtime.presentation_snapshot(hass, control_entities=entities)
         snapshot = _filter_snapshot_for_user(
-            runtime.presentation_snapshot(hass, control_entities=entities),
+            full,
             entities,
             allowed,
+            _readable_area_sensor_ids(connection.user, full),
         )
 
     existing = connection.subscriptions.pop(msg["id"], None)
@@ -343,6 +347,25 @@ def _readable_entity_ids(user: Any, entities: dict[str, str]) -> frozenset[str] 
     )
 
 
+def _readable_area_sensor_ids(user: Any, snapshot: dict[str, Any]) -> frozenset[str] | None:
+    """Resolve which sensors named by the snapshot's areas the user may read."""
+    return _readable_entity_ids(
+        user,
+        {
+            entity_id: entity_id
+            for zone in snapshot["zones"]
+            for area in zone["areas"]
+            for entity_id in (area["temperature_entity_id"], area["humidity_entity_id"])
+            if entity_id is not None
+        },
+    )
+
+
+def _readable_or_none(entity_id: str | None, readable: frozenset[str] | None) -> str | None:
+    """Return an entity ID only when the user may read it."""
+    return entity_id if readable is not None and entity_id in readable else None
+
+
 def _has_read_access(allowed: frozenset[str] | None) -> bool:
     """Require one readable Plant entity when Home Assistant exposes ACLs."""
     return allowed is None or bool(allowed)
@@ -352,8 +375,13 @@ def _filter_snapshot_for_user(
     snapshot: dict[str, Any],
     entities: dict[str, str],
     allowed: frozenset[str] | None,
+    readable_area_sensors: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """Remove Hydronicus-owned zones and controls hidden by entity ACLs."""
+    """Remove Hydronicus-owned zones and controls hidden by entity ACLs.
+
+    A visible zone keeps its area readings, but names only the area sensors in
+    ``readable_area_sensors``, or none when that set is not given.
+    """
     if allowed is None:
         return snapshot
     controls = dict(snapshot["controls"])
@@ -372,6 +400,18 @@ def _filter_snapshot_for_user(
         if control_entity is not None and control_entity not in allowed:
             thermostat["control_entity_id"] = None
         visible_zone["thermostat"] = thermostat
+        visible_zone["areas"] = [
+            {
+                **area,
+                "temperature_entity_id": _readable_or_none(
+                    area["temperature_entity_id"], readable_area_sensors
+                ),
+                "humidity_entity_id": _readable_or_none(
+                    area["humidity_entity_id"], readable_area_sensors
+                ),
+            }
+            for area in visible_zone["areas"]
+        ]
         zones.append(visible_zone)
     visible_zone_ids = {zone["id"] for zone in zones}
     filtered = dict(snapshot)

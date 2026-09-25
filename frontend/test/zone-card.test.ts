@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/index";
 import { plantDirectory } from "../src/config";
-import { FakeConnection, makeHass, makeSnapshot, makeZone, OTHER_PLANT_ID, PLANT_ID, settle, type FakeHass } from "./fixtures";
+import { FakeConnection, makeArea, makeAreaZone, makeHass, makeSnapshot, makeZone, OTHER_PLANT_ID, PLANT_ID, settle, type FakeHass } from "./fixtures";
 
 type CardElement = HTMLElement & {
   hass?: unknown;
@@ -103,6 +103,82 @@ describe("Zone card rendering", () => {
     const card = await mount(hass, { density: "compact" });
     await deliver(card, hass.connection);
     expect(root(card).querySelector("ha-card")?.classList.contains("compact")).toBe(true);
+  });
+});
+
+describe("Zone card areas", () => {
+  function areaLines(card: CardElement): string[] {
+    return [...root(card).querySelectorAll(".area-list > li")].map((line) => (line.textContent ?? "").replace(/\s+/g, " ").trim());
+  }
+
+  it("shows one line per area when the Zone covers several areas", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeAreaZone()] }));
+
+    const list = root(card).querySelector("ul.area-list");
+    expect(list?.getAttribute("aria-label")).toBe("Areas");
+    expect([...root(card).querySelectorAll(".area-list > li")].map((line) => line.getAttribute("part"))).toEqual(["area", "area", "area"]);
+    // A reading the controller could not use, and a sensor the area does not name, show a dash.
+    expect(areaLines(card)).toEqual([
+      "Kitchen 20.5°C 45%",
+      "Hall -- temperature unavailable 52%",
+      "Study -- no temperature sensor -- no humidity sensor",
+    ]);
+  });
+
+  it("leaves out humidity when no area names a humidity sensor", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const areas = [makeArea({ humidity: null, humidity_entity_id: null }), makeArea({ id: "hall", name: "Hall", temperature: 21, humidity: null, humidity_entity_id: null })];
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone({ areas })] }));
+
+    expect(areaLines(card)).toEqual(["Kitchen 20.5°C", "Hall 21.0°C"]);
+  });
+
+  it("shows area temperatures in the unit system and number format of Home Assistant", async () => {
+    const hass = makeHass({ config: { unit_system: { temperature: "°F" } }, locale: { language: "de", number_format: "language" } });
+    const card = await mount(hass);
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeAreaZone()] }));
+
+    expect(areaLines(card)[0]).toBe("Kitchen 68,9°F 45%");
+  });
+
+  it.each([
+    ["no area", []],
+    ["one area", [makeArea()]],
+  ])("shows no area lines for a Zone that covers %s", async (_label, areas) => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone({ areas })] }));
+
+    expect(root(card).querySelector(".area-list")).toBeNull();
+  });
+
+  it("opens more-info for the sensor an area names", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeAreaZone();
+    zone.areas[1] = { ...zone.areas[1], temperature_entity_id: null };
+    await deliver(card, hass.connection, makeSnapshot({ zones: [zone] }));
+    const opened: string[] = [];
+    card.addEventListener("hass-more-info", (event) => opened.push((event as CustomEvent<{ entityId: string }>).detail.entityId));
+
+    const names = [...root(card).querySelectorAll(".area-list > li .area-name")];
+    for (const name of names) name.querySelector("button")?.click();
+
+    // The hall's temperature sensor is hidden from this user, so its humidity sensor opens.
+    expect(opened).toEqual(["sensor.kitchen_temperature", "sensor.hall_humidity"]);
+    expect(names[2]?.querySelector("button")).toBeNull();
+    expect(names[2]?.textContent).toBe("Study");
+  });
+
+  it("grows its masonry size with the area lines", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeAreaZone()] }));
+
+    expect(card.getCardSize()).toBe(7);
   });
 });
 

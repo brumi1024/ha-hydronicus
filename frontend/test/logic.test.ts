@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneDemandKind, zoneHvacModes } from "../src/logic";
+import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneAreaLines, zoneDemandKind, zoneHvacModes, zoneTileSize } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
-  id: "zone-1", name: "Living room",
+  id: "zone-1", name: "Living room", areas: [],
   thermostat: {
     kind: "hydronicus", state: "available", control_entity_id: "climate.hydronic_living_room",
     current_temperature: 20, target_temperature: 21, preset: "comfort", preset_modes: ["comfort", "eco"], hvac_mode: "heat", hvac_modes: ["off", "heat"],
@@ -197,5 +197,21 @@ describe("Alert titles", () => {
     expect(alertTitle({ code: "binding_unavailable", scope: "plant", name: "Hydronic plant" })).toBe("Entity unavailable");
     expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Zone blocked");
     expect(alertTitle({ code: "something_new", scope: "plant" })).toBe("Something new");
+  });
+});
+
+describe("area lines", () => {
+  const area = { id: "kitchen", name: "Kitchen", temperature: 20, humidity: 45, temperature_entity_id: "sensor.kitchen", humidity_entity_id: null };
+
+  it("shows a line per area only for a Zone that covers several areas", () => {
+    expect(zoneAreaLines({ areas: [] })).toEqual([]);
+    expect(zoneAreaLines({ areas: [area] })).toEqual([]);
+    expect(zoneAreaLines({ areas: [area, { ...area, id: "hall" }] })).toHaveLength(2);
+  });
+
+  it("grows a Zone tile's masonry size by one unit per two area lines", () => {
+    expect(zoneTileSize({ areas: [area] })).toBe(5);
+    expect(zoneTileSize({ areas: [area, area] })).toBe(6);
+    expect(zoneTileSize({ areas: [area, area, area] })).toBe(7);
   });
 });

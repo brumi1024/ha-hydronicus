@@ -1,7 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { HydronicusCardElement } from "./card-base";
 import { configForm, shownSections, stubConfig, validateConfig, type ConfigForm } from "./config";
-import { actionForSafeShutdown, plantVisualState } from "./logic";
+import { actionForSafeShutdown, plantVisualState, zoneTileSize } from "./logic";
 import type { RenderContext } from "./render/context";
 import { renderAlerts, renderBoundary, renderEquipment, renderExplanations, renderHeader, renderOperations, renderPaths, renderZones } from "./render/plant";
 import { renderActionError, renderState, renderStreamNotice, renderUnservedPlant, showableSnapshot } from "./render/state";
@@ -23,7 +23,7 @@ function sectionSize(section: PlantSection, snapshot: PlantSnapshot): number {
       return alerts ? 1 + alerts : 0;
     }
     case "zones":
-      return 1 + Math.max(1, snapshot.zones.length) * 5;
+      return 1 + (snapshot.zones.length ? snapshot.zones.reduce((size, zone) => size + zoneTileSize(zone), 0) : 5);
     case "paths":
       return snapshot.delivery_paths.length ? 1 + snapshot.delivery_paths.length * 3 : 0;
     case "equipment":

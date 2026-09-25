@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import "../src/index";
 import { cardStyles } from "../src/styles";
-import { makeHass, makeSnapshot, PLANT_ID, settle, type FakeConnection } from "./fixtures";
+import { makeAreaZone, makeHass, makeSnapshot, PLANT_ID, settle, type FakeConnection } from "./fixtures";
 
 /** The theme token contract shared with themes that map it. */
 const CONTRACT_TOKENS = [
@@ -107,6 +107,7 @@ type CardElement = HTMLElement & { hass?: unknown; setConfig(config: Record<stri
 
 function richSnapshot() {
   return makeSnapshot({
+    zones: [makeAreaZone()],
     alerts: [{ code: "stale", severity: "warning", priority: 1, scope: "plant", message: "Sensor is stale." }],
     delivery_paths: [{ id: "p", zone_id: "zone-1", circuit_id: "c", status: "active", problem: null, coupled: false, nodes: [{ kind: "zone", id: "zone-1", name: "Living room", state: "active" }, { kind: "circuit", id: "c", name: "Floor loop", state: "active" }] }],
     actuators: [{ id: "a", name: "Pump", kind: "pump", state: "active", requested: null, observed: "on", ready: true, blocked: false, mismatch: false, reason: null, active_consumers: [{ id: "c", name: "Floor loop" }] }],

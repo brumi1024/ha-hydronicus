@@ -92,6 +92,9 @@ density: comfortable
 `density` is optional and takes the same values as on the Plant card.
 
 The Zone card shows the same Zone tile as the Plant card, with the same HVAC mode, target, preset, and more-info controls and the same read-only rules for external thermostats.
+A Zone that covers two or more Home Assistant areas shows one line per area below its temperatures, with the area's temperature and, when any of its areas names a humidity sensor, humidity.
+A dash stands for a reading the controller could not use, such as a stale one, and for a sensor the area does not name.
+Selecting an area's name opens the more-info dialog of the temperature sensor the area names, or of its humidity sensor when it names no temperature sensor.
 It shows the same loading, unavailable, not found, no access, and reconnecting states as the Plant card.
 When the Plant snapshot has no Zone with that id, the card shows Zone not found.
 The snapshot leaves out Zones you may not read, so a Zone you have no access to also shows Zone not found.
@@ -176,6 +179,7 @@ Any user allowed to discover the Plant can see that source state, while configur
 The Plant mode control calls only the Hydronicus-owned mode select entity.
 Safe shutdown is a hold-to-confirm action and calls only the Hydronicus-owned shutdown button entity.
 Configured physical entity IDs do not cross the presentation boundary and are never rendered as card action targets.
+The sensors that a Zone's areas name in Home Assistant are the one exception: they are household choices rather than Plant bindings, so each area of the snapshot carries them for its more-info dialog, and only when the user may read them.
 
 The configured external thermostat entity ID is also redacted from the presentation stream.
 
@@ -318,6 +322,7 @@ The parts are public and stable; any other element inside a card is internal.
 | `section-title` | The heading of a section |
 | `zone` | A Zone tile |
 | `zone-title` | A Zone name |
+| `area` | One line of a Zone that covers several areas, with the area's name and readings |
 | `metric` | A current or target temperature |
 | `path` | A hydraulic path |
 | `node` | One step of a hydraulic path |
