@@ -37,6 +37,10 @@ The Hydronicus thermostat path expects one or more `sensor` entities.
 The external thermostat path expects one existing `climate` entity.
 The first Circuit form expects a `switch` or `valve` entity for the valve and a `switch` entity for the pump.
 Confirm that the synthetic entities have the expected domain and are visible in Home Assistant.
+Temperature pickers list only sensors with the `temperature` device class, and humidity pickers list only sensors with the `humidity` device class.
+Give a template or helper sensor the matching `device_class` if it is missing from the list.
+Pickers never offer entities that Hydronicus itself creates, because binding a Hydronicus sensor back into a Zone would create a feedback loop.
+An entity chosen before this filtering existed stays selected when you reconfigure the object.
 
 ### The review reports an invalid topology
 

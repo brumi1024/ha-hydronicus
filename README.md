@@ -182,7 +182,7 @@ Remove credentials, tokens, private addresses, and household-specific entity det
 ## Documentation
 
 - [How Hydronicus works](docs/how-it-works.md) explains the model, evaluation cycle, shared equipment, and exact control boundary.
-- [Lovelace Plant card](docs/lovelace.md) documents the bundled card resource, dynamic Plant selector, presentation contract, and responsive layout.
+- [Lovelace Plant card](docs/lovelace.md) documents automatic card loading, removal of the old manual resource, dynamic Plant selector, presentation contract, and responsive layout.
 - [Configuration and simulation](docs/configuration.md) walks through a complete UI-created Plant.
 - [Safety limits](docs/safety.md) separates software coordination from physical protection.
 - [Troubleshooting](docs/troubleshooting.md) covers setup, observations, explanations, Repairs, and diagnostics.
