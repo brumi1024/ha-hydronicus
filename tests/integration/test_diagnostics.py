@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -12,7 +13,7 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.model import PumpState, ThermostatHvacMode, ValveState
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from tests.integration.plant_fixtures import plant_entry
 
@@ -176,6 +177,48 @@ async def test_repeated_identical_evaluations_do_not_publish_entity_updates(hass
 
     assert runtime.evaluation_count == initial_evaluations + 3
     assert publications == []
+    remove_listener()
+
+
+async def test_a_dry_run_plant_keeps_its_proposed_equipment_state_between_refreshes(
+    hass, monkeypatch
+) -> None:
+    """Dry run never moves the equipment, so reading it back must not undo the plan.
+
+    Resetting the proposed valve and pump from the untouched entities made them
+    alternate on every refresh, and every entity published again each time.
+    """
+    hass.states.async_set("sensor.private_bedroom_temperature", "18.0")
+    hass.states.async_set("switch.private_manifold_valve", "off")
+    hass.states.async_set("switch.private_plant_pump", "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+    clock = [runtime._now()]
+    monkeypatch.setattr(type(runtime), "_now", lambda _self: clock[0])
+    await runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+    # Past the valve opening time, the proposed pump runs for the ready loop.
+    clock[0] += timedelta(seconds=40)
+    await runtime.async_refresh(hass)
+    assert runtime.runtime_state.valves[VALVE_ID].state is ValveState.OPEN
+    assert runtime.runtime_state.pumps[PUMP_ID].state is PumpState.RUNNING
+    # The next refresh proposes nothing new, which is itself a change to publish.
+    clock[0] += timedelta(seconds=40)
+    await runtime.async_refresh(hass)
+    assert runtime.last_execution.proposed == ()
+    settled = runtime.runtime_state
+    publications: list[None] = []
+    remove_listener = runtime.async_add_listener(lambda: publications.append(None))
+
+    for _ in range(3):
+        clock[0] += timedelta(seconds=40)
+        await runtime.async_refresh(hass)
+
+    assert runtime.runtime_state.valves == settled.valves
+    assert runtime.runtime_state.pumps == settled.pumps
+    assert publications == []
+    assert hass.states.get("switch.private_plant_pump").state == "off"
     remove_listener()
 
 

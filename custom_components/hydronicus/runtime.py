@@ -1140,9 +1140,14 @@ class HydronicRuntime:
                     valves[actuator_id] = current
                 else:
                     valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
-            elif self.dry_run and current is not None and current.state is ValveState.OPENING:
+            elif (
+                self.dry_run
+                and current is not None
+                and current.state in {ValveState.OPENING, ValveState.OPEN}
+            ):
                 # Shadow execution does not change the physical entity.  Keep
-                # the virtual opening transition stable across identical reads.
+                # the proposed opening and open valve stable across identical
+                # reads, or the proposal would restart on every refresh.
                 valves[actuator_id] = current
             elif readiness is False or observed is ActuatorObservedState.OFF:
                 valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
@@ -1184,6 +1189,14 @@ class HydronicRuntime:
                         PumpState.RUNNING,
                         current.changed_at if current is not None else now,
                     )
+            elif (
+                self.dry_run
+                and current is not None
+                and current.state in {PumpState.RUNNING, PumpState.OVERRUN}
+            ):
+                # Shadow execution never starts the physical pump, so an idle
+                # entity must not undo the proposed run or overrun.
+                pumps[actuator_id] = current
             elif retained is ActuatorObservedState.ON and current is not None:
                 if current.state is PumpState.STARTING:
                     pumps[actuator_id] = current
@@ -1196,9 +1209,7 @@ class HydronicRuntime:
                 )
             elif current is not None and current.state is PumpState.RUNNING:
                 pumps[actuator_id] = PumpRuntime(
-                    PumpState.RUNNING
-                    if self.dry_run
-                    else PumpState.STARTING
+                    PumpState.STARTING
                     if any(state.demand for state in self.runtime_state.zone_runtime.values())
                     else PumpState.OVERRUN,
                     current.changed_at or now,
