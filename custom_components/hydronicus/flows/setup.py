@@ -62,7 +62,7 @@ SECTION_PUMP_OPTIONS: Final = "pump_options"
 MENU_OPTIONS: Final = ("guided", "import_plant")
 # The name of the one pump guided setup creates; Plant settings can rename it.
 GUIDED_PUMP_NAME: Final = "Pump"
-# Compiler warnings that never block a save (Decision 11).
+# The path shown for a plant file error that no single key causes.
 _TOP_LEVEL: Final = "the top level"
 
 

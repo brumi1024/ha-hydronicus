@@ -87,7 +87,7 @@ CONF_PUMP: Final = "pump"
 CONF_REMOVE_PUMP: Final = "remove_pump"
 CONF_CONFIRM: Final = "confirm"
 MENU_OPTIONS: Final = ("dry_run", "add_pump", "edit_pump", "export_plant", "edit_plant")
-# Compiler warnings that never block a save (Decision 11).
+# The path shown for a plant file error that no single key causes.
 _TOP_LEVEL: Final = "the top level"
 _PUMP_FEEDBACK: Final = (
     (CONF_POWER_FEEDBACK_ENTITY, CONF_POWER_FEEDBACK_MAX_AGE),
