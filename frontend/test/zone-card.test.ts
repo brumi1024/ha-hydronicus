@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/index";
 import { plantDirectory } from "../src/config";
+import { cardStyles } from "../src/styles";
 import { FakeConnection, makeArea, makeAreaZone, makeHass, makeSnapshot, makeZone, OTHER_PLANT_ID, PLANT_ID, settle, type FakeHass } from "./fixtures";
 
 type CardElement = HTMLElement & {
@@ -473,5 +474,17 @@ describe("Zone card editor", () => {
   it("rejects an invalid config so Home Assistant offers YAML", async () => {
     const editor = (customElements.get(TAG) as ZoneCardClass).getConfigElement() as EditorElement;
     expect(() => editor.setConfig({ type: TYPE, plant: PLANT_ID, density: "huge" })).toThrow();
+  });
+});
+
+describe("zone card layout", () => {
+  it("wraps the preset select onto its own row instead of shrinking it to its arrow", () => {
+    // At a card width of about 190 px the preset select shared its row with the
+    // target buttons and shrank until only its arrow showed.
+    const rule = cardStyles.cssText.match(/\.preset \{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/min-inline-size: 7rem;/);
+    expect(rule).toMatch(/flex: 1 1 7rem;/);
+    const row = cardStyles.cssText.match(/\.zone-actions \{[^}]*\}/)?.[0] ?? "";
+    expect(row).toMatch(/flex-wrap: wrap;/);
   });
 });

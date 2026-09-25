@@ -263,9 +263,9 @@ export const cardStyles = css`
   .hvac-mode[data-mode="heat"][aria-pressed="true"] { border-color: color-mix(in srgb, var(--_hy-heating) 55%, var(--_hy-line)); }
   .hvac-mode[data-mode="cool"][aria-pressed="true"] { border-color: color-mix(in srgb, var(--_hy-cooling) 55%, var(--_hy-line)); }
   .hvac-mode[data-mode="off"][aria-pressed="true"] { border-color: var(--_hy-line); }
-  .zone-actions { display: flex; gap: 0.35rem; margin-block-start: 0.45rem; }
+  .zone-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-block-start: 0.45rem; }
   .zone-actions button { min-inline-size: 2.75rem; }
-  .preset { flex: 1; min-inline-size: 0; }
+  .preset { flex: 1 1 7rem; min-inline-size: 7rem; }
   .path-list, .actuator-list { display: grid; gap: 0.55rem; }
   .path { overflow: hidden; }
   .path-head { justify-content: space-between; flex-wrap: wrap; }
