@@ -746,7 +746,7 @@ describe("Shared Plant subscription", () => {
   it("shares one subscription between cards for the same Plant", async () => {
     const hass = makeHass();
     const first = await mount(hass);
-    const second = await mount(hass);
+    const second = await mount(hass, { sections: ["rooms"] });
     expect(hass.connection.subscriptions).toHaveLength(1);
 
     await deliver(first, hass.connection);
@@ -791,5 +791,113 @@ describe("Shared Plant subscription", () => {
 
     expect(root(first).querySelector(".action-error")).not.toBeNull();
     expect(root(second).querySelector(".action-error")).toBeNull();
+  });
+});
+
+describe("Plant card sections", () => {
+  function richSnapshot() {
+    return makeSnapshot({
+      alerts: [{ code: "stale", severity: "warning", priority: 1, scope: "plant", message: "Sensor is stale." }],
+      delivery_paths: [{ id: "p", zone_id: "zone-1", circuit_id: "c", status: "active", problem: null, coupled: false, nodes: [{ kind: "zone", id: "zone-1", name: "Living room", state: "active" }] }],
+      actuators: [{ id: "a", name: "Pump", kind: "pump", state: "idle", requested: null, observed: "off", ready: true, blocked: false, mismatch: false, reason: null, active_consumers: [] }],
+      explanations: [{ order: 1, scope: "plant", code: "x", message: "Why." }],
+      execution: { boundary: {}, operations: { proposed: [{ action: "open", actuator_name: "Valve", result: "proposed" }], executed: [], suppressed: [], failed: [], timed_out: [] } },
+    });
+  }
+
+  /** The shown sections in document order, by their distinctive element. */
+  function shown(card: CardElement): string[] {
+    const markers: Array<[string, string]> = [
+      ["header", "header.header"],
+      ["alerts", "[aria-labelledby='hydronicus-alerts']"],
+      ["rooms", "[aria-labelledby='hydronicus-zones']"],
+      ["paths", "[aria-labelledby='hydronicus-paths']"],
+      ["equipment", "[aria-labelledby='hydronicus-actuators']"],
+      ["explanations", "details:not([open])"],
+      ["operations", "details[open]"],
+    ];
+    const found = markers
+      .map(([name, selector]) => [name, root(card).querySelector(selector)] as const)
+      .filter((entry): entry is readonly [string, Element] => entry[1] !== null);
+    return found
+      .sort(([, left], [, right]) => (left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+      .map(([name]) => name);
+  }
+
+  it("shows every section in the default order without `sections`", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, richSnapshot());
+
+    expect(shown(card)).toEqual(["header", "alerts", "rooms", "paths", "equipment", "explanations", "operations"]);
+    expect(root(card).querySelector(".boundary")).not.toBeNull();
+  });
+
+  it("shows only the configured sections, in the configured order", async () => {
+    const hass = makeHass();
+    const card = await mount(hass, { sections: ["rooms", "alerts"] });
+    await deliver(card, hass.connection, richSnapshot());
+
+    expect(shown(card)).toEqual(["rooms", "alerts"]);
+    // The execution boundary belongs to the header section.
+    expect(root(card).querySelector(".boundary")).toBeNull();
+    expect(root(card).querySelector("button.shutdown")).toBeNull();
+  });
+
+  it("keeps stream notices and action errors visible without the header", async () => {
+    const hass = makeHass();
+    const card = await mount(hass, { sections: ["rooms"] });
+    await deliver(card, hass.connection);
+    hass.failNextCall = "Entity is unavailable.";
+
+    root(card).querySelector<HTMLButtonElement>(".zone-actions button")?.click();
+    await settle(card);
+    hass.connection.fire("disconnected");
+    await settle(card);
+
+    const first = root(card).querySelector("ha-card")?.firstElementChild;
+    expect(first?.classList.contains("notice")).toBe(true);
+    expect(root(card).querySelector(".action-error")?.textContent).toContain("Entity is unavailable.");
+  });
+
+  it("validates `sections`", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    for (const sections of [["rooms", "rooms"], ["zones"], "rooms", [1]]) {
+      expect(() => card.setConfig({ type: `custom:${TAG}`, plant: PLANT_ID, sections }), JSON.stringify(sections)).toThrow();
+    }
+    // The visual editor clears every choice to an empty list: every section.
+    card.setConfig({ type: `custom:${TAG}`, plant: PLANT_ID, sections: [] });
+    await deliver(card, hass.connection, richSnapshot());
+    expect(shown(card)).toHaveLength(7);
+  });
+
+  it("offers the sections as an ordered choice in the editor", async () => {
+    const form = await (customElements.get(TAG) as CardClass).getConfigForm();
+    const field = form.schema.find((entry) => entry.name === "sections") as { selector: { select: Record<string, unknown> } };
+    expect(field.selector.select).toMatchObject({ multiple: true, reorder: true });
+    expect((field.selector.select.options as Array<{ value: string }>).map((option) => option.value)).toEqual([
+      "header", "alerts", "rooms", "paths", "equipment", "explanations", "operations",
+    ]);
+    expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID, sections: ["header"] })).not.toThrow();
+    expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID, sections: ["nope"] })).toThrow();
+    expect(form.computeLabel?.({ name: "sections" })).toBe("Sections");
+  });
+
+  it("sizes the card for the shown sections", async () => {
+    const hass = makeHass();
+    const full = await mount(hass);
+    const header = await mount(hass, { sections: ["header"] });
+    const rooms = await mount(hass, { sections: ["rooms"] });
+    await deliver(full, hass.connection, richSnapshot());
+    await settle(header);
+    await settle(rooms);
+
+    expect(header.getCardSize()).toBe(4);
+    expect(rooms.getCardSize()).toBe(6);
+    expect(full.getCardSize()).toBeGreaterThan(header.getCardSize() + rooms.getCardSize());
+    expect(full.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
+    expect(rooms.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
+    expect(header.getGridOptions()).toEqual({ columns: 6, min_columns: 4 });
   });
 });

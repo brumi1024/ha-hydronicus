@@ -1,14 +1,42 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { HydronicusCardElement } from "./card-base";
-import { configForm, stubConfig, validateConfig, type ConfigForm } from "./config";
+import { configForm, shownSections, stubConfig, validateConfig, type ConfigForm } from "./config";
 import { actionForSafeShutdown, plantVisualState } from "./logic";
+import type { RenderContext } from "./render/context";
 import { renderAlerts, renderBoundary, renderEquipment, renderExplanations, renderHeader, renderOperations, renderPaths, renderRooms } from "./render/plant";
 import { renderActionError, renderState, renderStreamNotice, renderUnservedPlant, showableSnapshot } from "./render/state";
 import type { PlantState } from "./store";
-import type { HomeAssistantLike, PlantCardConfig, PlantSnapshot } from "./types";
+import type { HomeAssistantLike, PlantCardConfig, PlantSection, PlantSnapshot } from "./types";
 
 const HOLD_MS = 1_200;
 const EYEBROW = "Hydronicus Plant";
+/** Sections whose items fill a grid or a wide track, so the card spans the section. */
+const WIDE_SECTIONS: readonly PlantSection[] = ["rooms", "paths", "equipment"];
+
+/** Masonry height in 50 px units of each section, estimated from its items. */
+function sectionSize(section: PlantSection, snapshot: PlantSnapshot): number {
+  switch (section) {
+    case "header":
+      return 4;
+    case "alerts": {
+      const alerts = Math.min(snapshot.alerts.length, 3);
+      return alerts ? 1 + alerts : 0;
+    }
+    case "rooms":
+      return 1 + Math.max(1, snapshot.zones.length) * 5;
+    case "paths":
+      return snapshot.delivery_paths.length ? 1 + snapshot.delivery_paths.length * 3 : 0;
+    case "equipment":
+      return snapshot.actuators.length ? 1 + snapshot.actuators.length * 2 : 0;
+    case "explanations":
+      return 1;
+    case "operations": {
+      const operations = Object.values(snapshot.execution.operations).flat().length;
+      return operations ? 1 + operations : 0;
+    }
+  }
+}
+
 export class HydronicusPlantCard extends HydronicusCardElement {
   static properties = {
     _config: { state: true },
@@ -44,25 +72,20 @@ export class HydronicusPlantCard extends HydronicusCardElement {
     return this._config?.plant;
   }
 
-  /** Masonry height in 50 px units, estimated from the rendered sections. */
+  /** Masonry height in 50 px units, estimated from the shown sections. */
   getCardSize(): number {
     const snapshot = this._plant.snapshot;
-    if (!snapshot) return 4;
-    let size = 4;
-    const alerts = Math.min(snapshot.alerts.length, 3);
-    if (alerts) size += 1 + alerts;
-    size += 1 + Math.max(1, snapshot.zones.length) * 5;
-    if (snapshot.delivery_paths.length) size += 1 + snapshot.delivery_paths.length * 3;
-    if (snapshot.actuators.length) size += 1 + snapshot.actuators.length * 2;
-    size += 1;
-    const operations = Object.values(snapshot.execution.operations).flat().length;
-    if (operations) size += 1 + operations;
-    return size;
+    const sections = shownSections(this._config);
+    if (!snapshot) return sections.includes("header") ? 4 : 2;
+    return Math.max(1, sections.reduce((size, section) => size + sectionSize(section, snapshot), 0));
   }
 
   getGridOptions() {
     // No rows: the Sections grid then sizes the card to its content height.
-    return { columns: 12, min_columns: 6 };
+    // Without a Room grid, path track, or equipment list the card fits half
+    // a section, like other summary cards.
+    const wide = shownSections(this._config).some((section) => WIDE_SECTIONS.includes(section));
+    return wide ? { columns: 12, min_columns: 6 } : { columns: 6, min_columns: 4 };
   }
 
   disconnectedCallback(): void {
@@ -84,18 +107,35 @@ export class HydronicusPlantCard extends HydronicusCardElement {
     const snapshot = showableSnapshot(state);
     if (!snapshot) return renderUnservedPlant(EYEBROW, state);
     const context = this.renderContext;
+    const sections = shownSections(config);
+    // Notices about the stream and a failed action follow the header, or
+    // lead the card when the header is not shown.
+    const notices = html`${renderStreamNotice(state.status)}${renderActionError(this._actionError, this.dismissActionError)}`;
     return html`<ha-card class=${config.density ?? "comfortable"} data-visual=${plantVisualState(snapshot)}>
-      ${renderHeader(context, snapshot, this._renderShutdown(snapshot))}
-      ${renderStreamNotice(state.status)}
-      ${renderActionError(this._actionError, this.dismissActionError)}
-      ${renderBoundary(snapshot)}
-      ${renderAlerts(context, snapshot)}
-      ${renderRooms(context, snapshot)}
-      ${renderPaths(snapshot)}
-      ${renderEquipment(snapshot)}
-      ${renderExplanations(snapshot)}
-      ${renderOperations(context, snapshot)}
+      ${sections.includes("header") ? nothing : notices}
+      ${sections.map((section) => this._renderSection(section, context, snapshot, notices))}
     </ha-card>`;
+  }
+
+  private _renderSection(section: PlantSection, context: RenderContext, snapshot: PlantSnapshot, notices: TemplateResult) {
+    switch (section) {
+      case "header":
+        return html`${renderHeader(context, snapshot, this._renderShutdown(snapshot))}
+          ${notices}
+          ${renderBoundary(snapshot)}`;
+      case "alerts":
+        return renderAlerts(context, snapshot);
+      case "rooms":
+        return renderRooms(context, snapshot);
+      case "paths":
+        return renderPaths(snapshot);
+      case "equipment":
+        return renderEquipment(snapshot);
+      case "explanations":
+        return renderExplanations(snapshot);
+      case "operations":
+        return renderOperations(context, snapshot);
+    }
   }
 
   private _renderShutdown(snapshot: PlantSnapshot): TemplateResult {

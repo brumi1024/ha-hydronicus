@@ -1,10 +1,15 @@
 export type Density = "comfortable" | "compact";
 
+/** A block of the Plant card, named for what it shows. */
+export type PlantSection = "header" | "alerts" | "rooms" | "paths" | "equipment" | "explanations" | "operations";
+
 export interface PlantCardConfig {
   type: "custom:hydronicus-plant-card";
   /** The Plant UUID; an empty string means the card still needs a Plant. */
   plant: string;
   density?: Density;
+  /** The sections to show, in this order; absent means every section. */
+  sections?: PlantSection[];
 }
 
 export interface PlantSummary {
