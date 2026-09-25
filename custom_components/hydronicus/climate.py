@@ -11,6 +11,7 @@ from contextlib import suppress
 from typing import Any, Final
 
 from homeassistant.components.climate import (
+    ATTR_HVAC_MODE,
     ATTR_TEMPERATURE,
     PRESET_NONE,
     ClimateEntity,
@@ -177,12 +178,11 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set a manual target in Celsius, which leaves any preset."""
+        """Set a manual target in Celsius, which leaves any preset, and the mode it names."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
-        if temperature is None:
-            return
-        target = _usable_target(float(temperature))
-        if target is None:
+        hvac_mode = kwargs.get(ATTR_HVAC_MODE)
+        target = None if temperature is None else _usable_target(float(temperature))
+        if temperature is not None and target is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="invalid_target_temperature",
@@ -192,7 +192,24 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
                     "maximum": str(MAX_TARGET),
                 },
             )
-        self._set(DigitalThermostatState(self._thermostat.hvac_mode, target))
+        if hvac_mode is not None and hvac_mode not in self.hvac_modes:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unsupported_hvac_mode",
+                translation_placeholders={
+                    "mode": str(hvac_mode),
+                    "modes": ", ".join(self.hvac_modes),
+                },
+            )
+        thermostat = self._thermostat
+        mode = thermostat.hvac_mode
+        if hvac_mode is not None:
+            self._remember_active(hvac_mode)
+            mode = Mode(HVACMode(hvac_mode).value)
+        if target is not None:
+            self._set(DigitalThermostatState(mode, target))
+        elif mode is not thermostat.hvac_mode:
+            self._set(DigitalThermostatState(mode, thermostat.target, thermostat.preset))
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         preset = None if preset_mode == PRESET_NONE else Preset(preset_mode)

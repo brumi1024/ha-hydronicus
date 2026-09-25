@@ -633,6 +633,9 @@
     },
     "invalid_target_temperature": {
       "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
+    },
+    "unsupported_hvac_mode": {
+      "message": "The zone thermostat has no mode {mode}. Choose one of: {modes}."
     }
   },
   "services": {

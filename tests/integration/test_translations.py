@@ -143,6 +143,7 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
         "invalid_plant",
         "plant_not_found",
         "invalid_target_temperature",
+        "unsupported_hvac_mode",
     }
     assert set(STRINGS["services"]) == {"export_plant"}
 

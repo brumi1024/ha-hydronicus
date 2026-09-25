@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant, State
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import mock_restore_cache_with_extra_data
 
@@ -132,6 +133,44 @@ async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
     await async_call(hass, "climate", "turn_off", entity_id="climate.study")
     await async_call(hass, "climate", "turn_on", entity_id="climate.study")
     assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.COOL, 23.5)
+
+
+async def test_setting_a_target_with_a_mode_changes_both(hass: HomeAssistant) -> None:
+    """``climate.set_temperature`` may carry an ``hvac_mode``, as automations often send."""
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 21.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+    assert hass.states.get("climate.study").state == "off"
+
+    await async_call(
+        hass,
+        "climate",
+        "set_temperature",
+        entity_id="climate.study",
+        temperature=22.5,
+        hvac_mode="heat",
+    )
+
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 22.5)
+    climate = hass.states.get("climate.study")
+    assert (climate.state, climate.attributes["temperature"]) == ("heat", 22.5)
+
+    await async_call(hass, "climate", "turn_off", entity_id="climate.study")
+    await async_call(hass, "climate", "turn_on", entity_id="climate.study")
+    assert hass.states.get("climate.study").state == "heat", "turn_on restores the mode it set"
+
+    with pytest.raises(ServiceValidationError, match="unsupported_hvac_mode|no mode auto"):
+        await async_call(
+            hass,
+            "climate",
+            "set_temperature",
+            entity_id="climate.study",
+            temperature=20.0,
+            hvac_mode="auto",
+        )
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 22.5)
 
 
 async def test_a_missing_output_blocks_its_loop_and_raises_a_repair(
