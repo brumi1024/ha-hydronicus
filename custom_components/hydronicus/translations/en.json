@@ -222,6 +222,20 @@
           "guaranteed": "Turn this on when a hydraulic separator, buffer, or bypass gives the pump a path whatever the loops do; then no loop is held open."
         }
       },
+      "min_flow_no_loop": {
+        "title": "A pump without a loop",
+        "description": "The source runs pump {pump} by itself, and it needs an open loop while it runs, but no loop uses it yet, so there is no loop to hold open. Add a plant loop for it now, and Review and save then asks which loops to hold open. For a zone loop, which the zone's own entry adds once the pump is saved, change the pump to A separator guarantees its flow for now, or remove it, then add the zone loop and change the pump's Minimum flow back.",
+        "menu_options": {
+          "min_flow_add_loop": "Add a plant loop",
+          "min_flow_edit_pump": "Change the pump",
+          "reconfigure": "Back to the menu"
+        },
+        "menu_option_descriptions": {
+          "min_flow_add_loop": "A loop that no zone owns, such as a bypass, on the new pump.",
+          "min_flow_edit_pump": "Change its minimum flow or remove it.",
+          "reconfigure": "Change something else first."
+        }
+      },
       "review": {
         "title": "Review the Plant",
         "description": "{summary}\n\nWarnings:\n{warnings}\n\nThe new Plant starts with no output armed and Control equipment off, so it commands nothing until you arm its outputs in Plant settings and turn Control equipment on."

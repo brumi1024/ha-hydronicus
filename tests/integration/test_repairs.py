@@ -124,7 +124,9 @@ async def test_an_invalid_plant_opens_the_entry_reconfigure_flow(hass: HomeAssis
     # The frontend shows a flow it is handed by asking for its current step.
     reconfigure = await flow.async_configure(flow_id)
     assert reconfigure["step_id"] == "reconfigure"
-    assert "min_flow_loops" in reconfigure["description_placeholders"]["status"]
+    assert reconfigure["description_placeholders"]["status"].startswith(
+        "Pump Heat pump needs min-flow loops"
+    )
     result = await async_choose(flow, reconfigure, "pump_pick")
     result = await async_submit(flow, result, {"pump": "heat_pump"})
     result = await async_submit(

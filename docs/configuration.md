@@ -119,15 +119,19 @@ The menu says whether the stored Plant is valid, and offers:
 - **Replace from a plant file**: paste a plant file of this Plant to replace the whole Plant, zones included.
   Zones are added, changed, and removed by their slugs.
   The file must carry this Plant's ID, or no ID.
-- **Review and save**: **Save the changes** lists the zones added, removed, and changed, the Plant settings that change, and the outputs added and removed, with the warnings of the new Plant.
+- **Review and save**: first asks for any min-flow loops still missing, then **Save the changes** lists the zones added, removed, and changed, the Plant settings that change, and the outputs added and removed, with the warnings of the new Plant.
 
 Nothing is stored until you submit **Save the changes**.
 The Plant then reloads.
 Removed outputs are disarmed, and new outputs wait for you to arm them.
 If a removed output was running, the Plant first stops the equipment of its previous configuration, as [safety limits](safety.md#reloads-restarts-and-changes) describe.
 
-A new pump that the source runs and that needs an open loop has no loops yet to hold open, so the pump form refuses it with **Needs an open loop**.
-Add it with **A separator guarantees its flow**, give it loops, and then change its **Minimum flow** and choose its **Min-flow loops**.
+A pump the source runs that needs an open loop may have no loops yet to hold open, such as a new pump, one that the source now runs instead of a switch, or one whose min-flow loop you removed.
+The menu then says so, and **Review and save** asks for its **Loops to hold open** first, as guided setup does, once a loop uses the pump.
+A plant loop added in the same session counts, and so does a zone loop that already uses the pump.
+If no loop uses the pump yet, **Review and save** opens **A pump without a loop** instead:
+**Add a plant loop** for the pump now, or, for a zone loop, **Change the pump** to **A separator guarantees its flow** for now, or remove it.
+A zone loop can use the pump only once it is saved, so add it in the zone's **Reconfigure**, then change the pump's **Minimum flow** back and choose its **Min-flow loops**.
 
 ## Zones
 

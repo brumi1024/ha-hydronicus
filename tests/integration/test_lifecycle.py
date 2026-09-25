@@ -39,6 +39,7 @@ from tests.integration.helpers import (
     async_heat_living_area,
     async_import,
     async_set_options,
+    option_values,
     plant_entities,
     reference_world,
     restart_states,
@@ -265,9 +266,7 @@ async def test_a_plant_keeps_the_order_of_its_pumps_and_loops_across_a_restart(
         DOMAIN, context={"source": "reconfigure", "entry_id": restarted.entry_id}
     )
     result = await flow.async_configure(result["flow_id"], {"next_step_id": "pump_pick"})
-    picker = next(v for k, v in result["data_schema"].schema.items() if str(k) == "pump")
-    options = picker.serialize()["selector"]["select"]["options"]
-    assert [option["value"] for option in options][:3] == ["heat_pump", "floor", "towel_dryer"]
+    assert option_values(result, "pump")[:3] == ["heat_pump", "floor", "towel_dryer"]
 
 
 async def test_a_stored_plant_matches_the_plant_file_split(hass: HomeAssistant) -> None:

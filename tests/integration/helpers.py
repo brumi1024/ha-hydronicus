@@ -204,6 +204,15 @@ async def async_choose(manager: Any, result: Mapping[str, Any], option: str) -> 
     return await manager.async_configure(result["flow_id"], {"next_step_id": option})
 
 
+def option_values(result: Mapping[str, Any], field: str) -> list[str]:
+    """Return the values a select field of a form offers, in order."""
+    for key, value in result["data_schema"].schema.items():
+        if str(key) == field:
+            options = value.serialize()["selector"]["select"]["options"]
+            return [option if isinstance(option, str) else option["value"] for option in options]
+    raise AssertionError(field)
+
+
 def suggested(result: Mapping[str, Any], field: str) -> Any:
     """Return what a form shows in a field: its suggested value, or its default."""
     for key in result["data_schema"].schema:

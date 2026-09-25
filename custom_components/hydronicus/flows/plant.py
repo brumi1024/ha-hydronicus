@@ -10,6 +10,11 @@ Reconfigure edits what the entry's data holds (the Plant, its source, pumps,
 and plant loops) or replaces the whole Plant from a plant file, and stores it
 after a summary of what changes: zone subentries are created, updated, and
 removed by slug. A pump that a loop still uses cannot be removed (decision 13).
+
+Both check each form without the min-flow loops that a source-driven pump
+does not name yet, such as a new pump's, and ask for them at the end, once
+the pump's loops exist: after the plant loops in guided setup, and in Review
+and save when reconfiguring.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 
-from ..areas import areas_with_temperature_sensor, zone_name_for_areas
+from ..areas import areas_with_temperature_sensor, listed, zone_name_for_areas
 from ..const import CONFIG_ENTRY_MINOR_VERSION, CONFIG_ENTRY_VERSION, DOMAIN, SUBENTRY_TYPE_ZONE
 from ..core.plant_file import (
     PlantFileError,
@@ -62,8 +67,6 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._document: docs.Document = docs.new_document()
         self._loaded = False
-        # Source-driven pumps whose min-flow loops guided setup asks for at the end.
-        self._pending: list[str] = []
         self._mode_entity: str | None = None
         self._zoning = ZONING_GROUPED
         # The areas still to get a zone each, in one zone per area.
@@ -71,6 +74,8 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         self._zone: str | None = None
         # The pump or plant loop being edited, or None for a new one.
         self._editing: str | None = None
+        # The source-driven pump that drives no loop yet, when Review and save explains it.
+        self._min_flow_pump: str | None = None
 
     @staticmethod
     @callback
@@ -97,10 +102,10 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         document: docs.Document,
         prefix: str = "",
         fields: dict[str, str] | None = None,
-        pending: list[str] | None = None,
+        asked: str | None = None,
     ) -> forms.Checked:
-        """Check a draft without the min-flow loops that guided setup still asks for."""
-        pending = self._pending if pending is None else pending
+        """Check a draft without the min-flow loops still to ask for, except pump ``asked``'s."""
+        pending = [slug for slug in docs.unresolved_min_flow(document) if slug != asked]
         draft = docs.pending_min_flow(document, pending) if pending else document
         return forms.check(self.hass, draft, prefix=prefix, fields=fields, entry_id=self._entry_id)
 
@@ -284,14 +289,11 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
                 checked = forms.Checked(None, {"name": "name_required"})
             else:
                 document, slug = docs.with_pump(self._document, slug, user_input)
-                pending = self._pending
-                if not self._reconfiguring and docs.needs_min_flow_loops(document, slug):
-                    pending = [*pending, slug]
                 # Without the min-flow loops field, their problem shows on the minimum flow.
                 fields = {"min_flow_loops": "min_flow", **forms.shown(forms.PUMP_FIELDS, schema)}
-                checked = self._check(document, f"pumps.{slug}", fields, pending)
+                checked = self._check(document, f"pumps.{slug}", fields)
                 if checked.plant is not None:
-                    self._document, self._pending = document, pending
+                    self._document = document
                     if self._reconfiguring:
                         return await self.async_step_reconfigure()
                     self._editing = None
@@ -477,10 +479,22 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Choose the loops held open for each source-driven pump that needs a path."""
-        if not self._pending:
+        unresolved = docs.unresolved_min_flow(self._document)
+        if not unresolved:
+            if self._reconfiguring:
+                return await self.async_step_save()
             return await self.async_step_review()
-        slug, rest = self._pending[0], self._pending[1:]
-        values = user_input or {}
+        slug = unresolved[0]
+        pump = docs.pumps(self._document)[slug]
+        loops = docs.loop_refs(self._document, slug)
+        if not loops and self._reconfiguring:
+            self._min_flow_pump = slug
+            return await self.async_step_min_flow_no_loop()
+        values = (
+            {"min_flow_loops": docs.own_min_flow_loops(self._document, slug)}
+            if user_input is None
+            else user_input
+        )
         checked: forms.Checked | None = None
         if user_input is not None:
             chosen = list(user_input.get("min_flow_loops") or [])
@@ -493,18 +507,41 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
                     document,
                     f"pumps.{slug}",
                     {"min_flow_loops": "min_flow_loops", "min_flow": "min_flow_loops"},
-                    rest,
+                    asked=slug,
                 )
                 if checked.plant is not None:
-                    self._document, self._pending = document, rest
+                    self._document = document
                     return await self.async_step_min_flow()
-        pump = docs.pumps(self._document)[slug]
         return self._form(
             "min_flow",
-            forms.min_flow_schema(docs.loop_refs(self._document, slug), values),
+            forms.min_flow_schema(loops, values),
             checked,
             {"pump": docs.title(pump, slug)},
         )
+
+    async def async_step_min_flow_no_loop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Explain that a source-driven pump needs a loop before it has min-flow loops."""
+        slug = self._min_flow_pump
+        assert slug is not None
+        return self.async_show_menu(
+            step_id="min_flow_no_loop",
+            menu_options=["min_flow_add_loop", "min_flow_edit_pump", "reconfigure"],
+            description_placeholders={"pump": docs.title(docs.pumps(self._document)[slug], slug)},
+        )
+
+    async def async_step_min_flow_add_loop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._editing = None
+        return await self.async_step_plant_loop()
+
+    async def async_step_min_flow_edit_pump(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._editing = self._min_flow_pump
+        return await self.async_step_pump()
 
     # Reconfigure
 
@@ -515,8 +552,12 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         if not self._loaded:
             self._loaded, self._document = True, stored_document(entry)
-        checked = forms.check(self.hass, self._document, entry_id=entry.entry_id)
+        checked = self._check(self._document)
         status = "The Plant is valid."
+        if pending := docs.unresolved_min_flow(self._document):
+            names = listed([docs.title(docs.pumps(self._document)[slug], slug) for slug in pending])
+            which = f"Pump {names} needs" if len(pending) == 1 else f"Pumps {names} need"
+            status = f"{which} min-flow loops, which Review and save asks for."
         if checked.plant is None:
             where = checked.placeholders.get("where", "")
             problem = checked.placeholders.get("problem") or checked.placeholders.get(
@@ -569,7 +610,9 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         return self._form("replace", forms.plant_file_schema(text), checked)
 
     async def async_step_save(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show what changes, then store it."""
+        """Ask for the min-flow loops still missing, show what changes, then store it."""
+        if docs.unresolved_min_flow(self._document):
+            return await self.async_step_min_flow()
         entry = self._get_reconfigure_entry()
         checked = forms.check(self.hass, self._document, entry_id=entry.entry_id)
         if (plant := checked.plant) is None:

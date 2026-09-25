@@ -25,6 +25,7 @@ from tests.integration.helpers import (
     async_choose,
     async_import,
     async_submit,
+    option_values,
     reference_world,
     stored,
     suggested,
@@ -314,7 +315,103 @@ async def test_replace_refuses_another_plants_file_and_an_invalid_file(
     assert result["description_placeholders"]["summary"] == "Nothing changes."
 
 
-async def test_a_new_source_driven_pump_needs_a_loop_before_it_needs_min_flow_loops(
+async def test_a_new_source_driven_pump_gets_its_min_flow_loops_at_save(
+    hass: HomeAssistant,
+) -> None:
+    """A new pump has no loops yet, so Review and save asks for them once a loop uses it."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "pump_pick")
+    result = await async_submit(flow, result, {"pump": "__new__"})
+    result = await async_submit(flow, result, {"name": "Primary", "min_flow": "path"})
+    assert result["step_id"] == "reconfigure", result.get("errors")
+    status = result["description_placeholders"]["status"]
+    assert status.startswith("Pump Primary needs min-flow loops")
+
+    result = await async_choose(flow, result, "plant_loop_pick")
+    result = await async_submit(flow, result, {"loop": "__new__"})
+    result = await async_submit(
+        flow,
+        result,
+        {"name": "Bypass", "pump": "primary", "runs": "with_source"},
+    )
+    result = await async_choose(flow, result, "save")
+    assert result["step_id"] == "min_flow"
+    assert result["description_placeholders"]["pump"] == "Primary"
+    assert option_values(result, "min_flow_loops") == ["bypass"]
+    result = await async_submit(flow, result, {})
+    assert result["errors"] == {"min_flow_loops": "min_flow_loops_required"}
+    result = await async_submit(flow, result, {"min_flow_loops": ["bypass"]})
+    assert result["step_id"] == "save"
+    result = await async_submit(flow, result)
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    pump = entry.runtime_data.plant.pump("primary")
+    assert pump.driven_by_source and pump.min_flow is MinFlow.PATH
+    assert [str(ref) for ref in pump.min_flow_loops] == ["bypass"]
+
+
+async def test_a_pump_the_source_now_drives_gets_its_zone_loops_as_min_flow_loops(
+    hass: HomeAssistant,
+) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "pump_pick")
+    result = await async_submit(flow, result, {"pump": "floor"})
+    result = await async_submit(flow, result, {"name": "Floor", "min_flow": "path"})
+    assert result["step_id"] == "reconfigure", result.get("errors")
+
+    result = await async_choose(flow, result, "save")
+    assert result["step_id"] == "min_flow"
+    assert option_values(result, "min_flow_loops") == ["living_area.floor"]
+    result = await async_submit(flow, result, {"min_flow_loops": ["living_area.floor"]})
+    await async_submit(flow, result)
+    await hass.async_block_till_done()
+
+    pump = entry.runtime_data.plant.pump("floor")
+    assert pump.driven_by_source
+    assert [str(ref) for ref in pump.min_flow_loops] == ["living_area.floor"]
+
+
+async def test_removing_a_min_flow_loop_asks_for_another_at_save(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    entry = await async_import(
+        hass,
+        REFERENCE_PLANT.replace(
+            "min_flow_loops: [living_area.ceiling]", "min_flow_loops: [living_area.ceiling, bypass]"
+        ).replace(
+            "loops:\n  towel_dryer:",
+            "loops:\n  bypass:\n    pump: heat_pump\n    runs: with_source\n    modes: [heat]\n"
+            "  towel_dryer:",
+        ),
+    )
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "plant_loop_pick")
+    result = await async_submit(flow, result, {"loop": "bypass"})
+    result = await async_submit(
+        flow, result, {"name": "Bypass", "pump": "heat_pump", "runs": "with_source", "remove": True}
+    )
+    assert result["step_id"] == "reconfigure", result.get("errors")
+
+    result = await async_choose(flow, result, "save")
+    assert result["step_id"] == "min_flow"
+    assert suggested(result, "min_flow_loops") == ["living_area.ceiling"]
+    result = await async_submit(flow, result, {"min_flow_loops": ["living_area.ceiling"]})
+    await async_submit(flow, result)
+    await hass.async_block_till_done()
+
+    pump = entry.runtime_data.plant.pump("heat_pump")
+    assert [str(ref) for ref in pump.min_flow_loops] == ["living_area.ceiling"]
+    assert [loop.slug for loop in entry.runtime_data.plant.loops] == ["towel_dryer"]
+
+
+async def test_a_new_source_driven_pump_without_a_loop_is_explained_at_save(
     hass: HomeAssistant,
 ) -> None:
     reference_world(hass)
@@ -323,10 +420,25 @@ async def test_a_new_source_driven_pump_needs_a_loop_before_it_needs_min_flow_lo
     result = await async_reconfigure(hass, entry)
     result = await async_choose(flow, result, "pump_pick")
     result = await async_submit(flow, result, {"pump": "__new__"})
-
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "path"})
-    assert result["errors"] == {"min_flow": "invalid_value"}
 
+    result = await async_choose(flow, result, "save")
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "min_flow_no_loop"
+    assert result["description_placeholders"] == {"pump": "Primary"}
+    assert result["menu_options"] == ["min_flow_add_loop", "min_flow_edit_pump", "reconfigure"]
+    loop_form = await async_choose(flow, result, "min_flow_add_loop")
+    assert loop_form["step_id"] == "plant_loop"
+    assert suggested(loop_form, "pump") is None
+
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "pump_pick")
+    result = await async_submit(flow, result, {"pump": "__new__"})
+    result = await async_submit(flow, result, {"name": "Primary", "min_flow": "path"})
+    result = await async_choose(flow, result, "save")
+    result = await async_choose(flow, result, "min_flow_edit_pump")
+    assert result["step_id"] == "pump"
+    assert suggested(result, "name") == "Primary"
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "guaranteed"})
     result = await async_save(hass, result)
     assert entry.runtime_data.plant.pump("primary").min_flow is MinFlow.GUARANTEED

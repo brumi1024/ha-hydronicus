@@ -282,8 +282,8 @@ def without_pump(document: Mapping[str, Any], slug: str) -> Document:
 def pending_min_flow(document: Mapping[str, Any], slugs: Iterable[str]) -> Document:
     """Return the document as if the pumps whose min-flow loops are still to come had a separator.
 
-    Guided setup asks for a source-driven pump's min-flow loops only once the
-    loops exist, so until then the rest of the Plant is checked without them.
+    The flows ask for a source-driven pump's min-flow loops only once the loops
+    exist, so until then the rest of the Plant is checked without them.
     """
     result = deepcopy(dict(document))
     for slug in slugs:
@@ -297,6 +297,31 @@ def pending_min_flow(document: Mapping[str, Any], slugs: Iterable[str]) -> Docum
 def needs_min_flow_loops(document: Mapping[str, Any], slug: str) -> bool:
     pump = pumps(document).get(slug, {})
     return "switch" not in pump and pump.get("min_flow", MinFlow.PATH.value) == MinFlow.PATH.value
+
+
+def unresolved_min_flow(document: Mapping[str, Any]) -> list[str]:
+    """Return the pumps that need min-flow loops and do not name only loops of their own.
+
+    A new source-driven pump has no loops, and a removed loop or one moved to
+    another pump leaves a reference behind; the flows ask for these pumps'
+    min-flow loops at the end, once the loops exist.
+    """
+    unresolved = []
+    for slug, pump in pumps(document).items():
+        if needs_min_flow_loops(document, slug):
+            refs = pump.get("min_flow_loops")
+            if not refs or own_min_flow_loops(document, slug) != refs:
+                unresolved.append(slug)
+    return unresolved
+
+
+def own_min_flow_loops(document: Mapping[str, Any], slug: str) -> list[str]:
+    """Return the min-flow loops a pump names that are still loops of that pump."""
+    refs = pumps(document).get(slug, {}).get("min_flow_loops")
+    if not isinstance(refs, list):
+        return []
+    own = loop_refs(document, slug)
+    return [ref for ref in refs if isinstance(ref, str) and ref in own]
 
 
 # Loops
