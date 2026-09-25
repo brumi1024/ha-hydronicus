@@ -346,7 +346,12 @@ class PlantSettingsSteps(ConfigFlowBase):
         options = [
             option for option in MENU_OPTIONS if option != "edit_pump" or self._pump_options(entry)
         ]
-        return self.async_show_menu(step_id="reconfigure", menu_options=options)
+        # A repair opens this menu directly, so it names the Plant it edits.
+        return self.async_show_menu(
+            step_id="reconfigure",
+            menu_options=options,
+            description_placeholders={"plant": entry.title},
+        )
 
     # Dry run
 
@@ -683,16 +688,20 @@ class PlantSettingsSteps(ConfigFlowBase):
         )
 
     def _edit_plant_schema(self, entry: config_entries.ConfigEntry) -> vol.Schema:
-        """Return the plant file editor, prefilled with the current export when it has one."""
+        """Return the plant file editor, prefilled with the current export when it has one.
+
+        The document is optional, like on import, so that an emptied or
+        unparseable file reaches the flow and is explained there.
+        """
         try:
             current: dict[str, Any] | None = plant_file(entry.data)
         except ValueError:
             # A stored graph without a faithful plant file can still be replaced.
             current = None
         key = (
-            vol.Required(CONF_DOCUMENT)
+            vol.Optional(CONF_DOCUMENT)
             if current is None
-            else vol.Required(CONF_DOCUMENT, description={"suggested_value": current})
+            else vol.Optional(CONF_DOCUMENT, description={"suggested_value": current})
         )
         return vol.Schema({key: selector.ObjectSelector()})
 

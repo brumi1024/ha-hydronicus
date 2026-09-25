@@ -55,18 +55,19 @@ Guided setup takes one menu, one Plant form, one form per room, and a review.
      Leave it off after the last room.
 4. **Review the Plant** lists the rooms, the compiled topology, and the warnings.
 
-The compiled topology shows one line per loop and one per room, such as `Circuit Bedroom loop opens valves Bedroom loop valve before requesting pump Pump.` and `Zone Bedroom can request circuit Bedroom loop.`
+The compiled topology shows one line per loop and one per room, such as `Loop Bedroom loop opens valve Bedroom loop valve before requesting pump Circulation pump.` and `Room Bedroom can request loop Bedroom loop.`
 When the rooms share the pump, the review warns that the shared pump limits independent control.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before the Plant is created.
 Later room, loop, and plant file edits ask only about warnings that the edit introduces.
 
 The Plant is created in Dry run, with one room entry per room.
-Guided setup names the pump `Pump`; rename it, add more pumps, or change its options later in the Plant settings.
+Guided setup names the pump `Circulation pump`; rename it, add more pumps, or change its options later in the Plant settings.
 
 ### Import a plant file
 
 1. Choose **Import a plant file**.
 2. Paste the file into **Plant file** and submit.
+   An empty editor, or YAML that the editor cannot read, is reported at the top level, and the editor marks the line with the YAML problem.
 3. **Review the imported Plant** lists the Plant name, the rooms, the compiled topology, and the warnings.
    Confirm a warning other than unused equipment with **I understand these warnings**, and submit.
 
@@ -105,7 +106,7 @@ Hydronicus does not infer the external integration's actuator or support externa
 
 ### Edit a room
 
-Open the room's **Reconfigure** action to reach **Edit room**, a menu with these options:
+Open the room's **Reconfigure** action to reach the room's edit menu, titled with the room name, such as `Edit Bedroom`, with these options:
 
 - **Name, thermostat owner, and sensors** changes the **Room name**, the **Existing climate thermostat**, the **Temperature sensors**, and the **Shared loops**.
   Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.
@@ -163,7 +164,7 @@ Every chosen valve must open before the pump may run.
 
 ## Plant settings
 
-Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a menu with these options:
+Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a menu that names the Plant, with these options:
 
 - **Dry run** turns Dry run on, or leaves it after confirming the exact heating outputs.
 - **Add a pump** adds a pump with its **Pump name**, **Pump entity**, **Pump overrun**, and optional **Feedback** entities.
@@ -182,7 +183,7 @@ The `hydronicus.export_plant` action returns the same plant file as **Show the p
 
 | Object | Created and edited in |
 | --- | --- |
-| Room, its thermostat and sensors | Guided setup, **Add room**, and the room's **Edit room** menu. |
+| Room, its thermostat and sensors | Guided setup, **Add room**, and the room's edit menu. |
 | Private loop and private valve | The room form and the room's loop steps. |
 | Pump | Guided setup and **Plant settings**. |
 | Source | **Add source**, the source entry, or the plant file. |
@@ -207,7 +208,7 @@ The useful states for a first simulation are:
 - The aggregate-temperature sensor, which identifies usable and excluded observations in its attributes.
 - The blocked binary sensor and blocked-reason sensor, which expose fail-closed sensor decisions without parsing prose.
 - The valve requested and pump requested binary sensors, which report virtual requests.
-- The topology preview sensor, which reports zone and circuit counts and exposes compiled logic and structured warnings as separate attributes.
+- The topology preview sensor, which reports room and loop counts, such as `2 rooms, 2 loops`, and exposes compiled logic and structured warnings as separate attributes.
 - The room explanation sensor, which reports why demand is requested, idle, or blocked.
 
 Change the synthetic temperature below the target and wait for the configured virtual valve opening time.

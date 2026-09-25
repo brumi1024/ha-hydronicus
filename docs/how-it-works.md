@@ -157,7 +157,7 @@ Room B -> Loop B -+
 ```
 
 The topology is valid but physically coupled.
-Hydronicus warns that separate climate entities cannot create independent flow through the shared valve.
+Hydronicus warns that separate room thermostats cannot independently control loops coupled by the same physical valve.
 A valve used by the loops of two rooms is a shared valve, written in the plant file.
 
 ### One room with several loops

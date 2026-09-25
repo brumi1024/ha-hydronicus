@@ -41,6 +41,8 @@ _SUBENTRY_OBJECT_TYPES = frozenset({"zone", "valve", "circuit", "source"})
 # Plant equipment that Plant settings edit directly. Shared valves and loops,
 # Plant-owned sources, and the source selector are edited through the plant file.
 _PLANT_SETTINGS_OBJECT_TYPES = frozenset({"pump"})
+# How a repair names the entity behind an actuator binding, by its domain.
+_ACTUATOR_NOUNS = {"switch": "switch", "valve": "valve entity", "input_boolean": "toggle helper"}
 
 
 def _plant_issue_prefix(plant_id: str) -> str:
@@ -77,8 +79,28 @@ def _owning_subentry_id(entry: ConfigEntry[HydronicRuntime], binding: EntityBind
     return entry.runtime_data.subentry_id_for(binding.object_id)
 
 
+def _binding_phrase(binding: EntityBinding) -> str:
+    """Name a binding the way users know it, without its entity ID.
+
+    An actuator is the entity bound to its object, such as ``switch bound to
+    Study loop valve``; any other binding is a role of its object, such as
+    ``temperature sensor of Study`` or ``readiness feedback of Study loop valve``.
+    """
+    if binding.category is BindingCategory.THERMOSTAT:
+        return f"thermostat bound to {binding.object_name}"
+    if binding.category is BindingCategory.ACTUATOR:
+        domain = binding.entity_id.partition(".")[0]
+        return f"{_ACTUATOR_NOUNS.get(domain, 'entity')} bound to {binding.object_name}"
+    role = binding.label.removeprefix(f"{binding.object_type} ")
+    return f"{role} of {binding.object_name}"
+
+
 def async_sync_repairs(
-    hass: HomeAssistant, plant_id: str, unresolved_bindings: Iterable[EntityBinding]
+    hass: HomeAssistant,
+    plant_id: str,
+    unresolved_bindings: Iterable[EntityBinding],
+    *,
+    plant_name: str,
 ) -> None:
     """Create current binding repairs and remove recovered or obsolete repairs."""
     current = tuple(unresolved_bindings)
@@ -100,11 +122,17 @@ def async_sync_repairs(
             "binding_category": binding.category.value,
         }
         translation_key = _TRANSLATION_KEYS[binding.category]
+        placeholders = {
+            "plant": plant_name,
+            "object_name": binding.object_name,
+            "binding": _binding_phrase(binding),
+        }
         subentry_id = _owning_subentry_id(entry, binding) if entry is not None else None
         fixable = False
         if entry is not None and subentry_id is not None:
             data[ISSUE_DATA_ENTRY_ID] = entry.entry_id
             data[ISSUE_DATA_SUBENTRY_ID] = subentry_id
+            placeholders["owner"] = entry.subentries[subentry_id].title
             translation_key += _FIXABLE_SUFFIX
             fixable = True
         elif entry is not None and binding.object_type in _PLANT_SETTINGS_OBJECT_TYPES:
@@ -120,11 +148,7 @@ def async_sync_repairs(
             is_persistent=False,
             severity=ir.IssueSeverity.ERROR,
             translation_key=translation_key,
-            translation_placeholders={
-                "object_type": binding.object_type,
-                "object_name": binding.object_name,
-                "binding_label": binding.label,
-            },
+            translation_placeholders=placeholders,
         )
 
 

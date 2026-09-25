@@ -153,12 +153,12 @@ class TopologyPreviewSensor(_HydronicSensor):
 
     @property
     def native_value(self) -> str:
-        """Summarize the graph size without overflowing Home Assistant state length."""
-        zone_count = len(self._runtime.plant.zones)
-        circuit_count = len(self._runtime.plant.circuits)
-        zone_noun = "zone" if zone_count == 1 else "zones"
-        circuit_noun = "circuit" if circuit_count == 1 else "circuits"
-        return f"{zone_count} {zone_noun}, {circuit_count} {circuit_noun}"
+        """Summarize the graph size in rooms and loops, within the state length limit."""
+        room_count = len(self._runtime.plant.zones)
+        loop_count = len(self._runtime.plant.circuits)
+        room_noun = "room" if room_count == 1 else "rooms"
+        loop_noun = "loop" if loop_count == 1 else "loops"
+        return f"{room_count} {room_noun}, {loop_count} {loop_noun}"
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

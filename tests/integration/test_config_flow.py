@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import voluptuous as vol
 import yaml
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.data_entry_flow import FlowResultType
@@ -165,9 +166,9 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
     assert result["step_id"] == "review"
     placeholders = result["description_placeholders"]
     assert placeholders["rooms"] == "- Living room\n- Bedroom\n- Office"
-    assert "Zone Bedroom can request circuit Bedroom loop." in placeholders["logic"]
+    assert "Room Bedroom can request loop Bedroom loop." in placeholders["logic"]
     # Three rooms on one pump carry the shared pump warning, which needs confirming.
-    assert "shared by circuits" in placeholders["warnings"]
+    assert "shared by loops" in placeholders["warnings"]
     result = await _submit(hass, result, {"confirm": True})
     await hass.async_block_till_done()
 
@@ -184,7 +185,7 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
     (pump,) = topology["pumps"]
     assert pump == {
         "id": pump["id"],
-        CONF_NAME: "Pump",
+        CONF_NAME: "Circulation pump",
         "entity_id": PUMP,
         "overrun_seconds": 90.0,
     }
@@ -407,7 +408,7 @@ async def test_import_creates_the_plant_with_room_and_source_subentries(hass) ->
     placeholders = result["description_placeholders"]
     assert placeholders["name"] == "Sources"
     assert placeholders["rooms"] == "- Living room"
-    assert "Zone Living room can request circuit Living loop." in placeholders["logic"]
+    assert "Room Living room can request loop Living loop." in placeholders["logic"]
     result = await _submit(
         hass, result, {"confirm": True} if "confirm" in form_fields(result) else {}
     )
@@ -450,6 +451,40 @@ async def test_import_accepts_yaml_text(hass) -> None:
     result = await _import(hass, text)
 
     assert result["step_id"] == "import_review"
+
+
+EMPTY_DOCUMENT_ERROR = (
+    "The plant file is empty or not valid YAML. The editor marks the line with the problem."
+)
+
+
+async def test_import_editor_starts_empty(hass) -> None:
+    """The plant file editor has no default, so it opens empty rather than with ``''``."""
+    result = await _start(hass, "import_plant")
+
+    (key,) = result["data_schema"].schema
+    assert isinstance(key, vol.Optional)
+    assert key.default is vol.UNDEFINED
+    assert form_value(result, "document") is None
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [{}, {"document": ""}, {"document": None}, {"document": "  \n"}],
+    ids=["missing", "empty_text", "none", "blank_text"],
+)
+async def test_import_without_a_document_explains_the_editor(hass, user_input) -> None:
+    """A missing or unparseable document reaches the flow, which explains it at the top."""
+    result = await _start(hass, "import_plant")
+    result = await _submit(hass, result, user_input)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "import_plant"
+    assert result["errors"] == {"base": "invalid_document"}
+    assert result["description_placeholders"] == {
+        "path": "the top level",
+        "error": EMPTY_DOCUMENT_ERROR,
+    }
 
 
 async def test_import_of_a_configured_plant_aborts(hass) -> None:

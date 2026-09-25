@@ -59,8 +59,8 @@ def test_compile_topology_produces_summary() -> None:
 
     assert compiled.id == "plant-1"
     assert compiled.logic_summary == (
-        "Circuit Floor loop opens valves Floor valve before requesting pump Floor pump.",
-        "Zone Living room can request circuit Floor loop.",
+        "Loop Floor loop opens valve Floor valve before requesting pump Floor pump.",
+        "Room Living room can request loop Floor loop.",
     )
 
 
@@ -102,13 +102,26 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
     compiled = compile_topology(plant)
 
     assert compiled.logic_summary == (
-        "Circuit Floor loop opens valves Shared valve before requesting pump Shared pump.",
-        "Circuit Ceiling loop opens valves Shared valve before requesting pump Shared pump.",
-        "Zone Living room can request circuits Floor loop, Ceiling loop.",
-        "Zone Office can request circuit Floor loop.",
-        "Valve Shared valve is shared by circuits Floor loop, Ceiling loop.",
-        "Pump Shared pump is shared by circuits Floor loop, Ceiling loop.",
+        "Loop Floor loop opens valve Shared valve before requesting pump Shared pump.",
+        "Loop Ceiling loop opens valve Shared valve before requesting pump Shared pump.",
+        "Room Living room can request loops Floor loop, Ceiling loop.",
+        "Room Office can request loop Floor loop.",
+        "Valve Shared valve is shared by loops Floor loop, Ceiling loop.",
+        "Pump Shared pump is shared by loops Floor loop, Ceiling loop.",
     )
+    # Warnings name the loops in configuration order, like the summary, and keep ids sorted.
+    assert [(warning.circuit_ids, warning.message) for warning in compiled.warnings] == [
+        (
+            ("ceiling", "floor"),
+            "Valve Shared valve is shared by loops Floor loop, Ceiling loop; separate room "
+            "thermostats cannot independently control loops coupled by the same physical valve.",
+        ),
+        (
+            ("ceiling", "floor"),
+            "Pump Shared pump is shared by loops Floor loop, Ceiling loop; separate room "
+            "thermostats cannot independently control heating and cooling through the same pump.",
+        ),
+    ]
 
 
 def test_compile_topology_emits_stable_non_fatal_shared_valve_warning() -> None:
@@ -344,8 +357,7 @@ def test_unused_valve_and_pump_compile_with_warnings() -> None:
     assert warning.valve_id == "valve-2"
     assert warning.zone_ids == ()
     assert warning.message == (
-        "Valve Unused valve is not reached by any enabled Delivery Route, "
-        "so Hydronicus never requests it."
+        "Valve Unused valve is not reached by any room, so Hydronicus never requests it."
     )
     assert set(compiled.valves) == {"valve-1", "valve-2"}
     assert set(compiled.pumps) == {"pump-1", "pump-2"}
@@ -386,6 +398,14 @@ def test_unrouted_circuit_and_its_equipment_are_unused() -> None:
         "pump-2": ("pump", ("circuit-2",)),
     }
     assert [route.id for route in compiled.routes] == ["route-1"]
+    assert (
+        "Loop Spare loop opens valves Spare valve, Floor valve before requesting pump Spare pump."
+        in compiled.logic_summary
+    )
+    loop_warning = next(w for w in compiled.warnings if w.equipment_id == "circuit-3")
+    assert loop_warning.message == (
+        "Loop Disabled loop is not reached by any room, so Hydronicus never requests it."
+    )
 
 
 def test_zone_without_enabled_route_is_still_rejected() -> None:
@@ -1056,6 +1076,10 @@ def test_compile_topology_warns_for_shared_pumps_and_sources() -> None:
         ("shared_source_limits_independent_control", "source", "source"),
     ]
     assert all("independently" in warning.message for warning in compiled.warnings)
+    assert compiled.warnings[1].message == (
+        "Source Plant source is shared by the Plant; separate room thermostats cannot "
+        "independently change heating and cooling source mode."
+    )
 
 
 @pytest.mark.parametrize(

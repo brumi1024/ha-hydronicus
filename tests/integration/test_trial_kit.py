@@ -119,18 +119,17 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     assert result["step_id"] == "import_review"
     placeholders = result["description_placeholders"]
     assert placeholders["name"] == "Trial plant"
-    assert "- Zone Bedroom can request circuit Bedroom loop." in placeholders["logic"]
+    assert "- Room Bedroom can request loop Bedroom loop." in placeholders["logic"]
     assert (
-        "- Circuit Bedroom loop opens valves Bedroom loop valve before requesting pump Pump."
-        in placeholders["logic"]
+        "- Loop Bedroom loop opens valve Bedroom loop valve before requesting pump "
+        "Circulation pump." in placeholders["logic"]
     )
     # The README tells the user to expect this one warning and to confirm it.
-    # The loops are listed in id order, and a file without an id gets a new Plant id.
-    warnings = placeholders["warnings"]
-    assert warnings.startswith("- Pump Pump is shared by circuits ")
-    assert "Bedroom loop" in warnings
-    assert "Living room loop" in warnings
-    assert warnings.count("\n") == 0
+    # The loops are listed in file order, so the text is the same on every import.
+    assert placeholders["warnings"] == (
+        "- Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate "
+        "room thermostats cannot independently control heating and cooling through the same pump."
+    )
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
     assert result["errors"] == {"base": "confirm_required"}
     result = await hass.config_entries.flow.async_configure(
@@ -146,7 +145,7 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
         "Bedroom",
         "Living room",
     ]
-    assert state("sensor.trial_plant_topology_preview") == "2 zones, 2 circuits"
+    assert state("sensor.trial_plant_topology_preview") == "2 rooms, 2 loops"
 
     await hass.services.async_call(
         "climate",
@@ -167,7 +166,7 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     assert state("binary_sensor.trial_plant_bedroom_loop_valve_requested") == "on"
     assert state("binary_sensor.trial_plant_living_room_loop_valve_requested") == "off"
     # The pump waits for the valve's 30 second default opening time.
-    assert state("binary_sensor.trial_plant_pump_requested") == "off"
+    assert state("binary_sensor.trial_plant_circulation_pump_requested") == "off"
 
     assert entry.runtime_data.dry_run is True
     assert calls == []

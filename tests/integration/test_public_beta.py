@@ -58,7 +58,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     assert result["step_id"] == "review"
     assert result["description_placeholders"]["rooms"] == "- Living room\n- Bedroom"
     assert result["description_placeholders"]["warnings"].startswith(
-        "- Pump Pump is shared by circuits "
+        "- Pump Circulation pump is shared by loops Living room loop, Bedroom loop; "
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={"confirm": True}
@@ -89,7 +89,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     topology_state = hass.states.get("sensor.trial_plant_topology_preview")
     valve_request = hass.states.get("binary_sensor.trial_plant_living_room_loop_valve_requested")
     assert demand_state is not None and demand_state.state == "on"
-    assert topology_state is not None and topology_state.state == "2 zones, 2 circuits"
+    assert topology_state is not None and topology_state.state == "2 rooms, 2 loops"
     assert valve_request is not None and valve_request.state == "on"
 
     await hass.services.async_call(

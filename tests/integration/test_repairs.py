@@ -374,7 +374,11 @@ async def test_pump_binding_repair_opens_plant_settings(hass, hass_client) -> No
     result = await response.json()
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "confirm"
-    assert result["description_placeholders"]["object_name"] == "Zone A pump"
+    assert result["description_placeholders"] == {
+        "plant": "Synthetic plant",
+        "object_name": "Zone A pump",
+        "binding": "switch bound to Zone A pump",
+    }
 
     response = await client.post(f"/api/repairs/issues/fix/{result['flow_id']}", json={})
     assert response.status == 200
@@ -432,7 +436,12 @@ async def test_room_binding_repair_opens_the_room_reconfigure_flow(
     result = await response.json()
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "confirm"
-    assert result["description_placeholders"]["object_name"] == "Zone B valve"
+    assert result["description_placeholders"] == {
+        "plant": "Synthetic plant",
+        "object_name": "Zone B valve",
+        "binding": "switch bound to Zone B valve",
+        "owner": "Zone B",
+    }
 
     response = await client.post(f"/api/repairs/issues/fix/{result['flow_id']}", json={})
     assert response.status == 200
@@ -460,6 +469,8 @@ async def test_room_reconfigure_opens_the_room_menu_without_changes(hass) -> Non
 
     assert result["type"] == FlowResultType.MENU
     assert "edit_loop" in result["menu_options"]
+    # The menu names the room it edits, since a repair opens it without context.
+    assert result["description_placeholders"] == {"room": "Zone B"}
     assert dict(entry.data) == data
 
 
@@ -512,6 +523,12 @@ async def test_room_loop_sensor_repair_belongs_to_the_room(hass) -> None:
     assert issue.data is not None
     assert issue.data["object_id"] == CIRCUIT_B
     assert issue.data["subentry_id"] == subentry_id_for(ZONE_B)
+    assert issue.translation_placeholders == {
+        "plant": "Synthetic plant",
+        "object_name": "Zone B circuit",
+        "binding": "supply temperature reference of Zone B circuit",
+        "owner": "Zone B",
+    }
 
 
 def test_binding_repair_titles_fit_on_one_header_line() -> None:
@@ -522,9 +539,10 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
     strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
     issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
     placeholders = {
-        "object_type": "valve",
+        "plant": "Hydronic plant",
         "object_name": "Living valve",
-        "binding_label": "valve readiness feedback",
+        "binding": "readiness feedback of Living valve",
+        "owner": "Living room",
     }
     binding_keys = [key for key in issues if key.startswith("missing_")]
     assert len(binding_keys) == 10
@@ -540,5 +558,11 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
         for title in titles:
             assert "{object_name}" in title, key
             assert len(title.format(**placeholders)) <= 36, (key, title)
-        assert "{object_type} {object_name}" in description, key
-        assert "{binding_label}" in description or "thermostat" in key, key
+        # The description names the Plant and the binding in UI terms.
+        assert "{plant}" in description, key
+        assert "the {binding}" in description, key
+        for core_term in ("{object_type}", "circuit", "Zone", "configured"):
+            assert core_term not in description, (key, core_term)
+        for reason, text in issue.get("fix_flow", {}).get("abort", {}).items():
+            assert "{object_type}" not in text, (key, reason)
+            text.format(**placeholders)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 
 import yaml
 from homeassistant.core import HomeAssistant
@@ -13,6 +13,12 @@ from .const import CONF_NAME, CONF_PLANT_ID
 from .core.plant_document import ImportedPlant, PlantDocumentError, export_plant_document
 from .entry_configuration import plant_ownership, topology_copy
 from .flows.common import is_hydronicus_owned
+
+# The object selector's editor submits no value while it is empty or holds YAML
+# it cannot parse, and marks the line of the YAML problem itself.
+EMPTY_PLANT_FILE_ERROR: Final = (
+    "The plant file is empty or not valid YAML. The editor marks the line with the problem."
+)
 
 
 def plant_file(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -35,13 +41,18 @@ def plant_file_yaml(document: Mapping[str, Any]) -> str:
 
 
 def parsed_plant_file(document: Any) -> Any:
-    """Return a submitted plant file, parsing it when it arrives as YAML text."""
-    if not isinstance(document, str):
-        return document
-    try:
-        return yaml.safe_load(document)
-    except yaml.YAMLError as error:
-        raise PlantDocumentError("", f"The plant file is not valid YAML: {error}") from error
+    """Return a submitted plant file, parsing it when it arrives as YAML text.
+
+    A missing or empty document raises ``PlantDocumentError`` at the top level.
+    """
+    if isinstance(document, str):
+        try:
+            document = yaml.safe_load(document)
+        except yaml.YAMLError as error:
+            raise PlantDocumentError("", f"The plant file is not valid YAML: {error}") from error
+    if document is None or document == "":
+        raise PlantDocumentError("", EMPTY_PLANT_FILE_ERROR)
+    return document
 
 
 def first_own_entity(hass: HomeAssistant, imported: ImportedPlant) -> tuple[str, str] | None:

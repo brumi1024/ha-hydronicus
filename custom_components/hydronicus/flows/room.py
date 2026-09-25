@@ -330,7 +330,12 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         options.extend(["sensors", "add_loop"])
         if room.circuits:
             options.append("edit_loop")
-        return self.async_show_menu(step_id="reconfigure", menu_options=options)
+        # A repair opens this menu directly, so it names the room it edits.
+        return self.async_show_menu(
+            step_id="reconfigure",
+            menu_options=options,
+            description_placeholders={"room": str(room.zone[CONF_NAME])},
+        )
 
     async def async_step_room(
         self, user_input: dict[str, Any] | None = None

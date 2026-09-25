@@ -18,9 +18,10 @@ Hydronicus never reads it from `configuration.yaml`, and the Plant you import is
 
 The **Plant file** field is a YAML editor.
 Paste the file there, either as the YAML text or as the parsed object that the editor shows.
+The editor marks a line whose YAML it cannot read, and submitting an empty or unreadable file reports that the plant file is empty or not valid YAML.
 
 The `hydronicus.export_plant` action is available only to administrators.
-Run it from **Developer tools > Actions** with the Plant selected, and choose to return the response.
+Run it from **Settings > Tools > Actions** with the Plant selected; Home Assistant shows the response of this response-only action automatically.
 
 Import and edit both show a review before anything is saved.
 The review lists the rooms or the changes, the compiled topology, and the warnings.
@@ -379,7 +380,7 @@ Without an ID, Hydronicus derives one from the Plant ID and the slug, so the sam
 A file without a top-level `id` becomes a new Plant with a new ID when you import it.
 
 Export writes every ID explicitly, so importing an exported file on another instance rebuilds the Plant with the same entity IDs.
-Importing a file whose `id` matches a Plant that already exists stops with **This plant is already configured.**
+Importing a file whose `id` matches a Plant that already exists stops with **This Plant is already configured.**
 Delete the existing Plant first to rebuild it from its file, or remove the top-level `id` to create a copy.
 
 When you edit a Plant's file, a top-level `id` must match the Plant.

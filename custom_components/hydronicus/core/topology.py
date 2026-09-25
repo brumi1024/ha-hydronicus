@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from math import isfinite
-from typing import Literal
+from typing import Final, Literal
 
 from .entity_bindings import configured_entity_bindings
 from .model import (
@@ -513,12 +513,21 @@ def _validate_relationships(
     )
 
 
+def _counted(noun: str, names: list[str]) -> str:
+    """Name a list of objects after a singular or plural noun, such as ``loops A, B``."""
+    return f"{noun if len(names) == 1 else noun + 's'} {', '.join(names)}"
+
+
 def _build_summary_and_warnings(
     configuration: PlantConfiguration,
     index: _TopologyIndex,
     enabled_routes: tuple[DeliveryRoute, ...],
 ) -> tuple[tuple[str, ...], tuple[TopologyWarning, ...]]:
-    """Build deterministic topology presentation after validation succeeds."""
+    """Build deterministic topology presentation after validation succeeds.
+
+    Every text is shown to users, so it uses the UI terms room and loop and
+    names objects in configuration order; warning ids stay sorted.
+    """
     valves = index.valves
     pumps = index.pumps
     circuits = index.circuits
@@ -526,8 +535,8 @@ def _build_summary_and_warnings(
     summary_routes = tuple(route for route in configuration.routes if route.enabled)
     summary = [
         (
-            f"Circuit {circuit.name} opens valves "
-            f"{', '.join(valves[valve_id].name for valve_id in circuit.valve_ids)} "
+            f"Loop {circuit.name} opens "
+            f"{_counted('valve', [valves[valve_id].name for valve_id in circuit.valve_ids])} "
             f"before requesting pump {pumps[circuit.pump_id].name}."
         )
         for circuit in configuration.circuits
@@ -536,8 +545,7 @@ def _build_summary_and_warnings(
         route_circuits = [
             circuits[route.circuit_id].name for route in summary_routes if route.zone_id == zone.id
         ]
-        noun = "circuit" if len(route_circuits) == 1 else "circuits"
-        summary.append(f"Zone {zone.name} can request {noun} {', '.join(route_circuits)}.")
+        summary.append(f"Room {zone.name} can request {_counted('loop', route_circuits)}.")
 
     for source in configuration.sources:
         if source.kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
@@ -555,16 +563,10 @@ def _build_summary_and_warnings(
         )
         if len(shared_circuits) <= 1:
             continue
-        summary_circuits = tuple(
-            circuit.id for circuit in configuration.circuits if valve_id in circuit.valve_ids
+        loop_names = ", ".join(
+            circuit.name for circuit in configuration.circuits if valve_id in circuit.valve_ids
         )
-        summary_circuit_names = ", ".join(
-            circuits[circuit_id].name for circuit_id in summary_circuits
-        )
-        warning_circuit_names = ", ".join(
-            circuits[circuit_id].name for circuit_id in shared_circuits
-        )
-        summary.append(f"Valve {valve.name} is shared by circuits {summary_circuit_names}.")
+        summary.append(f"Valve {valve.name} is shared by loops {loop_names}.")
         affected_zones = tuple(
             sorted(
                 {route.zone_id for route in enabled_routes if route.circuit_id in shared_circuits}
@@ -574,8 +576,8 @@ def _build_summary_and_warnings(
             TopologyWarning(
                 code="shared_valve_limits_independent_control",
                 message=(
-                    f"Valve {valve.name} is shared by circuits {warning_circuit_names}; "
-                    "separate climate entities cannot independently control circuits "
+                    f"Valve {valve.name} is shared by loops {loop_names}; "
+                    "separate room thermostats cannot independently control loops "
                     "coupled by the same physical valve."
                 ),
                 valve_id=valve_id,
@@ -592,14 +594,10 @@ def _build_summary_and_warnings(
         )
         if len(shared_circuits) <= 1:
             continue
-        summary_circuits = tuple(
-            circuit.id for circuit in configuration.circuits if pump_id == circuit.pump_id
+        loop_names = ", ".join(
+            circuit.name for circuit in configuration.circuits if pump_id == circuit.pump_id
         )
-        summary.append(
-            f"Pump {pump.name} is shared by circuits "
-            + ", ".join(circuits[circuit_id].name for circuit_id in summary_circuits)
-            + "."
-        )
+        summary.append(f"Pump {pump.name} is shared by loops {loop_names}.")
         affected_zones = tuple(
             sorted(
                 {route.zone_id for route in enabled_routes if route.circuit_id in shared_circuits}
@@ -609,9 +607,8 @@ def _build_summary_and_warnings(
             TopologyWarning(
                 code="shared_pump_limits_independent_control",
                 message=(
-                    f"Pump {pump.name} is shared by circuits "
-                    f"{', '.join(circuits[circuit_id].name for circuit_id in shared_circuits)}; "
-                    "separate climate entities cannot independently control heating and cooling "
+                    f"Pump {pump.name} is shared by loops {loop_names}; "
+                    "separate room thermostats cannot independently control heating and cooling "
                     "through the same pump."
                 ),
                 valve_id=pump_id,
@@ -641,7 +638,7 @@ def _build_summary_and_warnings(
                 TopologyWarning(
                     code="shared_source_limits_independent_control",
                     message=(
-                        f"Source {source.name} is shared by the plant; separate climate entities "
+                        f"Source {source.name} is shared by the Plant; separate room thermostats "
                         "cannot independently change heating and cooling source mode."
                     ),
                     valve_id=source_id,
@@ -653,6 +650,15 @@ def _build_summary_and_warnings(
             )
     warnings.extend(_unused_equipment_warnings(index, enabled_routes))
     return tuple(summary), tuple(warnings)
+
+
+# The word users see for each kind of unused equipment.
+_UI_KIND_NAMES: Final = {
+    EquipmentKind.CIRCUIT: "Loop",
+    EquipmentKind.VALVE: "Valve",
+    EquipmentKind.PUMP: "Pump",
+    EquipmentKind.SOURCE: "Source",
+}
 
 
 def _unused_equipment_warnings(
@@ -685,8 +691,8 @@ def _unused_equipment_warnings(
         TopologyWarning(
             code="unused_equipment",
             message=(
-                f"{kind.value.capitalize()} {name} is not reached by any enabled "
-                "Delivery Route, so Hydronicus never requests it."
+                f"{_UI_KIND_NAMES[kind]} {name} is not reached by any room, "
+                "so Hydronicus never requests it."
             ),
             valve_id=equipment_id,
             circuit_ids=circuit_ids,

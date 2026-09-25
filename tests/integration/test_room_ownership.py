@@ -181,6 +181,26 @@ async def test_deleting_a_room_removes_its_entities_and_devices_and_the_plant_lo
     ]
 
 
+async def test_devices_show_the_ui_names_of_their_kinds(hass) -> None:
+    """A room device reads as a Room; the model is not part of any identifier or entity ID."""
+    _set_states(hass)
+    entry = manifold_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    room = _device(hass, entry, "zone", LIVING.zone_id)
+    assert room is not None
+    assert room.model == "Hydronicus Room"
+    valve = _device(hass, entry, "valve", LIVING.valve_id)
+    assert valve is not None
+    assert valve.model == "Hydronicus Valve"
+    pump = _device(hass, entry, "pump", MANIFOLD_PUMP_ID)
+    assert pump is not None
+    assert pump.model == "Hydronicus Pump"
+    assert _entity(hass, "climate", f"{PLANT_ID}_{LIVING.zone_id}_climate") is not None
+
+
 async def test_reload_reconstructs_rooms_and_their_entity_ownership(hass) -> None:
     """Room entities and devices belong to their room, Plant equipment to the parent."""
     _set_states(hass)

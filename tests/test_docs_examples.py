@@ -43,7 +43,6 @@ EXTERNAL_LABELS = frozenset(
         "Actions",
         "Add integration",
         "Custom repositories",
-        "Developer tools",
         "Devices & services",
         "Download diagnostics",
         "Hydronicus",
@@ -56,6 +55,7 @@ EXTERNAL_LABELS = frozenset(
         "States",
         "Submit",
         "System",
+        "Tools",
     }
 )
 _YAML_BLOCK = re.compile(r"^```yaml\n(.*?)^```", re.MULTILINE | re.DOTALL)

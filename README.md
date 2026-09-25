@@ -125,8 +125,8 @@ To use guided setup:
 Guided setup names each room's loop after the room, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
 The plant file uses the same names, which is why both paths create the same entity IDs.
 
-The review lists the two rooms and the compiled topology, such as `Zone Bedroom can request circuit Bedroom loop.`
-It also lists one warning: both loops share the pump, so separate room thermostats cannot control them independently.
+The review lists the two rooms and the compiled topology, such as `Room Bedroom can request loop Bedroom loop.`
+It also lists one warning, `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; ...`, because separate room thermostats cannot control loops on one pump independently.
 That is expected for a manifold, so turn on **I understand these warnings** and submit.
 The new Plant starts in Dry run.
 
@@ -135,7 +135,7 @@ The new Plant starts in Dry run.
 1. Set `climate.trial_plant_bedroom` to heat, because a fresh Hydronicus thermostat starts off with a 21 °C target.
 2. Lower `input_number.hydronicus_trial_bedroom_temperature` to 18 °C.
 3. Check that `binary_sensor.trial_plant_bedroom_demand` and `binary_sensor.trial_plant_bedroom_loop_valve_requested` turn on, while the Living room entities stay off.
-4. After the valve's 30 second default opening time, check that `binary_sensor.trial_plant_pump_requested` turns on.
+4. After the valve's 30 second default opening time, check that `binary_sensor.trial_plant_circulation_pump_requested` turns on.
 5. Raise the bedroom temperature to 22 °C.
    Demand ends, the virtual pump follows its 120 second default overrun, and then the virtual valve closes.
 

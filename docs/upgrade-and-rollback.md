@@ -56,7 +56,7 @@ After the restart:
 
 1. Confirm the Hydronicus version.
 2. Confirm that every Plant loads and shows one Room entry per room, and no Zone, Circuit, or Actuator entries.
-3. Open each room's **Edit room** menu and confirm that its loops and valves are the ones you expect.
+3. Open each room's edit menu and confirm that its loops and valves are the ones you expect.
 4. Review the topology preview, the devices, and the entity IDs, which the migration keeps.
 5. Confirm the Plant returned to Dry run after migration or any topology edit.
 6. Use **Show the plant file** in the Plant settings to keep a copy of each migrated Plant.

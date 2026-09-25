@@ -411,7 +411,7 @@ class HydronicRuntime:
         self._stopping = True
         self._initializing = False
         if self._hass is not None:
-            async_sync_repairs(self._hass, self.plant_id, ())
+            async_sync_repairs(self._hass, self.plant_id, (), plant_name=self.name)
         async with self._operation_lock:
             if self._remove_state_listener is not None:
                 with suppress(ValueError):
@@ -994,7 +994,7 @@ class HydronicRuntime:
         self.unavailable_entity_ids = frozenset(
             binding.entity_id for binding in self.unresolved_bindings
         )
-        async_sync_repairs(hass, self.plant_id, self.unresolved_bindings)
+        async_sync_repairs(hass, self.plant_id, self.unresolved_bindings, plant_name=self.name)
 
     def _unavailable_actuator_ids(self) -> frozenset[str]:
         """Return primary actuator IDs that must never receive a command."""

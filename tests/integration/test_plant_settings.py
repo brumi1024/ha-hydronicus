@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 import pytest
+import voluptuous as vol
 import yaml
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
@@ -140,6 +141,8 @@ async def test_reconfigure_opens_the_plant_settings_menu(hass) -> None:
         "export_plant",
         "edit_plant",
     ]
+    # A menu opened from a repair names the Plant it edits.
+    assert result["description_placeholders"] == {"plant": "Hydronic plant"}
 
 
 async def test_menu_hides_pump_editing_without_pumps(hass) -> None:
@@ -659,6 +662,23 @@ async def test_yaml_syntax_error_is_an_invalid_document(hass) -> None:
     assert result["description_placeholders"]["path"] == "the top level"
 
 
+async def test_emptied_plant_file_editor_is_explained(hass) -> None:
+    """The editor field is optional, so an emptied or unparseable file reaches the flow."""
+    entry = await _loaded_manifold(hass)
+    result = await _open(hass, entry, "edit_plant")
+    assert isinstance(_schema_keys(result)["document"], vol.Optional)
+
+    result = await _submit(hass, result, {})
+
+    assert result["errors"] == {"base": "invalid_document"}
+    assert result["description_placeholders"] == {
+        "path": "the top level",
+        "error": (
+            "The plant file is empty or not valid YAML. The editor marks the line with the problem."
+        ),
+    }
+
+
 async def test_plant_file_binding_a_hydronicus_entity_is_refused(hass) -> None:
     """A Hydronicus entity bound in the file is reported with its path."""
     entry = await _loaded_manifold(hass)
@@ -698,7 +718,7 @@ async def test_review_lists_changes_and_requires_confirmation_of_warnings(hass) 
     assert "- Removes loop Bedroom loop" in changes
     assert "- Removes valve Bedroom loop valve" in changes
     assert "- Adds pump Spare pump" in changes
-    assert "Zone Lounge can request circuit Living room loop." in placeholders["logic"]
+    assert "Room Lounge can request loop Living room loop." in placeholders["logic"]
     assert "Spare pump" in placeholders["warnings"]
 
     # Only an unused pump is left to warn about, which never blocks a save.

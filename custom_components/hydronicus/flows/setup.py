@@ -61,7 +61,7 @@ CONF_DOCUMENT: Final = "document"
 SECTION_PUMP_OPTIONS: Final = "pump_options"
 MENU_OPTIONS: Final = ("guided", "import_plant")
 # The name of the one pump guided setup creates; Plant settings can rename it.
-GUIDED_PUMP_NAME: Final = "Pump"
+GUIDED_PUMP_NAME: Final = "Circulation pump"
 # The path shown for a plant file error that no single key causes.
 _TOP_LEVEL: Final = "the top level"
 
@@ -92,8 +92,13 @@ def _room_schema() -> vol.Schema:
 
 
 def _import_schema() -> vol.Schema:
-    """Return the plant file form."""
-    return vol.Schema({vol.Required(CONF_DOCUMENT): selector.ObjectSelector()})
+    """Return the plant file form.
+
+    The document is optional so that the editor opens empty and a missing or
+    unparseable file reaches the flow, which explains it instead of the
+    frontend's generic required-field message.
+    """
+    return vol.Schema({vol.Optional(CONF_DOCUMENT): selector.ObjectSelector()})
 
 
 def _room_lines(data: Mapping[str, Any]) -> str:

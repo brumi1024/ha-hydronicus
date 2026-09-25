@@ -4,17 +4,17 @@
 hydronicus: 1
 name: Trial plant
 pumps:
-  pump: switch.hydronicus_trial_pump
+  circulation_pump: switch.hydronicus_trial_pump
 rooms:
   living_room:
     temperature_sensors: [sensor.hydronicus_trial_living_room_temperature]
     loops:
       living_room_loop:
         valves: [switch.hydronicus_trial_living_room_valve]
-        pump: pump
+        pump: circulation_pump
   bedroom:
     temperature_sensors: [sensor.hydronicus_trial_bedroom_temperature]
     loops:
       bedroom_loop:
         valves: [switch.hydronicus_trial_bedroom_valve]
-        pump: pump
+        pump: circulation_pump

@@ -51,7 +51,7 @@ Add pumps in the Plant settings, and add shared loops and shared valves in the [
 ### A review asks to confirm a shared pump warning
 
 Rooms whose loops share one pump, as in every manifold that guided setup builds, produce a warning that the shared pump limits independent control.
-The topology is valid; the warning says that separate room thermostats cannot control the shared pump independently.
+The topology is valid; the warning, such as `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate room thermostats cannot independently control heating and cooling through the same pump.`, says that the rooms cannot be controlled independently through the shared pump.
 Turn on **I understand these warnings** to save.
 Later edits do not ask about the shared pump again, because only a warning that a change introduces needs a confirmation.
 Unused equipment is reported without ever needing a confirmation.
@@ -60,9 +60,10 @@ Unused equipment is reported without ever needing a confirmation.
 
 The form names the path of the first problem, such as `rooms.bedroom.loops.bedroom_loop.pump`, followed by a message.
 A problem with the whole file, such as invalid YAML, is reported at the top level.
+An empty editor, or YAML that the editor cannot read, is reported as a plant file that is empty or not valid YAML, and the editor marks the line with the YAML problem.
 Check the key at that path against the [plant file reference](plant-file.md#errors).
 
-An import that stops with **This plant is already configured.** has a top-level `id` of a Plant that already exists.
+An import that stops with **This Plant is already configured.** has a top-level `id` of a Plant that already exists.
 Delete that Plant first to rebuild it from its file, or remove the `id` line to create a new Plant.
 
 When you edit a Plant's file, **This plant file belongs to another Plant. Remove its top-level id, or set it to this Plant's id, to apply it here.** means the file's `id` differs from the Plant being edited.
@@ -90,14 +91,14 @@ The blocked binary sensor turns on, the blocked-reason sensor explains the failu
 An unusable optional sensor is excluded from aggregation and appears in the aggregate-temperature and blocked-state attributes.
 If no usable sensor remains, the room blocks even when every configured observation is optional.
 
-Check the sensor state in **Developer tools > States**.
+Check the sensor state in **Settings > Tools > States**.
 Use a numeric value with a supported unit for the simulated sensor.
 Check the observation's configured required status, maximum age, and calibration offset before changing the topology.
 Do not paste private device attributes into a public report.
 
 ### A sensor with a valid number is still unusable
 
-Check the sensor's `unit_of_measurement` attribute in **Developer tools > States**.
+Check the sensor's `unit_of_measurement` attribute in **Settings > Tools > States**.
 A temperature observation must report `°C`, `°F`, `K`, or no unit, and a humidity observation must report `%` or no unit.
 Any other unit, including a misspelled one such as `C` or `degC`, makes the observation unusable, so a required sensor blocks the room and demand is released.
 This is deliberate: Hydronicus fails closed rather than guessing what an unknown unit means.
@@ -215,7 +216,8 @@ Useful checks include:
 
 Download redacted diagnostics from the Hydronicus config entry or device page before filing an issue.
 Hydronicus also creates Repairs issues for unresolved configured entity bindings and removes them after the binding is restored.
-A repair for a room's binding opens that room's reconfigure flow, and a repair for a pump opens the Plant settings.
+Each repair names the Plant and the entity it misses, such as `the switch bound to Bedroom loop valve`.
+A repair for a room's binding opens that room's edit menu, and a repair for a pump opens the Plant settings.
 A repair for a shared loop, a shared valve, or the source selector cannot open a form; edit the binding with **Edit plant file** in the Plant settings, or restore the original entity.
 If diagnostics are unavailable or a binding problem does not produce a Repair, capture the first relevant log exception and report it as a runtime problem.
 Use the [diagnostic bug-report template](../.github/ISSUE_TEMPLATE/diagnostic-bug-report.md) and provide only the information needed to reproduce the issue.

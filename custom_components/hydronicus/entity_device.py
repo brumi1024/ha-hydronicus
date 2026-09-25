@@ -7,6 +7,10 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from .const import DOMAIN
 from .runtime import HydronicRuntime
 
+# The UI name of each device kind. The kind itself stays in the device identifier,
+# and the model is display text only, so renaming a model changes no ID.
+_MODEL_NAMES = {"zone": "Room", "circuit": "Loop"}
+
 
 def plant_device_info(runtime: HydronicRuntime) -> DeviceInfo:
     """Return the parent Plant device for Plant-level entities."""
@@ -31,6 +35,6 @@ def topology_device_info(
         identifiers={(DOMAIN, f"{runtime.plant_id}:{kind}:{object_id}")},
         name=f"{runtime.name} {name}",
         manufacturer="Hydronicus",
-        model=f"Hydronicus {kind.title()}",
+        model=f"Hydronicus {_MODEL_NAMES.get(kind, kind.title())}",
         via_device_id=runtime.plant_device_id,
     )
