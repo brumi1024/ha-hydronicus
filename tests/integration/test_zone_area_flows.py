@@ -687,3 +687,31 @@ async def test_a_zone_device_takes_the_area_only_of_a_zone_over_one_existing_are
     }
     # Suggesting a missing area would have created it.
     assert len(ar.async_get(hass).areas) == area_count
+
+
+async def test_a_placed_zone_device_keeps_entity_ids_without_the_area_name(hass, home) -> None:
+    # Home Assistant puts the area name in front of new entity IDs, so a zone
+    # named after its area would otherwise get climate.kitchen_kitchen.
+    topology = manifold_topology(("Kitchen",))
+    topology["zones"][0]["areas"] = [{"area_id": "kitchen"}]
+    (kitchen,) = manifold_zones(("Kitchen",))
+    _temperature(hass, kitchen.temperature_sensor)
+
+    entry = await _setup(hass, plant_entry(plant_data(topology)))
+
+    device = _zone_device(hass, entry, kitchen.zone_id)
+    assert device.area_id == "kitchen"
+    entity_ids = {
+        registered.entity_id
+        for registered in er.async_entries_for_device(er.async_get(hass), device.id)
+    }
+    assert "climate.kitchen" in entity_ids
+    assert "sensor.kitchen_combined_temperature" in entity_ids
+    assert not any("kitchen_kitchen" in entity_id for entity_id in entity_ids)
+
+    # The area is placed only when the device is created, so a device the user
+    # took out of the area stays out after a reload.
+    dr.async_get(hass).async_update_device(device.id, area_id=None)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _zone_device(hass, entry, kitchen.zone_id).area_id is None

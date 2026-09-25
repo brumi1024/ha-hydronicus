@@ -15,7 +15,7 @@ Investigated on 2026-09-25 against Home Assistant 2026.9 and Hydronicus v0.1.0 (
 - The UI calls one thermostat's space a Room, so a zone that covers a kitchen, a dining room, and a hall reads as a Room that contains rooms.
 - Core code, the Lovelace card, and the WebSocket snapshot already say Zone.
 - The maintainer decided on 2026-09-25 that no backward compatibility is required at this stage, so stored names, the plant file, and the card change without aliases or migration.
-- `DeviceInfo.suggested_area` still assigns an area to a newly created device.
+- `DeviceInfo.suggested_area` still assigns an area to a newly created device, but Home Assistant then puts the area name in front of the entity IDs it generates for that device, so a zone named after its area would get entity IDs such as `climate.kitchen_kitchen`.
 - Reload and unload are command-free lifecycle boundaries, and `_async_reload_entry` skips a reload when `runtime_configuration_fingerprint` is unchanged.
 
 ## Outcome
@@ -187,7 +187,7 @@ zones:
   - Whole home opens one zone form named `Home` with every area that has a temperature sensor.
   - Per area first asks which areas, defaulting to every area with a temperature sensor, then opens one prefilled zone form per area with its progress in the description.
   - Grouped opens the zone form with **Add another zone**, as guided setup does today.
-- `topology_device_info` passes `suggested_area` for a zone that covers exactly one existing area.
+- A zone device created by a setup is put in the one existing area its zone covers after its entities have registered, so the area name never enters their entity IDs; `suggested_area` is not used.
 
 ### K7 Snapshot and card
 
