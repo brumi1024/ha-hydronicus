@@ -277,7 +277,7 @@ async def test_initial_review_explains_topology_validation_error(hass, monkeypat
     def reject(configuration):
         raise TopologyValidationError("Synthetic compiler reason.")
 
-    monkeypatch.setattr("custom_components.hydronicus.config_flow.compile_topology", reject)
+    monkeypatch.setattr("custom_components.hydronicus.flows.setup.compile_topology", reject)
     result = await _start_first_circuit(hass)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input=_FIRST_CIRCUIT
@@ -679,7 +679,7 @@ def test_parent_flow_steps_return_config_flow_results() -> None:
         for name in dir(HydronicClimateConfigFlow)
         if name.startswith("async_step_") and name not in {"async_step_ignore"}
     ]
-    own = [step for step in steps if step.__module__ == HydronicClimateConfigFlow.__module__]
+    own = [step for step in steps if step.__module__.startswith("custom_components.hydronicus.")]
 
     assert own
     assert {step.__annotations__["return"] for step in own} == {"config_entries.ConfigFlowResult"}

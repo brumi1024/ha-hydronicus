@@ -20,10 +20,8 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_ZONE,
 )
 from custom_components.hydronicus.core.configuration import StoredTopologyError
-from custom_components.hydronicus.entry_configuration import (
-    effective_plant_configuration,
-    migration_plan,
-)
+from custom_components.hydronicus.entry_configuration import effective_plant_configuration
+from custom_components.hydronicus.migration import migration_plan
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"

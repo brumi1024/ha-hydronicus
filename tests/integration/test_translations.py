@@ -105,7 +105,7 @@ class Unresolved(Exception):
     """A key expression that the static pass cannot reduce to literals."""
 
 
-@dataclass
+@dataclass(eq=False)
 class _Module:
     path: Path
     tree: ast.Module
@@ -265,16 +265,18 @@ class _Resolver:
 
     def _function_returns(self, module: _Module, call: ast.Call, depth: int) -> set[str]:
         name = _call_name(call)
-        for function in ast.walk(module.tree):
-            if (
-                isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
-                and function.name == name
-            ):
-                values: set[str] = set()
-                for node in ast.walk(function):
-                    if isinstance(node, ast.Return) and node.value is not None:
-                        values |= self.resolve(module, node.value, depth + 1)
-                return values
+        # A helper is looked up in the calling module first, then in the modules it imports from.
+        for owner in (module, *(other for other in self.modules if other is not module)):
+            for function in ast.walk(owner.tree):
+                if (
+                    isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and function.name == name
+                ):
+                    values: set[str] = set()
+                    for node in ast.walk(function):
+                        if isinstance(node, ast.Return) and node.value is not None:
+                            values |= self.resolve(owner, node.value, depth + 1)
+                    return values
         raise Unresolved(module.location(call))
 
 
@@ -332,6 +334,20 @@ def _discover() -> _Discovery:
     subentry_types: dict[str, str] = {}
     for module in modules:
         subentry_types |= _subentry_types(module, resolver)
+    # Flow step mixins live in their own modules, so classes are indexed across modules.
+    all_classes = {
+        node.name: (module, node)
+        for module in modules
+        for node in ast.walk(module.tree)
+        if isinstance(node, ast.ClassDef)
+    }
+
+    def with_mixins(module: _Module, flow: ast.ClassDef) -> list[tuple[_Module, ast.ClassDef]]:
+        owners = [(module, flow)]
+        for base in flow.bases:
+            if isinstance(base, ast.Name) and base.id in all_classes:
+                owners.extend(with_mixins(*all_classes[base.id]))
+        return owners
 
     def keys(module: _Module, node: ast.expr, *, skip_attributes: bool = False) -> set[str]:
         if skip_attributes and isinstance(node, ast.Attribute):
@@ -400,23 +416,22 @@ def _discover() -> _Discovery:
                         f"{module.location(flow)}: repairs flow {flow.name} has no issue fix_flow"
                     )
             steps = found.form_steps.setdefault(prefixes[0] if prefixes else flow.name, set())
-            paths: set[tuple[str, ast.AST]] = set()
-            # A flow also owns the keys of mixins it inherits from the same module.
-            mixins = [
-                classes[base.id]
-                for base in flow.bases
-                if isinstance(base, ast.Name) and base.id in classes
-            ]
-            for node in (node for owner in (flow, *mixins) for node in ast.walk(owner)):
+            paths: set[tuple[str, _Module, ast.AST]] = set()
+            # A flow also owns the keys of the mixins it inherits, from any module.
+            for owner_module, node in (
+                (owner_module, node)
+                for owner_module, owner in with_mixins(module, flow)
+                for node in ast.walk(owner)
+            ):
                 if isinstance(node, ast.Call):
                     name = _call_name(node)
                     if (step_node := _keyword(node, "step_id")) is not None:
-                        for step in keys(module, step_node):
+                        for step in keys(owner_module, step_node):
                             steps.add(step)
-                            paths.add((f"step.{step}", node))
+                            paths.add((f"step.{step}", owner_module, node))
                     if (errors := _keyword(node, "errors")) is not None:
-                        for error in keys(module, errors):
-                            paths.add((f"error.{error}", node))
+                        for error in keys(owner_module, errors):
+                            paths.add((f"error.{error}", owner_module, node))
                     # errors.update(helper(...)) merges the errors a helper returns.
                     if (
                         name == "update"
@@ -425,14 +440,14 @@ def _discover() -> _Discovery:
                         and node.func.value.id == "errors"
                         and node.args
                     ):
-                        for error in keys(module, node.args[0]):
-                            paths.add((f"error.{error}", node))
+                        for error in keys(owner_module, node.args[0]):
+                            paths.add((f"error.{error}", owner_module, node))
                     if name == "async_abort" and (reason := _keyword(node, "reason")):
-                        for abort in keys(module, reason):
-                            paths.add((f"abort.{abort}", node))
+                        for abort in keys(owner_module, reason):
+                            paths.add((f"abort.{abort}", owner_module, node))
                     if name == "AbortFlow" and node.args:
-                        for abort in keys(module, node.args[0]):
-                            paths.add((f"abort.{abort}", node))
+                        for abort in keys(owner_module, node.args[0]):
+                            paths.add((f"abort.{abort}", owner_module, node))
                     implicit = IMPLICIT_ABORTS.get(kind, {}).get(name, set())
                     if name == "async_set_unique_id" and any(
                         kw.arg == "raise_on_progress"
@@ -444,9 +459,9 @@ def _discover() -> _Discovery:
                     if (reason := _keyword(node, "reason")) is not None and name.endswith(
                         "_and_abort"
                     ):
-                        implicit = keys(module, reason)
+                        implicit = keys(owner_module, reason)
                     for abort in implicit:
-                        paths.add((f"abort.{abort}", node))
+                        paths.add((f"abort.{abort}", owner_module, node))
                 elif isinstance(node, ast.Assign):
                     for target in node.targets:
                         if (
@@ -454,12 +469,12 @@ def _discover() -> _Discovery:
                             and isinstance(target.value, ast.Name)
                             and target.value.id == "errors"
                         ):
-                            for error in keys(module, node.value):
-                                paths.add((f"error.{error}", node))
+                            for error in keys(owner_module, node.value):
+                                paths.add((f"error.{error}", owner_module, node))
             # Errors returned through helper methods such as _details_form(error=...).
-            for path, node in sorted(paths, key=lambda item: item[0]):
+            for path, owner_module, node in sorted(paths, key=lambda item: item[0]):
                 for prefix in prefixes:
-                    requirement = _Requirement(f"{prefix}.{path}", module.location(node))
+                    requirement = _Requirement(f"{prefix}.{path}", owner_module.location(node))
                     if kind == "RepairsFlow":
                         found.fix_flow_requirements.append(requirement)
                     else:

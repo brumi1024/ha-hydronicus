@@ -13,7 +13,6 @@ from homeassistant.helpers import issue_registry
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.config_flow import SECTION_COOLING
 from custom_components.hydronicus.const import (
     CONF_CIRCUIT_IDS,
     CONF_DRY_RUN,
@@ -30,6 +29,7 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_CIRCUIT,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.flows.common import SECTION_COOLING
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_A = "00000000-0000-4000-8000-000000000002"

@@ -22,12 +22,12 @@ from .core.configuration import StoredTopologyError
 from .core.topology import TopologyValidationError
 from .entry_configuration import (
     invalidate_output_authorization,
-    migration_plan,
     output_authorization_is_valid,
     reconcile_removed_subentries,
     runtime_configuration_fingerprint,
 )
 from .frontend import async_register_frontend
+from .migration import migration_plan
 from .output_ownership import (
     async_create_output_conflict_issue,
     async_schedule_output_review,

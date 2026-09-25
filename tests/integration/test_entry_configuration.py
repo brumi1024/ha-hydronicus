@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.config_flow import _async_persist_subentry_graph
 from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_OUTPUT_AUTHORIZATION,
@@ -24,6 +23,7 @@ from custom_components.hydronicus.entry_configuration import (
     output_authorization,
     output_authorization_is_valid,
 )
+from custom_components.hydronicus.flows.common import async_persist_subentry_graph
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -172,7 +172,7 @@ async def test_active_graph_mutation_aborts_when_safe_shutdown_cannot_finish(has
     entry.runtime_data = runtime
     original = deepcopy(dict(entry.data))
 
-    persisted = await _async_persist_subentry_graph(
+    persisted = await async_persist_subentry_graph(
         SimpleNamespace(hass=hass),
         entry,
         SUBENTRY_TYPE_ZONE,
