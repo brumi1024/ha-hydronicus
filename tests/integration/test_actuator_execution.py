@@ -860,8 +860,8 @@ async def test_dry_run_keeps_the_desired_plan_without_service_calls(hass) -> Non
     assert runtime.active_equipment_ids() == ()
 
 
-async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> None:
-    """The normal config-entry reconfigure path changes the Plant boundary."""
+async def test_plant_settings_can_leave_dry_run_after_one_confirmation(hass) -> None:
+    """Plant settings change the Plant boundary after one confirmation."""
     hass.states.async_set("sensor.synthetic_temperature", "22.0")
     hass.states.async_set("switch.synthetic_valve", "off")
     entry = _entry(dry_run=True)
@@ -870,20 +870,20 @@ async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> Non
     await hass.async_block_till_done()
     runtime = entry.runtime_data
 
-    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == "menu"
-    assert result["step_id"] == "reconfigure"
-    result = await hass.config_entries.flow.async_configure(
+    assert result["step_id"] == "init"
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "dry_run"}
     )
     assert result["type"] == "form"
     assert result["step_id"] == "dry_run"
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN: False}
     )
     assert result["type"] == "form"
     assert result["step_id"] == "dry_run_confirmation"
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"dry_run_confirmation": True}
     )
     assert result["type"] == "abort"

@@ -537,8 +537,12 @@ def test_static_discovery_sees_the_flow_contract() -> None:
 
     assert {
         "config.abort.already_configured",
-        "config.abort.reconfigure_successful",
+        "options.abort.settings_saved",
+        "options.error.dry_run_confirmation_required",
         "config.error.thermostat_loop",
+        # Returned by the room basics helper for its Cooling section.
+        "config.error.cooling_requires_room_loop",
+        "config_subentries.room.error.cooling_requires_room_loop",
         "config.error.name_required",
         # Returned inside an (errors, placeholders) tuple by the room basics helper.
         "config.error.delivery_required",
@@ -781,15 +785,15 @@ async def test_setup_flow_steps_are_fully_translated(hass) -> None:
     assert audit.missing == []
 
 
-async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
+async def test_plant_settings_steps_are_fully_translated(hass) -> None:
     """Every Plant settings menu, form, error, and abort renders translated."""
-    audit = _FormAudit("config")
-    flow = hass.config_entries.flow
+    audit = _FormAudit("options")
+    flow = hass.config_entries.options
     entry = plant_entry(dict(_plant_entry().data))
     entry.add_to_hass(hass)
 
     async def menu(option: str) -> Mapping[str, Any]:
-        result = audit.check(await entry.start_reconfigure_flow(hass))
+        result = audit.check(await flow.async_init(entry.entry_id))
         return audit.check(await flow.async_configure(result["flow_id"], {"next_step_id": option}))
 
     async def submit(result: Mapping[str, Any], user_input: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -802,7 +806,7 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
     result = await submit(result, {CONF_DRY_RUN_CONFIRMATION: True})
     assert result["errors"] == {"base": "dry_run_runtime_unavailable"}
     result = await submit(result, {CONF_DRY_RUN: True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
 
     pump = {CONF_NAME: "Spare pump", "entity_id": "switch.spare_pump", "overrun_seconds": 0.0}
     result = await menu("add_pump")
@@ -811,7 +815,7 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
     result = await submit(result, {**pump, "entity_id": "switch.floor_valve"})
     assert result["errors"] == {"entity_id": "actuator_entity_in_use"}
     result = await submit(result, pump)
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
 
     # A pump entity another Plant binds is reviewed before it is saved.
     other_pump = {
@@ -835,7 +839,7 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
     result = await submit(result, {"confirm": False})
     assert result["errors"] == {"base": "confirm_required"}
     result = await submit(result, {"confirm": True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
 
     result = await menu("edit_pump")
     result = await submit(result, {"pump": PUMP_ID})
@@ -891,10 +895,10 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
     result = await submit(result, {"confirm": False})
     assert result["errors"] == {"base": "confirm_required"}
     result = await submit(result, {"confirm": True})
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
 
     assert audit.steps == {
-        "reconfigure",
+        "init",
         "dry_run",
         "dry_run_confirmation",
         "pump",

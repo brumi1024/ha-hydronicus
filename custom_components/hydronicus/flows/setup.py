@@ -101,10 +101,21 @@ def _import_schema() -> vol.Schema:
     return vol.Schema({vol.Optional(CONF_DOCUMENT): selector.ObjectSelector()})
 
 
+def _room_names(data: Mapping[str, Any]) -> list[str]:
+    """Return the room names of Plant data in the order they were added."""
+    return [str(zone.get(CONF_NAME, "")) for zone in topology_copy(data)[CONF_ZONES]]
+
+
 def _room_lines(data: Mapping[str, Any]) -> str:
     """List the rooms of Plant data in the order they were added."""
-    names = [str(zone.get(CONF_NAME, "")) for zone in topology_copy(data)[CONF_ZONES]]
-    return "\n".join(f"- {name}" for name in names) or "- None"
+    return "\n".join(f"- {name}" for name in _room_names(data)) or "- None"
+
+
+def _rooms_so_far(data: Mapping[str, Any]) -> str:
+    """List the rooms guided setup has added, or nothing before the first room."""
+    if not (names := _room_names(data)):
+        return ""
+    return "\n\nRooms added so far:\n" + "\n".join(f"- {name}" for name in names)
 
 
 def _logic_lines(compiled: CompiledPlant) -> str:
@@ -212,7 +223,7 @@ class SetupSteps(ConfigFlowBase):
     async def async_step_room(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Add one room with its own loop on the Plant's pump."""
+        """Add one room with its own loop on the Plant's pump, which may also cool it."""
         plant = effective_plant_from_data(self._data)
         schema = _room_schema()
         errors: dict[str, str] = {}
@@ -236,7 +247,7 @@ class SetupSteps(ConfigFlowBase):
             step_id="room",
             data_schema=with_submitted_values(self, schema, user_input),
             errors=errors,
-            description_placeholders={**placeholders, "rooms": _room_lines(self._data)},
+            description_placeholders={**placeholders, "rooms": _rooms_so_far(self._data)},
         )
 
     async def async_step_review(

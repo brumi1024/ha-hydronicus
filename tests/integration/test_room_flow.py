@@ -335,6 +335,106 @@ async def test_a_room_can_use_a_shared_loop_without_private_valves(hass) -> None
     assert _warning_codes(entry) == set()
 
 
+LIVING_COOLING = {
+    "cooling_enabled": True,
+    "humidity_sensors": ["sensor.living_room_humidity"],
+    "supply_temperature_sensor": "sensor.living_room_supply",
+}
+
+
+async def test_adding_a_cooling_room_cools_its_private_loop(hass) -> None:
+    """The Cooling section of Add a room enables cooling on the room's own loop."""
+    entry = await _setup(hass, _pump_only_entry())
+    result = await _start_room(hass, entry)
+    fields = form_fields(result)
+    assert fields["cooling"]["expanded"] is False
+    assert form_value(result, "cooling.cooling_enabled") is False
+
+    result = await _configure(hass, result, {**LIVING_INPUT, "cooling": LIVING_COOLING})
+    result = await _confirmed(hass, result)
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    draft = room_draft(entry.data, _zone_id(entry, "Living room"))
+    (circuit,) = draft.circuits
+    assert circuit["cooling_enabled"] is True
+    assert circuit["supply_temperature_sensor"] == "sensor.living_room_supply"
+    assert circuit["surface_temperature_sensor"] is None
+    assert circuit["condensation_margin"] == 2.0
+    assert [sensor["entity_id"] for sensor in draft.zone["humidity_sensor_metadata"]] == [
+        "sensor.living_room_humidity"
+    ]
+    assert entry.state is ConfigEntryState.LOADED
+    assert effective_plant(entry).compiled.circuits[circuit["id"]].cooling_enabled is True
+
+
+async def test_room_basics_edit_has_no_cooling_section(hass) -> None:
+    """Cooling of an existing room stays in its loop and sensors steps."""
+    entry = await _setup(hass, _pump_only_entry())
+    result = await _configure(hass, await _start_room(hass, entry), LIVING_INPUT)
+    subentry = room_subentry(entry, _zone_id(entry, "Living room"))
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await _configure(hass, result, {"next_step_id": "room"})
+
+    assert "cooling" not in form_fields(result)
+
+
+@pytest.mark.parametrize(
+    ("room_input", "errors"),
+    [
+        pytest.param(
+            {
+                "name": "Living room",
+                "temperature_sensors": [LIVING.temperature_sensor],
+                "shared_loops": [SHARED_LOOP_ID],
+                "cooling": LIVING_COOLING,
+            },
+            {"base": "cooling_requires_room_loop"},
+            id="shared loops only",
+        ),
+        pytest.param(
+            {
+                **LIVING_INPUT,
+                "cooling": {
+                    key: value
+                    for key, value in LIVING_COOLING.items()
+                    if key != "supply_temperature_sensor"
+                },
+            },
+            {"base": "cooling_reference_required"},
+            id="no condensation reference",
+        ),
+        pytest.param(
+            {**LIVING_INPUT, "cooling": {**LIVING_COOLING, "humidity_sensors": []}},
+            {"base": "humidity_required_for_cooling"},
+            id="no humidity sensors",
+        ),
+        pytest.param(
+            {
+                **LIVING_INPUT,
+                "temperature_sensors": [],
+                "external_climate_entity": "climate.living_room_thermostat",
+                "cooling": LIVING_COOLING,
+            },
+            {"temperature_sensors": "temperature_required_for_cooling"},
+            id="no temperature sensors",
+        ),
+    ],
+)
+async def test_adding_a_cooling_room_is_validated(hass, room_input, errors) -> None:
+    """Cooling needs the room's own loop, a condensation reference, and room sensors."""
+    topology = _with_shared_loop({"pumps": [_pump()]})
+    entry = await _setup(hass, plant_entry(plant_data(topology)))
+    result = await _start_room(hass, entry)
+
+    result = await _configure(hass, result, room_input)
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == errors
+    assert entry.subentries == {}
+
+
 async def test_empty_required_selections_are_reported_on_their_fields(hass) -> None:
     """A lazily loaded picker can submit an empty list, which the flow rejects by field."""
     entry = await _setup(hass, _pump_only_entry())
@@ -1222,17 +1322,17 @@ async def test_concurrent_edits_of_a_live_plant_keep_each_others_changes(hass) -
     room_task = hass.async_create_task(
         hass.config_entries.subentries.async_configure(room["flow_id"], KITCHEN_INPUT)
     )
-    pump = await entry.start_reconfigure_flow(hass)
-    pump = await hass.config_entries.flow.async_configure(
+    pump = await hass.config_entries.options.async_init(entry.entry_id)
+    pump = await hass.config_entries.options.async_configure(
         pump["flow_id"], {"next_step_id": "edit_pump"}
     )
-    pump = await hass.config_entries.flow.async_configure(
+    pump = await hass.config_entries.options.async_configure(
         pump["flow_id"], {"pump": MANIFOLD_PUMP_ID}
     )
     assert pump["step_id"] == "pump"
     # The pump save waits for the runtime lock the shutdown holds.
     pump_task = hass.async_create_task(
-        hass.config_entries.flow.async_configure(
+        hass.config_entries.options.async_configure(
             pump["flow_id"],
             {"name": "Renamed pump", "entity_id": MANIFOLD_PUMP_ENTITY, "overrun_seconds": 0.0},
         )
@@ -1245,7 +1345,7 @@ async def test_concurrent_edits_of_a_live_plant_keep_each_others_changes(hass) -
     await hass.async_block_till_done()
 
     assert room_result["type"] == FlowResultType.CREATE_ENTRY
-    assert pump_result["reason"] == "reconfigure_successful"
+    assert pump_result["reason"] == "settings_saved"
     topology = entry.data["topology"]
     assert [zone["name"] for zone in topology["zones"]] == ["Living room", "Bedroom", "Kitchen"]
     assert [pump["name"] for pump in topology["pumps"]] == ["Renamed pump"]

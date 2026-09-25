@@ -59,8 +59,8 @@ def test_compile_topology_produces_summary() -> None:
 
     assert compiled.id == "plant-1"
     assert compiled.logic_summary == (
-        "Loop Floor loop opens valve Floor valve before requesting pump Floor pump.",
-        "Room Living room can request loop Floor loop.",
+        "Floor loop opens Floor valve, then starts Floor pump.",
+        "Living room is heated by Floor loop.",
     )
 
 
@@ -102,10 +102,10 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
     compiled = compile_topology(plant)
 
     assert compiled.logic_summary == (
-        "Loop Floor loop opens valve Shared valve before requesting pump Shared pump.",
-        "Loop Ceiling loop opens valve Shared valve before requesting pump Shared pump.",
-        "Room Living room can request loops Floor loop, Ceiling loop.",
-        "Room Office can request loop Floor loop.",
+        "Floor loop opens Shared valve, then starts Shared pump.",
+        "Ceiling loop opens Shared valve, then starts Shared pump.",
+        "Living room is heated by Floor loop and Ceiling loop.",
+        "Office is heated by Floor loop.",
         "Valve Shared valve is shared by loops Floor loop, Ceiling loop.",
         "Pump Shared pump is shared by loops Floor loop, Ceiling loop.",
     )
@@ -399,7 +399,7 @@ def test_unrouted_circuit_and_its_equipment_are_unused() -> None:
     }
     assert [route.id for route in compiled.routes] == ["route-1"]
     assert (
-        "Loop Spare loop opens valves Spare valve, Floor valve before requesting pump Spare pump."
+        "Spare loop opens Spare valve and Floor valve, then starts Spare pump."
         in compiled.logic_summary
     )
     loop_warning = next(w for w in compiled.warnings if w.equipment_id == "circuit-3")
@@ -1020,6 +1020,50 @@ def test_compile_topology_accepts_cooling_references_and_metadata() -> None:
     compiled = compile_topology(plant)
 
     assert compiled.circuits["circuit"].cooling_enabled is True
+    assert "Zone is heated and cooled by Circuit." in compiled.logic_summary
+
+
+def test_compile_topology_names_the_cooling_loops_of_a_room() -> None:
+    """A room served by heating-only and cooling loops says which loops also cool it."""
+    zone = Zone(
+        "zone",
+        "Living",
+        22.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.temperature"),),
+        humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+    )
+    plant = PlantConfiguration(
+        id="mixed",
+        zones=(zone,),
+        valves=(
+            Valve("floor-valve", "Floor valve", "switch.floor_valve"),
+            Valve("ceiling-valve", "Ceiling valve", "switch.ceiling_valve"),
+        ),
+        pumps=(Pump("pump", "Circulation pump", "switch.pump"),),
+        circuits=(
+            Circuit("floor", "Floor loop", ("floor-valve",), "pump"),
+            Circuit(
+                "ceiling",
+                "Ceiling loop",
+                ("ceiling-valve",),
+                "pump",
+                cooling_enabled=True,
+                supply_temperature_sensor="sensor.supply",
+            ),
+        ),
+        routes=(
+            DeliveryRoute("floor-route", "zone", "floor"),
+            DeliveryRoute("ceiling-route", "zone", "ceiling"),
+        ),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert compiled.logic_summary[:3] == (
+        "Floor loop opens Floor valve, then starts Circulation pump.",
+        "Ceiling loop opens Ceiling valve, then starts Circulation pump.",
+        "Living is heated by Floor loop and Ceiling loop, and cooled by Ceiling loop.",
+    )
 
 
 def test_compile_topology_warns_for_shared_pumps_and_sources() -> None:

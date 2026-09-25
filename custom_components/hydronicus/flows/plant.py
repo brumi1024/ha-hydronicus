@@ -1,4 +1,4 @@
-"""Plant settings: the parent reconfigure menu, pumps, and the plant file."""
+"""Plant settings: the Plant entry's options menu, pumps, and the plant file."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ from ..plant_file import first_own_entity, parsed_plant_file, plant_file, plant_
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
     SECTION_FEEDBACK,
-    ConfigFlowBase,
+    OwnEntityPickerMixin,
     async_persist_entry_data,
     collapsed_section,
     dry_run_confirmation_schema,
@@ -324,8 +324,14 @@ def async_apply_plant_handles(
         hass.config_entries.async_update_entry(entry, title=name)
 
 
-class PlantSettingsSteps(ConfigFlowBase):
-    """Change Plant settings through Home Assistant reconfiguration."""
+class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow):
+    """Change Plant settings from the Plant entry's Configure button.
+
+    Plant settings edit the Plant graph, which lives in the entry data, so every
+    save stores entry data through ``async_persist_entry_data`` and ends with an
+    abort. The entry's update listener then reloads the Plant, and the entry
+    options stay unused.
+    """
 
     _requested_dry_run: bool
     _shown_authorization: dict[str, Any]
@@ -338,17 +344,17 @@ class PlantSettingsSteps(ConfigFlowBase):
     _reviewed: tuple[Any, ...]  # the signature of the Plant the review showed
     _review_blocking: bool
 
-    async def async_step_reconfigure(
+    async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Show the Plant settings menu."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         options = [
             option for option in MENU_OPTIONS if option != "edit_pump" or self._pump_options(entry)
         ]
         # A repair opens this menu directly, so it names the Plant it edits.
         return self.async_show_menu(
-            step_id="reconfigure",
+            step_id="init",
             menu_options=options,
             description_placeholders={"plant": entry.title},
         )
@@ -359,7 +365,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Change the Plant Dry run setting."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         # A Plant held in Dry run by an output conflict is stored live but is
         # not live, so the form offers its effective setting. Leaving Dry run then
         # takes the confirmed, conflict-checked path; choosing Dry run stores it.
@@ -384,7 +390,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Confirm the exact heating outputs before leaving Dry run."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         if user_input is None:
             return self._dry_run_confirmation_form(entry)
         if not user_input.get(CONF_DRY_RUN_CONFIRMATION, False):
@@ -456,7 +462,7 @@ class PlantSettingsSteps(ConfigFlowBase):
                 )
             data = invalidate_output_authorization(entry.data)
             self.hass.config_entries.async_update_entry(entry, data=data)
-        return self.async_abort(reason="reconfigure_successful")
+        return self.async_abort(reason="settings_saved")
 
     # Pumps
 
@@ -494,7 +500,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Choose the Plant pump to edit."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         options = self._pump_options(entry)
         if user_input is not None:
             self._pump_id = str(user_input[CONF_PUMP])
@@ -510,7 +516,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Add, edit, or remove one Plant pump, reviewing the warnings it introduces."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         existing = self._stored_pump(entry)
         editing = self._pump_id is not None
         errors: dict[str, str] = {}
@@ -539,7 +545,7 @@ class PlantSettingsSteps(ConfigFlowBase):
                     errors.update(graph)
                 else:
                     if stored:
-                        return self.async_abort(reason="reconfigure_successful")
+                        return self.async_abort(reason="settings_saved")
                     errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
             step_id="pump",
@@ -614,7 +620,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         A Plant that changed meanwhile so that the pump no longer fits sends the
         user back to the pump form, which explains why.
         """
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         errors: dict[str, str] = {}
         if user_input is not None:
             if not user_input.get(CONF_CONFIRM, False):
@@ -625,7 +631,7 @@ class PlantSettingsSteps(ConfigFlowBase):
                 except _PUMP_EDIT_ERRORS:
                     return await self.async_step_pump(self._pump_input)
                 if stored:
-                    return self.async_abort(reason="reconfigure_successful")
+                    return self.async_abort(reason="settings_saved")
                 errors["base"] = "dry_run_shutdown_in_progress"
         return self._pump_review_form(errors)
 
@@ -635,7 +641,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Show the plant file of this Plant."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         try:
             document = plant_file_yaml(plant_file(entry.data))
         except ValueError as error:
@@ -652,7 +658,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Edit the whole Plant as a plant file."""
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
@@ -714,7 +720,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         that another flow changed meanwhile is reviewed again before anything is
         applied, and a file that no longer fits it returns to the editor.
         """
-        entry = self._get_reconfigure_entry()
+        entry = self.config_entry
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
@@ -723,7 +729,7 @@ class PlantSettingsSteps(ConfigFlowBase):
                 if self._review_blocking and not user_input.get(CONF_CONFIRM, False):
                     errors["base"] = "confirm_required"
                 elif await self._async_apply_plant(entry):
-                    return self.async_abort(reason="reconfigure_successful")
+                    return self.async_abort(reason="settings_saved")
                 else:
                     errors["base"] = "dry_run_shutdown_in_progress"
             except _PlantChangedError:

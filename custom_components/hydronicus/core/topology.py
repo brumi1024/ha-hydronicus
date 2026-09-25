@@ -516,9 +516,24 @@ def _validate_relationships(
     )
 
 
-def _counted(noun: str, names: list[str]) -> str:
-    """Name a list of objects after a singular or plural noun, such as ``loops A, B``."""
-    return f"{noun if len(names) == 1 else noun + 's'} {', '.join(names)}"
+def _listed(names: list[str]) -> str:
+    """Join names the way a sentence lists them, such as ``A, B and C``."""
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _room_delivery(room: str, loops: list[Circuit]) -> str:
+    """Describe which loops heat a room, and which of them also cool it."""
+    heating = [loop.name for loop in loops]
+    cooling = [loop.name for loop in loops if loop.cooling_enabled]
+    if not heating:
+        return f"{room} is not heated by any loop."
+    if cooling == heating:
+        return f"{room} is heated and cooled by {_listed(heating)}."
+    if cooling:
+        return f"{room} is heated by {_listed(heating)}, and cooled by {_listed(cooling)}."
+    return f"{room} is heated by {_listed(heating)}."
 
 
 def _build_summary_and_warnings(
@@ -538,17 +553,17 @@ def _build_summary_and_warnings(
     summary_routes = tuple(route for route in configuration.routes if route.enabled)
     summary = [
         (
-            f"Loop {circuit.name} opens "
-            f"{_counted('valve', [valves[valve_id].name for valve_id in circuit.valve_ids])} "
-            f"before requesting pump {pumps[circuit.pump_id].name}."
+            f"{circuit.name} opens "
+            f"{_listed([valves[valve_id].name for valve_id in circuit.valve_ids])}, "
+            f"then starts {pumps[circuit.pump_id].name}."
         )
         for circuit in configuration.circuits
     ]
     for zone in configuration.zones:
         route_circuits = [
-            circuits[route.circuit_id].name for route in summary_routes if route.zone_id == zone.id
+            circuits[route.circuit_id] for route in summary_routes if route.zone_id == zone.id
         ]
-        summary.append(f"Room {zone.name} can request {_counted('loop', route_circuits)}.")
+        summary.append(_room_delivery(zone.name, route_circuits))
 
     for source in configuration.sources:
         if source.kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:

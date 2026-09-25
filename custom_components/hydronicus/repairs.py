@@ -226,16 +226,14 @@ class PlantSettingsRepairFlow(RepairsFlow):
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
         if entry is None or entry.domain != DOMAIN:
             return self.async_abort(reason="subentry_not_found")
-        result = await self.hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-        )
+        # Plant settings are the options flow of the Plant entry.
+        result = await self.hass.config_entries.options.async_init(entry.entry_id)
         # Abort rather than create an entry: the issue stays until the binding
         # actually resolves, and the runtime removes it on its next synchronization.
         return self.async_abort(
             reason="reconfigure_subentry",
             description_placeholders=placeholders,
-            next_flow=(FlowType.CONFIG_FLOW, result["flow_id"]),
+            next_flow=(FlowType.OPTIONS_FLOW, result["flow_id"]),
         )
 
 

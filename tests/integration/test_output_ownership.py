@@ -200,7 +200,7 @@ async def test_leaving_dry_run_is_refused_while_another_live_plant_shares_output
     assert calls == []
 
 
-async def test_reconfigure_confirmation_shows_the_output_conflict(hass: HomeAssistant) -> None:
+async def test_plant_settings_confirmation_shows_the_output_conflict(hass: HomeAssistant) -> None:
     """The Dry run confirmation reports the conflict as a form error, not a crash."""
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
@@ -209,14 +209,14 @@ async def test_reconfigure_confirmation_shows_the_output_conflict(hass: HomeAssi
         _plant_data(2, sensor="sensor.warm_room", live=False),
     )
 
-    result = await second.start_reconfigure_flow(hass)
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_init(second.entry_id)
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "dry_run"}
     )
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_DRY_RUN: False}
     )
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True}
     )
 
@@ -577,8 +577,8 @@ async def test_turning_on_dry_run_for_a_held_plant_is_stored(hass: HomeAssistant
     assert calls == []
 
 
-async def test_reconfigure_shows_a_held_plant_in_dry_run(hass: HomeAssistant) -> None:
-    """Reconfigure offers the held Plant's effective Dry run and reports the conflict."""
+async def test_plant_settings_show_a_held_plant_in_dry_run(hass: HomeAssistant) -> None:
+    """Plant settings offer the held Plant's effective Dry run and reports the conflict."""
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
         hass,
@@ -586,17 +586,17 @@ async def test_reconfigure_shows_a_held_plant_in_dry_run(hass: HomeAssistant) ->
         _plant_data(2, sensor="sensor.warm_room"),
     )
 
-    result = await second.start_reconfigure_flow(hass)
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_init(second.entry_id)
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "dry_run"}
     )
     (dry_run_key,) = [key for key in result["data_schema"].schema if key == CONF_DRY_RUN]
     assert dry_run_key.default() is True
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_DRY_RUN: False}
     )
     assert result["step_id"] == "dry_run_confirmation"
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True}
     )
 

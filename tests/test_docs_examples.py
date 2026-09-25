@@ -42,6 +42,7 @@ EXTERNAL_LABELS = frozenset(
     {
         "Actions",
         "Add integration",
+        "Configure",
         "Custom repositories",
         "Devices & services",
         "Diagnostic",
