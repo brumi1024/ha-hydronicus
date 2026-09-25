@@ -21,7 +21,7 @@
           "pump_entity": "Pump entity"
         },
         "data_description": {
-          "name": "Shown as the integration entry title and used as the device name prefix.",
+          "name": "Names the Plant, its device, and its Plant-wide entities.",
           "pump_entity": "The switch that runs the circulation pump."
         },
         "sections": {
@@ -77,7 +77,7 @@
       },
       "review": {
         "title": "Review the Plant",
-        "description": "Rooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
+        "description": "Rooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -97,7 +97,7 @@
       },
       "import_review": {
         "title": "Review the imported Plant",
-        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
+        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nHow it connects:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. To control equipment, open the Plant's Configure button and leave Dry run after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -507,7 +507,7 @@
         }
       },
       "dry_run_confirmation": {
-        "title": "Confirm heating control",
+        "title": "Confirm equipment control",
         "description": "Hydronicus will be allowed to control only these exact heating and cooling outputs when the plan permits them:\n{outputs}",
         "data": {
           "dry_run_confirmation": "I understand these outputs may be controlled"

@@ -617,12 +617,14 @@ def _cooling_interlocks(
             margins.append(margin)
             if margin <= circuit.condensation_margin:
                 circuit_blocked = True
+                position = f"{margin:.1f} °C above" if margin >= 0 else f"{-margin:.1f} °C below"
                 interlocks.append(
                     SafetyInterlockResult(
                         f"cooling:{route.circuit_id}:{reference_name}",
                         InterlockStatus.BLOCKED,
-                        f"Cooling is blocked before the condensation margin is crossed: "
-                        f"{margin:.2f} °C is at or below {circuit.condensation_margin:.2f} °C.",
+                        f"Cooling is blocked to prevent condensation: the {reference_name} "
+                        f"temperature is {position} the dew point, inside the "
+                        f"{circuit.condensation_margin:.1f} °C condensation margin.",
                     )
                 )
             else:
