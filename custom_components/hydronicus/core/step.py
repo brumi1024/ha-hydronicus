@@ -436,6 +436,10 @@ class _Evaluation:
             loop: mode is Mode.COOL and guards.get(str(loop.ref), GuardState(False, now)).blocked
             for loop in plant.all_loops
         }
+        if mode is not Mode.COOL:
+            # A guard blocks only cooling; outside it, it only follows its reference.
+            for key in [f"{ref}.guard" for ref in guards]:
+                self.reasons.pop(key, None)
         plan = _Plan(self, mode, label, active, demands, blocked_by_guard)
         outputs = plan.outputs()
 

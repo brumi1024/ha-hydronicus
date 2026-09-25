@@ -458,6 +458,17 @@ def test_a_released_request_keeps_its_running_pump_until_it_is_observed_off() ->
     assert run(plant, off, state)[1].outputs["switch.pump"] == OFF
 
 
+def test_a_condensation_guard_neither_blocks_nor_reports_while_heating() -> None:
+    plant = _plant(HEAT_PUMP)
+    # 18 °C at 50 % has a dew point of 7.4 °C: 8 °C is inside the 2 K margin.
+    cold_supply = {"sensor.supply": Reading(8.0, NOW)}
+    heating = observe(plant, temperatures={"a": 18.0}, on=["switch.a_ceiling"], sensors=cold_supply)
+    state, desired, _ = run(plant, heating)
+    assert state.guards["a.ceiling"].blocked, "the guard is ready for a change to cooling"
+    assert desired.source_request
+    assert not [key for key in desired.reasons if key.endswith(".guard")]
+
+
 def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteresis() -> None:
     plant = _plant(HEAT_PUMP)
     warm = {"a": 26.0}
