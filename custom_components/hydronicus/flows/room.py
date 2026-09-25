@@ -96,7 +96,6 @@ from .room_form import (
     new_valves,
     pump_options,
     room_draft_from_form,
-    room_entity_errors,
     room_form_defaults,
     room_form_errors,
     room_form_schema,
@@ -702,7 +701,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             errors[CONF_VALVES] = "valves_required"
         if not user_input.get(CONF_PUMP):
             errors[CONF_PUMP] = "pump_required"
-        errors.update(room_entity_errors(self.hass, user_input))
+        errors.update(own_entity_errors(self.hass, user_input))
         return errors
 
     def _loop_form(

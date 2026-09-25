@@ -615,12 +615,6 @@ class _FormAudit:
                     value = option if isinstance(option, str) else option["value"]
                     self._need(f"selector.{key}.options.{value}")
 
-    def check_menu(self, result: Mapping[str, Any]) -> None:
-        step = f"{self.flow_prefix}.step.{result['step_id']}"
-        self._need(f"{step}.title")
-        for option in result["menu_options"]:
-            self._need(f"{step}.menu_options.{option}")
-
     def check(self, result: Mapping[str, Any]) -> Mapping[str, Any]:
         if result["type"] == FlowResultType.FORM:
             step = f"{self.flow_prefix}.step.{result['step_id']}"
@@ -944,8 +938,7 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
         )
         assert result["reason"] == "reconfigure_successful"
     menu = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
-    room.steps.add(menu["step_id"])
-    room.check_menu(menu)
+    room.check(menu)
     hass.config_entries.subentries.async_abort(menu["flow_id"])
     bedroom = {
         CONF_NAME: "Bedroom",

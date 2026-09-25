@@ -64,10 +64,8 @@ from .common import (
 CONF_PUMP = "pump"
 CONF_SHARED_LOOPS = "shared_loops"
 
+
 # Entity fields of the room forms that the shared own-entity check does not cover yet.
-_ROOM_ENTITY_FIELDS = frozenset({CONF_VALVES})
-
-
 def valve_entity_selector() -> selector.EntitySelector:
     """Return the picker for the switches and valves of a loop."""
     return selector.EntitySelector(
@@ -158,17 +156,6 @@ def shared_loop_options(plant: EffectivePlant) -> list[selector.SelectOptionDict
     ]
 
 
-def room_entity_errors(hass: HomeAssistant, user_input: Mapping[str, Any]) -> dict[str, str]:
-    """Reject submitted Hydronicus entities, including the room's valve entities."""
-    errors = own_entity_errors(hass, user_input)
-    for key in _ROOM_ENTITY_FIELDS:
-        if key not in errors and any(
-            is_hydronicus_owned(hass, entity_id) for entity_id in _entity_list(user_input.get(key))
-        ):
-            errors[key] = "own_entity"
-    return errors
-
-
 def room_form_errors(
     hass: HomeAssistant, user_input: Mapping[str, Any], plant: EffectivePlant
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -189,7 +176,7 @@ def room_form_errors(
         errors["base"] = "delivery_required"
     elif user_input.get(CONF_VALVES) and _pump_id(user_input, plant) is None:
         errors[CONF_PUMP if len(plant.configuration.pumps) >= 2 else "base"] = "pump_required"
-    errors.update(room_entity_errors(hass, user_input))
+    errors.update(own_entity_errors(hass, user_input))
     if external and is_hydronicus_owned(hass, str(external)):
         errors["base"] = "thermostat_loop"
     return errors, {}
@@ -405,14 +392,6 @@ def _pump_id(user_input: Mapping[str, Any], plant: EffectivePlant) -> str | None
     if len(pump_ids) == 1:
         return next(iter(pump_ids))
     return None
-
-
-def _entity_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, (list, tuple)):
-        return [item for item in value if isinstance(item, str) and item]
-    return []
 
 
 def _canonical(object_id: Any) -> str:

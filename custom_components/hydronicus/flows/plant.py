@@ -10,7 +10,6 @@ from typing import Any, Final
 from uuid import UUID, uuid4
 
 import voluptuous as vol
-import yaml
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
@@ -57,7 +56,7 @@ from ..entry_configuration import (
     topology_copy,
 )
 from ..migration import async_move_object_registrations
-from ..services import plant_file, plant_file_yaml
+from ..plant_file import first_own_entity, parsed_plant_file, plant_file, plant_file_yaml
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
     SECTION_FEEDBACK,
@@ -66,7 +65,6 @@ from .common import (
     collapsed_section,
     dry_run_confirmation_schema,
     flatten_sections,
-    is_hydronicus_owned,
     max_age_selector,
     name_selector,
     optional_entity,
@@ -178,16 +176,6 @@ def _object_id(record: Mapping[str, Any]) -> str:
         return raw
 
 
-def _parsed_document(document: Any) -> Any:
-    """Return the submitted plant file, parsing it when it arrives as YAML text."""
-    if not isinstance(document, str):
-        return document
-    try:
-        return yaml.safe_load(document)
-    except yaml.YAMLError as error:
-        raise PlantDocumentError("", f"The plant file is not valid YAML: {error}") from error
-
-
 def _object_ids(data: Mapping[str, Any]) -> set[str]:
     """Return the id of every zone, loop, valve, pump, and source of stored data."""
     topology = topology_copy(data)
@@ -270,14 +258,6 @@ def _routes_of(topology: Mapping[str, Any], zone_id: str) -> list[str]:
         for route in topology[CONF_ROUTES]
         if str(route.get("zone_id")) == zone_id
     )
-
-
-def _first_own_entity(hass: HomeAssistant, imported: ImportedPlant) -> tuple[str, str] | None:
-    """Return the path and entity ID of the first Hydronicus entity the file binds."""
-    for entity_id, path in imported.entity_paths.items():
-        if is_hydronicus_owned(hass, entity_id):
-            return path, entity_id
-    return None
 
 
 def _handle_owners(
@@ -600,7 +580,7 @@ class PlantSettingsSteps(ConfigFlowBase):
             plant_id = str(UUID(str(entry.data[CONF_PLANT_ID])))
             try:
                 imported = import_plant_document(
-                    _parsed_document(user_input.get(CONF_DOCUMENT)), plant_id=plant_id
+                    parsed_plant_file(user_input.get(CONF_DOCUMENT)), plant_id=plant_id
                 )
                 data = data_with_plant(entry.data, imported)
             except PlantDocumentError as error:
@@ -612,7 +592,7 @@ class PlantSettingsSteps(ConfigFlowBase):
             else:
                 if imported.plant_id != plant_id:
                     errors["base"] = "plant_id_mismatch"
-                elif own := _first_own_entity(self.hass, imported):
+                elif own := first_own_entity(self.hass, imported):
                     errors["base"] = "document_own_entity"
                     placeholders = {"path": own[0], "entity_id": own[1]}
                 elif _signature(data) == _signature(entry.data):
