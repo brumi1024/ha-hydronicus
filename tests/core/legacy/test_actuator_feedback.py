@@ -5,14 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronicus_core.controller import (
+from hydronicus_core.legacy.controller import (
     _feedback_active,
     _feedback_boolean,
     _position_state,
     evaluate,
     safe_shutdown,
 )
-from hydronicus_core.model import (
+from hydronicus_core.legacy.model import (
     ActuatorFeedback,
     ActuatorFeedbackStatus,
     Circuit,
@@ -34,7 +34,7 @@ from hydronicus_core.model import (
     ValveState,
     Zone,
 )
-from hydronicus_core.topology import compile_topology
+from hydronicus_core.legacy.topology import compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 

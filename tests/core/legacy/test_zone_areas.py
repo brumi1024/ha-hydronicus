@@ -7,14 +7,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from hydronicus_core.configuration import (
+from hydronicus_core.legacy.configuration import (
     DesignatedReferenceError,
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
-from hydronicus_core.controller import aggregate_temperature, evaluate
-from hydronicus_core.entity_bindings import configured_entity_bindings
-from hydronicus_core.model import (
+from hydronicus_core.legacy.controller import aggregate_temperature, evaluate
+from hydronicus_core.legacy.entity_bindings import configured_entity_bindings
+from hydronicus_core.legacy.model import (
     AreaSensors,
     HydronicusThermostatState,
     NumericObservation,
@@ -26,7 +26,7 @@ from hydronicus_core.model import (
     ZoneArea,
     ZoneDecisionStatus,
 )
-from hydronicus_core.topology import (
+from hydronicus_core.legacy.topology import (
     CoolingObservationError,
     TopologyValidationError,
     compile_topology,
@@ -34,7 +34,7 @@ from hydronicus_core.topology import (
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests.core.strategies import stored_plants
+from tests.core.legacy.strategies import stored_plants
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"

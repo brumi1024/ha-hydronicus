@@ -10,9 +10,9 @@ from uuid import UUID, uuid5
 
 import pytest
 import yaml
-from hydronicus_core.configuration import plant_configuration_from_entry_data
-from hydronicus_core.ownership import PlantOwnership, derive_ownership, validate_ownership
-from hydronicus_core.plant_document import (
+from hydronicus_core.legacy.configuration import plant_configuration_from_entry_data
+from hydronicus_core.legacy.ownership import PlantOwnership, derive_ownership, validate_ownership
+from hydronicus_core.legacy.plant_document import (
     PLANT_FILE_FORMAT,
     ImportedPlant,
     PlantDocumentError,
@@ -21,9 +21,9 @@ from hydronicus_core.plant_document import (
 )
 from hypothesis import given, settings
 
-from tests.core.strategies import stored_plants
+from tests.core.legacy.strategies import stored_plants
 
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "plant_files"
+FIXTURES = Path(__file__).parents[2] / "fixtures" / "plant_files"
 PLANT_ID = "00000000-0000-4000-8000-0000000000aa"
 OTHER_PLANT_ID = "00000000-0000-4000-8000-0000000000bb"
 NAMESPACE = UUID(PLANT_ID)

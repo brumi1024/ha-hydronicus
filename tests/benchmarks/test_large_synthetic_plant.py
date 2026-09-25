@@ -9,10 +9,12 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from custom_components.hydronicus.core.configuration import plant_configuration_from_entry_data
-from custom_components.hydronicus.core.controller import evaluate
-from custom_components.hydronicus.core.model import RuntimeState
-from custom_components.hydronicus.core.topology import compile_topology
+from custom_components.hydronicus.core.legacy.configuration import (
+    plant_configuration_from_entry_data,
+)
+from custom_components.hydronicus.core.legacy.controller import evaluate
+from custom_components.hydronicus.core.legacy.model import RuntimeState
+from custom_components.hydronicus.core.legacy.topology import compile_topology
 from tests.integration.plant_fixtures import plant_entry
 
 from .plant_factory import (

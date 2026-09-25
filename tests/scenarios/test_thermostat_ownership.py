@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from hydronicus_core.controller import evaluate
-from hydronicus_core.executor import ActuatorExecutor
-from hydronicus_core.model import (
+from hydronicus_core.legacy.controller import evaluate
+from hydronicus_core.legacy.executor import ActuatorExecutor
+from hydronicus_core.legacy.model import (
     Circuit,
     DeliveryRoute,
     ExternalClimateThermostatConfig,
@@ -29,7 +29,7 @@ from hydronicus_core.model import (
     Zone,
     ZoneDecisionStatus,
 )
-from hydronicus_core.topology import compile_topology
+from hydronicus_core.legacy.topology import compile_topology
 
 NOW = datetime(2026, 7, 20, 12, tzinfo=UTC)
 

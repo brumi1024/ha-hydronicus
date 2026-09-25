@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from hydronicus_core.configuration import (
+from hydronicus_core.legacy.configuration import (
     DesignatedReferenceError,
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
-from hydronicus_core.model import TemperatureAggregation
+from hydronicus_core.legacy.model import TemperatureAggregation
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"

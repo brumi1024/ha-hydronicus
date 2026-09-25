@@ -8,8 +8,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from custom_components.hydronicus.core.controller import evaluate
-from custom_components.hydronicus.core.model import (
+from custom_components.hydronicus.core.legacy.controller import evaluate
+from custom_components.hydronicus.core.legacy.model import (
     Circuit,
     DeliveryRoute,
     ExternalClimateThermostatConfig,
@@ -29,7 +29,7 @@ from custom_components.hydronicus.core.model import (
     ZoneDecisionStatus,
     ZoneRuntime,
 )
-from custom_components.hydronicus.core.topology import compile_topology
+from custom_components.hydronicus.core.legacy.topology import compile_topology
 
 NOW = datetime(2026, 7, 20, 12, tzinfo=UTC)
 

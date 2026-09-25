@@ -6,9 +6,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronicus_core.configuration import StoredTopologyError, plant_configuration_from_entry_data
-from hydronicus_core.controller import evaluate
-from hydronicus_core.model import (
+from hydronicus_core.legacy.configuration import (
+    StoredTopologyError,
+    plant_configuration_from_entry_data,
+)
+from hydronicus_core.legacy.controller import evaluate
+from hydronicus_core.legacy.model import (
     ActuatorAction,
     Circuit,
     DeliveryRoute,
@@ -30,7 +33,7 @@ from hydronicus_core.model import (
     ValveState,
     Zone,
 )
-from hydronicus_core.topology import TopologyValidationError, compile_topology
+from hydronicus_core.legacy.topology import TopologyValidationError, compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 STORED_PLANT_ID = "00000000-0000-4000-8000-000000000001"

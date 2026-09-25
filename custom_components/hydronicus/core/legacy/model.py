@@ -1,0 +1,911 @@
+"""Domain types that contain no Home Assistant dependencies."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from types import MappingProxyType
+
+MIN_ZONE_TARGET_TEMPERATURE = 5.0
+MAX_ZONE_TARGET_TEMPERATURE = 35.0
+
+
+class ValveState(StrEnum):
+    """Virtual or observed lifecycle state of a valve."""
+
+    CLOSED = "closed"
+    OPENING = "opening"
+    OPEN = "open"
+    INDETERMINATE = "indeterminate"
+
+
+class PumpState(StrEnum):
+    """Virtual or observed lifecycle state of a pump."""
+
+    OFF = "off"
+    WAITING_FOR_VALVES = "waiting_for_valves"
+    STARTING = "starting"
+    RUNNING = "running"
+    OVERRUN = "overrun"
+
+
+class SafeShutdownPhase(StrEnum):
+    """Ordered phases of an explicit safe-shutdown request."""
+
+    IDLE = "idle"
+    SOURCE_RELEASED = "source_released"
+    PUMP_OVERRUN = "pump_overrun"
+    PUMPS_STOPPED = "pumps_stopped"
+    VALVES_CLOSED = "valves_closed"
+
+
+class ActuatorFeedbackStatus(StrEnum):
+    """Conservative status of configured actuator feedback."""
+
+    NOT_CONFIGURED = "not_configured"
+    HEALTHY = "healthy"
+    MISMATCH = "mismatch"
+    BLOCKED = "blocked"
+    UNKNOWN = "unknown"
+
+
+class PlantMode(StrEnum):
+    """Operating mode shared by heating, cooling, and idle evaluations."""
+
+    AUTO = "auto"
+    IDLE = "idle"
+    HEATING = "heating"
+    COOLING = "cooling"
+
+
+class ModeChangeoverPhase(StrEnum):
+    """Ordered phases used while moving the shared plant between modes."""
+
+    IDLE = "idle"
+    SOURCE_RELEASE = "source_release"
+    PUMP_OVERRUN = "pump_overrun"
+    PUMPS_STOPPING = "pumps_stopping"
+    VALVES_CLOSING = "valves_closing"
+
+
+class ActuatorAction(StrEnum):
+    """Explicit actuator operations accepted by the executor boundary."""
+
+    OPEN = "open"
+    CLOSE = "close"
+    TURN_ON = "turn_on"
+    TURN_OFF = "turn_off"
+    SELECT = "select"
+
+
+class InterlockStatus(StrEnum):
+    """Result of one safety interlock evaluation."""
+
+    PERMITTED = "permitted"
+    BLOCKED = "blocked"
+    UNKNOWN = "unknown"
+
+
+class EquipmentKind(StrEnum):
+    """Kind of Plant equipment named by a topology warning or mode conflict."""
+
+    VALVE = "valve"
+    PUMP = "pump"
+    SOURCE = "source"
+    CIRCUIT = "circuit"
+
+
+class BindingCategory(StrEnum):
+    """Safety category for one configured Home Assistant entity reference."""
+
+    SENSOR = "sensor"
+    FEEDBACK = "feedback"
+    ACTUATOR = "actuator"
+    THERMOSTAT = "thermostat"
+
+
+class TemperatureAggregation(StrEnum):
+    """Policy used to combine a zone's configured temperature readings."""
+
+    DESIGNATED_REFERENCE = "designated_reference"
+    MEAN = "mean"
+    MEDIAN = "median"
+    MINIMUM = "minimum"
+    MAXIMUM = "maximum"
+    WEIGHTED_MEAN = "weighted_mean"
+
+
+class ZoneDecisionStatus(StrEnum):
+    """Structured result category for one zone evaluation."""
+
+    REQUESTED = "requested"
+    SATISFIED = "satisfied"
+    DURATION_HELD = "duration_held"
+    DURATION_LOCKED = "duration_locked"
+    SENSOR_BLOCKED = "sensor_blocked"
+    MODE_BLOCKED = "mode_blocked"
+
+
+class ThermostatKind(StrEnum):
+    """Configured owner of one Zone's comfort demand."""
+
+    HYDRONICUS = "hydronicus"
+    EXTERNAL_CLIMATE = "external_climate"
+
+
+class ThermostatHvacMode(StrEnum):
+    """Home Assistant-independent thermostat operating modes."""
+
+    OFF = "off"
+    HEAT = "heat"
+    COOL = "cool"
+    HEAT_COOL = "heat_cool"
+    AUTO = "auto"
+
+
+class ExternalHvacAction(StrEnum):
+    """Normalized actions accepted from an external climate entity."""
+
+    OFF = "off"
+    IDLE = "idle"
+    HEATING = "heating"
+    PREHEATING = "preheating"
+    COOLING = "cooling"
+
+
+class SourceKind(StrEnum):
+    """Supported source qualification strategies."""
+
+    EXTERNAL = "external"
+    TEMPERATURE_QUALIFIED_BUFFER = "temperature_qualified_buffer"
+
+
+class SourceSelectionPhase(StrEnum):
+    """Ordered phases of a deterministic source changeover."""
+
+    IDLE = "idle"
+    WAITING_FOR_HYDRAULICS = "waiting_for_hydraulics"
+    MINIMUM_DWELL = "minimum_dwell"
+    RELEASING = "releasing"
+    BREAKING = "breaking"
+    SELECTING = "selecting"
+    ACTIVE = "active"
+
+
+@dataclass(frozen=True, slots=True)
+class TemperatureSensorMetadata:
+    """Immutable configuration for one temperature observation."""
+
+    entity_id: str
+    required: bool = True
+    weight: float = 1.0
+    calibration_offset: float = 0.0
+    max_age_seconds: float = 1800.0
+    designated_reference: bool = False
+    # The Home Assistant area this record was resolved from, or None for an explicit sensor.
+    area_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneArea:
+    """One Home Assistant area a zone covers, with the settings of its temperature sensor.
+
+    The area's humidity sensor is always required, with the area's maximum age.
+    """
+
+    area_id: str
+    required: bool = False
+    weight: float = 1.0
+    designated_reference: bool = False
+    max_age_seconds: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
+class AreaSensors:
+    """The sensors that Home Assistant currently names for one area."""
+
+    temperature_entity_id: str | None = None
+    humidity_entity_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HydronicusThermostatConfig:
+    """Static policy for a Hydronicus-owned digital thermostat."""
+
+    initial_target_temperature: float = 21.0
+    heating_start_delta: float = 0.3
+    heating_stop_delta: float = 0.1
+    cooling_start_delta: float = 0.3
+    cooling_stop_delta: float = 0.1
+    minimum_active_duration_seconds: float = 0.0
+    minimum_idle_duration_seconds: float = 0.0
+    preset_targets: Mapping[str, float] = field(default_factory=dict)
+    initial_preset: str = "none"
+
+    @property
+    def kind(self) -> ThermostatKind:
+        """Return the persisted discriminator."""
+        return ThermostatKind.HYDRONICUS
+
+    def __post_init__(self) -> None:
+        """Freeze preset targets at the domain boundary."""
+        object.__setattr__(self, "preset_targets", MappingProxyType(dict(self.preset_targets)))
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalClimateThermostatConfig:
+    """Reference to one read-only existing Home Assistant climate entity."""
+
+    entity_id: str
+
+    @property
+    def kind(self) -> ThermostatKind:
+        """Return the persisted discriminator."""
+        return ThermostatKind.EXTERNAL_CLIMATE
+
+
+type ThermostatConfig = HydronicusThermostatConfig | ExternalClimateThermostatConfig
+
+
+@dataclass(frozen=True, slots=True)
+class HydronicusThermostatState:
+    """Mutable digital-thermostat state normalized by the adapter."""
+
+    target_temperature: float = 21.0
+    preset: str = "none"
+    hvac_mode: ThermostatHvacMode = ThermostatHvacMode.OFF
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalClimateThermostatState:
+    """Read-only external climate state normalized by the adapter."""
+
+    available: bool = False
+    hvac_action: ExternalHvacAction | None = None
+    hvac_mode: ThermostatHvacMode | None = None
+    target_temperature: float | None = None
+    current_temperature: float | None = None
+    explanation: str = "External thermostat state is unavailable."
+    hvac_mode_valid: bool = True
+
+
+type ThermostatState = HydronicusThermostatState | ExternalClimateThermostatState
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class Zone:
+    """A comfort area whose demand is owned by exactly one thermostat."""
+
+    id: str
+    name: str
+    thermostat: ThermostatConfig
+    temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
+    aggregation: TemperatureAggregation
+    humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
+    # The declared areas; the sensor metadata above already holds their resolved records.
+    areas: tuple[ZoneArea, ...]
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        target_temperature: float = 21.0,
+        temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...] = (),
+        aggregation: TemperatureAggregation = TemperatureAggregation.MEAN,
+        heating_start_delta: float = 0.3,
+        heating_stop_delta: float = 0.1,
+        minimum_active_duration_seconds: float = 0.0,
+        minimum_idle_duration_seconds: float = 0.0,
+        preset_targets: Mapping[str, float] | None = None,
+        humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...] = (),
+        cooling_start_delta: float = 0.3,
+        cooling_stop_delta: float = 0.1,
+        *,
+        thermostat: ThermostatConfig | None = None,
+        areas: tuple[ZoneArea, ...] = (),
+    ) -> None:
+        """Create a Zone, accepting the former constructor as a test compatibility seam."""
+        if thermostat is None:
+            thermostat = HydronicusThermostatConfig(
+                initial_target_temperature=target_temperature,
+                heating_start_delta=heating_start_delta,
+                heating_stop_delta=heating_stop_delta,
+                cooling_start_delta=cooling_start_delta,
+                cooling_stop_delta=cooling_stop_delta,
+                minimum_active_duration_seconds=minimum_active_duration_seconds,
+                minimum_idle_duration_seconds=minimum_idle_duration_seconds,
+                preset_targets=preset_targets or {},
+            )
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "thermostat", thermostat)
+        object.__setattr__(self, "temperature_sensor_metadata", temperature_sensor_metadata)
+        object.__setattr__(self, "aggregation", aggregation)
+        object.__setattr__(self, "humidity_sensor_metadata", humidity_sensor_metadata)
+        object.__setattr__(self, "areas", areas)
+
+    @property
+    def target_temperature(self) -> float:
+        """Return the internal thermostat's initialization fallback for legacy callers."""
+        if isinstance(self.thermostat, HydronicusThermostatConfig):
+            return self.thermostat.initial_target_temperature
+        return 21.0
+
+    @property
+    def heating_start_delta(self) -> float:
+        return (
+            self.thermostat.heating_start_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def heating_stop_delta(self) -> float:
+        return (
+            self.thermostat.heating_stop_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def cooling_start_delta(self) -> float:
+        return (
+            self.thermostat.cooling_start_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def cooling_stop_delta(self) -> float:
+        return (
+            self.thermostat.cooling_stop_delta
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def minimum_active_duration_seconds(self) -> float:
+        return (
+            self.thermostat.minimum_active_duration_seconds
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def minimum_idle_duration_seconds(self) -> float:
+        return (
+            self.thermostat.minimum_idle_duration_seconds
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else 0.0
+        )
+
+    @property
+    def preset_targets(self) -> Mapping[str, float]:
+        return (
+            self.thermostat.preset_targets
+            if isinstance(self.thermostat, HydronicusThermostatConfig)
+            else MappingProxyType({})
+        )
+
+    @property
+    def temperature_sensors(self) -> tuple[str, ...]:
+        """Return entity IDs for adapter callers that do not need metadata."""
+        return tuple(sensor.entity_id for sensor in self.temperature_sensor_metadata)
+
+    @property
+    def sensor_metadata(self) -> tuple[TemperatureSensorMetadata, ...]:
+        """Return the canonical per-sensor configuration records."""
+        return self.temperature_sensor_metadata
+
+    @property
+    def humidity_sensors(self) -> tuple[str, ...]:
+        """Return configured humidity entity IDs."""
+        return tuple(sensor.entity_id for sensor in self.humidity_sensor_metadata)
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneRuntime:
+    """Persistable demand state and its last state-transition timestamp."""
+
+    demand: bool = False
+    last_demand_transition_at: datetime | None = None
+
+    @property
+    def demand_active(self) -> bool:
+        """Return the current demand state using an explicit name."""
+        return self.demand
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationResult:
+    """Structured aggregate and sensor-health result for one zone."""
+
+    value: float | None
+    usable_sensor_ids: tuple[str, ...] = ()
+    excluded_optional_sensor_ids: tuple[str, ...] = ()
+    blocking_required_sensor_ids: tuple[str, ...] = ()
+    explanation: str = ""
+
+    @property
+    def is_blocked(self) -> bool:
+        """Return whether sensor health prevents a usable aggregate."""
+        return bool(self.blocking_required_sensor_ids) or not self.usable_sensor_ids
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneDecision:
+    """Structured safety and timing decision for one comfort zone."""
+
+    status: ZoneDecisionStatus
+    demand: bool
+    aggregation: AggregationResult | None = None
+    explanation: str = ""
+    deadline: datetime | None = None
+    # Cooling only: the highest usable humidity and temperature, whose
+    # combination is the worst-case dew point of every space the zone covers.
+    humidity_aggregation: AggregationResult | None = None
+    dew_point_temperature: float | None = None
+    dew_point: float | None = None
+    condensation_margin: float | None = None
+    interlocks: tuple[SafetyInterlockResult, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyWarning:
+    """Non-fatal warning produced while compiling a valid topology."""
+
+    code: str
+    message: str
+    valve_id: str
+    circuit_ids: tuple[str, ...] = ()
+    zone_ids: tuple[str, ...] = ()
+    equipment_kind: str = EquipmentKind.VALVE
+    equipment_id: str | None = None
+
+    @property
+    def affected_equipment_id(self) -> str:
+        """Return the stable id of the equipment involved in this warning."""
+        return self.equipment_id or self.valve_id
+
+
+@dataclass(frozen=True, slots=True)
+class ModeConflict:
+    """Deterministic explanation for a heating/cooling shared-equipment conflict."""
+
+    code: str
+    equipment_kind: str
+    equipment_id: str
+    heating_circuit_ids: tuple[str, ...]
+    cooling_circuit_ids: tuple[str, ...]
+    heating_zone_ids: tuple[str, ...]
+    cooling_zone_ids: tuple[str, ...]
+    message: str
+
+    @property
+    def interlock_id(self) -> str:
+        """Return a stable interlock id suitable for adapter publication."""
+        return f"cooling:mode-conflict:{self.equipment_kind}:{self.equipment_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class SafetyInterlockResult:
+    """Structured result for a safety permit used by future control modes."""
+
+    interlock_id: str
+    status: InterlockStatus
+    reason: str
+
+    @property
+    def permits(self) -> bool:
+        """Return whether this result permits the guarded operation."""
+        return self.status is InterlockStatus.PERMITTED
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecommendation:
+    """Shadow source choice and explanation without issuing an actuator call."""
+
+    source_id: str | None
+    explanation: str
+    eligible_source_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDiagnostic:
+    """One atomic source qualification and guarded-demand result."""
+
+    source_id: str
+    available: bool | None
+    eligible: bool
+    recommended: bool
+    active: bool
+    demand_requested: bool
+    demand_permitted: bool
+    blocked: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class Source:
+    """A configured heat source used by qualification and guarded demand."""
+
+    id: str
+    name: str
+    priority: int = 0
+    kind: SourceKind = SourceKind.EXTERNAL
+    availability_entity_id: str | None = None
+    temperature_entity_id: str | None = None
+    minimum_temperature: float | None = None
+    maximum_age_seconds: float = 1800.0
+    hysteresis: float = 0.5
+    demand_entity_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionActuator:
+    """Generic source selector configuration with a synthetic-safe default."""
+
+    id: str
+    name: str
+    entity_id: str | None = None
+    break_interval_seconds: float = 30.0
+    minimum_dwell_seconds: float = 300.0
+    release_option: str = "none"
+    shadow_only: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionRuntime:
+    """Persistable state for one break-before-make source transition."""
+
+    phase: SourceSelectionPhase = SourceSelectionPhase.IDLE
+    active_source_id: str | None = None
+    target_source_id: str | None = None
+    transition_started_at: datetime | None = None
+    last_selected_at: datetime | None = None
+    released_source_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionDiagnostic:
+    """Structured explanation for source selection and its safety gate."""
+
+    phase: SourceSelectionPhase
+    active_source_id: str | None
+    target_source_id: str | None
+    recommended_source_id: str | None
+    hydraulically_safe: bool
+    explanation: str
+    dwell_remaining_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class Valve:
+    """A topology-owned valve with one Home Assistant entity binding."""
+
+    id: str
+    name: str
+    entity_id: str
+    opening_time_seconds: float = 30.0
+    readiness_entity_id: str | None = None
+    position_entity_id: str | None = None
+    position_max_age_seconds: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
+class Pump:
+    """A topology-owned pump with one Home Assistant entity binding."""
+
+    id: str
+    name: str
+    entity_id: str
+    overrun_seconds: float = 120.0
+    power_entity_id: str | None = None
+    flow_entity_id: str | None = None
+    fault_entity_id: str | None = None
+    power_max_age_seconds: float = 1800.0
+    flow_max_age_seconds: float = 1800.0
+    fault_max_age_seconds: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
+class Circuit:
+    """A water path whose required valves must be ready before its pump may run."""
+
+    id: str
+    name: str
+    valve_ids: tuple[str, ...]
+    pump_id: str
+    cooling_enabled: bool = False
+    supply_temperature_sensor: str | None = None
+    surface_temperature_sensor: str | None = None
+    condensation_margin: float = 2.0
+    supply_temperature_max_age_seconds: float = 1800.0
+    surface_temperature_max_age_seconds: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryRoute:
+    """An eligible connection from a zone to a circuit."""
+
+    id: str
+    zone_id: str
+    circuit_id: str
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class EntityBinding:
+    """One topology-owned entity reference without any Home Assistant dependency."""
+
+    category: BindingCategory
+    object_type: str
+    object_id: str
+    object_name: str
+    binding_key: str
+    label: str
+    entity_id: str
+    circuit_ids: tuple[str, ...] = ()
+    zone_ids: tuple[str, ...] = ()
+    actuator_id: str | None = None
+    required: bool = True
+    # The Home Assistant area whose sensor this binding follows, if any.
+    area_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlantConfiguration:
+    """User topology before validation and compilation."""
+
+    id: str
+    zones: tuple[Zone, ...]
+    valves: tuple[Valve, ...]
+    pumps: tuple[Pump, ...]
+    circuits: tuple[Circuit, ...]
+    routes: tuple[DeliveryRoute, ...]
+    sources: tuple[Source, ...] = ()
+    source_selector: SourceSelectionActuator | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledPlant:
+    """Validated topology optimized for deterministic evaluation."""
+
+    id: str
+    zones: Mapping[str, Zone]
+    valves: Mapping[str, Valve]
+    pumps: Mapping[str, Pump]
+    circuits: Mapping[str, Circuit]
+    routes: tuple[DeliveryRoute, ...]
+    logic_summary: tuple[str, ...]
+    entity_bindings: tuple[EntityBinding, ...] = ()
+    warnings: tuple[TopologyWarning, ...] = ()
+    sources: Mapping[str, Source] = field(default_factory=dict)
+    source_selector: SourceSelectionActuator | None = None
+
+    def zone_can_cool(self, zone_id: str) -> bool:
+        """Return whether an enabled Delivery Route leads the Zone to a cooling Circuit.
+
+        This is the one notion of a zone that can cool: its thermostat offers
+        cool modes and its cooling entities exist exactly when this holds.
+        """
+        return any(
+            route.enabled
+            and route.zone_id == zone_id
+            and self.circuits[route.circuit_id].cooling_enabled
+            for route in self.routes
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NumericObservation:
+    """A normalized temperature or humidity reading supplied by the runtime adapter.
+
+    ``invalid_reason`` explains why the adapter could not produce a usable
+    ``value``, such as an unsupported unit or a physically implausible reading.
+    """
+
+    value: float | None
+    observed_at: datetime | None
+    invalid_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FeedbackObservation:
+    """One typed actuator observation with an explicit freshness timestamp."""
+
+    value: float | bool | str | None
+    observed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ActuatorFeedback:
+    """Optional, independently configured observations for one actuator."""
+
+    position: FeedbackObservation | None = None
+    power: FeedbackObservation | None = None
+    flow: FeedbackObservation | None = None
+    fault: FeedbackObservation | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActuatorDiagnostic:
+    """Structured observed-state, mismatch, and dependent-block explanation."""
+
+    actuator_id: str
+    status: ActuatorFeedbackStatus
+    mismatch: bool = False
+    blocked: bool = False
+    expected: str | None = None
+    observed: str | float | bool | None = None
+    feedback_kind: str | None = None
+    stale_feedback: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def is_mismatch(self) -> bool:
+        """Return whether observed feedback disagrees with requested state."""
+        return self.mismatch
+
+    @property
+    def dependent_blocked(self) -> bool:
+        """Return whether dependent hydraulic paths must fail closed."""
+        return self.blocked
+
+
+@dataclass(frozen=True, slots=True)
+class PlantSnapshot:
+    """All observations required by the pure controller.
+
+    The optional mappings are extension points for cooling safety and source
+    recommendation.  Heating-only callers can continue to provide only
+    ``temperatures``.
+    """
+
+    temperatures: Mapping[str, NumericObservation]
+    thermostats: Mapping[str, ThermostatState] = field(default_factory=dict)
+    humidities: Mapping[str, NumericObservation] = field(default_factory=dict)
+    supply_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
+    surface_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
+    source_temperatures: Mapping[str, NumericObservation] = field(default_factory=dict)
+    source_availability: Mapping[str, bool] = field(default_factory=dict)
+    source_selector_states: Mapping[str, str | None] = field(default_factory=dict)
+    source_demand_states: Mapping[str, bool] = field(default_factory=dict)
+    actuator_feedback: Mapping[str, ActuatorFeedback] = field(default_factory=dict)
+    unavailable_entity_ids: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class ValveRuntime:
+    """Controller-owned lifecycle data for one shared valve."""
+
+    state: ValveState = ValveState.CLOSED
+    changed_at: datetime | None = None
+    ready: bool = False
+
+    @property
+    def is_ready(self) -> bool:
+        """Return whether this virtual valve satisfies circuit readiness."""
+        return self.state is ValveState.OPEN and bool(self.ready)
+
+
+@dataclass(frozen=True, slots=True)
+class PumpRuntime:
+    """Controller-owned lifecycle data for one shared pump."""
+
+    state: PumpState = PumpState.OFF
+    changed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeState:
+    """Persistable controller state, separate from observed Home Assistant state."""
+
+    cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
+    zone_runtime: Mapping[str, ZoneRuntime] = field(default_factory=dict)
+    valves: Mapping[str, ValveRuntime] = field(default_factory=dict)
+    pumps: Mapping[str, PumpRuntime] = field(default_factory=dict)
+    plant_mode: PlantMode = PlantMode.IDLE
+    requested_mode: PlantMode = PlantMode.AUTO
+    selected_source_id: str | None = None
+    source_selection: SourceSelectionRuntime = field(default_factory=SourceSelectionRuntime)
+    changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
+    changeover_target_mode: PlantMode | None = None
+    changeover_started_at: datetime | None = None
+    changeover_deadline: datetime | None = None
+    changeover_reason: str = ""
+    safe_shutdown_phase: SafeShutdownPhase = SafeShutdownPhase.IDLE
+    safe_shutdown_started_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActuatorCommand:
+    """An idempotent desired actuator command, never a toggle."""
+
+    actuator_id: str
+    action: ActuatorAction
+    reason: str
+    target: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlan:
+    """Desired shadow or active actions produced during one evaluation."""
+
+    commands: tuple[ActuatorCommand, ...]
+    valve_consumers: Mapping[str, frozenset[str]]
+    pump_consumers: Mapping[str, frozenset[str]]
+    plant_mode: PlantMode = PlantMode.IDLE
+    cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
+    source_recommendation: SourceRecommendation | None = None
+    interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
+    cooling_valve_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    cooling_pump_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    mode_conflicts: tuple[ModeConflict, ...] = ()
+    source_selection: SourceSelectionDiagnostic | None = None
+    source_selection_actuator_ids: frozenset[str] = frozenset()
+    requested_mode: PlantMode = PlantMode.AUTO
+    changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
+    changeover_target_mode: PlantMode | None = None
+    changeover_deadline: datetime | None = None
+    mode_explanation: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SafeShutdownPlan:
+    """One idempotent step in the source-release and hydraulic shutdown order."""
+
+    phase: SafeShutdownPhase
+    commands: tuple[ActuatorCommand, ...] = ()
+    next_deadline: datetime | None = None
+    explanation: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerDiagnostics:
+    """Human-readable reasons for every significant controller decision."""
+
+    zone_reasons: Mapping[str, str]
+    circuit_reasons: Mapping[str, str]
+    actuator_reasons: Mapping[str, str]
+    zone_decisions: Mapping[str, ZoneDecision] = field(default_factory=dict)
+    cooling_zone_decisions: Mapping[str, ZoneDecision] = field(default_factory=dict)
+    interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
+    source_recommendation: SourceRecommendation | None = None
+    source_diagnostics: Mapping[str, SourceDiagnostic] = field(default_factory=dict)
+    cooling_circuit_reasons: Mapping[str, str] = field(default_factory=dict)
+    cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
+    mode_conflicts: tuple[ModeConflict, ...] = ()
+    actuator_diagnostics: Mapping[str, ActuatorDiagnostic] = field(default_factory=dict)
+    source_selection: SourceSelectionDiagnostic | None = None
+    requested_mode: PlantMode = PlantMode.AUTO
+    active_mode: PlantMode = PlantMode.IDLE
+    changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
+    changeover_target_mode: PlantMode | None = None
+    changeover_deadline: datetime | None = None
+    mode_explanation: str = ""
+
+    @property
+    def actuator_feedback(self) -> Mapping[str, ActuatorDiagnostic]:
+        """Return structured actuator feedback diagnostics."""
+        return self.actuator_diagnostics
+
+    @property
+    def mismatches(self) -> Mapping[str, ActuatorDiagnostic]:
+        """Return diagnostics for callers interested in manual intervention."""
+        return {
+            actuator_id: diagnostic
+            for actuator_id, diagnostic in self.actuator_diagnostics.items()
+            if diagnostic.mismatch
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Evaluation:
+    """Atomic result of a deterministic controller evaluation."""
+
+    next_runtime: RuntimeState
+    control_plan: ControlPlan
+    diagnostics: ControllerDiagnostics

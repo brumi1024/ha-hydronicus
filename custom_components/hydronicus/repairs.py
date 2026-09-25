@@ -23,7 +23,7 @@ from homeassistant.helpers import issue_registry as ir
 
 from .areas import AreaResolution, ZoneAreaProblem, ZoneAreaProblemKind, listed
 from .const import DOMAIN
-from .core.entity_bindings import BindingCategory, EntityBinding
+from .core.legacy.entity_bindings import BindingCategory, EntityBinding
 
 if TYPE_CHECKING:
     from .runtime import HydronicRuntime

@@ -10,7 +10,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.hydronicus.const import DOMAIN
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import output_authorization
 from custom_components.hydronicus.runtime import HydronicRuntime
 from tests.integration.plant_fixtures import (

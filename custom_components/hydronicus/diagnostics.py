@@ -11,8 +11,8 @@ from .const import (
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
-from .core.executor import ActuatorOperation
-from .core.model import ExternalClimateThermostatConfig, ZoneRuntime
+from .core.legacy.executor import ActuatorOperation
+from .core.legacy.model import ExternalClimateThermostatConfig, ZoneRuntime
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry

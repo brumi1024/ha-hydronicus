@@ -15,7 +15,7 @@ from .const import (
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
-from .core.model import PlantMode, SourceSelectionPhase
+from .core.legacy.model import PlantMode, SourceSelectionPhase
 from .entity_device import plant_device_info, topology_device_info
 from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime

@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicConfigEntry
-from .core.model import PumpState, ValveState, ZoneRuntime
+from .core.legacy.model import PumpState, ValveState, ZoneRuntime
 from .entity_device import plant_device_info, topology_device_info
 from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime

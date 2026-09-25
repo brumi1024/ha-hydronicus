@@ -29,7 +29,7 @@ from ..const import (
     SOURCE_KIND_EXTERNAL,
     SUBENTRY_TYPE_SOURCE,
 )
-from ..core.configuration import (
+from ..core.legacy.configuration import (
     BufferTemperatureRequiredError,
 )
 from ..entry_configuration import (

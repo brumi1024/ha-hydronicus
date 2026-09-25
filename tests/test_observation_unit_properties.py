@@ -11,8 +11,8 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from hypothesis import given
 from hypothesis import strategies as st
 
-from custom_components.hydronicus.core.controller import evaluate
-from custom_components.hydronicus.core.model import (
+from custom_components.hydronicus.core.legacy.controller import evaluate
+from custom_components.hydronicus.core.legacy.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
@@ -24,7 +24,7 @@ from custom_components.hydronicus.core.model import (
     Zone,
     ZoneDecisionStatus,
 )
-from custom_components.hydronicus.core.topology import compile_topology
+from custom_components.hydronicus.core.legacy.topology import compile_topology
 from custom_components.hydronicus.runtime import (
     AIR_TEMPERATURE_RANGE,
     RELATIVE_HUMIDITY_RANGE,

@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronicus_core.controller import (
+from hydronicus_core.legacy.controller import (
     aggregate_humidity,
     aggregate_temperature,
     condensation_margin,
@@ -15,7 +15,7 @@ from hydronicus_core.controller import (
     evaluate,
     resolve_cooling_delivery_routes,
 )
-from hydronicus_core.model import (
+from hydronicus_core.legacy.model import (
     Circuit,
     DeliveryRoute,
     InterlockStatus,
@@ -39,7 +39,7 @@ from hydronicus_core.model import (
     ZoneDecisionStatus,
     ZoneRuntime,
 )
-from hydronicus_core.topology import compile_topology
+from hydronicus_core.legacy.topology import compile_topology
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 

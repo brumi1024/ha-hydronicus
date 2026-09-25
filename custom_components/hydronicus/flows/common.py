@@ -40,14 +40,14 @@ from ..const import (
     DOMAIN,
     SUBENTRY_TYPE_SOURCE,
 )
-from ..core.configuration import (
+from ..core.legacy.configuration import (
     StoredTopologyError,
 )
-from ..core.model import (
+from ..core.legacy.model import (
     CompiledPlant,
 )
-from ..core.ownership import OwnershipError
-from ..core.topology import (
+from ..core.legacy.ownership import OwnershipError
+from ..core.legacy.topology import (
     TopologyValidationError,
 )
 from ..entry_configuration import (

@@ -19,7 +19,7 @@ from custom_components.hydronicus.const import (
     CONF_TEMPERATURE_SENSORS,
     DOMAIN,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import authorize_outputs
 from tests.integration.plant_fixtures import plant_entry
 

@@ -37,14 +37,14 @@ from .const import (
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
-from .core.controller import evaluate
-from .core.entity_bindings import (
+from .core.legacy.controller import evaluate
+from .core.legacy.entity_bindings import (
     EntityBinding,
     configured_entity_bindings,
     degraded_actuator_ids,
     unresolved_entity_bindings,
 )
-from .core.executor import (
+from .core.legacy.executor import (
     ActuatorExecutionFailure,
     ActuatorExecutor,
     ActuatorObservedState,
@@ -52,7 +52,7 @@ from .core.executor import (
     ExecutionReport,
     SafeShutdownReport,
 )
-from .core.model import (
+from .core.legacy.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
     ActuatorDiagnostic,
@@ -84,7 +84,7 @@ from .core.model import (
     ZoneDecision,
     ZoneDecisionStatus,
 )
-from .core.ownership import PlantOwnership
+from .core.legacy.ownership import PlantOwnership
 from .entry_configuration import (
     effective_plant,
     output_authorization,

@@ -13,7 +13,7 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
 )
-from custom_components.hydronicus.core.model import PumpState, ThermostatHvacMode, ValveState
+from custom_components.hydronicus.core.legacy.model import PumpState, ThermostatHvacMode, ValveState
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from tests.integration.plant_fixtures import plant_entry
 

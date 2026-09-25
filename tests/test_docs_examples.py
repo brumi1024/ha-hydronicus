@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 import yaml
 
-from custom_components.hydronicus.core.ownership import PlantOwnership
-from custom_components.hydronicus.core.plant_document import (
+from custom_components.hydronicus.core.legacy.ownership import PlantOwnership
+from custom_components.hydronicus.core.legacy.plant_document import (
     PlantDocumentError,
     export_plant_document,
     import_plant_document,

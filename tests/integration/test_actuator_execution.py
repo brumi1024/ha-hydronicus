@@ -16,12 +16,12 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
 )
-from custom_components.hydronicus.core.executor import (
+from custom_components.hydronicus.core.legacy.executor import (
     ActuatorFailureKind,
     ActuatorObservedState,
     ActuatorOperation,
 )
-from custom_components.hydronicus.core.model import (
+from custom_components.hydronicus.core.legacy.model import (
     ActuatorAction,
     PlantMode,
     PumpRuntime,

@@ -38,9 +38,9 @@ from ..const import (
     DEFAULT_PLANT_NAME,
     DEFAULT_PUMP_OVERRUN,
 )
-from ..core.model import CompiledPlant
-from ..core.ownership import PlantOwnership
-from ..core.plant_document import PlantDocumentError, import_plant_document
+from ..core.legacy.model import CompiledPlant
+from ..core.legacy.ownership import PlantOwnership
+from ..core.legacy.plant_document import PlantDocumentError, import_plant_document
 from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
     canonical_id,

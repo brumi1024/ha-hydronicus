@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from hydronicus_core.model import (
+from hydronicus_core.legacy.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
@@ -16,7 +16,7 @@ from hydronicus_core.model import (
     Valve,
     Zone,
 )
-from hydronicus_core.ownership import (
+from hydronicus_core.legacy.ownership import (
     OwnershipError,
     PlantOwnership,
     ZoneClosure,
@@ -26,10 +26,10 @@ from hydronicus_core.ownership import (
     without_zone,
     zone_closure,
 )
-from hydronicus_core.topology import compile_topology
+from hydronicus_core.legacy.topology import compile_topology
 from hypothesis import given, settings
 
-from tests.core.strategies import plant_configurations
+from tests.core.legacy.strategies import plant_configurations
 
 
 def _zone(zone_id: str) -> Zone:

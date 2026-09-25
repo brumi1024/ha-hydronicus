@@ -12,7 +12,7 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import CONF_TOPOLOGY, DOMAIN
-from custom_components.hydronicus.core.plant_document import import_plant_document
+from custom_components.hydronicus.core.legacy.plant_document import import_plant_document
 from custom_components.hydronicus.entry_configuration import (
     data_with_plant,
     subentries_for,

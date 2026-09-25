@@ -14,7 +14,7 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
 )
-from custom_components.hydronicus.core.model import ExternalClimateThermostatState
+from custom_components.hydronicus.core.legacy.model import ExternalClimateThermostatState
 from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000301"

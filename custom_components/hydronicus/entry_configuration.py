@@ -39,10 +39,10 @@ from .const import (
     SUBENTRY_TYPE_SOURCE,
     SUBENTRY_TYPE_ZONE,
 )
-from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
-from .core.model import AreaSensors, CompiledPlant, PlantConfiguration
-from .core.ownership import OwnershipError, PlantOwnership, validate_ownership, without_zone
-from .core.topology import TopologyValidationError, compile_topology
+from .core.legacy.configuration import StoredTopologyError, plant_configuration_from_entry_data
+from .core.legacy.model import AreaSensors, CompiledPlant, PlantConfiguration
+from .core.legacy.ownership import OwnershipError, PlantOwnership, validate_ownership, without_zone
+from .core.legacy.topology import TopologyValidationError, compile_topology
 
 SUPPORTED_SUBENTRY_TYPES = frozenset({SUBENTRY_TYPE_ZONE, SUBENTRY_TYPE_SOURCE})
 _COLLECTION_BY_SUBENTRY_TYPE = {

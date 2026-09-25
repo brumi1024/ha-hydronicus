@@ -27,7 +27,7 @@ from custom_components.hydronicus.const import (
     CONF_SUPPLY_TEMPERATURE_SENSOR,
     DOMAIN,
 )
-from custom_components.hydronicus.core.model import (
+from custom_components.hydronicus.core.legacy.model import (
     PlantMode,
     SourceSelectionPhase,
     ThermostatHvacMode,

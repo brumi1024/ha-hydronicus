@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util.yaml import dump
 
 from .const import CONF_NAME, CONF_PLANT_ID
-from .core.plant_document import ImportedPlant, PlantDocumentError, export_plant_document
+from .core.legacy.plant_document import ImportedPlant, PlantDocumentError, export_plant_document
 from .entry_configuration import plant_ownership, topology_copy
 from .flows.common import is_hydronicus_owned
 

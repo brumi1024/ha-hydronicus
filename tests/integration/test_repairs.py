@@ -24,7 +24,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
     SUBENTRY_TYPE_ZONE,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.flows.zone import ZoneSubentryFlowHandler
 from tests.integration.plant_fixtures import plant_entry, subentry_id_for
 

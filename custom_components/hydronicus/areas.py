@@ -35,7 +35,7 @@ from .const import (
     CONF_TOPOLOGY,
     CONF_ZONES,
 )
-from .core.model import AreaSensors, CompiledPlant, HydronicusThermostatConfig
+from .core.legacy.model import AreaSensors, CompiledPlant, HydronicusThermostatConfig
 from .flows.common import is_hydronicus_owned, listed
 
 # The name each covered area last had, so a removed area is still named in a

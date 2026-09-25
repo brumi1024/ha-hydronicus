@@ -6,8 +6,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from hydronicus_core.controller import evaluate
-from hydronicus_core.model import (
+from hydronicus_core.legacy.controller import evaluate
+from hydronicus_core.legacy.model import (
     ActuatorFeedback,
     NumericObservation,
     PlantMode,
@@ -21,7 +21,7 @@ from hydronicus_core.model import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hydronicus_core.model import CompiledPlant
+    from hydronicus_core.legacy.model import CompiledPlant
 
 
 @dataclass(frozen=True, slots=True)

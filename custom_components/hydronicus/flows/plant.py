@@ -39,10 +39,10 @@ from ..const import (
     SUBENTRY_TYPE_SOURCE,
     SUBENTRY_TYPE_ZONE,
 )
-from ..core.configuration import StoredTopologyError
-from ..core.model import CompiledPlant
-from ..core.plant_document import ImportedPlant, PlantDocumentError, import_plant_document
-from ..core.topology import DuplicateActuatorBindingError
+from ..core.legacy.configuration import StoredTopologyError
+from ..core.legacy.model import CompiledPlant
+from ..core.legacy.plant_document import ImportedPlant, PlantDocumentError, import_plant_document
+from ..core.legacy.topology import DuplicateActuatorBindingError
 from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
     EquipmentInUseError,

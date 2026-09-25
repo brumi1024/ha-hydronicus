@@ -11,7 +11,7 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.presentation import PRESENTATION_SCHEMA_VERSION
 from tests.integration.plant_fixtures import plant_entry
 

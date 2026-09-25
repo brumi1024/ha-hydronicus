@@ -38,7 +38,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
 from .const import CONF_DRY_RUN, DOMAIN
-from .core.configuration import StoredTopologyError
+from .core.legacy.configuration import StoredTopologyError
 from .entry_configuration import exclusive_output_entity_ids
 
 OUTPUT_CONFLICT_ISSUE = "output_conflict"

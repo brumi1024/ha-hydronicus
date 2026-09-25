@@ -10,11 +10,11 @@ from homeassistant.helpers import entity_registry as entity_registry_helper
 
 from .areas import ZoneAreaProblemKind, listed
 from .const import DOMAIN
-from .core.executor import (
+from .core.legacy.executor import (
     ActuatorExecutionFailure,
     ActuatorOperation,
 )
-from .core.model import (
+from .core.legacy.model import (
     BindingCategory,
     EntityBinding,
     ExternalClimateThermostatState,
@@ -27,7 +27,7 @@ from .core.model import (
     ZoneDecision,
     ZoneDecisionStatus,
 )
-from .core.topology import thermostat_hvac_modes
+from .core.legacy.topology import thermostat_hvac_modes
 
 PRESENTATION_SCHEMA_VERSION = 2
 

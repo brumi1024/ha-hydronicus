@@ -14,7 +14,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.hydronicus import runtime as runtime_module
 from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_PLANT_ID, DOMAIN
-from custom_components.hydronicus.core.model import (
+from custom_components.hydronicus.core.legacy.model import (
     RuntimeState,
     SafeShutdownPhase,
     ThermostatHvacMode,

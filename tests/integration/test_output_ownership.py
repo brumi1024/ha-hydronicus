@@ -42,7 +42,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
     SUBENTRY_TYPE_SOURCE,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.entry_configuration import (
     authorize_outputs,

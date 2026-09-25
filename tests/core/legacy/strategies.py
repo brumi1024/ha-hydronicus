@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID, uuid5
 
-from hydronicus_core.configuration import plant_configuration_from_entry_data
-from hydronicus_core.model import PlantConfiguration
+from hydronicus_core.legacy.configuration import plant_configuration_from_entry_data
+from hydronicus_core.legacy.model import PlantConfiguration
 from hypothesis import strategies as st
 
 PLANT_ID = "00000000-0000-4000-8000-00000000a000"

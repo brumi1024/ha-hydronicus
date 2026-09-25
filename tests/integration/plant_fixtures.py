@@ -28,8 +28,10 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_SOURCE,
     SUBENTRY_TYPE_ZONE,
 )
-from custom_components.hydronicus.core.configuration import plant_configuration_from_entry_data
-from custom_components.hydronicus.core.ownership import derive_ownership
+from custom_components.hydronicus.core.legacy.configuration import (
+    plant_configuration_from_entry_data,
+)
+from custom_components.hydronicus.core.legacy.ownership import derive_ownership
 from custom_components.hydronicus.entry_configuration import (
     authorize_outputs,
     new_plant_data,

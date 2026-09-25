@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from hydronicus_core.executor import (
+from hydronicus_core.legacy.executor import (
     ActuatorBinding,
     ActuatorExecutor,
     ActuatorFailureKind,
@@ -15,7 +15,7 @@ from hydronicus_core.executor import (
     observed_state_for,
     operation_for,
 )
-from hydronicus_core.model import (
+from hydronicus_core.legacy.model import (
     ActuatorAction,
     ActuatorCommand,
     CompiledPlant,

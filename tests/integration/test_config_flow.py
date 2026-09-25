@@ -25,7 +25,7 @@ from custom_components.hydronicus.const import (
 )
 from custom_components.hydronicus.flows.plant import PlantSettingsOptionsFlow
 from custom_components.hydronicus.plant_file import plant_file
-from tests.core.test_plant_document import NEGATIVE_FIXTURES
+from tests.core.legacy.test_plant_document import NEGATIVE_FIXTURES
 from tests.integration.flow_forms import form_fields, form_value
 from tests.integration.plant_fixtures import plant_entry
 

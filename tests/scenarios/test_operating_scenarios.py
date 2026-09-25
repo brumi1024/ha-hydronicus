@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronicus_core.controller import evaluate
-from hydronicus_core.executor import ActuatorExecutor, ActuatorOperation
-from hydronicus_core.model import (
+from hydronicus_core.legacy.controller import evaluate
+from hydronicus_core.legacy.executor import ActuatorExecutor, ActuatorOperation
+from hydronicus_core.legacy.model import (
     ActuatorAction,
     ActuatorFeedback,
     Circuit,
@@ -33,7 +33,7 @@ from hydronicus_core.model import (
     Zone,
     ZoneDecisionStatus,
 )
-from hydronicus_core.topology import compile_topology
+from hydronicus_core.legacy.topology import compile_topology
 
 from .harness import ScenarioStep, run_scenario
 

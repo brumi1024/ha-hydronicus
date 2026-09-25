@@ -17,9 +17,9 @@ from custom_components.hydronicus.const import (
     CONF_SUBENTRY_OBJECTS,
     CONF_ZONE_OBJECTS,
 )
-from custom_components.hydronicus.core.configuration import StoredTopologyError
-from custom_components.hydronicus.core.ownership import OwnershipError, PlantOwnership
-from custom_components.hydronicus.core.topology import TopologyValidationError
+from custom_components.hydronicus.core.legacy.configuration import StoredTopologyError
+from custom_components.hydronicus.core.legacy.ownership import OwnershipError, PlantOwnership
+from custom_components.hydronicus.core.legacy.topology import TopologyValidationError
 from custom_components.hydronicus.entry_configuration import (
     EquipmentInUseError,
     SubentrySync,

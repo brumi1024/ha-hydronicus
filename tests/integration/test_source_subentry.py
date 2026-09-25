@@ -21,7 +21,7 @@ from custom_components.hydronicus.const import (
     CONF_SOURCE_TYPE,
     SUBENTRY_TYPE_SOURCE,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import subentry_draft
 from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 from tests.integration.plant_fixtures import plant_entry

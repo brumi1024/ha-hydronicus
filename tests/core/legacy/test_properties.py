@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from hydronicus_core.controller import dew_point_celsius, evaluate, safe_shutdown
-from hydronicus_core.model import (
+from hydronicus_core.legacy.controller import dew_point_celsius, evaluate, safe_shutdown
+from hydronicus_core.legacy.model import (
     ActuatorAction,
     Circuit,
     DeliveryRoute,
@@ -31,11 +31,11 @@ from hydronicus_core.model import (
     ZoneDecisionStatus,
     ZoneRuntime,
 )
-from hydronicus_core.topology import compile_topology
+from hydronicus_core.legacy.topology import compile_topology
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests.core.strategies import plant_configurations
+from tests.core.legacy.strategies import plant_configurations
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 

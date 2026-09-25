@@ -21,7 +21,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
     SUBENTRY_TYPE_ZONE,
 )
-from custom_components.hydronicus.core.plant_document import export_plant_document
+from custom_components.hydronicus.core.legacy.plant_document import export_plant_document
 from custom_components.hydronicus.entry_configuration import (
     data_with_pump,
     effective_plant,

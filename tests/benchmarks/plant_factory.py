@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from custom_components.hydronicus.core.model import NumericObservation, PlantSnapshot
+from custom_components.hydronicus.core.legacy.model import NumericObservation, PlantSnapshot
 
 BENCHMARK_FIXTURE = (
     Path(__file__).parents[1] / "fixtures" / "benchmarks" / "large-synthetic-plant.json"

@@ -21,7 +21,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from custom_components.hydronicus.areas import resolve_area_sensors
 from custom_components.hydronicus.const import DOMAIN
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.legacy.model import ThermostatHvacMode
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.websocket import WS_SUBSCRIBE_PLANT, ws_subscribe_plant
 from tests.integration.flow_forms import form_fields

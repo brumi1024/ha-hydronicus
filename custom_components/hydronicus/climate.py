@@ -24,14 +24,14 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 
 from . import HydronicConfigEntry
 from .const import DEFAULT_TARGET_TEMPERATURE
-from .core.model import (
+from .core.legacy.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
     HydronicusThermostatConfig,
     ThermostatHvacMode,
     ZoneRuntime,
 )
-from .core.topology import thermostat_hvac_modes
+from .core.legacy.topology import thermostat_hvac_modes
 from .entity_device import topology_device_info
 from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime

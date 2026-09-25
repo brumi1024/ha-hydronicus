@@ -33,7 +33,7 @@ The CI format check covers the same complete source tree.
 
 Config-entry version 4 and minor version 0 are the supported persisted contract.
 The parent config entry owns one complete UUID-backed graph in `topology`, including every Zone, Circuit, Delivery Route, Valve, Pump, Source, and the source selector.
-`zone_objects` maps every zone-owned Circuit and Valve to its owning Zone, and every other object belongs to the Plant, as `core/ownership.py` defines.
+`zone_objects` maps every zone-owned Circuit and Valve to its owning Zone, and every other object belongs to the Plant, as `core/legacy/ownership.py` defines.
 `subentry_objects` records which graph objects are exposed through Home Assistant config subentries.
 Each Zone has exactly one `zone` subentry, and a source may have one `source` subentry; each subentry is only a stable ownership handle containing `{"id": "<object UUID>"}`.
 No topology field is duplicated between the parent graph and a subentry.
@@ -43,7 +43,7 @@ If Home Assistant removes a subentry while a Plant is active, Hydronicus complet
 If the shutdown cannot complete, the parent graph and active runtime are retained and the failure is logged.
 Zone observations use typed temperature and humidity metadata collections rather than parallel legacy representations.
 
-The plant file in `core/plant_document.py` is the portable form of the same graph, documented for users in [the plant file reference](plant-file.md).
+The plant file in `core/legacy/plant_document.py` is the portable form of the same graph, documented for users in [the plant file reference](plant-file.md).
 It maps slugs to objects, derives missing IDs with `uuid5` from the Plant ID and the slug, and exports the canonical form with every ID written, so an export and import round trip keeps every object ID and entity ID.
 
 Entries of earlier development versions, below version 4, are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
@@ -51,16 +51,21 @@ Do not add speculative schema aliases or migration paths without a concrete pers
 
 ## Architecture boundaries
 
-`custom_components/hydronicus/core/configuration.py` decodes only the canonical persisted objects into typed domain values.
-`custom_components/hydronicus/core/ownership.py` assigns every graph object to the Plant or to one zone so that removing a zone always leaves a valid graph.
+The redesign in [the redesign plan](redesign-plan.md) replaces the model below phase by phase.
+`custom_components/hydronicus/core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs.
+`custom_components/hydronicus/core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into config entry data and zone subentry data, and `from_storage` joins them again.
+Until the runtime, flows, and platforms move to the new model, they run on the v0.1 modules in `custom_components/hydronicus/core/legacy/`, which nothing new may import and which each phase deletes once their last consumer is gone.
+
+`custom_components/hydronicus/core/legacy/configuration.py` decodes only the canonical persisted objects into typed domain values.
+`custom_components/hydronicus/core/legacy/ownership.py` assigns every graph object to the Plant or to one zone so that removing a zone always leaves a valid graph.
 `custom_components/hydronicus/entry_configuration.py` owns graph mutation, zone and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
 `custom_components/hydronicus/registrations.py` moves entity and device registrations between subentries when a graph edit changes an object's owner, and removes the registrations of objects a graph edit drops.
 `custom_components/hydronicus/zone_area.py` puts a newly created zone climate entity in the one area its zone covers, after the entities have registered, and never assigns the zone device an area.
 `custom_components/hydronicus/areas.py` owns every area registry read: it resolves the sensors that covered areas name, drops sensors Hydronicus provides, and reports missing areas for the runtime, the reviews, diagnostics, and repairs.
-`custom_components/hydronicus/core/configuration.py` merges those resolved sensors after a zone's explicit sensors, while structural rules count an area as a sensor, so an area change never makes a stored graph invalid.
+`custom_components/hydronicus/core/legacy/configuration.py` merges those resolved sensors after a zone's explicit sensors, while structural rules count an area as a sensor, so an area change never makes a stored graph invalid.
 `custom_components/hydronicus/config_flow.py` composes the flow step modules in `custom_components/hydronicus/flows/`.
-`custom_components/hydronicus/core/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
-`custom_components/hydronicus/core/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.
+`custom_components/hydronicus/core/legacy/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
+`custom_components/hydronicus/core/legacy/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.
 Its public evaluation result, diagnostics, deadlines, and command order are the contract; private phase helper structure is not.
 `custom_components/hydronicus/runtime.py` owns the Home Assistant boundary and runs snapshot, evaluate, execute, and publish stages in that order.
 One per-Plant operation lock serializes refresh, execution, reconciliation, safe shutdown, mode changes, Dry run changes, and teardown.

@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronicus_core.configuration import (
+from hydronicus_core.legacy.configuration import (
     BufferTemperatureRequiredError,
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
-from hydronicus_core.controller import evaluate, recommend_source
-from hydronicus_core.model import (
+from hydronicus_core.legacy.controller import evaluate, recommend_source
+from hydronicus_core.legacy.model import (
     Circuit,
     DeliveryRoute,
     NumericObservation,
@@ -25,7 +25,7 @@ from hydronicus_core.model import (
     Valve,
     Zone,
 )
-from hydronicus_core.topology import TopologyValidationError, compile_topology
+from hydronicus_core.legacy.topology import TopologyValidationError, compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 STORED_PLANT_ID = "00000000-0000-4000-8000-000000000001"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from hydronicus_core.model import (
+from hydronicus_core.legacy.model import (
     Circuit,
     DeliveryRoute,
     ExternalClimateThermostatConfig,
@@ -17,7 +17,7 @@ from hydronicus_core.model import (
     Valve,
     Zone,
 )
-from hydronicus_core.topology import (
+from hydronicus_core.legacy.topology import (
     CoolingObservationError,
     CoolingReferenceError,
     DuplicateActuatorBindingError,

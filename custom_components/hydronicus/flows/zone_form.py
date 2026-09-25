@@ -91,13 +91,13 @@ from ..const import (
     THERMOSTAT_KIND_EXTERNAL_CLIMATE,
     THERMOSTAT_KIND_HYDRONICUS,
 )
-from ..core.configuration import DesignatedReferenceError
-from ..core.model import (
+from ..core.legacy.configuration import DesignatedReferenceError
+from ..core.legacy.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
     TemperatureAggregation,
 )
-from ..core.topology import (
+from ..core.legacy.topology import (
     CoolingObservationError,
     CoolingReferenceError,
     DuplicateActuatorBindingError,

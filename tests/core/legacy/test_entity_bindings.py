@@ -5,14 +5,14 @@ from datetime import UTC, datetime
 from hypothesis import given
 from hypothesis import strategies as st
 
-from custom_components.hydronicus.core.controller import evaluate
-from custom_components.hydronicus.core.entity_bindings import (
+from custom_components.hydronicus.core.legacy.controller import evaluate
+from custom_components.hydronicus.core.legacy.entity_bindings import (
     BindingCategory,
     configured_entity_bindings,
     degraded_circuit_ids,
     unresolved_entity_bindings,
 )
-from custom_components.hydronicus.core.model import (
+from custom_components.hydronicus.core.legacy.model import (
     Circuit,
     DeliveryRoute,
     NumericObservation,
@@ -24,7 +24,7 @@ from custom_components.hydronicus.core.model import (
     Valve,
     Zone,
 )
-from custom_components.hydronicus.core.topology import compile_topology
+from custom_components.hydronicus.core.legacy.topology import compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 ZONE_A = "zone-a"

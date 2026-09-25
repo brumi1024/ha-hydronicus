@@ -1,0 +1,56 @@
+hydronicus: 2
+id: 7c9e6679-7425-40de-944b-e07fc1f90ae7   # optional; keeps entity IDs on import
+name: Home
+mode_dwell: 3600
+source:
+  name: Heat pump
+  strategy: request
+  request: switch.heat_pump_heat_request                           # hypothetical entity
+  mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}   # optional, hypothetical
+  post_run: 180
+  min_on: 600
+  min_off: 600
+pumps:
+  heat_pump:
+    driven_by: source
+    min_flow: path                 # guaranteed if the separator protects this pump, see O2
+    min_flow_loops: [living_area.ceiling]   # open decision O1
+    supply_temperature: sensor.ceiling_supply_temperature   # added later
+  floor:
+    switch: switch.home_underfloor_heating_pump
+    overrun: 180
+  towel_dryer:
+    switch: switch.home_bathrooms_towel_dryer_pump
+    overrun: 120
+loops:
+  towel_dryer:
+    pump: towel_dryer
+    runs: with_source
+    modes: [heat]
+zones:
+  basement:
+    areas: [basement, workshop]
+    thermostat: {digital: {presets: {comfort: 21, eco: 19, away: 16}}}
+    loops:
+      ceiling:
+        valves: [switch.home_basement_ceiling_heating_valve]
+        pump: heat_pump
+        modes: [heat, cool]
+  bedroom_area:
+    areas: [main_bedroom, lilla_bedroom]
+    loops:
+      ceiling:
+        valves: [switch.home_bedroom_area_ceiling_heating_valve]
+        pump: heat_pump
+        modes: [heat, cool]
+  living_area:
+    areas: [living_room, dining_room, kitchen, hallway]
+    loops:
+      ceiling:
+        valves: [switch.home_living_area_ceiling_heating_valve]
+        pump: heat_pump
+        modes: [heat, cool]
+      floor:
+        valves: [switch.home_living_area_floor_heating_valve]
+        pump: floor
+        modes: [heat]
