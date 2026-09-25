@@ -16,6 +16,7 @@ Investigated on 2026-09-25 against Home Assistant 2026.9 and Hydronicus v0.1.0 (
 - Core code, the Lovelace card, and the WebSocket snapshot already say Zone.
 - The maintainer decided on 2026-09-25 that no backward compatibility is required at this stage, so stored names, the plant file, and the card change without aliases or migration.
 - `DeviceInfo.suggested_area` still assigns an area to a newly created device, but Home Assistant then puts the area name in front of the entity IDs it generates for that device, so a zone named after its area would get entity IDs such as `climate.kitchen_kitchen`.
+- A device in an area takes its entities into the area, and the area settings temperature picker lists every temperature sensor in the area, so a zone device in its area offers the zone's own Combined temperature there; hiding the entity or marking it diagnostic does not remove it from the picker.
 - Reload and unload are command-free lifecycle boundaries, and `_async_reload_entry` skips a reload when `runtime_configuration_fingerprint` is unchanged.
 
 ## Outcome
@@ -59,8 +60,9 @@ These are settled; implement them rather than revisiting them.
    An area that is missing or names no sensor contributes nothing, and a zone left without a usable reading is blocked by the existing fail-closed aggregation and gets a Repair.
 7. **Area changes reload the Plant** through the existing coalesced reload, and only when the resolved sensors of a covered area change, because the fingerprint includes the resolution.
 8. **Self-feed guard.** An area sensor that Hydronicus provides is ignored and reported as a Repair, because it would feed the Plant back into itself.
-9. **Device placement.** A zone that covers exactly one area suggests that area for its device when the device is created.
-   A zone that covers several areas leaves its device unassigned, because a device has one area.
+9. **Area placement.** A zone that covers exactly one existing area puts its climate entity in that area when Hydronicus creates the entity, and the zone device stays unassigned.
+   The zone's other entities, such as its Combined temperature, therefore stay out of the area and out of its temperature picker, while area dashboards, voice, and area-targeted actions still reach the thermostat.
+   A zone that covers several areas or none puts nothing in an area, because an entity has one area.
 10. **Guided setup asks "How is your home zoned?"** with three answers: one zone for the whole home, one zone per area, or group areas into zones.
     Every answer still ends in the zone form, where valves are chosen.
 11. **Plant file.** `zones` replaces `rooms` and a zone accepts `areas`, and the format number stays 1 because no earlier file needs to import.
@@ -187,7 +189,8 @@ zones:
   - Whole home opens one zone form named `Home` with every area that has a temperature sensor.
   - Per area first asks which areas, defaulting to every area with a temperature sensor, then opens one prefilled zone form per area with its progress in the description.
   - Grouped opens the zone form with **Add another zone**, as guided setup does today.
-- A zone device created by a setup is put in the one existing area its zone covers after its entities have registered, so the area name never enters their entity IDs; `suggested_area` is not used.
+- A zone climate entity created by a setup is put in the one existing area its zone covers after the entities have registered, so the area name never enters their entity IDs.
+  The zone device gets no area, and `suggested_area` is not used.
 
 ### K7 Snapshot and card
 

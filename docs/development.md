@@ -55,6 +55,7 @@ Do not add speculative schema aliases or migration paths without a concrete pers
 `custom_components/hydronicus/core/ownership.py` assigns every graph object to the Plant or to one zone so that removing a zone always leaves a valid graph.
 `custom_components/hydronicus/entry_configuration.py` owns graph mutation, zone and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
 `custom_components/hydronicus/registrations.py` moves entity and device registrations between subentries when a graph edit changes an object's owner, and removes the registrations of objects a graph edit drops.
+`custom_components/hydronicus/zone_area.py` puts a newly created zone climate entity in the one area its zone covers, after the entities have registered, and never assigns the zone device an area.
 `custom_components/hydronicus/areas.py` owns every area registry read: it resolves the sensors that covered areas name, drops sensors Hydronicus provides, and reports missing areas for the runtime, the reviews, diagnostics, and repairs.
 `custom_components/hydronicus/core/configuration.py` merges those resolved sensors after a zone's explicit sensors, while structural rules count an area as a sensor, so an area change never makes a stored graph invalid.
 `custom_components/hydronicus/config_flow.py` composes the flow step modules in `custom_components/hydronicus/flows/`.

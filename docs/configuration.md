@@ -127,11 +127,11 @@ The settings apply to the area's temperature sensor.
 An area temperature is optional by default, so one flat battery in a zone of five rooms does not stop heating the other four.
 An area's humidity sensor is always required, with the area's maximum age, because an unobserved humid room is where a cooled floor condenses.
 
-A zone that covers exactly one existing area puts its device in that area when Hydronicus creates the device, so the thermostat shows up in the area.
-The device moves into the area after its entities are registered, so their entity IDs do not repeat the area name, such as `climate.bedroom` rather than `climate.bedroom_bedroom`.
-Moving the device later is your choice, and Hydronicus does not move it back.
-A zone over several areas leaves its device unassigned, because a device has one area.
-A zone device in an area puts the zone's entities in the area too, so the area settings then offer the zone's **Combined temperature** as a temperature sensor; do not choose it, because the zone ignores it.
+A zone that covers exactly one existing area puts its thermostat, the zone's climate entity, in that area when Hydronicus creates it, so the thermostat shows up on the area's page, on area dashboards, and in area voice commands such as "set the bedroom to 21".
+Only the climate entity goes in the area, and the zone device stays unassigned, so the zone's other entities, such as its **Combined temperature**, are not offered as the area's temperature sensor.
+The climate entity moves into the area after the entities are registered, so their entity IDs do not repeat the area name, such as `climate.bedroom` rather than `climate.bedroom_bedroom`.
+Moving the climate entity or the zone device later is your choice, and Hydronicus does not move them back.
+A zone over several areas puts nothing in an area, because an entity has one area.
 
 An area may be covered by several zones, for example a hall between two floors.
 Its sensors then count in each of them, and the review mentions it without asking for a confirmation.
@@ -275,7 +275,7 @@ After setup, Hydronicus exposes entities associated with the Plant.
 Each zone, valve, pump, and source is a device named after the object alone, under the Plant device that carries the Plant name.
 Entity IDs come from those device names, so the trial Plant has entities such as `climate.bedroom`, `binary_sensor.bedroom_heating_demand`, and `binary_sensor.bedroom_loop_valve_requested`, while Plant-wide entities such as `select.trial_plant_requested_mode` keep the Plant name.
 The zone's combined temperature is `sensor.bedroom_combined_temperature`, so it does not take the entity ID of a room sensor such as `sensor.bedroom_temperature`.
-A zone device that Hydronicus puts in its area keeps the same entity IDs, because the area is set after the entities are registered.
+A zone climate entity that Hydronicus puts in its area keeps the same entity ID, because the area is set after the entities are registered.
 If an entity ID is already taken, Home Assistant adds a suffix such as `_2`.
 
 The useful states for a first simulation are:

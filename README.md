@@ -148,7 +148,7 @@ Then either import [plant-areas.yaml](docs/examples/trial/plant-areas.yaml) as a
 4. In the second form, for `Living room`, choose `switch.hydronicus_trial_living_room_valve` and submit.
 
 The review lists the same shared pump warning, and the Plant has the same entity IDs as before, such as `climate.bedroom`.
-Each zone device is placed in its area.
+Each zone's thermostat, `climate.bedroom` and `climate.living_room`, is placed in its area, while the zone device stays unassigned.
 The zone's **Combined temperature** sensor lists the areas and the sensors they resolve to in its `areas` attribute.
 Change the sensor in an area's settings and the Plant follows it after a reload that happens by itself.
 

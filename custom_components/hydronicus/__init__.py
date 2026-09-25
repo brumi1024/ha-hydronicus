@@ -19,7 +19,6 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .entity_device import async_place_new_zone_devices, zones_without_device
 from .entity_registration import async_remove_unprovided_entities
 from .entry_configuration import (
     GRAPH_EDIT_ERRORS,
@@ -43,6 +42,7 @@ from .websocket import (
     register_runtime,
     unregister_runtime,
 )
+from .zone_area import async_place_new_zone_climates, zones_without_climate
 
 type HydronicConfigEntry = ConfigEntry[HydronicRuntime]
 
@@ -222,10 +222,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
     try:
         await runtime.async_start(hass, defer_initial_refresh=True)
         _ensure_plant_device(hass, entry, runtime)
-        new_zone_devices = zones_without_device(hass, entry.entry_id, runtime)
+        new_zone_climates = zones_without_climate(hass, runtime)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         forwarded = True
-        async_place_new_zone_devices(hass, entry.entry_id, runtime, new_zone_devices)
+        async_place_new_zone_climates(hass, runtime, new_zone_climates)
         # Entities are conditional on the graph, so an edit such as turning off
         # a loop's cooling leaves registry entries that nothing provides now.
         async_remove_unprovided_entities(hass, entry, runtime)

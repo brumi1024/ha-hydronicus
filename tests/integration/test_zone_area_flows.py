@@ -169,8 +169,8 @@ async def test_whole_home_is_one_zone_over_every_area_with_a_temperature_sensor(
         "sensor.hall_temperature",
         "sensor.kitchen_temperature",
     )
-    # A device has one area, so a zone over three areas leaves its device unassigned.
-    assert _zone_device(hass, entry, zone["id"]).area_id is None
+    # A zone over three areas puts nothing in an area.
+    assert not any(_zone_areas(hass, entry, zone["id"]).values())
 
 
 async def test_per_area_setup_opens_one_prefilled_zone_form_per_area(hass, home) -> None:
@@ -217,9 +217,11 @@ async def test_per_area_setup_opens_one_prefilled_zone_form_per_area(hass, home)
     assert [record["entity_id"] for record in zones["Study"]["temperature_sensor_metadata"]] == [
         "sensor.study_probe"
     ]
-    # A zone over exactly one area suggests that area for its device.
-    assert _zone_device(hass, entry, zones["Kitchen"]["id"]).area_id == "kitchen"
-    assert _zone_device(hass, entry, zones["Study"]["id"]).area_id == "study"
+    # A zone over exactly one area puts its climate entity, not its device, in that area.
+    kitchen = _zone_areas(hass, entry, zones["Kitchen"]["id"])
+    study = _zone_areas(hass, entry, zones["Study"]["id"])
+    assert (kitchen["device"], kitchen["climate.kitchen"]) == (None, "kitchen")
+    assert (study["device"], study["climate.study"]) == (None, "study")
 
 
 async def test_grouped_setup_names_zones_after_their_floor_and_reviews_shared_areas(
@@ -723,11 +725,20 @@ async def test_the_sensors_step_needs_a_temperature_source_for_a_hydronicus_ther
 
 
 # --------------------------------------------------------------------------
-# Device placement
+# Area placement
 # --------------------------------------------------------------------------
 
 
-async def test_a_zone_device_takes_the_area_only_of_a_zone_over_one_existing_area(
+def _zone_areas(hass, entry: config_entries.ConfigEntry, zone_id: str) -> dict[str, str | None]:
+    """Return the device area and the area of every entity of one zone device."""
+    device = _zone_device(hass, entry, zone_id)
+    areas: dict[str, str | None] = {"device": device.area_id}
+    for registered in er.async_entries_for_device(er.async_get(hass), device.id):
+        areas[registered.entity_id] = registered.area_id
+    return areas
+
+
+async def test_only_the_climate_entity_of_a_zone_over_one_existing_area_is_in_it(
     hass, home
 ) -> None:
     names = ("One area", "Two areas", "Missing area", "No areas")
@@ -742,21 +753,18 @@ async def test_a_zone_device_takes_the_area_only_of_a_zone_over_one_existing_are
 
     entry = await _setup(hass, plant_entry(plant_data(topology)))
 
-    placed = {
-        name: _zone_device(hass, entry, zone.zone_id).area_id
-        for name, zone in zip(names, manifold_zones(names), strict=True)
-    }
-    assert placed == {
-        "One area": "kitchen",
-        "Two areas": None,
-        "Missing area": None,
-        "No areas": None,
-    }
-    # Suggesting a missing area would have created it.
+    one, *others = manifold_zones(names)
+    placed = {name: area for name, area in _zone_areas(hass, entry, one.zone_id).items() if area}
+    # The device stays unassigned, so the zone's sensors, such as its Combined
+    # temperature, stay out of the area and out of its temperature picker.
+    assert placed == {"climate.one_area": "kitchen"}
+    for zone in others:
+        assert not any(_zone_areas(hass, entry, zone.zone_id).values())
+    # Placing a missing area would have created it.
     assert len(ar.async_get(hass).areas) == area_count
 
 
-async def test_a_placed_zone_device_keeps_entity_ids_without_the_area_name(hass, home) -> None:
+async def test_a_placed_climate_entity_keeps_entity_ids_without_the_area_name(hass, home) -> None:
     # Home Assistant puts the area name in front of new entity IDs, so a zone
     # named after its area would otherwise get climate.kitchen_kitchen.
     topology = manifold_topology(("Kitchen",))
@@ -766,19 +774,58 @@ async def test_a_placed_zone_device_keeps_entity_ids_without_the_area_name(hass,
 
     entry = await _setup(hass, plant_entry(plant_data(topology)))
 
-    device = _zone_device(hass, entry, kitchen.zone_id)
-    assert device.area_id == "kitchen"
-    entity_ids = {
-        registered.entity_id
-        for registered in er.async_entries_for_device(er.async_get(hass), device.id)
-    }
-    assert "climate.kitchen" in entity_ids
-    assert "sensor.kitchen_combined_temperature" in entity_ids
-    assert not any("kitchen_kitchen" in entity_id for entity_id in entity_ids)
+    areas = _zone_areas(hass, entry, kitchen.zone_id)
+    assert areas["device"] is None
+    assert areas["climate.kitchen"] == "kitchen"
+    assert areas["sensor.kitchen_combined_temperature"] is None
+    assert not any("kitchen_kitchen" in entity_id for entity_id in areas)
 
-    # The area is placed only when the device is created, so a device the user
-    # took out of the area stays out after a reload.
-    dr.async_get(hass).async_update_device(device.id, area_id=None)
-    assert await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
-    assert _zone_device(hass, entry, kitchen.zone_id).area_id is None
+
+async def test_the_area_a_user_chooses_for_a_zone_stays_across_reloads(hass, home) -> None:
+    topology = manifold_topology(("Kitchen",))
+    topology["zones"][0]["areas"] = [{"area_id": "kitchen"}]
+    (kitchen,) = manifold_zones(("Kitchen",))
+    _temperature(hass, kitchen.temperature_sensor)
+    entry = await _setup(hass, plant_entry(plant_data(topology)))
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+
+    async def reload() -> dict[str, str | None]:
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        return _zone_areas(hass, entry, kitchen.zone_id)
+
+    # The area is set only when Hydronicus creates the climate entity, so a
+    # user who takes it out of the area keeps it out.
+    entities.async_update_entity("climate.kitchen", area_id=None)
+    assert not any((await reload()).values())
+
+    entities.async_update_entity("climate.kitchen", area_id="hall")
+    assert (await reload())["climate.kitchen"] == "hall"
+
+    # A device the user puts in an area stays there, and its entities follow it.
+    entities.async_update_entity("climate.kitchen", area_id=None)
+    devices.async_update_device(_zone_device(hass, entry, kitchen.zone_id).id, area_id="bedroom")
+    areas = await reload()
+    assert areas["device"] == "bedroom"
+    assert areas["climate.kitchen"] is None
+
+
+async def test_a_zone_added_later_puts_only_its_climate_entity_in_its_area(hass, home) -> None:
+    entry = await _setup(hass, _pump_only_entry())
+
+    result = await _confirmed(
+        hass,
+        await _configure(
+            hass,
+            await _start_zone(hass, entry),
+            {CONF_NAME: " ", "areas": ["kitchen"], "valves": ["switch.kitchen_valve"]},
+        ),
+    )
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    (zone,) = entry.data["topology"]["zones"]
+    areas = _zone_areas(hass, entry, zone["id"])
+    assert areas["device"] is None
+    assert areas["climate.kitchen"] == "kitchen"
+    assert {entity_id for entity_id, area in areas.items() if area} == {"climate.kitchen"}

@@ -131,7 +131,7 @@ Choose a temperature sensor in the settings of one of its areas, or select **Sub
 
 The repair `Home, zone Bedroom: area Bedroom names a Hydronicus sensor` means that the area settings name a sensor that Hydronicus provides, such as a zone's **Combined temperature**.
 Following it would feed the Plant back into itself, so every zone that covers the area ignores it, and each of those zones reports it.
-A zone device that Hydronicus put in the area makes its **Combined temperature** appear in the area's sensor list, which is the usual way this happens.
+Hydronicus puts only a zone's climate entity in an area, so its sensors appear in the area's sensor list only when you put a Hydronicus sensor or device in the area yourself.
 Open the area settings and choose a sensor that measures the room.
 
 ### A repair says an area sensor is missing
