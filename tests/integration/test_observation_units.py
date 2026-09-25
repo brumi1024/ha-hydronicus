@@ -26,10 +26,10 @@ SUPPLY_SENSOR = "sensor.units_supply_temperature"
 SURFACE_SENSOR = "sensor.units_surface_temperature"
 SOURCE_SENSOR = "sensor.units_source_temperature"
 EXTERNAL_CLIMATE = "climate.units_external_room"
-CLIMATE_ENTITY = "climate.unit_plant_units_zone"
-DEMAND_ENTITY = "binary_sensor.unit_plant_units_zone_demand"
-BLOCKED_ENTITY = "binary_sensor.unit_plant_units_zone_blocked"
-BLOCKED_REASON_ENTITY = "sensor.unit_plant_units_zone_blocked_reason"
+CLIMATE_ENTITY = "climate.units_zone"
+DEMAND_ENTITY = "binary_sensor.units_zone_heating_demand"
+BLOCKED_ENTITY = "binary_sensor.units_zone_blocked"
+BLOCKED_REASON_ENTITY = "sensor.units_zone_blocked_reason"
 
 
 def _entry(*, external: bool = False) -> MockConfigEntry:

@@ -44,6 +44,7 @@ EXTERNAL_LABELS = frozenset(
         "Add integration",
         "Custom repositories",
         "Devices & services",
+        "Diagnostic",
         "Download diagnostics",
         "Hydronicus",
         "Hydronicus Plant",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -84,11 +85,12 @@ async def test_external_state_changes_drive_demand_without_external_service_call
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     runtime = entry.runtime_data
-    assert hass.states.get("climate.external_thermostat_plant_external_room") is None
+    # The external climate entity is the thermostat; Hydronicus publishes none of its own.
     assert (
-        hass.states.get("binary_sensor.external_thermostat_plant_external_room_demand").state
-        == "on"
+        er.async_get(hass).async_get_entity_id("climate", DOMAIN, f"{PLANT_ID}_{ZONE_ID}_climate")
+        is None
     )
+    assert hass.states.get("binary_sensor.external_room_heating_demand").state == "on"
     assert runtime.evaluation.diagnostics.zone_decisions[ZONE_ID].explanation.startswith(
         "External thermostat accepted authoritative heating"
     )
@@ -98,10 +100,7 @@ async def test_external_state_changes_drive_demand_without_external_service_call
         hass.states.async_set(EXTERNAL_ENTITY, "heat", {"hvac_action": "idle"})
         await hass.async_block_till_done()
         assert runtime.evaluation_count > first_evaluation_count
-        assert (
-            hass.states.get("binary_sensor.external_thermostat_plant_external_room_demand").state
-            == "off"
-        )
+        assert hass.states.get("binary_sensor.external_room_heating_demand").state == "off"
         assert all(
             call.args[1:3] != ("climate", "set_temperature")
             and call.args[1:3] != ("climate", "set_preset_mode")
@@ -111,10 +110,7 @@ async def test_external_state_changes_drive_demand_without_external_service_call
 
     hass.states.async_set(EXTERNAL_ENTITY, "unavailable", {"hvac_action": "heating"})
     await hass.async_block_till_done()
-    assert (
-        hass.states.get("binary_sensor.external_thermostat_plant_external_room_demand").state
-        == "off"
-    )
+    assert hass.states.get("binary_sensor.external_room_heating_demand").state == "off"
     assert "unavailable" in runtime.evaluation.diagnostics.zone_decisions[ZONE_ID].explanation
 
     serialized = runtime.serialized_presentation(hass)
@@ -132,10 +128,7 @@ async def test_missing_external_binding_creates_thermostat_repair(hass) -> None:
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert (
-        hass.states.get("binary_sensor.external_thermostat_plant_external_room_demand").state
-        == "off"
-    )
+    assert hass.states.get("binary_sensor.external_room_heating_demand").state == "off"
     issues = issue_registry.async_get(hass).issues
     assert any(
         issue.domain == DOMAIN and issue.translation_key == "missing_thermostat_binding_fixable"
@@ -155,7 +148,7 @@ async def test_external_zone_visibility_uses_hydronicus_demand_acl(hass) -> None
 
     class _Permissions:
         def check_entity(self, entity_id: str, _permission: str) -> bool:
-            return entity_id.endswith("external_room_demand")
+            return entity_id.endswith("external_room_heating_demand")
 
     user = type("User", (), {"permissions": _Permissions()})()
     entities = entry.runtime_data.presentation_entities(hass)
@@ -179,7 +172,7 @@ async def test_switching_thermostat_kind_does_not_leave_a_duplicate_climate_enti
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    climate_entity_id = "climate.external_thermostat_plant_internal_room"
+    climate_entity_id = "climate.internal_room"
     assert hass.states.get(climate_entity_id) is not None
 
     updated_data = dict(entry.data)
@@ -212,7 +205,7 @@ async def test_internal_thermostat_restores_mutable_state_without_changing_plant
     entry = _entry(internal=True)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
-    climate_entity_id = "climate.external_thermostat_plant_internal_room"
+    climate_entity_id = "climate.internal_room"
 
     await hass.services.async_call(
         "climate",

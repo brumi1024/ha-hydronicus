@@ -652,6 +652,19 @@ class CompiledPlant:
     sources: Mapping[str, Source] = field(default_factory=dict)
     source_selector: SourceSelectionActuator | None = None
 
+    def zone_can_cool(self, zone_id: str) -> bool:
+        """Return whether an enabled Delivery Route leads the Zone to a cooling Circuit.
+
+        This is the one notion of a room that can cool: its thermostat offers
+        cool modes and its cooling entities exist exactly when this holds.
+        """
+        return any(
+            route.enabled
+            and route.zone_id == zone_id
+            and self.circuits[route.circuit_id].cooling_enabled
+            for route in self.routes
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class NumericObservation:

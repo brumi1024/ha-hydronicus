@@ -111,6 +111,8 @@ class HydronicRuntime:
     ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(room_objects={}))
     diagnostics_include_actuator_details: bool = False
     plant_device_id: str | None = None
+    # Entity platform domain -> unique IDs that platform provided in this setup.
+    provided_entities: dict[str, frozenset[str]] = field(default_factory=dict)
     configuration_fingerprint: str = ""
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)

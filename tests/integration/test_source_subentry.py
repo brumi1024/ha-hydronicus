@@ -177,10 +177,18 @@ async def test_source_setup_reconfigure_reload_delete_and_entities(hass) -> None
     assert hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
     await hass.async_block_till_done()
     assert entry.runtime_data.plant.sources == {}
-    assert hass.states.get("sensor.hydronic_plant_recommended_source").state == "none"
-    assert hass.states.get("sensor.hydronic_plant_source_recommendation").state == (
-        "No source configured."
-    )
+    # Without a source, the Plant-level source entities leave the registry too.
+    registry = er.async_get(hass)
+    for entity_id in (
+        "sensor.hydronic_plant_active_source",
+        "sensor.hydronic_plant_recommended_source",
+        "sensor.hydronic_plant_source_changeover",
+        "sensor.hydronic_plant_source_dwell",
+        "sensor.hydronic_plant_source_recommendation",
+    ):
+        assert registry.async_get(entity_id) is None, entity_id
+        assert hass.states.get(entity_id) is None, entity_id
+    assert hass.states.get("sensor.hydronic_plant_operating_mode") is not None
 
 
 async def test_source_availability_and_buffer_freshness_update_entities(hass) -> None:

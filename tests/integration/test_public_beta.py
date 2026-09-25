@@ -73,7 +73,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     await hass.services.async_call(
         "climate",
         "set_hvac_mode",
-        {"entity_id": "climate.trial_plant_living_room", "hvac_mode": "heat"},
+        {"entity_id": "climate.living_room", "hvac_mode": "heat"},
         blocking=True,
     )
     await hass.services.async_call(
@@ -85,9 +85,9 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     await hass.async_block_till_done()
 
     assert entry.runtime_data.dry_run is True
-    demand_state = hass.states.get("binary_sensor.trial_plant_living_room_demand")
+    demand_state = hass.states.get("binary_sensor.living_room_heating_demand")
     topology_state = hass.states.get("sensor.trial_plant_topology_preview")
-    valve_request = hass.states.get("binary_sensor.trial_plant_living_room_loop_valve_requested")
+    valve_request = hass.states.get("binary_sensor.living_room_loop_valve_requested")
     assert demand_state is not None and demand_state.state == "on"
     assert topology_state is not None and topology_state.state == "2 rooms, 2 loops"
     assert valve_request is not None and valve_request.state == "on"
@@ -99,7 +99,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
         blocking=True,
     )
     await hass.async_block_till_done()
-    demand_state = hass.states.get("binary_sensor.trial_plant_living_room_demand")
+    demand_state = hass.states.get("binary_sensor.living_room_heating_demand")
     assert demand_state is not None and demand_state.state == "off"
     assert calls == []
     assert_helpers_untouched(hass)

@@ -214,7 +214,7 @@ async def test_cooling_executes_outside_dry_run_and_stops_on_condensation_risk(h
         ("switch", "turn_off", "switch.cooling_pump"),
         ("switch", "turn_off", "switch.cooling_valve"),
     ]
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
 
 
 async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
@@ -228,29 +228,26 @@ async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
     await hass.async_block_till_done()
     await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
 
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_demand").state == "on"
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "off"
+    assert hass.states.get("binary_sensor.living_cooling_demand").state == "on"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "off"
+    assert float(hass.states.get("sensor.living_cooling_dew_point").state) == pytest.approx(
+        13.8516, abs=0.001
+    )
     assert float(
-        hass.states.get("sensor.hydronic_plant_living_cooling_dew_point").state
-    ) == pytest.approx(13.8516, abs=0.001)
-    assert float(
-        hass.states.get("sensor.hydronic_plant_living_cooling_condensation_margin").state
+        hass.states.get("sensor.living_cooling_condensation_margin").state
     ) == pytest.approx(4.1484, abs=0.001)
-    assert hass.states.get("sensor.hydronic_plant_living_cooling_blocked_reason").state == "none"
+    assert hass.states.get("sensor.living_cooling_blocked_reason").state == "none"
     assert entry.runtime_data.evaluation.control_plan.commands
 
     hass.states.async_set("sensor.cooling_supply", "15.0")
     await hass.async_block_till_done()
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_demand").state == "off"
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
-    assert (
-        "condensation margin"
-        in hass.states.get("sensor.hydronic_plant_living_cooling_blocked_reason").state
-    )
+    assert hass.states.get("binary_sensor.living_cooling_demand").state == "off"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
+    assert "condensation margin" in hass.states.get("sensor.living_cooling_blocked_reason").state
 
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
 
 
 async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
@@ -282,7 +279,7 @@ async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
     assert calls == []
     assert entry.runtime_data.evaluation.diagnostics.mode_conflicts
     assert entry.runtime_data.runtime_state.cooling_zone_demands[COOLING_ZONE_ID] is False
-    reason = hass.states.get("sensor.shared_mode_plant_cooling_zone_cooling_blocked_reason")
+    reason = hass.states.get("sensor.cooling_zone_cooling_blocked_reason")
     assert reason is not None
     assert "shared" in reason.state
     preview = hass.states.get("sensor.shared_mode_plant_topology_preview")
@@ -347,10 +344,7 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
         "safely idle"
         in hass.states.get("sensor.shared_mode_plant_mode_changeover_explanation").state
     )
-    assert (
-        hass.states.get("binary_sensor.shared_mode_plant_cooling_zone_cooling_demand").state
-        == "off"
-    )
+    assert hass.states.get("binary_sensor.cooling_zone_cooling_demand").state == "off"
     assert calls == []
 
 

@@ -1091,7 +1091,7 @@ async def test_reload_during_pump_starting_does_not_assume_running_feedback(hass
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     await _enable_heating(hass, entry.runtime_data)
-    assert hass.states.get("climate.synthetic_plant_synthetic_zone").state == "heat"
+    assert hass.states.get("climate.synthetic_zone").state == "heat"
     hass.states.async_set("switch.synthetic_valve", "on")
     await hass.async_block_till_done()
     calls.clear()

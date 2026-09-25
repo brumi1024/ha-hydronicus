@@ -590,7 +590,7 @@
         "name": "Mode changeover lockout"
       },
       "zone_demand": {
-        "name": "Demand"
+        "name": "Heating demand"
       },
       "zone_blocked": {
         "name": "Blocked"
@@ -710,7 +710,7 @@
         "name": "Explanation"
       },
       "zone_aggregate_temperature": {
-        "name": "Aggregate temperature"
+        "name": "Temperature"
       },
       "zone_blocked_reason": {
         "name": "Blocked reason"
