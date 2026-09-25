@@ -167,6 +167,11 @@ def build_plant_summary(runtime: Any) -> dict[str, object]:
 
 
 def _boundary_message(runtime: Any, forced_shadow: list[str]) -> str:
+    if runtime.dry_run and getattr(runtime, "output_hold", None) is not None:
+        return (
+            "Dry run - held because another Plant is using the same outputs. No actuator "
+            "calls are sent, and the Plant resumes automatically when the conflict is gone."
+        )
     if runtime.dry_run:
         return "Dry run - operations are proposed and no actuator calls are sent."
     if forced_shadow:

@@ -206,17 +206,22 @@ This is expected.
 Every topology or physical binding change invalidates the prior output fingerprint and returns the Plant to Dry run.
 Review the complete graph and the exact valve, pump, and direct source-demand output list before authorizing active heating again.
 
-### A Plant was moved to Dry run because of shared outputs
+### A Plant is held in Dry run because of shared outputs
 
 One actuator entity belongs to one live Plant.
-When two Plants bind the same valve, pump, or source-demand entity and both are out of Dry run, the Plant that sets up second is moved to Dry run before it sends any command.
-Hydronicus removes that Plant's output authorization and raises a repair that names the other Plant and the shared entities.
-Bind different entities in one of the Plants, remove one of the Plants, or turn on Dry run for the other Plant.
-The repair clears on its own once the Plants no longer share a live output, and you can then turn Dry run off again after reviewing the outputs.
+When two Plants bind the same valve, pump, or source-demand entity and both are set to run outside Dry run, the first one to claim its outputs during setup runs live.
+The other one is held in Dry run before it sends any command.
+Its Dry run binary sensor is on, with the `held_by_output_conflict` attribute set to true and `held_by_plant` naming the live Plant.
+A repair says that the Plant is held in Dry run because the other Plant is using the same outputs.
+Hydronicus keeps the held Plant's Dry run setting and confirmed outputs, and resumes it automatically when the conflict is gone.
+That happens when the live Plant enters Dry run, is unloaded, is removed, or fails to set up; the held Plant then reloads through its normal startup and the repair clears.
+Reloading the live Plant does not hand its outputs over.
+To end the conflict for good, bind different entities in one of the Plants, remove one of the Plants, or turn on Dry run for one of them.
 
 ### Turning Dry run off reports another Plant or changed outputs
 
-If the confirmation reports that another Plant controls some of the same entities, that Plant is out of Dry run and owns them.
+If the confirmation reports that another Plant controls some of the same entities, that Plant is live and owns them.
+This also applies to a Plant that is held in Dry run: its reconfigure form shows Dry run on, and turning it off is refused until the conflict is gone.
 Resolve the overlap as described above before trying again.
 If the confirmation reports that the outputs changed since the form was shown, the Plant configuration was edited while the form was open.
 Review the updated output list that the form now shows, and confirm again only if it is what you expect.

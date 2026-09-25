@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import UnitOfTemperature, UnitOfTime
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as entity_registry_helper
@@ -146,6 +146,7 @@ from .entry_configuration import (
     authorize_outputs,
     effective_plant_configuration,
     entry_data_with_subentry_draft,
+    exclusive_output_entity_ids,
     invalidate_output_authorization,
     output_authorization,
     subentry_draft,
@@ -287,40 +288,37 @@ class _OwnEntityPickerMixin:
     """Keep Hydronicus entities out of the entity pickers of every form.
 
     Selecting one, such as a zone's aggregate temperature, would create a feedback loop.
-    It also flags outputs that another Plant already binds, naming that Plant in
-    the next form it shows.
     """
 
     hass: Any
-    _other_plant_placeholders: dict[str, str] | None = None
-
-    def _other_plant_binding_errors(
-        self, entry_id: str | None, fields: Mapping[str, Any]
-    ) -> dict[str, str]:
-        """Flag submitted outputs that another Plant already binds.
-
-        This is advisory, so users learn about sharing before it matters. The
-        runtime guard that keeps one live Plant per output is authoritative.
-        """
-        errors: dict[str, str] = {}
-        self._other_plant_placeholders = None
-        for field, entity_id in fields.items():
-            if conflict := bound_by_other_plant(self.hass, entry_id, entity_id):
-                errors[field] = "actuator_entity_in_other_plant"
-                if self._other_plant_placeholders is None:
-                    self._other_plant_placeholders = {"other_plant": conflict.other_plant}
-        return errors
 
     def async_show_form(self, *, data_schema: vol.Schema | None = None, **kwargs: Any) -> Any:
         """Show a form whose entity pickers exclude this integration's entities."""
         if data_schema is not None:
             data_schema = _schema_without_own_entities(data_schema, _own_entity_ids(self.hass))
-        if self._other_plant_placeholders:
-            kwargs["description_placeholders"] = {
-                **self._other_plant_placeholders,
-                **(kwargs.get("description_placeholders") or {}),
-            }
         return super().async_show_form(data_schema=data_schema, **kwargs)  # type: ignore[misc]
+
+
+def _other_plant_sharing_warnings(
+    hass: HomeAssistant, entry_id: str | None, entity_ids: Iterable[Any]
+) -> tuple[str, ...]:
+    """Describe chosen outputs that another Plant already binds, for a review step.
+
+    Sharing is allowed, because Dry run Plants may share entities with a live
+    Plant, for example to compare a draft configuration. The review lets users
+    learn about sharing before it matters. The runtime guard that keeps one live
+    Plant per output is authoritative.
+    """
+    warnings = []
+    for entity_id in dict.fromkeys(entity_ids):
+        if conflict := bound_by_other_plant(hass, entry_id, entity_id):
+            warnings.append(
+                f"{entity_id} is already bound by {conflict.other_plant}. Only one of the "
+                "two plants can be out of Dry run at a time: while one is live, the other "
+                "cannot leave Dry run, and if it is stored out of Dry run it is held in "
+                "Dry run until the conflict is gone."
+            )
+    return tuple(warnings)
 
 
 def _flatten_sections(user_input: Mapping[str, Any]) -> dict[str, Any]:
@@ -642,16 +640,17 @@ def _effective_topology_compile(
         return None
 
 
-def _warning_text(compiled: Any) -> str:
-    """Render structured compiler warnings for a confirmation form."""
-    warnings = getattr(compiled, "warnings", ())
-    return "\n".join(f"- {warning.message}" for warning in warnings)
+def _warning_text(compiled: Any, sharing: Sequence[str] = ()) -> str:
+    """Render compiler warnings, then outputs shared with other Plants, for a review form."""
+    messages = [warning.message for warning in getattr(compiled, "warnings", ())]
+    return "\n".join(f"- {message}" for message in (*messages, *sharing))
 
 
 def _initial_review_placeholders(
     topology: Mapping[str, Any],
     compiled: CompiledPlant | None,
     validation_error: str | None = None,
+    sharing: Sequence[str] = (),
 ) -> dict[str, str]:
     """Render complete initial-review context, including validation failures."""
     logic = (
@@ -663,7 +662,7 @@ def _initial_review_placeholders(
         "zone": str(topology[CONF_ZONES][0][CONF_NAME]),
         "circuit": str(topology[CONF_CIRCUITS][0][CONF_NAME]),
         "logic": logic,
-        "warnings": _warning_text(compiled) or "- None",
+        "warnings": _warning_text(compiled, sharing) or "- None",
         "outputs": authorization_output_lines({CONF_PLANT_ID: "pending", CONF_TOPOLOGY: topology}),
     }
 
@@ -1741,12 +1740,94 @@ def _actuator_validation_errors(
     return {"base": "invalid_actuator"}
 
 
-class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSubentryFlow):
+if TYPE_CHECKING:
+    _SubentryFlowBase = config_entries.ConfigSubentryFlow
+else:
+    _SubentryFlowBase = object
+
+
+class _SubentryReviewMixin(_SubentryFlowBase):
+    """Save one drafted subentry, after a review step when there are warnings.
+
+    The review lists non-fatal compiler warnings and outputs that another Plant
+    already binds, and requires an explicit acknowledgement before saving.
+    """
+
+    _subentry_type: str
+    _draft: dict[str, Any]
+    _reconfigure: bool
+    _review_warnings: str
+
+    async def _async_save_draft(
+        self,
+        draft: dict[str, Any],
+        *,
+        reconfigure: bool,
+        warnings: str,
+        errors: dict[str, str],
+    ) -> config_entries.SubentryFlowResult | None:
+        """Review warnings first, or save the draft now; ``None`` means the save failed."""
+        self._draft = draft
+        self._reconfigure = reconfigure
+        if warnings:
+            self._review_warnings = warnings
+            return await self.async_step_review()
+        if result := await self._async_persist_draft():
+            return result
+        errors["base"] = "dry_run_shutdown_in_progress"
+        return None
+
+    async def _async_persist_draft(self) -> config_entries.SubentryFlowResult | None:
+        """Persist the draft graph and return its UI handle, or ``None`` if Dry run is pending."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry() if self._reconfigure else None
+        if not await _async_persist_subentry_graph(
+            self,
+            entry,
+            self._subentry_type,
+            self._draft,
+            excluded_subentry_id=subentry.subentry_id if subentry is not None else None,
+        ):
+            return None
+        if subentry is not None:
+            return self.async_update_and_abort(
+                entry,
+                subentry,
+                title=self._draft[CONF_NAME],
+                data=_subentry_handle(self._draft),
+            )
+        return self.async_create_entry(
+            title=self._draft[CONF_NAME],
+            data=_subentry_handle(self._draft),
+            unique_id=self._draft["id"],
+        )
+
+    async def async_step_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Confirm the listed warnings before saving the drafted subentry."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get("confirm", False):
+                errors["base"] = "confirm_required"
+            elif result := await self._async_persist_draft():
+                return result
+            else:
+                errors["base"] = "dry_run_shutdown_in_progress"
+        return self.async_show_form(
+            step_id="review",
+            data_schema=_warning_review_schema(),
+            errors=errors,
+            description_placeholders={"warnings": self._review_warnings},
+        )
+
+
+class ActuatorSubentryFlowHandler(
+    _SubentryReviewMixin, _OwnEntityPickerMixin, config_entries.ConfigSubentryFlow
+):
     """Add an actuator that extends one or more existing hydraulic circuits."""
 
-    _draft: dict[str, Any]
-    _draft_compiled: CompiledPlant
-    _reconfigure: bool
+    _subentry_type = SUBENTRY_TYPE_ACTUATOR
 
     def _circuit_options(self) -> list[selector.SelectOptionDict]:
         entry = self._get_entry()
@@ -1757,6 +1838,22 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
             for circuit in configuration.circuits
             if circuit.id not in dynamic_circuit_ids
         ]
+
+    def _review_text(
+        self,
+        entry: config_entries.ConfigEntry,
+        data: Mapping[str, Any],
+        *,
+        excluded_subentry_id: str | None = None,
+    ) -> str:
+        """Collect compiler warnings and the other Plant already binding this actuator."""
+        compiled = _effective_topology_compile(
+            entry,
+            proposed_actuators=(data,),
+            excluded_subentry_id=excluded_subentry_id,
+        )
+        sharing = _other_plant_sharing_warnings(self.hass, entry.entry_id, (data[CONF_ENTITY_ID],))
+        return _warning_text(compiled, sharing)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -1772,36 +1869,17 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
             errors[CONF_CIRCUIT_IDS] = "circuits_required"
         if user_input is not None:
             errors.update(_own_entity_errors(self.hass, user_input))
-            errors.update(
-                self._other_plant_binding_errors(
-                    entry.entry_id, {CONF_ENTITY_ID: user_input.get(CONF_ENTITY_ID)}
-                )
-            )
         if user_input is not None and not errors:
-            actuator_id = str(uuid4())
-            data = _valve_actuator_data(user_input, actuator_id)
+            data = _valve_actuator_data(user_input, str(uuid4()))
             if validation_errors := _actuator_validation_errors(entry, data):
                 errors.update(validation_errors)
-            else:
-                self._draft = data
-                self._reconfigure = False
-                compiled = _effective_topology_compile(
-                    entry,
-                    proposed_actuators=(data,),
-                )
-                if compiled is not None and compiled.warnings:
-                    self._draft_compiled = compiled
-                    return await self.async_step_review()
-                if await _async_persist_subentry_graph(
-                    self,
-                    entry,
-                    SUBENTRY_TYPE_ACTUATOR,
-                    data,
-                ):
-                    return self.async_create_entry(
-                        title=data[CONF_NAME], data=_subentry_handle(data), unique_id=actuator_id
-                    )
-                errors["base"] = "dry_run_shutdown_in_progress"
+            elif result := await self._async_save_draft(
+                data,
+                reconfigure=False,
+                warnings=self._review_text(entry, data),
+                errors=errors,
+            ):
+                return result
 
         return self.async_show_form(
             step_id="user",
@@ -1824,11 +1902,6 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
             errors[CONF_CIRCUIT_IDS] = "circuits_required"
         if user_input is not None:
             errors.update(_own_entity_errors(self.hass, user_input))
-            errors.update(
-                self._other_plant_binding_errors(
-                    entry.entry_id, {CONF_ENTITY_ID: user_input.get(CONF_ENTITY_ID)}
-                )
-            )
         if user_input is not None and not errors:
             data = _valve_actuator_data(user_input, defaults["id"])
             if validation_errors := _actuator_validation_errors(
@@ -1837,31 +1910,13 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
                 excluded_subentry_id=subentry.subentry_id,
             ):
                 errors.update(validation_errors)
-            else:
-                self._draft = data
-                self._reconfigure = True
-                compiled = _effective_topology_compile(
-                    entry,
-                    proposed_actuators=(data,),
-                    excluded_subentry_id=subentry.subentry_id,
-                )
-                if compiled is not None and compiled.warnings:
-                    self._draft_compiled = compiled
-                    return await self.async_step_review()
-                if await _async_persist_subentry_graph(
-                    self,
-                    entry,
-                    SUBENTRY_TYPE_ACTUATOR,
-                    data,
-                    excluded_subentry_id=subentry.subentry_id,
-                ):
-                    return self.async_update_and_abort(
-                        entry,
-                        subentry,
-                        title=data[CONF_NAME],
-                        data=_subentry_handle(data),
-                    )
-                errors["base"] = "dry_run_shutdown_in_progress"
+            elif result := await self._async_save_draft(
+                data,
+                reconfigure=True,
+                warnings=self._review_text(entry, data, excluded_subentry_id=subentry.subentry_id),
+                errors=errors,
+            ):
+                return result
 
         return self.async_show_form(
             step_id="reconfigure",
@@ -1869,62 +1924,6 @@ class ActuatorSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSu
                 self, _valve_actuator_schema(circuit_options, defaults), user_input
             ),
             errors=errors,
-        )
-
-    async def async_step_review(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.SubentryFlowResult:
-        """Confirm structured warnings before saving the proposed actuator."""
-        if user_input is not None:
-            if not user_input.get("confirm", False):
-                return self.async_show_form(
-                    step_id="review",
-                    data_schema=_warning_review_schema(),
-                    errors={"base": "confirm_required"},
-                    description_placeholders={"warnings": _warning_text(self._draft_compiled)},
-                )
-            if self._reconfigure:
-                subentry = self._get_reconfigure_subentry()
-                if not await _async_persist_subentry_graph(
-                    self,
-                    self._get_entry(),
-                    SUBENTRY_TYPE_ACTUATOR,
-                    self._draft,
-                    excluded_subentry_id=subentry.subentry_id,
-                ):
-                    return self.async_show_form(
-                        step_id="review",
-                        data_schema=_warning_review_schema(),
-                        errors={"base": "dry_run_shutdown_in_progress"},
-                        description_placeholders={"warnings": _warning_text(self._draft_compiled)},
-                    )
-                return self.async_update_and_abort(
-                    self._get_entry(),
-                    subentry,
-                    title=self._draft[CONF_NAME],
-                    data=_subentry_handle(self._draft),
-                )
-            if not await _async_persist_subentry_graph(
-                self,
-                self._get_entry(),
-                SUBENTRY_TYPE_ACTUATOR,
-                self._draft,
-            ):
-                return self.async_show_form(
-                    step_id="review",
-                    data_schema=_warning_review_schema(),
-                    errors={"base": "dry_run_shutdown_in_progress"},
-                    description_placeholders={"warnings": _warning_text(self._draft_compiled)},
-                )
-            return self.async_create_entry(
-                title=self._draft[CONF_NAME],
-                data=_subentry_handle(self._draft),
-                unique_id=self._draft["id"],
-            )
-        return self.async_show_form(
-            step_id="review",
-            data_schema=_warning_review_schema(),
-            description_placeholders={"warnings": _warning_text(self._draft_compiled)},
         )
 
 
@@ -2074,15 +2073,20 @@ def _source_validation_errors(
     return {"base": "invalid_source"}
 
 
-class SourceSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSubentryFlow):
+class SourceSubentryFlowHandler(
+    _SubentryReviewMixin, _OwnEntityPickerMixin, config_entries.ConfigSubentryFlow
+):
     """Add a source used by the read-only source recommendation."""
 
-    def _other_plant_demand_errors(
-        self, entry: config_entries.ConfigEntry, data: Mapping[str, Any]
-    ) -> dict[str, str]:
-        """Flag a source demand switch that another Plant already binds."""
-        return self._other_plant_binding_errors(
-            entry.entry_id, {CONF_SOURCE_DEMAND_ENTITY: data[CONF_SOURCE_DEMAND_ENTITY]}
+    _subentry_type = SUBENTRY_TYPE_SOURCE
+
+    def _review_text(self, entry: config_entries.ConfigEntry, data: Mapping[str, Any]) -> str:
+        """Name the other Plant that already binds this source demand switch, if any."""
+        return _warning_text(
+            None,
+            _other_plant_sharing_warnings(
+                self.hass, entry.entry_id, (data[CONF_SOURCE_DEMAND_ENTITY],)
+            ),
         )
 
     async def async_step_user(
@@ -2092,23 +2096,19 @@ class SourceSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSube
         entry = self._get_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            source_id = str(uuid4())
-            data = _source_data(user_input, source_id)
+            data = _source_data(user_input, str(uuid4()))
             errors = _own_entity_errors(self.hass, user_input)
-            errors.update(self._other_plant_demand_errors(entry, data))
             if not errors:
                 errors = _source_validation_errors(entry, data)
-            if not errors:
-                if await _async_persist_subentry_graph(
-                    self,
-                    entry,
-                    SUBENTRY_TYPE_SOURCE,
+            if not errors and (
+                result := await self._async_save_draft(
                     data,
-                ):
-                    return self.async_create_entry(
-                        title=data[CONF_NAME], data=_subentry_handle(data), unique_id=source_id
-                    )
-                errors["base"] = "dry_run_shutdown_in_progress"
+                    reconfigure=False,
+                    warnings=self._review_text(entry, data),
+                    errors=errors,
+                )
+            ):
+                return result
         return self.async_show_form(
             step_id="user",
             data_schema=_with_submitted_values(self, _source_schema(), user_input),
@@ -2126,26 +2126,19 @@ class SourceSubentryFlowHandler(_OwnEntityPickerMixin, config_entries.ConfigSube
         if user_input is not None:
             data = _source_data(user_input, defaults["id"])
             errors = _own_entity_errors(self.hass, user_input)
-            errors.update(self._other_plant_demand_errors(entry, data))
             if not errors:
                 errors = _source_validation_errors(
                     entry, data, excluded_subentry_id=subentry.subentry_id
                 )
-            if not errors:
-                if await _async_persist_subentry_graph(
-                    self,
-                    entry,
-                    SUBENTRY_TYPE_SOURCE,
+            if not errors and (
+                result := await self._async_save_draft(
                     data,
-                    excluded_subentry_id=subentry.subentry_id,
-                ):
-                    return self.async_update_and_abort(
-                        entry,
-                        subentry,
-                        title=data[CONF_NAME],
-                        data=_subentry_handle(data),
-                    )
-                errors["base"] = "dry_run_shutdown_in_progress"
+                    reconfigure=True,
+                    warnings=self._review_text(entry, data),
+                    errors=errors,
+                )
+            ):
+                return result
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=_with_submitted_values(self, _source_schema(defaults), user_input),
@@ -2216,7 +2209,15 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     ) -> config_entries.ConfigFlowResult:
         """Change the Plant Dry run setting through Home Assistant reconfiguration."""
         entry = self._get_reconfigure_entry()
-        current_dry_run = bool(entry.data.get(CONF_DRY_RUN, True))
+        # A Plant held in Dry run by an output conflict is stored live but is
+        # not live, so the form offers its effective setting. Leaving Dry run then
+        # takes the confirmed, conflict-checked path; choosing Dry run stores it.
+        runtime = getattr(entry, "runtime_data", None)
+        current_dry_run = (
+            bool(runtime.dry_run)
+            if runtime is not None
+            else bool(entry.data.get(CONF_DRY_RUN, True))
+        )
         if user_input is not None:
             requested_dry_run = bool(user_input[CONF_DRY_RUN])
             if requested_dry_run is False and current_dry_run:
@@ -2470,14 +2471,6 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                 errors["base"] = "duplicate_actuator_entity"
             elif own_entity_errors := _own_entity_errors(self.hass, user_input):
                 errors.update(own_entity_errors)
-            elif other_plant_errors := self._other_plant_binding_errors(
-                None,
-                {
-                    CONF_VALVE_ENTITY: fields[CONF_VALVE_ENTITY],
-                    CONF_PUMP_ENTITY: fields[CONF_PUMP_ENTITY],
-                },
-            ):
-                errors.update(other_plant_errors)
             else:
                 circuit_id = str(uuid4())
                 valve_id = str(uuid4())
@@ -2558,13 +2551,22 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     ) -> config_entries.ConfigFlowResult:
         """Validate the initial topology before storing it in a config entry."""
         topology = self._draft[CONF_TOPOLOGY]
+        sharing = _other_plant_sharing_warnings(
+            self.hass,
+            None,
+            sorted(
+                exclusive_output_entity_ids({CONF_PLANT_ID: "pending", CONF_TOPOLOGY: topology})
+            ),
+        )
         try:
             plant = compile_topology(plant_configuration_from_entry_data(self._draft))
         except (StoredTopologyError, TopologyValidationError) as error:
             return self.async_show_form(
                 step_id="review",
                 errors={"base": "invalid_topology"},
-                description_placeholders=_initial_review_placeholders(topology, None, str(error)),
+                description_placeholders=_initial_review_placeholders(
+                    topology, None, str(error), sharing
+                ),
             )
 
         if user_input is not None:
@@ -2575,7 +2577,9 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
                     step_id="review",
                     data_schema=_dry_run_confirmation_schema(),
                     errors={"base": "dry_run_confirmation_required"},
-                    description_placeholders=_initial_review_placeholders(topology, plant),
+                    description_placeholders=_initial_review_placeholders(
+                        topology, plant, sharing=sharing
+                    ),
                 )
             await self.async_set_unique_id(self._draft[CONF_PLANT_ID])
             self._abort_if_unique_id_configured()
@@ -2586,5 +2590,5 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
         return self.async_show_form(
             step_id="review",
             data_schema=(_dry_run_confirmation_schema() if not self._draft[CONF_DRY_RUN] else None),
-            description_placeholders=_initial_review_placeholders(topology, plant),
+            description_placeholders=_initial_review_placeholders(topology, plant, sharing=sharing),
         )

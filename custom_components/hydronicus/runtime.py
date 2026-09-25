@@ -86,7 +86,11 @@ from .entry_configuration import (
     output_authorization,
     runtime_configuration_fingerprint,
 )
-from .output_ownership import async_sync_output_conflict_issues, live_output_conflict
+from .output_ownership import (
+    OutputConflict,
+    async_schedule_output_review,
+    live_output_conflict,
+)
 from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
 from .repairs import async_sync_repairs
 
@@ -117,6 +121,9 @@ class HydronicRuntime:
     last_execution: ExecutionReport | None = None
     unresolved_bindings: tuple[EntityBinding, ...] = ()
     unavailable_entity_ids: frozenset[str] = frozenset()
+    # Set while this Plant is stored live but held in Dry run because another
+    # live Plant owns a shared output. The hold lives only here, never in storage.
+    output_hold: OutputConflict | None = None
     _hass: HomeAssistant | None = None
     _entry: Any | None = None
     _remove_state_listener: Callable[[], None] | None = None
@@ -151,14 +158,21 @@ class HydronicRuntime:
         )
 
     @classmethod
-    def from_entry(cls, entry: Any) -> HydronicRuntime:
-        """Construct safe runtime data from a config entry."""
+    def from_entry(
+        cls, entry: Any, *, output_hold: OutputConflict | None = None
+    ) -> HydronicRuntime:
+        """Construct safe runtime data from a config entry.
+
+        A runtime built with ``output_hold`` is in Dry run from construction,
+        whatever the stored setting says, so it can never send a command.
+        """
         effective = effective_plant_configuration(entry)
         plant = compile_topology(effective.configuration)
         return cls(
             plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
             name=str(entry.data.get(CONF_NAME, getattr(entry, "title", "Hydronic plant"))),
-            dry_run=bool(entry.data.get(CONF_DRY_RUN, True)),
+            dry_run=bool(entry.data.get(CONF_DRY_RUN, True)) or output_hold is not None,
+            output_hold=output_hold,
             plant=plant,
             actuator_subentry_ids=effective.actuator_subentry_ids,
             circuit_subentry_ids=effective.circuit_subentry_ids,
@@ -229,16 +243,21 @@ class HydronicRuntime:
         hass: HomeAssistant | None = None,
         authorization: Mapping[str, Any] | None = None,
     ) -> bool:
-        """Apply Plant Dry run, safely releasing active heating before suppression."""
+        """Apply Plant Dry run, safely releasing active heating before suppression.
+
+        A held Plant is already in Dry run at runtime, so requesting Dry run only
+        stores it, and leaving Dry run takes the same authorized, conflict-checked
+        path as any other Plant.
+        """
         requested = bool(dry_run)
-        if requested == self.dry_run:
+        if requested == self.dry_run and not (requested and self.output_hold is not None):
             return True
         active_hass = hass or self._hass
         if active_hass is None or self._entry is None:
             raise self._not_started_error()
 
         async with self._operation_lock:
-            if requested:
+            if requested and not self.dry_run:
                 report = await self._async_safe_shutdown_locked(active_hass, force_dry_run=False)
                 while (
                     not report.execution.failures
@@ -282,7 +301,8 @@ class HydronicRuntime:
             active_hass.config_entries.async_update_entry(self._entry, data=data)
             self.dry_run = requested
             self.executor.dry_run = requested
-            async_sync_output_conflict_issues(active_hass)
+            self.output_hold = None
+            async_schedule_output_review(active_hass)
             if requested:
                 self._notify_listeners_if_changed()
             else:
@@ -775,6 +795,17 @@ class HydronicRuntime:
         ):
             return "blocked"
         return self.evaluation.control_plan.plant_mode.value
+
+    def set_output_hold(self, hold: OutputConflict | None) -> None:
+        """Record which live Plant holds this one in Dry run, or clear a stale hold.
+
+        This never changes whether the runtime is in Dry run: releasing a hold
+        takes a reload through the normal authorized startup path.
+        """
+        if hold == self.output_hold:
+            return
+        self.output_hold = hold
+        self._notify_listeners_if_changed()
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register an entity update callback."""
@@ -1607,6 +1638,7 @@ class HydronicRuntime:
                 tuple(sorted(self.zone_preset_modes.items())),
                 tuple(sorted(self.zone_hvac_modes.items())),
                 self.operational_status(),
+                self.output_hold,
                 self.last_reconciliation_status,
                 self.last_reconciliation_changed_actuator_count,
                 self._evaluation_publication_signature(),

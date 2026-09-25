@@ -66,9 +66,16 @@ class DryRunBinarySensor(HydronicShadowEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the latest operation boundary and safe-shutdown phase."""
+        """Expose the latest operation boundary and safe-shutdown phase.
+
+        A Plant stored live can be held in Dry run while another live Plant uses
+        the same outputs; the hold attributes say so and name that Plant.
+        """
+        hold = self._runtime.output_hold
         return {
             "dry_run": self._runtime.dry_run,
+            "held_by_output_conflict": hold is not None,
+            "held_by_plant": hold.other_plant if hold is not None else None,
             "safe_shutdown_phase": self._runtime.runtime_state.safe_shutdown_phase.value,
             "operations": self._runtime.execution_summary(),
         }

@@ -3,19 +3,25 @@
 Two config entries that command the same valve, pump, or source demand switch
 fight each other, and either one's safe shutdown can stop equipment the other
 needs. These tests pin the cross-entry guards: leaving Dry run is refused while
-another live Plant shares an output, the Plant that sets up second yields to Dry
-run without sending a command, and every flow warns before such a binding exists.
+another live Plant shares an output, a stored live Plant that reaches its claim
+second is held in a runtime-only Dry run without sending a command and without
+losing its stored authorization, it resumes by itself once the conflict is gone,
+and every flow warns before such a binding exists.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -46,10 +52,12 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_SOURCE,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.entry_configuration import (
     authorize_outputs,
     output_authorization,
 )
+from custom_components.hydronicus.runtime import HydronicRuntime
 
 SHARED_VALVE = "switch.valve_living"
 SHARED_PUMP = "switch.pump"
@@ -256,12 +264,14 @@ async def test_second_live_plant_at_startup_yields_without_commands(hass: HomeAs
     yielded = [entry for entry in (first, second) if entry.runtime_data.dry_run]
     assert len(live) == 1
     assert len(yielded) == 1
-    # Home Assistant sets entries up in stored order, so the second entry yields.
+    # Here the first entry reaches its claim first, so the second one is held.
     assert yielded == [second]
-    assert setup_order == [yielded[0].entry_id]
-    assert yielded[0].data[CONF_DRY_RUN] is True
-    assert "output_authorization" not in yielded[0].data
-    assert live[0].data["output_authorization"] == output_authorization(live[0].data)
+    # The hold is runtime-only: nothing rewrote either Plant's stored Dry run
+    # setting or output authorization.
+    assert setup_order == []
+    for entry in (first, second):
+        assert entry.data[CONF_DRY_RUN] is False
+        assert entry.data["output_authorization"] == output_authorization(entry.data)
     # The yielded Plant is command-free; the live one had no demand to act on either.
     assert [call for call in calls if call[0] == "turn_on"] == []
     issues = _conflict_issues(hass)
@@ -308,29 +318,299 @@ async def test_second_live_plant_setup_sends_no_command_before_yielding(
             lambda hass, live: hass.config_entries.async_remove(live.entry_id),
             id="live-plant-removed",
         ),
+        pytest.param(
+            lambda hass, live: hass.config_entries.async_unload(live.entry_id),
+            id="live-plant-unloaded",
+        ),
     ],
 )
-async def test_output_conflict_repair_clears_when_the_conflict_is_gone(
+async def test_held_plant_resumes_when_the_conflict_is_gone(
     hass: HomeAssistant, resolve: Callable[[HomeAssistant, MockConfigEntry], Any]
 ) -> None:
-    """The repair stays while the live Plant owns the outputs and clears afterwards."""
+    """The repair stays while the live Plant owns the outputs; then the held Plant resumes."""
+    calls = _record_switch_calls(hass)
+    first, second = await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(2, sensor="sensor.warm_room"),
+    )
+    stored = dict(second.data)
+    assert f"output_conflict_{second.entry_id}" in _conflict_issues(hass)
+
+    # A reload of the held Plant keeps the hold and the repair: the conflict still exists.
+    assert await hass.config_entries.async_reload(second.entry_id)
+    await hass.async_block_till_done()
+    assert second.runtime_data.dry_run is True
+    assert f"output_conflict_{second.entry_id}" in _conflict_issues(hass)
+
+    assert calls == []
+    await resolve(hass, first)
+    # Only the live owner's own safe shutdown may command, when it enters Dry run.
+    owner_shutdown = list(calls)
+    assert all(service == "turn_off" for service, _entity in owner_shutdown)
+    await hass.async_block_till_done()
+
+    assert _conflict_issues(hass) == {}
+    assert second.state is ConfigEntryState.LOADED
+    assert second.runtime_data.dry_run is False
+    assert second.runtime_data.output_hold is None
+    assert dict(second.data) == stored
+    # Resuming through the normal startup path sent nothing: no demand, all off.
+    assert calls == owner_shutdown
+
+
+async def test_owner_that_fails_setup_hands_its_outputs_to_the_held_plant(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A claim that ends in a failed setup must not strand the Plant it held back.
+
+    The failed owner can then be retried, and it is held in its turn.
+    """
+    calls = _record_switch_calls(hass)
+    first = _entry(_plant_data(1, sensor="sensor.cold_room"))
+    second = _entry(_plant_data(2, sensor="sensor.warm_room"))
+    first.add_to_hass(hass)
+    second.add_to_hass(hass)
+    stored = {entry.entry_id: dict(entry.data) for entry in (first, second)}
+    release = asyncio.Event()
+    failures = [RuntimeError("transient failure after the claim")]
+    original = HydronicRuntime.async_finish_start
+
+    async def finish_start(self: HydronicRuntime, *args: Any, **kwargs: Any) -> None:
+        if self._entry is first and failures:
+            await release.wait()
+            raise failures.pop()
+        await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(HydronicRuntime, "async_finish_start", finish_start)
+    setup = hass.async_create_task(async_setup_component(hass, DOMAIN, {}))
+    for _ in range(200):
+        await asyncio.sleep(0)
+        if second.state is ConfigEntryState.LOADED:
+            break
+    # The first Plant has claimed the outputs, so the second one is held.
+    assert second.state is ConfigEntryState.LOADED
+    assert second.runtime_data.dry_run is True
+    assert list(_conflict_issues(hass)) == [f"output_conflict_{second.entry_id}"]
+
+    release.set()
+    await setup
+    await hass.async_block_till_done()
+
+    assert first.state is ConfigEntryState.SETUP_ERROR
+    assert second.state is ConfigEntryState.LOADED
+    assert second.runtime_data.dry_run is False
+    assert second.runtime_data.output_hold is None
+    assert _conflict_issues(hass) == {}
+
+    # Retrying the failed owner works, and it is now the Plant that is held.
+    assert await hass.config_entries.async_reload(first.entry_id)
+    await hass.async_block_till_done()
+    assert first.state is ConfigEntryState.LOADED
+    assert first.runtime_data.dry_run is True
+    assert second.runtime_data.dry_run is False
+    assert list(_conflict_issues(hass)) == [f"output_conflict_{first.entry_id}"]
+    assert {entry.entry_id: dict(entry.data) for entry in (first, second)} == stored
+    assert calls == []
+
+
+async def test_failed_setup_can_be_retried(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A setup that fails after forwarding its platforms unloads them, so a retry works."""
+    _record_switch_calls(hass)
+    entry = _entry(_plant_data(1, sensor="sensor.cold_room", live=False))
+    entry.add_to_hass(hass)
+    failures = [RuntimeError("transient failure after forwarding platforms")]
+    original = HydronicRuntime.async_finish_start
+
+    async def finish_start(self: HydronicRuntime, *args: Any, **kwargs: Any) -> None:
+        if failures:
+            raise failures.pop()
+        await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(HydronicRuntime, "async_finish_start", finish_start)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    dry_run_id = er.async_get(hass).async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.data[CONF_PLANT_ID]}_dry_run"
+    )
+    # The failed attempt leaves no entity bound to its discarded runtime.
+    assert dry_run_id is not None
+    state = hass.states.get(dry_run_id)
+    assert state is None or state.state == "unavailable"
+    caplog.clear()
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert "has already been setup" not in caplog.text
+    state = hass.states.get(dry_run_id)
+    assert state is not None
+    assert state.state == "on"
+
+
+async def test_reloading_the_owner_keeps_its_outputs(hass: HomeAssistant) -> None:
+    """A reload of the live Plant is not a hand-over: the held Plant stays held."""
+    calls = _record_switch_calls(hass)
+    first, second = await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(2, sensor="sensor.warm_room"),
+    )
+
+    assert await hass.config_entries.async_reload(first.entry_id)
+    await hass.async_block_till_done()
+
+    assert first.runtime_data.dry_run is False
+    assert second.runtime_data.dry_run is True
+    assert list(_conflict_issues(hass)) == [f"output_conflict_{second.entry_id}"]
+    assert calls == []
+
+
+async def test_only_one_of_several_held_plants_resumes(hass: HomeAssistant) -> None:
+    """When the owner leaves, exactly one held Plant claims; the other stays held."""
+    calls = _record_switch_calls(hass)
+    first, second, third = await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(2, sensor="sensor.warm_room"),
+        _plant_data(3, sensor="sensor.warm_room"),
+    )
+    stored = {entry.entry_id: dict(entry.data) for entry in (second, third)}
+    assert second.runtime_data.dry_run is True
+    assert third.runtime_data.dry_run is True
+
+    assert await hass.config_entries.async_unload(first.entry_id)
+    await hass.async_block_till_done()
+
+    assert second.runtime_data.dry_run is False
+    assert third.runtime_data.dry_run is True
+    issues = _conflict_issues(hass)
+    assert list(issues) == [f"output_conflict_{third.entry_id}"]
+    placeholders = issues[f"output_conflict_{third.entry_id}"].translation_placeholders
+    assert placeholders["other_plant"] == "Plant 2"
+    assert {entry.entry_id: dict(entry.data) for entry in (second, third)} == stored
+    assert calls == []
+
+
+async def test_held_plant_runtime_never_starts_live(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held runtime is in Dry run from construction, before it can send anything."""
+    _record_switch_calls(hass)
+    started: list[tuple[str, bool, bool]] = []
+    original = HydronicRuntime.async_start
+
+    async def start(self: HydronicRuntime, *args: Any, **kwargs: Any) -> None:
+        started.append((self.name, self.dry_run, self.executor.dry_run))
+        await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(HydronicRuntime, "async_start", start)
+    _first, second = await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(2, sensor="sensor.warm_room"),
+    )
+    assert await hass.config_entries.async_reload(second.entry_id)
+    await hass.async_block_till_done()
+
+    assert started == [
+        ("Plant 1", False, False),
+        ("Plant 2", True, True),
+        ("Plant 2", True, True),
+    ]
+
+
+async def test_dry_run_sensor_explains_a_held_plant(hass: HomeAssistant) -> None:
+    """The UI shows the held Plant in Dry run and says why, instead of claiming it is live."""
     _record_switch_calls(hass)
     first, second = await _set_up_one_by_one(
         hass,
         _plant_data(1, sensor="sensor.cold_room"),
         _plant_data(2, sensor="sensor.warm_room"),
     )
-    assert f"output_conflict_{second.entry_id}" in _conflict_issues(hass)
+    registry = er.async_get(hass)
+    held_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{second.data[CONF_PLANT_ID]}_dry_run"
+    )
+    live_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{first.data[CONF_PLANT_ID]}_dry_run"
+    )
+    assert held_id is not None
+    assert live_id is not None
 
-    # A reload of the yielded Plant keeps the repair: the conflict still exists.
-    assert await hass.config_entries.async_reload(second.entry_id)
+    held = hass.states.get(held_id)
+    assert held is not None
+    assert held.state == "on"
+    assert held.attributes["held_by_output_conflict"] is True
+    assert held.attributes["held_by_plant"] == "Plant 1"
+    live = hass.states.get(live_id)
+    assert live is not None
+    assert live.state == "off"
+    assert live.attributes["held_by_output_conflict"] is False
+    assert live.attributes["held_by_plant"] is None
+    diagnostics = json.dumps(await async_get_config_entry_diagnostics(hass, second))
+    assert '"held_by_output_conflict": true' in diagnostics
+    boundary = second.runtime_data.presentation_snapshot(hass)["plant"]["execution_boundary"]
+    assert boundary["dry_run"] is True
+    assert "held because another Plant is using the same outputs" in boundary["message"]
+
+    assert await first.runtime_data.async_set_dry_run(True, hass=hass)
     await hass.async_block_till_done()
-    assert f"output_conflict_{second.entry_id}" in _conflict_issues(hass)
+    resumed = hass.states.get(held_id)
+    assert resumed is not None
+    assert resumed.state == "off"
+    assert resumed.attributes["held_by_output_conflict"] is False
 
-    await resolve(hass, first)
+
+async def test_turning_on_dry_run_for_a_held_plant_is_stored(hass: HomeAssistant) -> None:
+    """Asking a held Plant for Dry run stores it, so the Plant does not resume later."""
+    calls = _record_switch_calls(hass)
+    first, second = await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(2, sensor="sensor.warm_room"),
+    )
+
+    assert await second.runtime_data.async_set_dry_run(True, hass=hass)
     await hass.async_block_till_done()
-
+    assert second.data[CONF_DRY_RUN] is True
+    assert "output_authorization" not in second.data
+    assert second.runtime_data.output_hold is None
     assert _conflict_issues(hass) == {}
+
+    assert await hass.config_entries.async_unload(first.entry_id)
+    await hass.async_block_till_done()
+    assert second.runtime_data.dry_run is True
+    assert calls == []
+
+
+async def test_reconfigure_shows_a_held_plant_in_dry_run(hass: HomeAssistant) -> None:
+    """Reconfigure offers the held Plant's effective Dry run and reports the conflict."""
+    _record_switch_calls(hass)
+    _first, second = await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_room"),
+        _plant_data(2, sensor="sensor.warm_room"),
+    )
+
+    result = await second.start_reconfigure_flow(hass)
+    (dry_run_key,) = [key for key in result["data_schema"].schema if key == CONF_DRY_RUN]
+    assert dry_run_key.default() is True
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_DRY_RUN: False}
+    )
+    assert result["step_id"] == "dry_run_confirmation"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True}
+    )
+
+    assert result["errors"] == {"base": "output_conflict"}
+    assert result["description_placeholders"]["other_plant"] == "Plant 1"
+    assert second.runtime_data.dry_run is True
 
 
 async def test_removing_the_yielded_plant_clears_its_repair(hass: HomeAssistant) -> None:
@@ -397,10 +677,8 @@ def test_exclusive_outputs_are_the_authorized_outputs() -> None:
     assert exclusive_output_entity_ids(data) == frozenset(OUTPUTS)
 
 
-async def test_actuator_flow_warns_about_an_entity_bound_by_another_plant(
-    hass: HomeAssistant,
-) -> None:
-    """Adding a valve that another Plant already binds shows a field error."""
+async def _dry_run_pair(hass: HomeAssistant) -> MockConfigEntry:
+    """Set up Plant 1 bound to the shared outputs and Plant 2 on separate ones."""
     _record_switch_calls(hass)
     _first, second = await _set_up_one_by_one(
         hass,
@@ -414,8 +692,59 @@ async def test_actuator_flow_warns_about_an_entity_bound_by_another_plant(
             live=False,
         ),
     )
-    circuit_id = second.data["topology"]["circuits"][0]["id"]
+    return second
 
+
+async def test_actuator_flow_warns_about_an_entity_bound_by_another_plant(
+    hass: HomeAssistant,
+) -> None:
+    """Sharing a valve with another Plant is a reviewed warning, not a blocking error.
+
+    Dry run Plants may share entities with a live Plant, for example to compare
+    a draft configuration, so confirming the warning saves the actuator.
+    """
+    second = await _dry_run_pair(hass)
+    circuit_id = second.data["topology"]["circuits"][0]["id"]
+    user_input = {
+        CONF_NAME: "Borrowed valve",
+        CONF_ENTITY_ID: SHARED_VALVE,
+        CONF_OPENING_TIME: 0,
+        CONF_CIRCUIT_IDS: [circuit_id],
+    }
+
+    result = await hass.config_entries.subentries.async_init(
+        (second.entry_id, SUBENTRY_TYPE_ACTUATOR),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+
+    assert result["step_id"] == "review"
+    assert not result.get("errors")
+    warnings = result["description_placeholders"]["warnings"]
+    assert SHARED_VALVE in warnings
+    assert "Plant 1" in warnings
+    assert not second.subentries
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"confirm": False}
+    )
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] == "create_entry"
+    assert len(second.subentries) == 1
+
+
+async def test_actuator_reconfigure_warns_about_an_entity_bound_by_another_plant(
+    hass: HomeAssistant,
+) -> None:
+    """Moving an existing actuator onto a shared entity goes through the same review."""
+    second = await _dry_run_pair(hass)
+    circuit_id = second.data["topology"]["circuits"][0]["id"]
     result = await hass.config_entries.subentries.async_init(
         (second.entry_id, SUBENTRY_TYPE_ACTUATOR),
         context={"source": config_entries.SOURCE_USER},
@@ -423,35 +752,40 @@ async def test_actuator_flow_warns_about_an_entity_bound_by_another_plant(
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
-            CONF_NAME: "Borrowed valve",
+            CONF_NAME: "Extra valve",
+            CONF_ENTITY_ID: "switch.other_boiler",
+            CONF_OPENING_TIME: 0,
+            CONF_CIRCUIT_IDS: [circuit_id],
+        },
+    )
+    assert result["type"] == "create_entry"
+    (subentry_id,) = second.subentries
+
+    result = await second.start_subentry_reconfigure_flow(hass, subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Extra valve",
             CONF_ENTITY_ID: SHARED_VALVE,
             CONF_OPENING_TIME: 0,
             CONF_CIRCUIT_IDS: [circuit_id],
         },
     )
+    assert result["step_id"] == "review"
+    assert "Plant 1" in result["description_placeholders"]["warnings"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
 
-    assert result["errors"] == {CONF_ENTITY_ID: "actuator_entity_in_other_plant"}
-    assert result["description_placeholders"]["other_plant"] == "Plant 1"
-    assert not second.subentries
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
 
 
 async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
     hass: HomeAssistant,
 ) -> None:
-    """A source demand switch that another Plant binds shows a field error."""
-    _record_switch_calls(hass)
-    _first, second = await _set_up_one_by_one(
-        hass,
-        _plant_data(1, sensor="sensor.cold_room", live=False),
-        _plant_data(
-            2,
-            sensor="sensor.warm_room",
-            valve="switch.other_valve",
-            pump="switch.other_pump",
-            source=None,
-            live=False,
-        ),
-    )
+    """A source demand switch that another Plant binds is a reviewed warning."""
+    second = await _dry_run_pair(hass)
 
     result = await hass.config_entries.subentries.async_init(
         (second.entry_id, SUBENTRY_TYPE_SOURCE),
@@ -470,14 +804,29 @@ async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
         },
     )
 
-    assert result["errors"] == {CONF_SOURCE_DEMAND_ENTITY: "actuator_entity_in_other_plant"}
+    assert result["step_id"] == "review"
+    assert not result.get("errors")
+    warnings = result["description_placeholders"]["warnings"]
+    assert SHARED_SOURCE in warnings
+    assert "Plant 1" in warnings
     assert not second.subentries
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"confirm": False}
+    )
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] == "create_entry"
+    assert len(second.subentries) == 1
 
 
 async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     hass: HomeAssistant,
 ) -> None:
-    """The first circuit form flags a valve or pump that another Plant binds."""
+    """The initial review lists a valve or pump that another Plant binds, and still saves."""
     _record_switch_calls(hass)
     await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_room", live=False))
 
@@ -501,6 +850,14 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
         },
     )
 
-    assert result["step_id"] == "circuit"
-    assert result["errors"] == {CONF_PUMP_ENTITY: "actuator_entity_in_other_plant"}
-    assert result["description_placeholders"]["other_plant"] == "Plant 1"
+    assert result["step_id"] == "review"
+    assert not result.get("errors")
+    warnings = result["description_placeholders"]["warnings"]
+    assert SHARED_PUMP in warnings
+    assert "Plant 1" in warnings
+    assert "switch.other_valve" not in warnings
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_DRY_RUN] is True

@@ -377,7 +377,8 @@ def _discover() -> _Discovery:
                         for key in keys(module, node.value, skip_attributes=True):
                             require(f"entity.{platform}.{key}", module, node)
 
-        for flow in (n for n in ast.walk(module.tree) if isinstance(n, ast.ClassDef)):
+        classes = {n.name: n for n in ast.walk(module.tree) if isinstance(n, ast.ClassDef)}
+        for flow in classes.values():
             kind = _flow_kind(flow)
             if kind is None:
                 continue
@@ -400,7 +401,13 @@ def _discover() -> _Discovery:
                     )
             steps = found.form_steps.setdefault(prefixes[0] if prefixes else flow.name, set())
             paths: set[tuple[str, ast.AST]] = set()
-            for node in ast.walk(flow):
+            # A flow also owns the keys of mixins it inherits from the same module.
+            mixins = [
+                classes[base.id]
+                for base in flow.bases
+                if isinstance(base, ast.Name) and base.id in classes
+            ]
+            for node in (node for owner in (flow, *mixins) for node in ast.walk(owner)):
                 if isinstance(node, ast.Call):
                     name = _call_name(node)
                     if (step_node := _keyword(node, "step_id")) is not None:

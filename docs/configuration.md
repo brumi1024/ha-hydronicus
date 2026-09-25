@@ -183,10 +183,19 @@ Read [how Hydronicus works](how-it-works.md) for diagrams and the complete owner
 One actuator entity belongs to one live Plant.
 Sharing equipment between Circuits happens inside one Plant, never across Plants.
 A valve, pump, or source-demand entity that two Plants bind can be commanded by only one of them at a time, because two live Plants would switch it against each other and either one's Safe shutdown could stop equipment the other needs.
+A Plant counts as live when it is loaded and not in Dry run.
 Plants in Dry run may bind the same entities, for example to compare a draft configuration with the live one.
-The setup and subentry forms flag an entity that another Plant already binds, so the overlap is visible before it matters.
+When you choose a valve, pump, or source-demand entity that another Plant already binds, the initial setup review and the actuator and source review steps list it as a warning that names the other Plant.
+The warning does not block saving; in the actuator and source forms you confirm it with "I understand these warnings".
 Turning Dry run off is refused while another live Plant controls one of the same entities, and the error names that Plant and the shared entities.
-If two live Plants share an entity when Home Assistant starts, the Plant that sets up second is moved to Dry run before it sends any command, and a repair explains the conflict.
+If two Plants that are both set to run outside Dry run share an entity, the first one to finish claiming its outputs during setup runs live.
+The other one is held in Dry run before it sends any command, and a repair explains the conflict.
+Which Plant claims first is decided when they set up, so it is usually the same at every start, but a Plant whose setup is delayed or retried can lose to a later one.
+Holding a Plant does not change its settings: its Dry run setting and its confirmed outputs are kept.
+The held Plant resumes by itself, through a normal reload, once the conflict is gone, for example when the live Plant enters Dry run, is unloaded, is removed, or fails to set up.
+If several held Plants share the same outputs, only the first of them in Home Assistant's entry order resumes, and the others stay held.
+While a Plant is held, its Dry run binary sensor is on, its `held_by_output_conflict` attribute is true, and its `held_by_plant` attribute names the live Plant.
+Turning Dry run on for a held Plant stores Dry run, so it no longer resumes by itself.
 
 ## Configuration checklist
 
