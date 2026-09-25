@@ -1143,9 +1143,9 @@ def test_one_zone_requests_every_enabled_delivery_route() -> None:
         "ceiling-pump": frozenset({"ceiling"}),
     }
     assert opening.diagnostics.circuit_reasons["floor"] == (
-        "Waiting for valve readiness after eligible delivery route living-floor "
-        "requested this loop."
+        "Waiting for the valves to open for Living."
     )
+    assert ready.diagnostics.circuit_reasons["floor"] == "Ready: the valves are open for Living."
 
 
 def test_unchanged_running_snapshot_produces_no_new_commands() -> None:

@@ -2760,17 +2760,18 @@ def _coordinate_mode_routing(
 
 
 def _index_requested_routes(
+    plant: CompiledPlant,
     heating_routes: tuple[DeliveryRoute, ...],
     cooling_routes: tuple[DeliveryRoute, ...],
 ) -> tuple[set[str], dict[str, list[str]]]:
-    """Index final route demand by circuit in stable route order."""
+    """Index the rooms requesting each circuit, once each, in stable route order."""
     requested_circuits = {route.circuit_id for route in (*heating_routes, *cooling_routes)}
-    route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
-    for route in heating_routes:
-        route_ids_by_circuit[route.circuit_id].append(route.id)
-    for route in cooling_routes:
-        route_ids_by_circuit[route.circuit_id].append(route.id)
-    return requested_circuits, route_ids_by_circuit
+    room_names_by_circuit: dict[str, list[str]] = defaultdict(list)
+    for route in (*heating_routes, *cooling_routes):
+        name = plant.zones[route.zone_id].name
+        if name not in room_names_by_circuit[route.circuit_id]:
+            room_names_by_circuit[route.circuit_id].append(name)
+    return requested_circuits, room_names_by_circuit
 
 
 @dataclass(frozen=True, slots=True)
@@ -2967,13 +2968,16 @@ def _plan_valves(
             consumers[valve_id].add(circuit_id)
 
     cooling_consumers: dict[str, set[str]] = defaultdict(set)
+    cooling_rooms: dict[str, list[str]] = defaultdict(list)
     for route in cooling_routes:
         circuit = plant.circuits[route.circuit_id]
-        cooling.circuit_reasons[circuit.id] = (
-            f"Cooling route {route.id} requested loop {circuit.name}."
-        )
+        room_name = plant.zones[route.zone_id].name
+        if room_name not in cooling_rooms[circuit.id]:
+            cooling_rooms[circuit.id].append(room_name)
         for valve_id in circuit.valve_ids:
             cooling_consumers[valve_id].add(circuit.id)
+    for circuit_id, room_names in cooling_rooms.items():
+        cooling.circuit_reasons[circuit_id] = f"Cooling requested by {', '.join(room_names)}."
 
     feedback_expected = {
         valve_id: "open" if consumers.get(valve_id) else "closed" for valve_id in plant.valves
@@ -3247,7 +3251,7 @@ def _assemble_evaluation(
     mode_conflicts: tuple[ModeConflict, ...],
     mode_routing: _ModeRouting,
     requested_circuits: set[str],
-    route_ids_by_circuit: Mapping[str, list[str]],
+    room_names_by_circuit: Mapping[str, list[str]],
     valve_plan: _ValvePlan,
     pump_plan: _PumpPlan,
 ) -> Evaluation:
@@ -3342,15 +3346,15 @@ def _assemble_evaluation(
                 valve_id in valve_plan.blocked_valves
                 for valve_id in plant.circuits[circuit_id].valve_ids
             )
-            else "Ready: eligible delivery route "
-            + ", ".join(route_ids_by_circuit[circuit_id])
-            + " has valve-ready demand."
+            else "Ready: the valves are open for "
+            + ", ".join(room_names_by_circuit[circuit_id])
+            + "."
             if circuit_id in pump_plan.ready_circuit_ids
-            else "Waiting for valve readiness after eligible delivery route "
-            + ", ".join(route_ids_by_circuit[circuit_id])
-            + " requested this loop."
+            else "Waiting for the valves to open for "
+            + ", ".join(room_names_by_circuit[circuit_id])
+            + "."
             if circuit_id in requested_circuits
-            else "Idle: no eligible delivery route currently requests this loop."
+            else "Idle: no room currently requests this loop."
         )
         for circuit_id in sorted(plant.circuits)
     }
@@ -3485,7 +3489,8 @@ def evaluate(
         cooling,
         conflict_arbitration.mode_conflicts,
     )
-    requested_circuits, route_ids_by_circuit = _index_requested_routes(
+    requested_circuits, room_names_by_circuit = _index_requested_routes(
+        plant,
         mode_routing.heating_routes,
         mode_routing.cooling_routes,
     )
@@ -3518,7 +3523,7 @@ def evaluate(
         mode_conflicts=conflict_arbitration.mode_conflicts,
         mode_routing=mode_routing,
         requested_circuits=requested_circuits,
-        route_ids_by_circuit=route_ids_by_circuit,
+        room_names_by_circuit=room_names_by_circuit,
         valve_plan=valve_plan,
         pump_plan=pump_plan,
     )
