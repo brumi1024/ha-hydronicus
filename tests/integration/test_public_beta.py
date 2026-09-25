@@ -5,17 +5,7 @@ from __future__ import annotations
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import (
-    CONF_PUMP_ENTITY,
-    CONF_PUMP_OVERRUN,
-    CONF_TEMPERATURE_AGGREGATION,
-    CONF_TEMPERATURE_SENSORS,
-    CONF_THERMOSTAT_KIND,
-    CONF_VALVE_ENTITY,
-    CONF_VALVE_OPENING_TIME,
-    DOMAIN,
-    THERMOSTAT_KIND_HYDRONICUS,
-)
+from custom_components.hydronicus.const import DOMAIN
 
 
 async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass) -> None:
@@ -28,33 +18,27 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     hass.states.async_set(pump_entity, "off")
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] == FlowResultType.MENU
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={"name": "Public beta simulated plant"}
+        result["flow_id"], user_input={"next_step_id": "guided"}
     )
-    assert result["step_id"] == "zone"
+    assert result["step_id"] == "guided"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        user_input={CONF_THERMOSTAT_KIND: THERMOSTAT_KIND_HYDRONICUS},
+        user_input={
+            "name": "Public beta simulated plant",
+            "pump_entity": pump_entity,
+            "pump_options": {"overrun_seconds": 0.0},
+        },
     )
-    assert result["step_id"] == "zone_details"
+    assert result["step_id"] == "room"
     assert "target_temperature" not in {str(key.schema) for key in result["data_schema"].schema}
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
             "name": "Simulated zone",
-            CONF_TEMPERATURE_SENSORS: [temperature_entity],
-            CONF_TEMPERATURE_AGGREGATION: "mean",
-        },
-    )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        user_input={
-            "name": "Simulated circuit",
-            CONF_VALVE_ENTITY: valve_entity,
-            CONF_PUMP_ENTITY: pump_entity,
-            CONF_VALVE_OPENING_TIME: 0.0,
-            CONF_PUMP_OVERRUN: 0.0,
+            "temperature_sensors": [temperature_entity],
+            "valves": [valve_entity],
         },
     )
     assert result["type"] == FlowResultType.FORM

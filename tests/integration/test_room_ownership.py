@@ -219,27 +219,21 @@ async def test_reload_reconstructs_rooms_and_their_entity_ownership(hass) -> Non
 
 
 async def test_initial_setup_creates_one_room_that_owns_its_loop_and_valve(hass) -> None:
-    """The initial steps create version 3 data: one room, its loop and valve, a Plant pump."""
+    """Guided setup creates version 3 data: one room, its loop and valve, a Plant pump."""
     hass.states.async_set("sensor.study_temperature", "18.0")
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={"name": "Study plant"}
+        result["flow_id"], user_input={"next_step_id": "guided"}
     )
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={"thermostat_kind": "hydronicus"}
-    )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        user_input={"name": "Study", "temperature_sensors": ["sensor.study_temperature"]},
+        result["flow_id"], user_input={"name": "Study plant", "pump_entity": "switch.study_pump"}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
-            "name": "Study loop",
-            "valve_entity": "switch.study_valve",
-            "pump_entity": "switch.study_pump",
-            "valve_opening_time_seconds": 0.0,
-            "pump_overrun_seconds": 0.0,
+            "name": "Study",
+            "temperature_sensors": ["sensor.study_temperature"],
+            "valves": ["switch.study_valve"],
         },
     )
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})

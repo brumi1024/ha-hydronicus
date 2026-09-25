@@ -1,10 +1,15 @@
-"""Initial config flow steps that create a new Plant."""
+"""Config flow steps that create a new Plant: guided setup and plant file import.
+
+Guided setup asks for the Plant and its one pump, then one form per room, and
+reviews the result. Import reads a whole plant file. Both build version 3 data
+with the graph edit API, so every new Plant starts in Dry run.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, cast
-from uuid import uuid4
+from collections.abc import Mapping
+from typing import Any, Final, cast
+from uuid import UUID, uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -12,508 +17,286 @@ from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.helpers import selector
 
 from ..const import (
-    CONF_CIRCUIT_IDS,
-    CONF_CIRCUITS,
-    CONF_CONDENSATION_MARGIN,
-    CONF_CONFIGURE_SENSOR_METADATA,
-    CONF_COOLING_ENABLED,
-    CONF_DRY_RUN,
-    CONF_DRY_RUN_CONFIRMATION,
     CONF_ENTITY_ID,
-    CONF_EXTERNAL_CLIMATE_ENTITY,
-    CONF_FAULT_FEEDBACK_ENTITY,
-    CONF_FAULT_FEEDBACK_MAX_AGE,
-    CONF_FLOW_FEEDBACK_ENTITY,
-    CONF_FLOW_FEEDBACK_MAX_AGE,
     CONF_NAME,
-    CONF_OPENING_TIME,
     CONF_OVERRUN,
     CONF_PLANT_ID,
-    CONF_POSITION_FEEDBACK_ENTITY,
-    CONF_POSITION_FEEDBACK_MAX_AGE,
-    CONF_POWER_FEEDBACK_ENTITY,
-    CONF_POWER_FEEDBACK_MAX_AGE,
     CONF_PUMP_ENTITY,
-    CONF_PUMP_OVERRUN,
     CONF_PUMPS,
-    CONF_ROUTES,
-    CONF_SUPPLY_TEMPERATURE_MAX_AGE,
-    CONF_SUPPLY_TEMPERATURE_SENSOR,
-    CONF_SURFACE_TEMPERATURE_MAX_AGE,
-    CONF_SURFACE_TEMPERATURE_SENSOR,
-    CONF_TEMPERATURE_AGGREGATION,
-    CONF_TEMPERATURE_SENSOR_METADATA,
-    CONF_TEMPERATURE_SENSORS,
-    CONF_THERMOSTAT_KIND,
-    CONF_TOPOLOGY,
-    CONF_VALVE_ENTITY,
-    CONF_VALVE_IDS,
-    CONF_VALVE_OPENING_TIME,
-    CONF_VALVE_READINESS_ENTITY,
-    CONF_VALVES,
     CONF_ZONES,
-    DEFAULT_CONDENSATION_MARGIN,
     DEFAULT_PLANT_NAME,
     DEFAULT_PUMP_OVERRUN,
-    DEFAULT_REFERENCE_MAX_AGE,
-    DEFAULT_VALVE_OPENING_TIME,
-    THERMOSTAT_KIND_EXTERNAL_CLIMATE,
-    THERMOSTAT_KIND_HYDRONICUS,
 )
-from ..core.configuration import (
-    DesignatedReferenceError,
-    StoredTopologyError,
-    plant_configuration_from_entry_data,
-)
-from ..core.model import (
-    CompiledPlant,
-)
-from ..core.ownership import derive_ownership
-from ..core.topology import (
-    TopologyValidationError,
-    compile_topology,
-)
+from ..core.model import CompiledPlant
+from ..core.ownership import PlantOwnership
+from ..core.plant_document import PlantDocumentError, import_plant_document
 from ..entry_configuration import (
-    authorization_output_lines,
-    authorize_outputs,
+    GRAPH_EDIT_ERRORS,
+    data_with_room,
+    effective_plant_from_data,
     exclusive_output_entity_ids,
     new_plant_data,
     subentries_for,
+    topology_copy,
 )
+from ..plant_file import first_own_entity, parsed_plant_file
 from .common import (
-    DEFAULT_FEEDBACK_MAX_AGE,
-    SECTION_COOLING,
-    SECTION_FEEDBACK,
     ConfigFlowBase,
-    circuit_cooling_error,
     collapsed_section,
-    cooling_reference_fields,
-    dry_run_confirmation_schema,
-    flatten_sections,
-    is_hydronicus_owned,
-    max_age_selector,
     name_selector,
     other_plant_sharing_warnings,
     own_entity_errors,
-    requires_sensor_metadata_path,
     seconds_selector,
-    sensor_metadata_record,
-    sensor_metadata_schema,
-    sensor_policy_schema,
-    sensor_selector,
-    thermostat_kind_schema,
-    valve_feedback_fields,
+    warning_review_schema,
     warning_text,
     with_submitted_values,
-    zone_data,
-    zone_schema,
-    zone_temperature_sensor_defaults,
 )
+from .room import graph_errors
+from .room_form import room_draft_from_form, room_form_errors, room_form_schema
+
+CONF_ADD_ANOTHER: Final = "add_another"
+CONF_CONFIRM: Final = "confirm"
+CONF_DOCUMENT: Final = "document"
+SECTION_PUMP_OPTIONS: Final = "pump_options"
+MENU_OPTIONS: Final = ("guided", "import_plant")
+# The name of the one pump guided setup creates; Plant settings can rename it.
+GUIDED_PUMP_NAME: Final = "Pump"
+# Compiler warnings that never block a save (Decision 11).
+_NON_BLOCKING_WARNINGS: Final = frozenset({"unused_equipment"})
+_TOP_LEVEL: Final = "the top level"
 
 
-def _initial_review_placeholders(
-    topology: Mapping[str, Any],
-    compiled: CompiledPlant | None,
-    validation_error: str | None = None,
-    sharing: Sequence[str] = (),
-) -> dict[str, str]:
-    """Render complete initial-review context, including validation failures."""
-    logic = (
-        "\n".join(f"- {line}" for line in compiled.logic_summary)
-        if compiled is not None
-        else f"- Topology could not be compiled: {validation_error or 'unknown validation error'}"
-    )
-    return {
-        "zone": str(topology[CONF_ZONES][0][CONF_NAME]),
-        "circuit": str(topology[CONF_CIRCUITS][0][CONF_NAME]),
-        "logic": logic,
-        "warnings": warning_text(compiled, sharing) or "- None",
-        "outputs": authorization_output_lines({CONF_PLANT_ID: "pending", CONF_TOPOLOGY: topology}),
-    }
-
-
-def _initial_circuit_schema() -> vol.Schema:
-    """Build the first circuit form, including its first valve and pump."""
-    no_defaults: Mapping[str, Any] = {}
+def _guided_schema() -> vol.Schema:
+    """Return the Plant form of guided setup: its name and its one pump."""
     return vol.Schema(
         {
-            vol.Required(CONF_NAME): name_selector(),
-            vol.Required(CONF_VALVE_ENTITY): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=["switch", "valve"])
-            ),
+            vol.Required(CONF_NAME, default=DEFAULT_PLANT_NAME): name_selector(),
             vol.Required(CONF_PUMP_ENTITY): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="switch")
             ),
-            vol.Required(
-                CONF_VALVE_OPENING_TIME, default=DEFAULT_VALVE_OPENING_TIME
-            ): seconds_selector(),
-            vol.Required(CONF_PUMP_OVERRUN, default=DEFAULT_PUMP_OVERRUN): seconds_selector(),
-            vol.Optional(SECTION_FEEDBACK): collapsed_section(
-                {
-                    **valve_feedback_fields(no_defaults),
-                    vol.Optional(CONF_POWER_FEEDBACK_ENTITY): sensor_selector(),
-                    vol.Optional(
-                        CONF_POWER_FEEDBACK_MAX_AGE, default=DEFAULT_FEEDBACK_MAX_AGE
-                    ): max_age_selector(),
-                    vol.Optional(CONF_FLOW_FEEDBACK_ENTITY): sensor_selector(),
-                    vol.Optional(
-                        CONF_FLOW_FEEDBACK_MAX_AGE, default=DEFAULT_FEEDBACK_MAX_AGE
-                    ): max_age_selector(),
-                    vol.Optional(CONF_FAULT_FEEDBACK_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
-                    ),
-                    vol.Optional(
-                        CONF_FAULT_FEEDBACK_MAX_AGE, default=DEFAULT_FEEDBACK_MAX_AGE
-                    ): max_age_selector(),
-                }
+            vol.Optional(SECTION_PUMP_OPTIONS): collapsed_section(
+                {vol.Required(CONF_OVERRUN, default=DEFAULT_PUMP_OVERRUN): seconds_selector()}
             ),
-            vol.Optional(SECTION_COOLING): collapsed_section(cooling_reference_fields(no_defaults)),
         }
     )
 
 
-def _initial_circuit_cooling_error(draft: Mapping[str, Any], circuit_id: str) -> str | None:
-    """Explain a rejected cooling setting on the first circuit form, where it can be fixed.
+def _room_schema() -> vol.Schema:
+    """Return the room form: room basics with the implied pump, and ``add_another``.
 
-    Any other rejection is left to the review step, which shows the compiler reason.
+    A Plant being set up has one pump and no shared loops, so neither is asked for.
     """
+    return room_form_schema(pumps=(), shared_loops=()).extend(
+        {vol.Optional(CONF_ADD_ANOTHER, default=False): selector.BooleanSelector()}
+    )
+
+
+def _import_schema() -> vol.Schema:
+    """Return the plant file form."""
+    return vol.Schema({vol.Required(CONF_DOCUMENT): selector.ObjectSelector()})
+
+
+def _room_lines(data: Mapping[str, Any]) -> str:
+    """List the rooms of Plant data in the order they were added."""
+    names = [str(zone.get(CONF_NAME, "")) for zone in topology_copy(data)[CONF_ZONES]]
+    return "\n".join(f"- {name}" for name in names) or "- None"
+
+
+def _logic_lines(compiled: CompiledPlant) -> str:
+    return "\n".join(f"- {line}" for line in compiled.logic_summary) or "- None"
+
+
+def _canonical(object_id: str) -> str:
     try:
-        compile_topology(plant_configuration_from_entry_data(draft))
-    except (StoredTopologyError, TopologyValidationError) as error:
-        return circuit_cooling_error(error, circuit_id)
-    return None
+        return str(UUID(object_id))
+    except ValueError:
+        return object_id
 
 
 class SetupSteps(ConfigFlowBase):
-    """Create a new Plant from its first zone and first circuit."""
+    """Create a new Plant by guided setup or from a plant file."""
 
-    _draft: dict[str, Any]
-    _zone_draft: dict[str, Any]
-    _metadata_records: list[dict[str, Any]]
-    _metadata_index: int
-    _selected_thermostat_kind: str
+    _data: dict[str, Any]
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Handle the initial setup step."""
+        """Choose how to create the Plant."""
+        return self.async_show_menu(step_id="user", menu_options=list(MENU_OPTIONS))
+
+    # ------------------------------------------------------------------
+    # Shared review and creation
+    # ------------------------------------------------------------------
+
+    async def _async_review(
+        self, step_id: str, user_input: Mapping[str, Any] | None, placeholders: Mapping[str, str]
+    ) -> config_entries.ConfigFlowResult:
+        """Review the drafted Plant, then create it.
+
+        A warning other than unused equipment, or an output another Plant
+        already binds, needs an explicit confirmation.
+        """
+        compiled = effective_plant_from_data(self._data).compiled
+        sharing = other_plant_sharing_warnings(
+            self.hass, None, sorted(exclusive_output_entity_ids(self._data))
+        )
+        blocking = bool(sharing) or any(
+            warning.code not in _NON_BLOCKING_WARNINGS for warning in compiled.warnings
+        )
         errors: dict[str, str] = {}
-
         if user_input is not None:
-            name = str(user_input[CONF_NAME]).strip()
-            if not name:
-                errors["base"] = "name_required"
-            else:
-                self._draft = {
-                    CONF_NAME: name,
-                    CONF_PLANT_ID: str(uuid4()),
-                    CONF_DRY_RUN: bool(user_input.get(CONF_DRY_RUN, True)),
-                }
-                return await self.async_step_zone()
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_NAME, default=DEFAULT_PLANT_NAME): name_selector(),
-                vol.Optional(CONF_DRY_RUN, default=True): selector.BooleanSelector(),
-            }
-        )
+            if not blocking or user_input.get(CONF_CONFIRM, False):
+                return await self._async_create()
+            errors["base"] = "confirm_required"
         return self.async_show_form(
-            step_id="user",
-            data_schema=with_submitted_values(self, schema, user_input),
+            step_id=step_id,
+            data_schema=warning_review_schema() if blocking else vol.Schema({}),
             errors=errors,
-        )
-
-    async def async_step_zone(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Choose the first Zone's thermostat owner."""
-        if user_input is None:
-            return self.async_show_form(step_id="zone", data_schema=thermostat_kind_schema())
-        kind = str(user_input.get(CONF_THERMOSTAT_KIND, THERMOSTAT_KIND_HYDRONICUS))
-        if set(user_input) <= {CONF_THERMOSTAT_KIND}:
-            self._selected_thermostat_kind = kind
-            return await self.async_step_zone_details()
-        return await self._async_process_initial_zone(user_input, kind)
-
-    async def async_step_zone_details(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Collect only fields owned by the selected initial thermostat kind."""
-        if user_input is not None:
-            return await self._async_process_initial_zone(
-                {**user_input, CONF_THERMOSTAT_KIND: self._selected_thermostat_kind},
-                self._selected_thermostat_kind,
-            )
-        return self._zone_details_form(None, self._selected_thermostat_kind)
-
-    def _zone_details_form(
-        self,
-        user_input: Mapping[str, Any] | None,
-        kind: str,
-        *,
-        errors: dict[str, str] | None = None,
-    ) -> config_entries.ConfigFlowResult:
-        """Show the first Zone's details form, re-filled after a rejected submit."""
-        self._selected_thermostat_kind = kind
-        schema = zone_schema([], thermostat_kind=kind, include_circuits=False)
-        return self.async_show_form(
-            step_id="zone_details",
-            data_schema=with_submitted_values(self, schema, user_input),
-            errors=errors,
-        )
-
-    async def _async_process_initial_zone(
-        self, user_input: Mapping[str, Any], kind: str
-    ) -> config_entries.ConfigFlowResult:
-        """Normalize the first thermostat-specific Zone without adding a route yet."""
-        name = str(user_input.get(CONF_NAME, "")).strip()
-        errors: dict[str, str] = {}
-        if not name:
-            errors["base"] = "name_required"
-        # vol.Required accepts an empty list, which a lazily loaded frontend picker
-        # can submit, so the required sensor selection is checked explicitly.
-        if kind == THERMOSTAT_KIND_HYDRONICUS and not user_input.get(CONF_TEMPERATURE_SENSORS):
-            errors[CONF_TEMPERATURE_SENSORS] = "temperature_sensors_required"
-        errors.update(own_entity_errors(self.hass, user_input))
-        if errors:
-            return self._zone_details_form(user_input, kind, errors=errors)
-        if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE and is_hydronicus_owned(
-            self.hass, str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY])
-        ):
-            return self._zone_details_form(user_input, kind, errors={"base": "thermostat_loop"})
-        draft = zone_data(
-            {
-                **user_input,
-                CONF_NAME: name,
-                CONF_THERMOSTAT_KIND: kind,
-                CONF_CIRCUIT_IDS: ["pending"],
+            description_placeholders={
+                **placeholders,
+                "rooms": _room_lines(self._data),
+                "logic": _logic_lines(compiled),
+                "warnings": warning_text(compiled, sharing) or "- None",
             },
-            str(uuid4()),
         )
-        draft.pop(CONF_CIRCUIT_IDS, None)
-        draft.pop(CONF_ROUTES, None)
-        self._zone_draft = draft
-        if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
-            self._metadata_records = []
-            self._metadata_index = 0
-            return await self.async_step_sensor_metadata()
-        if requires_sensor_metadata_path(draft) and (
-            CONF_TEMPERATURE_SENSOR_METADATA not in user_input
-        ):
-            return self._zone_details_form(
-                user_input, kind, errors={"base": "sensor_metadata_required"}
-            )
-        self._draft[CONF_TOPOLOGY] = {CONF_ZONES: [draft]}
-        return await self.async_step_circuit()
 
-    async def async_step_sensor_metadata(
+    async def _async_create(self) -> config_entries.ConfigFlowResult:
+        """Create the entry with a room handle per room and a source handle per source."""
+        await self.async_set_unique_id(str(self._data[CONF_PLANT_ID]))
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=str(self._data[CONF_NAME]),
+            data=self._data,
+            subentries=cast(list[ConfigSubentryData], subentries_for(self._data)),
+        )
+
+    def _is_configured(self, plant_id: str) -> bool:
+        """Return whether a Plant with this id already exists."""
+        plant_id = _canonical(plant_id)
+        for entry in self._async_current_entries(include_ignore=False):
+            ids = {str(entry.data.get(CONF_PLANT_ID, "")), str(entry.unique_id or "")}
+            if plant_id in {_canonical(value) for value in ids}:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Guided setup
+    # ------------------------------------------------------------------
+
+    async def async_step_guided(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Edit initial sensor metadata through typed one-sensor forms."""
-        sensor_ids = zone_temperature_sensor_defaults(self._zone_draft)
+        """Name the Plant and choose its pump."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            errors = own_entity_errors(self.hass, user_input)
+            if not str(user_input.get(CONF_NAME, "")).strip():
+                errors[CONF_NAME] = "name_required"
+            errors.update(own_entity_errors(self.hass, user_input))
             if not errors:
-                self._metadata_records.append(sensor_metadata_record(user_input))
-                self._metadata_index += 1
-        if self._metadata_index < len(sensor_ids):
-            sensor_id = sensor_ids[self._metadata_index]
-            defaults: Mapping[str, Any] = next(
-                (
-                    record
-                    for record in self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA]
-                    if record.get("entity_id") == sensor_id
-                ),
-                {},
-            )
-            return self.async_show_form(
-                step_id="sensor_metadata",
-                data_schema=with_submitted_values(
-                    self,
-                    sensor_metadata_schema(sensor_id, defaults),
-                    user_input if errors else None,
-                ),
-                errors=errors,
-                description_placeholders={"sensor": sensor_id},
-            )
-        if self._metadata_records:
-            self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA] = self._metadata_records
-        return await self.async_step_sensor_policy()
-
-    async def async_step_sensor_policy(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Choose designated-reference or weighted aggregation after metadata editing."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            self._zone_draft[CONF_TEMPERATURE_AGGREGATION] = user_input[
-                CONF_TEMPERATURE_AGGREGATION
-            ]
-            try:
-                # The zone alone decodes without a circuit, which the next step adds.
-                plant_configuration_from_entry_data(
-                    {
-                        CONF_PLANT_ID: self._draft[CONF_PLANT_ID],
-                        CONF_TOPOLOGY: {CONF_ZONES: [self._zone_draft]},
-                    }
+                options = user_input.get(SECTION_PUMP_OPTIONS) or {}
+                pump = {
+                    "id": str(uuid4()),
+                    CONF_NAME: GUIDED_PUMP_NAME,
+                    CONF_ENTITY_ID: str(user_input[CONF_PUMP_ENTITY]),
+                    CONF_OVERRUN: float(options.get(CONF_OVERRUN, DEFAULT_PUMP_OVERRUN)),
+                }
+                self._data = new_plant_data(
+                    name=str(user_input[CONF_NAME]).strip(),
+                    plant_id=str(uuid4()),
+                    topology={CONF_PUMPS: [pump]},
+                    ownership=PlantOwnership(room_objects={}),
                 )
-            except DesignatedReferenceError:
-                errors["base"] = "designated_reference_count"
-            except StoredTopologyError:
-                pass  # The review step explains any other rejection in full.
-            if not errors:
-                self._draft[CONF_TOPOLOGY] = {CONF_ZONES: [self._zone_draft]}
-                return await self.async_step_circuit()
+                return await self.async_step_room()
         return self.async_show_form(
-            step_id="sensor_policy",
-            data_schema=sensor_policy_schema(self._zone_draft),
+            step_id="guided",
+            data_schema=with_submitted_values(self, _guided_schema(), user_input),
             errors=errors,
         )
 
-    async def async_step_circuit(
+    async def async_step_room(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Collect the first hydraulic circuit and its Dry run equipment path."""
+        """Add one room with its own loop on the Plant's pump."""
+        plant = effective_plant_from_data(self._data)
+        schema = _room_schema()
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         if user_input is not None:
-            fields = flatten_sections(user_input)
-            name = str(fields[CONF_NAME]).strip()
-            if not name:
-                errors["base"] = "name_required"
-            elif fields[CONF_VALVE_ENTITY] == fields[CONF_PUMP_ENTITY]:
-                errors["base"] = "duplicate_actuator_entity"
-            elif entity_errors := own_entity_errors(self.hass, user_input):
-                errors.update(entity_errors)
-            else:
-                circuit_id = str(uuid4())
-                valve_id = str(uuid4())
-                pump_id = str(uuid4())
-                zone_id = self._draft[CONF_TOPOLOGY][CONF_ZONES][0]["id"]
-                valve_data = {
-                    "id": valve_id,
-                    CONF_NAME: f"{name} valve",
-                    CONF_ENTITY_ID: fields[CONF_VALVE_ENTITY],
-                    CONF_OPENING_TIME: fields[CONF_VALVE_OPENING_TIME],
-                }
-                if fields.get(CONF_VALVE_READINESS_ENTITY):
-                    valve_data[CONF_VALVE_READINESS_ENTITY] = fields[CONF_VALVE_READINESS_ENTITY]
-                valve_data[CONF_POSITION_FEEDBACK_ENTITY] = fields.get(
-                    CONF_POSITION_FEEDBACK_ENTITY
-                )
-                valve_data[CONF_POSITION_FEEDBACK_MAX_AGE] = fields.get(
-                    CONF_POSITION_FEEDBACK_MAX_AGE, DEFAULT_FEEDBACK_MAX_AGE
-                )
-                self._draft[CONF_TOPOLOGY][CONF_VALVES] = [valve_data]
-                self._draft[CONF_TOPOLOGY][CONF_PUMPS] = [
-                    {
-                        "id": pump_id,
-                        CONF_NAME: f"{name} pump",
-                        CONF_ENTITY_ID: fields[CONF_PUMP_ENTITY],
-                        CONF_OVERRUN: fields[CONF_PUMP_OVERRUN],
-                        CONF_POWER_FEEDBACK_ENTITY: fields.get(CONF_POWER_FEEDBACK_ENTITY),
-                        CONF_POWER_FEEDBACK_MAX_AGE: fields.get(
-                            CONF_POWER_FEEDBACK_MAX_AGE, DEFAULT_FEEDBACK_MAX_AGE
-                        ),
-                        CONF_FLOW_FEEDBACK_ENTITY: fields.get(CONF_FLOW_FEEDBACK_ENTITY),
-                        CONF_FLOW_FEEDBACK_MAX_AGE: fields.get(
-                            CONF_FLOW_FEEDBACK_MAX_AGE, DEFAULT_FEEDBACK_MAX_AGE
-                        ),
-                        CONF_FAULT_FEEDBACK_ENTITY: fields.get(CONF_FAULT_FEEDBACK_ENTITY),
-                        CONF_FAULT_FEEDBACK_MAX_AGE: fields.get(
-                            CONF_FAULT_FEEDBACK_MAX_AGE, DEFAULT_FEEDBACK_MAX_AGE
-                        ),
-                    }
-                ]
-                self._draft[CONF_TOPOLOGY][CONF_CIRCUITS] = [
-                    {
-                        "id": circuit_id,
-                        CONF_NAME: name,
-                        CONF_VALVE_IDS: [valve_id],
-                        "pump_id": pump_id,
-                        CONF_COOLING_ENABLED: bool(fields.get(CONF_COOLING_ENABLED, False)),
-                        CONF_SUPPLY_TEMPERATURE_SENSOR: fields.get(CONF_SUPPLY_TEMPERATURE_SENSOR),
-                        CONF_SURFACE_TEMPERATURE_SENSOR: fields.get(
-                            CONF_SURFACE_TEMPERATURE_SENSOR
-                        ),
-                        CONF_CONDENSATION_MARGIN: fields.get(
-                            CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN
-                        ),
-                        CONF_SUPPLY_TEMPERATURE_MAX_AGE: fields.get(
-                            CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
-                        ),
-                        CONF_SURFACE_TEMPERATURE_MAX_AGE: fields.get(
-                            CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE
-                        ),
-                    }
-                ]
-                self._draft[CONF_TOPOLOGY][CONF_ROUTES] = [
-                    {"id": str(uuid4()), "zone_id": zone_id, "circuit_id": circuit_id}
-                ]
-                if cooling_error := _initial_circuit_cooling_error(self._draft, circuit_id):
-                    errors["base"] = cooling_error
+            form_errors, placeholders = room_form_errors(self.hass, user_input, plant)
+            errors.update(form_errors)
+            if not errors:
+                draft = room_draft_from_form(user_input, plant=plant, existing=None)
+                try:
+                    data = data_with_room(self._data, draft)
+                except GRAPH_EDIT_ERRORS as error:
+                    graph, placeholders = graph_errors(error, draft, frozenset(schema.schema))
+                    errors.update(graph)
                 else:
+                    self._data = data
+                    if user_input.get(CONF_ADD_ANOTHER, False):
+                        return await self.async_step_room()
                     return await self.async_step_review()
         return self.async_show_form(
-            step_id="circuit",
-            data_schema=with_submitted_values(self, _initial_circuit_schema(), user_input),
+            step_id="room",
+            data_schema=with_submitted_values(self, schema, user_input),
             errors=errors,
+            description_placeholders={**placeholders, "rooms": _room_lines(self._data)},
         )
 
     async def async_step_review(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Validate the initial topology before storing it in a config entry."""
-        topology = self._draft[CONF_TOPOLOGY]
-        sharing = other_plant_sharing_warnings(
-            self.hass,
-            None,
-            sorted(
-                exclusive_output_entity_ids({CONF_PLANT_ID: "pending", CONF_TOPOLOGY: topology})
-            ),
-        )
-        try:
-            plant = compile_topology(plant_configuration_from_entry_data(self._draft))
-        except (StoredTopologyError, TopologyValidationError) as error:
-            return self.async_show_form(
-                step_id="review",
-                errors={"base": "invalid_topology"},
-                description_placeholders=_initial_review_placeholders(
-                    topology, None, str(error), sharing
-                ),
-            )
+        """Review the rooms and warnings, then create the Plant."""
+        return await self._async_review("review", user_input, {})
 
+    # ------------------------------------------------------------------
+    # Plant file import
+    # ------------------------------------------------------------------
+
+    async def async_step_import_plant(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Read a whole Plant from a plant file."""
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         if user_input is not None:
-            if not self._draft[CONF_DRY_RUN] and not user_input.get(
-                CONF_DRY_RUN_CONFIRMATION, False
-            ):
-                return self.async_show_form(
-                    step_id="review",
-                    data_schema=dry_run_confirmation_schema(),
-                    errors={"base": "dry_run_confirmation_required"},
-                    description_placeholders=_initial_review_placeholders(
-                        topology, plant, sharing=sharing
-                    ),
+            try:
+                # A file without an id becomes a new Plant with a fresh id.
+                imported = import_plant_document(
+                    parsed_plant_file(user_input.get(CONF_DOCUMENT)), plant_id=str(uuid4())
                 )
-            await self.async_set_unique_id(self._draft[CONF_PLANT_ID])
-            self._abort_if_unique_id_configured()
-            # The first room owns its loop and valve, and the pump belongs to the Plant.
-            data = new_plant_data(
-                name=self._draft[CONF_NAME],
-                plant_id=self._draft[CONF_PLANT_ID],
-                topology=topology,
-                ownership=derive_ownership(plant_configuration_from_entry_data(self._draft)),
-            )
-            if not self._draft[CONF_DRY_RUN]:
-                data = authorize_outputs(data)
-            return self.async_create_entry(
-                title=self._draft[CONF_NAME],
-                data=data,
-                subentries=cast(list[ConfigSubentryData], subentries_for(data)),
-            )
-
+                data = new_plant_data(
+                    name=imported.name,
+                    plant_id=imported.plant_id,
+                    topology=imported.topology,
+                    ownership=imported.ownership,
+                )
+            except PlantDocumentError as error:
+                errors["base"] = "invalid_document"
+                placeholders = {"path": error.path or _TOP_LEVEL, "error": str(error)}
+            except GRAPH_EDIT_ERRORS as error:
+                errors["base"] = "invalid_document"
+                placeholders = {"path": _TOP_LEVEL, "error": str(error)}
+            else:
+                if self._is_configured(imported.plant_id):
+                    return self.async_abort(reason="already_configured")
+                if own := first_own_entity(self.hass, imported):
+                    errors["base"] = "document_own_entity"
+                    placeholders = {"path": own[0], "entity_id": own[1]}
+                else:
+                    self._data = data
+                    return await self.async_step_import_review()
         return self.async_show_form(
-            step_id="review",
-            data_schema=(dry_run_confirmation_schema() if not self._draft[CONF_DRY_RUN] else None),
-            description_placeholders=_initial_review_placeholders(topology, plant, sharing=sharing),
+            step_id="import_plant",
+            data_schema=with_submitted_values(self, _import_schema(), user_input),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_import_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Review the imported Plant and its warnings, then create it."""
+        return await self._async_review(
+            "import_review", user_input, {"name": str(self._data[CONF_NAME])}
         )

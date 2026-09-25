@@ -540,7 +540,9 @@ def test_static_discovery_sees_the_flow_contract() -> None:
         "config.abort.reconfigure_successful",
         "config.error.thermostat_loop",
         "config.error.name_required",
-        "selector.thermostat_kind",
+        # Returned inside an (errors, placeholders) tuple by the room basics helper.
+        "config.error.delivery_required",
+        "config.error.invalid_document",
         "selector.temperature_aggregation",
         "selector.source_type",
     } <= paths
@@ -566,6 +568,9 @@ def test_static_discovery_sees_the_flow_contract() -> None:
         "valve_details",
     }
     assert found.form_steps["config_subentries.source"] == {"user", "reconfigure", "review"}
+    assert {"user", "guided", "room", "review", "import_plant", "import_review"} <= (
+        found.form_steps["config"]
+    )
 
 
 def test_every_section_entry_is_a_nonempty_string() -> None:
@@ -703,84 +708,76 @@ def _plant_entry(*, dry_run: bool = True) -> MockConfigEntry:
     )
 
 
-async def test_initial_flow_steps_are_fully_translated(hass) -> None:
-    """Every initial setup form, field, section, option, error, and abort is translated."""
+async def test_setup_flow_steps_are_fully_translated(hass) -> None:
+    """Every guided setup and import menu, form, field, section, error, and abort is translated."""
     audit = _FormAudit("config")
     flow = hass.config_entries.flow
 
-    result = audit.check(await flow.async_init(DOMAIN, context={"source": "user"}))
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {CONF_NAME: " ", CONF_DRY_RUN: False})
-    )
-    assert result["errors"] == {"base": "name_required"}
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {CONF_NAME: "Plant", CONF_DRY_RUN: False})
-    )
-    external = audit.check(await flow.async_init(DOMAIN, context={"source": "user"}))
-    external = audit.check(await flow.async_configure(external["flow_id"], {CONF_NAME: "Plant"}))
-    external = audit.check(
-        await flow.async_configure(external["flow_id"], {"thermostat_kind": "external_climate"})
-    )
-    assert external["step_id"] == "zone_details"
-    flow.async_abort(external["flow_id"])
+    async def start(option: str) -> Mapping[str, Any]:
+        result = audit.check(await flow.async_init(DOMAIN, context={"source": "user"}))
+        return audit.check(await flow.async_configure(result["flow_id"], {"next_step_id": option}))
 
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {"thermostat_kind": "hydronicus"})
+    async def submit(result: Mapping[str, Any], user_input: Mapping[str, Any]) -> Mapping[str, Any]:
+        return audit.check(await flow.async_configure(result["flow_id"], dict(user_input)))
+
+    plant = {CONF_NAME: "Plant", "pump_entity": "switch.pump"}
+    result = await start("guided")
+    result = await submit(result, {**plant, CONF_NAME: " "})
+    assert result["errors"] == {CONF_NAME: "name_required"}
+    result = await submit(result, plant)
+    result = await submit(result, {CONF_NAME: "Living room", "valves": ["switch.pump"]})
+    assert result["errors"] == {"temperature_sensors": "temperature_sensors_required"}
+    room = {CONF_NAME: "Living room", "temperature_sensors": ["sensor.room"]}
+    result = await submit(result, room)
+    assert result["errors"] == {"base": "delivery_required"}
+    result = await submit(result, {**room, "valves": ["switch.pump"]})
+    assert result["errors"] == {"valves": "actuator_entity_in_use"}
+    result = await submit(result, {**room, "valves": ["switch.living"], "add_another": True})
+    result = await submit(
+        result,
+        {CONF_NAME: "Bedroom", "temperature_sensors": ["sensor.bed"], "valves": ["switch.bed"]},
     )
-    result = audit.check(
-        await flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_NAME: " ",
-                "temperature_sensors": ["sensor.room"],
-                "temperature_aggregation": "mean",
-            },
-        )
-    )
-    assert result["errors"] == {"base": "name_required"}
-    result = audit.check(
-        await flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_NAME: "Living room",
-                "temperature_sensors": ["sensor.room"],
-                "temperature_aggregation": "mean",
-                "configure_sensor_metadata": True,
-            },
-        )
-    )
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {"sensor_entity": "sensor.room"})
-    )
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {"temperature_aggregation": "mean"})
-    )
-    circuit = {
-        CONF_NAME: "Floor loop",
-        "valve_entity": "switch.floor_valve",
-        "pump_entity": "switch.floor_valve",
-    }
-    result = audit.check(await flow.async_configure(result["flow_id"], circuit))
-    assert result["errors"] == {"base": "duplicate_actuator_entity"}
-    result = audit.check(
-        await flow.async_configure(
-            result["flow_id"], {**circuit, "pump_entity": "switch.floor_pump"}
-        )
-    )
-    result = audit.check(await flow.async_configure(result["flow_id"], {}))
-    assert result["errors"] == {"base": "dry_run_confirmation_required"}
-    result = await flow.async_configure(result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True})
+    # Two rooms on one pump carry a warning, so the review asks for confirmation.
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await flow.async_configure(result["flow_id"], {"confirm": True})
     assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
 
-    assert audit.steps == {
-        "user",
-        "zone",
-        "zone_details",
-        "sensor_metadata",
-        "sensor_policy",
-        "circuit",
-        "review",
-    }
+    document = yaml.safe_load(
+        (Path(__file__).parents[1] / "fixtures" / "plant_files" / "sources.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    result = await start("import_plant")
+    result = await submit(result, {"document": {"name": "No format version"}})
+    assert result["errors"] == {"base": "invalid_document"}
+    own_entity = next(
+        registry_entry.entity_id
+        for registry_entry in er.async_get(hass).entities.values()
+        if registry_entry.platform == DOMAIN and registry_entry.domain == "sensor"
+    )
+    owning = deepcopy(document)
+    owning["rooms"]["living_room"]["temperature_sensors"] = [own_entity]
+    result = await submit(result, {"document": owning})
+    assert result["errors"] == {"base": "document_own_entity"}
+    result = await submit(result, {"document": document})
+    assert result["step_id"] == "import_review"
+    # The first Plant already binds switch.pump, which needs confirming.
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await flow.async_configure(result["flow_id"], {"confirm": True})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    result = await start("import_plant")
+    (imported,) = (
+        entry for entry in hass.config_entries.async_entries(DOMAIN) if entry.title == "Sources"
+    )
+    result = await submit(result, {"document": {**document, "id": imported.data[CONF_PLANT_ID]}})
+    assert result["reason"] == "already_configured"
+
+    assert audit.steps == {"user", "guided", "room", "review", "import_plant", "import_review"}
     assert audit.missing == []
 
 

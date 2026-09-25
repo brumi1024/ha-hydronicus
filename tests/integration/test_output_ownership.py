@@ -32,7 +32,6 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
     CONF_PUMP_ENTITY,
-    CONF_PUMP_OVERRUN,
     CONF_SOURCE_DEMAND_ENTITY,
     CONF_SOURCE_HYSTERESIS,
     CONF_SOURCE_MAXIMUM_AGE,
@@ -40,8 +39,6 @@ from custom_components.hydronicus.const import (
     CONF_SOURCE_PRIORITY,
     CONF_SOURCE_TYPE,
     CONF_TEMPERATURE_SENSORS,
-    CONF_VALVE_ENTITY,
-    CONF_VALVE_OPENING_TIME,
     DOMAIN,
     SUBENTRY_TYPE_SOURCE,
 )
@@ -736,27 +733,24 @@ async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
 async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     hass: HomeAssistant,
 ) -> None:
-    """The initial review lists a valve or pump that another Plant binds, and still saves."""
+    """The setup review lists a valve or pump that another Plant binds, and saves once confirmed."""
     _record_switch_calls(hass)
     await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_room", live=False))
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={"name": "Second plant"}
+        result["flow_id"], user_input={"next_step_id": "guided"}
     )
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        user_input={"name": "Study", CONF_TEMPERATURE_SENSORS: ["sensor.warm_room"]},
+        result["flow_id"], user_input={"name": "Second plant", CONF_PUMP_ENTITY: SHARED_PUMP}
     )
-    assert result["step_id"] == "circuit"
+    assert result["step_id"] == "room"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
-            "name": "Study loop",
-            CONF_VALVE_ENTITY: "switch.other_valve",
-            CONF_PUMP_ENTITY: SHARED_PUMP,
-            CONF_VALVE_OPENING_TIME: 0,
-            CONF_PUMP_OVERRUN: 0,
+            "name": "Study",
+            CONF_TEMPERATURE_SENSORS: ["sensor.warm_room"],
+            "valves": ["switch.other_valve"],
         },
     )
 
@@ -767,7 +761,10 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     assert "Plant 1" in warnings
     assert "switch.other_valve" not in warnings
 
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+    # Sharing an output with another Plant is a warning that needs confirming.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
 
     assert result["type"] == "create_entry"
     assert result["data"][CONF_DRY_RUN] is True
