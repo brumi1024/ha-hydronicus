@@ -15,12 +15,15 @@ from uuid import uuid4
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigSubentryData
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 
 from ..areas import (
     area_review_warnings,
     area_warnings_to_confirm,
     areas_with_temperature_sensor,
+    covered_area_ids,
+    resolve_area_sensors,
     zone_name_for_areas,
 )
 from ..const import (
@@ -51,6 +54,7 @@ from ..plant_file import first_own_entity, parsed_plant_file
 from .common import (
     ConfigFlowBase,
     collapsed_section,
+    listed,
     name_selector,
     own_entity_errors,
     seconds_selector,
@@ -61,6 +65,7 @@ from .common import (
     with_submitted_values,
 )
 from .zone_form import (
+    area_ids,
     area_selector,
     graph_errors,
     zone_draft_from_form,
@@ -131,21 +136,31 @@ def _import_schema() -> vol.Schema:
     return vol.Schema({vol.Optional(CONF_DOCUMENT): selector.ObjectSelector()})
 
 
-def _zone_names(data: Mapping[str, Any]) -> list[str]:
-    """Return the zone names of Plant data in the order they were added."""
-    return [str(zone.get(CONF_NAME, "")) for zone in topology_copy(data)[CONF_ZONES]]
+def _zone_descriptions(hass: HomeAssistant, data: Mapping[str, Any]) -> list[str]:
+    """Describe each zone of Plant data, in the order they were added, with its areas.
+
+    A zone over areas reads like ``Ground floor: Kitchen and Hall``, and a zone
+    without areas is its name alone.
+    """
+    resolution = resolve_area_sensors(hass, covered_area_ids(data))
+    descriptions = []
+    for zone in topology_copy(data)[CONF_ZONES]:
+        name = str(zone.get(CONF_NAME, ""))
+        areas = [resolution.name(area_id) for area_id in area_ids(zone.get(CONF_AREAS))]
+        descriptions.append(f"{name}: {listed(areas)}" if areas else name)
+    return descriptions
 
 
-def _zone_lines(data: Mapping[str, Any]) -> str:
-    """List the zones of Plant data in the order they were added."""
-    return "\n".join(f"- {name}" for name in _zone_names(data)) or "- None"
+def _zone_lines(hass: HomeAssistant, data: Mapping[str, Any]) -> str:
+    """List the zones of Plant data and their areas, in the order they were added."""
+    return "\n".join(f"- {zone}" for zone in _zone_descriptions(hass, data)) or "- None"
 
 
-def _zones_so_far(data: Mapping[str, Any]) -> str:
+def _zones_so_far(hass: HomeAssistant, data: Mapping[str, Any]) -> str:
     """List the zones guided setup has added, or nothing before the first zone."""
-    if not (names := _zone_names(data)):
+    if not (zones := _zone_descriptions(hass, data)):
         return ""
-    return "\n\nZones added so far:\n" + "\n".join(f"- {name}" for name in names)
+    return "\n\nZones added so far:\n" + "\n".join(f"- {zone}" for zone in zones)
 
 
 def _logic_lines(compiled: CompiledPlant) -> str:
@@ -198,7 +213,7 @@ class SetupSteps(ConfigFlowBase):
             errors=errors,
             description_placeholders={
                 **placeholders,
-                "zones": _zone_lines(self._data),
+                "zones": _zone_lines(self.hass, self._data),
                 "logic": _logic_lines(compiled),
                 "warnings": warning_text(
                     compiled,
@@ -344,7 +359,7 @@ class SetupSteps(ConfigFlowBase):
             description_placeholders={
                 **placeholders,
                 "progress": progress,
-                "zones": _zones_so_far(self._data),
+                "zones": _zones_so_far(self.hass, self._data),
             },
         )
 

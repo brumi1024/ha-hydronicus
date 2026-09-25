@@ -233,7 +233,9 @@ async def test_grouped_setup_names_zones_after_their_floor_and_reviews_shared_ar
     )
 
     assert result["step_id"] == "zone"
-    assert result["description_placeholders"]["zones"] == "\n\nZones added so far:\n- Ground floor"
+    assert result["description_placeholders"]["zones"] == (
+        "\n\nZones added so far:\n- Ground floor: Kitchen and Hall"
+    )
     mixed = {"areas": ["hall", "bedroom"], "valves": ["switch.hall_valve"]}
     result = await _submit(hass, result, mixed)
     # Areas on two floors give no name, so the form asks for one.
@@ -241,6 +243,10 @@ async def test_grouped_setup_names_zones_after_their_floor_and_reviews_shared_ar
     result = await _submit(hass, result, {**mixed, CONF_NAME: "Stairwell"})
 
     assert result["step_id"] == "review"
+    # The review names the areas each zone covers.
+    assert result["description_placeholders"]["zones"] == (
+        "- Ground floor: Kitchen and Hall\n- Stairwell: Hall and Bedroom"
+    )
     assert (
         "Area Hall is covered by zones Ground floor and Stairwell"
         in (result["description_placeholders"]["warnings"])
