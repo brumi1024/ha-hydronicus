@@ -46,7 +46,8 @@ An entity chosen before this filtering existed stays selected when you reconfigu
 
 Review the selected sensor, valve, and pump entities.
 Confirm that the Circuit and Delivery Route references are complete and that no object was removed while a relationship still points to it.
-Hydronicus rejects orphaned and inconsistent graphs rather than guessing a relationship.
+Hydronicus rejects inconsistent graphs, and a Zone that no enabled Delivery Route leaves, rather than guessing a relationship.
+A Circuit, valve, or pump that no enabled Delivery Route reaches is accepted, reported as unused equipment, and never requested.
 
 ## Unavailable or invalid sensors
 

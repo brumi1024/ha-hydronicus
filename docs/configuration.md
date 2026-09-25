@@ -213,4 +213,5 @@ Before accepting a simulated Plant, check all of the following:
 - No real equipment is being used as a test substitute.
 
 If validation rejects a proposed object, review the object references and ownership boundaries before trying a different name.
-Hydronicus rejects orphaned or inconsistent topology rather than silently guessing the intended relationship.
+Hydronicus rejects inconsistent topology, and a Zone that no enabled Delivery Route leaves, rather than silently guessing the intended relationship.
+A Circuit, valve, or pump that no enabled Delivery Route reaches is accepted, reported as unused equipment, and never requested.

@@ -311,20 +311,20 @@ def test_compile_topology_rejects_unknown_pump_relationship() -> None:
         compile_topology(plant)
 
 
-def test_compile_topology_rejects_orphaned_actuators() -> None:
-    """Unused actuator nodes should fail closed instead of silently drifting."""
+def _unused(compiled) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Return unused-equipment warnings as equipment id -> (kind, circuit ids)."""
+    return {
+        str(warning.equipment_id): (str(warning.equipment_kind), warning.circuit_ids)
+        for warning in compiled.warnings
+        if warning.code == "unused_equipment"
+    }
+
+
+def test_unused_valve_and_pump_compile_with_warnings() -> None:
+    """Plant equipment that no route reaches is reported, not rejected."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(
-            Zone(
-                "zone-1",
-                "Living room",
-                21.5,
-                _metadata(
-                    "sensor.living_temperature",
-                ),
-            ),
-        ),
+        zones=(Zone("zone-1", "Living room", 21.5, _metadata("sensor.living_temperature")),),
         valves=(
             Valve("valve-1", "Floor valve", "switch.floor_valve"),
             Valve("valve-2", "Unused valve", "switch.unused_valve"),
@@ -337,10 +337,90 @@ def test_compile_topology_rejects_orphaned_actuators() -> None:
         routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
     )
 
-    with pytest.raises(
-        TopologyValidationError, match="orphaned valves: valve-2; orphaned pumps: pump-2"
-    ):
+    compiled = compile_topology(plant)
+
+    assert _unused(compiled) == {"valve-2": ("valve", ()), "pump-2": ("pump", ())}
+    warning = next(w for w in compiled.warnings if w.equipment_id == "valve-2")
+    assert warning.valve_id == "valve-2"
+    assert warning.zone_ids == ()
+    assert warning.message == (
+        "Valve Unused valve is not reached by any enabled Delivery Route, "
+        "so Hydronicus never requests it."
+    )
+    assert set(compiled.valves) == {"valve-1", "valve-2"}
+    assert set(compiled.pumps) == {"pump-1", "pump-2"}
+
+
+def test_unrouted_circuit_and_its_equipment_are_unused() -> None:
+    """A circuit without an enabled route leaves its valves and pump unreached."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, _metadata("sensor.living_temperature")),),
+        valves=(
+            Valve("valve-1", "Floor valve", "switch.floor_valve"),
+            Valve("valve-2", "Spare valve", "switch.spare_valve"),
+            Valve("valve-3", "Disabled valve", "switch.disabled_valve"),
+        ),
+        pumps=(
+            Pump("pump-1", "Floor pump", "switch.floor_pump"),
+            Pump("pump-2", "Spare pump", "switch.spare_pump"),
+        ),
+        circuits=(
+            Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),
+            Circuit("circuit-2", "Spare loop", ("valve-2", "valve-1"), "pump-2"),
+            Circuit("circuit-3", "Disabled loop", ("valve-3",), "pump-1"),
+        ),
+        routes=(
+            DeliveryRoute("route-1", "zone-1", "circuit-1"),
+            DeliveryRoute("route-3", "zone-1", "circuit-3", enabled=False),
+        ),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert _unused(compiled) == {
+        "circuit-2": ("circuit", ("circuit-2",)),
+        "circuit-3": ("circuit", ("circuit-3",)),
+        "valve-2": ("valve", ("circuit-2",)),
+        "valve-3": ("valve", ("circuit-3",)),
+        "pump-2": ("pump", ("circuit-2",)),
+    }
+    assert [route.id for route in compiled.routes] == ["route-1"]
+
+
+def test_zone_without_enabled_route_is_still_rejected() -> None:
+    """Only equipment may be unused; a zone must be able to request heat."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, _metadata("sensor.living_temperature")),),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1", enabled=False),),
+    )
+
+    with pytest.raises(TopologyValidationError, match="orphaned zones: zone-1.$"):
         compile_topology(plant)
+
+
+def test_plant_without_zones_compiles() -> None:
+    """An empty Plant, or one holding only equipment, is valid and requests nothing."""
+    empty = compile_topology(
+        PlantConfiguration(id="plant-1", zones=(), valves=(), pumps=(), circuits=(), routes=())
+    )
+    equipment_only = compile_topology(
+        PlantConfiguration(
+            id="plant-1",
+            zones=(),
+            valves=(),
+            pumps=(Pump("pump-1", "Manifold pump", "switch.manifold_pump"),),
+            circuits=(),
+            routes=(),
+        )
+    )
+
+    assert empty.warnings == ()
+    assert _unused(equipment_only) == {"pump-1": ("pump", ())}
 
 
 def test_compile_topology_rejects_duplicate_actuator_ids() -> None:

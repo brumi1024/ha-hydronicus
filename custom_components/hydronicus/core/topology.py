@@ -397,7 +397,7 @@ def _validate_relationships(
     index: _TopologyIndex,
     source_selector: SourceSelectionActuator | None,
 ) -> tuple[DeliveryRoute, ...]:
-    """Validate bindings, dependencies, routes, cooling paths, and orphan ownership."""
+    """Validate bindings, dependencies, routes, cooling paths, and zone reachability."""
     zones = index.zones
     valves = index.valves
     pumps = index.pumps
@@ -430,8 +430,6 @@ def _validate_relationships(
             f"Source selector id {source_selector.id!r} is already used by another object."
         )
 
-    referenced_valves: set[str] = set()
-    referenced_pumps: set[str] = set()
     for circuit in configuration.circuits:
         if not circuit.valve_ids:
             raise TopologyValidationError(f"Circuit {circuit.id} requires at least one valve.")
@@ -471,11 +469,8 @@ def _validate_relationships(
             raise TopologyValidationError(
                 f"Circuit {circuit.id} references unknown pump {circuit.pump_id}."
             )
-        referenced_valves.update(circuit.valve_ids)
-        referenced_pumps.add(circuit.pump_id)
 
     referenced_zones: set[str] = set()
-    referenced_circuits: set[str] = set()
     for route in configuration.routes:
         if not isinstance(route.enabled, bool):
             raise TopologyValidationError(f"Route {route.id} enabled must be boolean.")
@@ -490,7 +485,6 @@ def _validate_relationships(
         if not route.enabled:
             continue
         referenced_zones.add(route.zone_id)
-        referenced_circuits.add(route.circuit_id)
 
     for circuit in configuration.circuits:
         if not circuit.cooling_enabled:
@@ -506,21 +500,10 @@ def _validate_relationships(
             if not zones[zone_id].humidity_sensor_metadata:
                 raise CoolingObservationError(circuit.id, zone_id, "humidity")
 
-    orphaned_zones = sorted(set(zones) - referenced_zones)
-    orphaned_valves = sorted(set(valves) - referenced_valves)
-    orphaned_pumps = sorted(set(pumps) - referenced_pumps)
-    orphaned_circuits = sorted(set(circuits) - referenced_circuits)
-    if orphaned_zones or orphaned_valves or orphaned_pumps or orphaned_circuits:
-        details: list[str] = []
-        if orphaned_zones:
-            details.append(f"orphaned zones: {', '.join(orphaned_zones)}")
-        if orphaned_valves:
-            details.append(f"orphaned valves: {', '.join(orphaned_valves)}")
-        if orphaned_pumps:
-            details.append(f"orphaned pumps: {', '.join(orphaned_pumps)}")
-        if orphaned_circuits:
-            details.append(f"orphaned circuits: {', '.join(orphaned_circuits)}")
-        raise TopologyValidationError("; ".join(details) + ".")
+    # A zone must be able to request heat. Equipment that no enabled route
+    # reaches is valid and reported as unused_equipment instead.
+    if orphaned_zones := sorted(set(zones) - referenced_zones):
+        raise TopologyValidationError(f"orphaned zones: {', '.join(orphaned_zones)}.")
 
     return tuple(
         sorted(
@@ -668,7 +651,50 @@ def _build_summary_and_warnings(
                     equipment_id=source_id,
                 )
             )
+    warnings.extend(_unused_equipment_warnings(index, enabled_routes))
     return tuple(summary), tuple(warnings)
+
+
+def _unused_equipment_warnings(
+    index: _TopologyIndex, enabled_routes: tuple[DeliveryRoute, ...]
+) -> list[TopologyWarning]:
+    """Report circuits, valves, and pumps that no enabled Delivery Route reaches.
+
+    The controller only requests equipment of circuits that an eligible route
+    requests, so unused equipment is never requested and stays idle.
+    """
+    circuits = index.circuits
+    reached_circuits = {route.circuit_id for route in enabled_routes}
+    reached_valves = {
+        valve_id for circuit_id in reached_circuits for valve_id in circuits[circuit_id].valve_ids
+    }
+    reached_pumps = {circuits[circuit_id].pump_id for circuit_id in reached_circuits}
+    candidates: list[tuple[EquipmentKind, str, str, tuple[str, ...]]] = []
+    for circuit_id, circuit in circuits.items():
+        if circuit_id not in reached_circuits:
+            candidates.append((EquipmentKind.CIRCUIT, circuit_id, circuit.name, (circuit_id,)))
+    for valve_id, valve in index.valves.items():
+        if valve_id not in reached_valves:
+            users = tuple(sorted(c.id for c in circuits.values() if valve_id in c.valve_ids))
+            candidates.append((EquipmentKind.VALVE, valve_id, valve.name, users))
+    for pump_id, pump in index.pumps.items():
+        if pump_id not in reached_pumps:
+            users = tuple(sorted(c.id for c in circuits.values() if c.pump_id == pump_id))
+            candidates.append((EquipmentKind.PUMP, pump_id, pump.name, users))
+    return [
+        TopologyWarning(
+            code="unused_equipment",
+            message=(
+                f"{kind.value.capitalize()} {name} is not reached by any enabled "
+                "Delivery Route, so Hydronicus never requests it."
+            ),
+            valve_id=equipment_id,
+            circuit_ids=circuit_ids,
+            equipment_kind=kind,
+            equipment_id=equipment_id,
+        )
+        for kind, equipment_id, name, circuit_ids in candidates
+    ]
 
 
 def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
