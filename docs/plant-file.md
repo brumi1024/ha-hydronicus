@@ -166,7 +166,7 @@ A room is one Comfort Zone with its thermostat, its sensors, and its loops:
 | --- | --- |
 | `thermostat` | The room's thermostat. Defaults to a Hydronicus thermostat with default settings. |
 | `temperature_sensors` | A list of entity IDs or sensor mappings. Required for a Hydronicus thermostat. |
-| `humidity_sensors` | A list of entity IDs or sensor mappings, used for the dew point when cooling. |
+| `humidity_sensors` | A list of entity IDs or sensor mappings; cooling uses the highest usable reading for the dew point. |
 | `temperature_aggregation` | `mean`, `median`, `minimum`, `maximum`, `designated_reference`, or `weighted_mean`. Defaults to `mean`. |
 | `valves` | Slug to private valve of the room. |
 | `loops` | Slug to private loop of the room. |
@@ -197,7 +197,7 @@ A sensor is either an entity ID or a mapping of the stored sensor fields:
 | `entity_id` | Required. |
 | `required` | A required sensor that is stale or unavailable blocks the room. Defaults to `true`. |
 | `designated_reference` | Used alone by `designated_reference` aggregation. Exactly one sensor must set it for that policy. |
-| `weight` | Relative weight in `weighted_mean` aggregation. |
+| `weight` | Relative weight in `weighted_mean` temperature aggregation, ignored for humidity sensors. |
 | `calibration_offset` | Added to every reading before aggregation. |
 | `max_age_seconds` | A reading older than this is stale. |
 

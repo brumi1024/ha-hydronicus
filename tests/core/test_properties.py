@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from hydronicus_core.controller import evaluate, safe_shutdown
+from hydronicus_core.controller import dew_point_celsius, evaluate, safe_shutdown
 from hydronicus_core.model import (
     ActuatorAction,
     Circuit,
@@ -383,6 +383,101 @@ def test_blocked_required_sensor_never_produces_zone_demand(
 
     assert result.next_runtime.zone_runtime["zone"].demand is False
     assert result.diagnostics.zone_decisions["zone"].status is ZoneDecisionStatus.SENSOR_BLOCKED
+
+
+@settings(max_examples=200)
+@given(
+    temperatures=st.lists(st.floats(min_value=15.0, max_value=35.0), min_size=1, max_size=4),
+    humidities=st.lists(
+        st.floats(min_value=0.0, max_value=100.0, exclude_min=True), min_size=1, max_size=4
+    ),
+    supply=st.floats(min_value=0.0, max_value=35.0),
+    aggregation=st.sampled_from(
+        (
+            TemperatureAggregation.MEAN,
+            TemperatureAggregation.MEDIAN,
+            TemperatureAggregation.MINIMUM,
+            TemperatureAggregation.MAXIMUM,
+            TemperatureAggregation.WEIGHTED_MEAN,
+        )
+    ),
+)
+def test_cooling_never_runs_inside_the_margin_of_any_space_dew_point(
+    temperatures: list[float],
+    humidities: list[float],
+    supply: float,
+    aggregation: TemperatureAggregation,
+) -> None:
+    """Without sensor pairing, every temperature and humidity pairing bounds the dew point."""
+    temperature_ids = tuple(f"sensor.temperature_{index}" for index in range(len(temperatures)))
+    humidity_ids = tuple(f"sensor.humidity_{index}" for index in range(len(humidities)))
+    plant = compile_topology(
+        PlantConfiguration(
+            id="generated-multi-space-cooling",
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    # Every generated reading requests cooling, so safety alone decides.
+                    10.0,
+                    temperature_sensor_metadata=_metadata(*temperature_ids),
+                    humidity_sensor_metadata=_metadata(*humidity_ids),
+                    aggregation=aggregation,
+                ),
+            ),
+            valves=(Valve("valve", "Valve", "switch.valve"),),
+            pumps=(Pump("pump", "Pump", "switch.pump"),),
+            circuits=(
+                Circuit(
+                    "circuit",
+                    "Circuit",
+                    ("valve",),
+                    "pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="sensor.supply",
+                    condensation_margin=2.0,
+                ),
+            ),
+            routes=(DeliveryRoute("route", "zone", "circuit"),),
+        )
+    )
+    snapshot = PlantSnapshot(
+        temperatures={
+            entity_id: NumericObservation(value, NOW)
+            for entity_id, value in zip(temperature_ids, temperatures, strict=True)
+        },
+        humidities={
+            entity_id: NumericObservation(value, NOW)
+            for entity_id, value in zip(humidity_ids, humidities, strict=True)
+        },
+        supply_temperatures={"sensor.supply": NumericObservation(supply, NOW)},
+    )
+    dew_points = [
+        dew_point
+        for temperature in temperatures
+        for humidity in humidities
+        if (dew_point := dew_point_celsius(temperature, humidity)) is not None
+    ]
+
+    result = evaluate(plant, snapshot, RuntimeState(), NOW)
+    decision = result.diagnostics.cooling_zone_decisions["zone"]
+    cooling = result.next_runtime.cooling_zone_demands["zone"]
+
+    if not dew_points:
+        # No humidity yields a finite dew point, which fails closed.
+        assert decision.dew_point is None
+        assert cooling is False
+        return
+    worst = max(dew_points)
+    assert decision.dew_point is not None
+    assert decision.dew_point >= worst - 1e-9
+    if supply - worst <= 2.0 - 1e-6:
+        assert cooling is False
+        assert result.control_plan.cooling_valve_consumers == {}
+        assert result.control_plan.cooling_pump_consumers == {}
+    elif supply - worst > 2.0 + 1e-6:
+        # The bound is tight: cooling is not blocked beyond the worst pairing.
+        assert cooling is True
 
 
 @given(shared_equipment=st.sampled_from(("valve", "pump", "source")))

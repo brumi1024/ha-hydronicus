@@ -415,7 +415,10 @@ class ZoneDecision:
     aggregation: AggregationResult | None = None
     explanation: str = ""
     deadline: datetime | None = None
+    # Cooling only: the highest usable humidity and temperature, whose
+    # combination is the worst-case dew point of every space the zone covers.
     humidity_aggregation: AggregationResult | None = None
+    dew_point_temperature: float | None = None
     dew_point: float | None = None
     condensation_margin: float | None = None
     interlocks: tuple[SafetyInterlockResult, ...] = ()

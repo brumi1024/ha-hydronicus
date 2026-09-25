@@ -162,7 +162,7 @@ class ZoneClimate(ClimateEntity, RestoreEntity):
 
     @property
     def current_humidity(self) -> float | None:
-        """Return the zone humidity aggregate the cooling interlock evaluated."""
+        """Return the highest usable zone humidity, which the cooling dew point uses."""
         if not self._has_humidity_sensors:
             return None
         decision = self._runtime.cooling_zone_decision(self._zone_id)

@@ -1678,6 +1678,7 @@ class HydronicRuntime:
                 decision.humidity_aggregation.value
                 if decision.humidity_aggregation is not None
                 else None,
+                decision.dew_point_temperature,
                 decision.dew_point,
                 decision.condensation_margin,
                 tuple(

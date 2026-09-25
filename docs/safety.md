@@ -50,7 +50,7 @@ The release calculates and publishes:
 
 - Heating and cooling demand.
 - Required and optional observation handling.
-- Humidity aggregation, dew point, and condensation margins.
+- The worst-case room dew point and condensation margins.
 - Supply or surface-temperature interlocks.
 - Valve readiness, pump sequencing, and pump overrun.
 - Minimum active and idle durations.
@@ -88,8 +88,16 @@ Cooling requires different evidence from heating.
 Room temperature alone cannot establish a safe cooling request.
 
 Condensation risk depends on humidity, dew point, supply or surface temperature, sensor freshness, circuit compatibility, and physical protection.
+
 Hydronicus calculates these conditions and, outside Dry run, opens cooling valves and starts pumps only while every one of them is satisfied.
 When the margin to the dew point becomes unsafe, it stops the pump immediately and closes the valves, without pump overrun.
+
+Hydronicus checks condensation against one worst-case dew point per room, calculated from the highest usable room temperature and the highest usable room humidity.
+Dew point rises with both temperature and humidity, so this bound covers every space a room spans without knowing which temperature and humidity sensors share a space.
+A room's temperature aggregation, such as a heating-oriented minimum or a designated reference, decides demand only and never lowers the dew point.
+One humid space, such as a bathroom after a shower, therefore blocks cooling for the whole room even when the average humidity looks safe.
+Cooling stays blocked while a required room temperature or humidity sensor is unusable, or while no usable reading remains.
+The worst case covers only the spaces that have sensors, so give every cooled space that can turn humid its own humidity sensor.
 
 Hydronicus does not command the chilled-water source, so the source's own supply temperature limits stay in charge of how cold the water gets.
 Keep an independent condensation or dew-point protection on every cooled emitter, because a stale sensor or a lost Home Assistant connection leaves the last commanded state in place.

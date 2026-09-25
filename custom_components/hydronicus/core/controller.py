@@ -219,13 +219,39 @@ def aggregate_humidity(
     *,
     now: datetime,
 ) -> AggregationResult:
-    """Aggregate relative-humidity observations at the controller evaluation time."""
+    """Return the highest usable relative humidity of a zone for its dew point.
+
+    A zone can span several physical spaces, and averaging a humid bathroom
+    with a dry bedroom would understate the dew point where the air is humid.
+    """
     return _aggregate_observations(
         zone.humidity_sensor_metadata,
         snapshot.humidities,
-        aggregation=TemperatureAggregation.WEIGHTED_MEAN,
+        aggregation=TemperatureAggregation.MAXIMUM,
         measurement="humidity",
         unit="%",
+        now=now,
+    )
+
+
+def aggregate_dew_point_temperature(
+    zone: Zone,
+    snapshot: PlantSnapshot,
+    *,
+    now: datetime,
+) -> AggregationResult:
+    """Return the highest usable zone temperature for the worst-case dew point.
+
+    The zone aggregation policy serves demand, but a mean, minimum, or
+    designated reference can sit below the warmest sensor and so understate
+    the dew point.
+    """
+    return _aggregate_observations(
+        zone.temperature_sensor_metadata,
+        snapshot.temperatures,
+        aggregation=TemperatureAggregation.MAXIMUM,
+        measurement="temperature",
+        unit="°C",
         now=now,
     )
 
@@ -239,7 +265,11 @@ def dew_point_celsius(temperature_celsius: float, relative_humidity: float) -> f
     # The approximation has a pole at -B and is meaningless at or below it.
     if temperature_celsius <= -_DEW_POINT_B:
         return None
-    gamma = log(relative_humidity / 100.0) + (
+    humidity_fraction = relative_humidity / 100.0
+    # A subnormal humidity underflows to zero, where the logarithm is undefined.
+    if humidity_fraction <= 0:
+        return None
+    gamma = log(humidity_fraction) + (
         _DEW_POINT_A * temperature_celsius / (_DEW_POINT_B + temperature_celsius)
     )
     denominator = _DEW_POINT_A - gamma
@@ -535,7 +565,13 @@ def _cooling_interlocks(
     snapshot: PlantSnapshot,
     now: datetime,
 ) -> tuple[bool, str, tuple[SafetyInterlockResult, ...], float | None, float | None]:
-    """Evaluate every cooling circuit reference for one zone fail-closed."""
+    """Evaluate every cooling circuit reference for one zone fail-closed.
+
+    ``temperature`` and ``humidity`` are the highest usable zone readings.  The
+    dew point rises with both, so without pairing each temperature sensor with
+    its humidity sensor their combination bounds the dew point of every space
+    the zone covers.
+    """
     routes = tuple(
         route
         for route in plant.routes
@@ -623,8 +659,9 @@ def _cooling_interlocks(
                         f"cooling:{route.circuit_id}:{reference_name}",
                         InterlockStatus.BLOCKED,
                         f"Cooling is blocked to prevent condensation: the {reference_name} "
-                        f"temperature is {position} the dew point, inside the "
-                        f"{circuit.condensation_margin:.1f} °C condensation margin.",
+                        f"temperature is {position} the worst-case dew point of "
+                        f"{dew_point:.1f} °C, inside the {circuit.condensation_margin:.1f} °C "
+                        "condensation margin.",
                     )
                 )
             else:
@@ -651,8 +688,8 @@ def _cooling_interlocks(
 
     return (
         True,
-        f"Cooling safety permitted: dew point is {dew_point:.2f} °C and the lowest "
-        f"reference margin is {min(margins):.2f} °C.",
+        f"Cooling safety permitted: the worst-case dew point is {dew_point:.2f} °C "
+        f"and the lowest reference margin is {min(margins):.2f} °C.",
         tuple(interlocks),
         dew_point,
         min(margins),
@@ -2322,6 +2359,9 @@ def _evaluate_cooling_zones(
         temperature = temperature_aggregation.value if temperature_aggregation else None
         humidity_aggregation = aggregate_humidity(zone, snapshot, now=now)
         humidity = humidity_aggregation.value
+        # The policy temperature serves demand, while the dew point takes the
+        # warmest usable sensor so that no space of the zone is understated.
+        dew_point_temperature = aggregate_dew_point_temperature(zone, snapshot, now=now).value
         external_status: ZoneDecisionStatus | None = None
         if isinstance(zone.thermostat, ExternalClimateThermostatConfig):
             assert isinstance(thermostat_state, ExternalClimateThermostatState)
@@ -2348,7 +2388,7 @@ def _evaluate_cooling_zones(
         safety_permitted, safety_reason, interlocks, dew_point, margin = _cooling_interlocks(
             plant,
             zone,
-            temperature,
+            dew_point_temperature,
             humidity,
             snapshot,
             now,
@@ -2382,8 +2422,7 @@ def _evaluate_cooling_zones(
             status = ZoneDecisionStatus.SENSOR_BLOCKED
             reason = (
                 temperature_aggregation.explanation
-                if temperature_aggregation is not None
-                and temperature_aggregation.blocking_required_sensor_ids
+                if temperature_aggregation is not None and temperature_aggregation.value is None
                 else humidity_aggregation.explanation
             )
         elif cooling_enabled_route_exists and safety_observations_required and not safety_permitted:
@@ -2411,6 +2450,7 @@ def _evaluate_cooling_zones(
             aggregation=temperature_aggregation,
             explanation=reason,
             humidity_aggregation=humidity_aggregation,
+            dew_point_temperature=dew_point_temperature,
             dew_point=dew_point,
             condensation_margin=margin,
             interlocks=interlocks,
@@ -2493,15 +2533,11 @@ def _filter_degraded_routes(
             prior = cooling.zone_decisions[zone_id]
             cooling.zone_demands[zone_id] = False
             cooling.zone_reasons[zone_id] = reason
-            cooling.zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_decisions[zone_id] = replace(
+                prior,
                 status=ZoneDecisionStatus.SENSOR_BLOCKED,
                 demand=False,
-                aggregation=prior.aggregation,
                 explanation=reason,
-                humidity_aggregation=prior.humidity_aggregation,
-                dew_point=prior.dew_point,
-                condensation_margin=prior.condensation_margin,
-                interlocks=prior.interlocks,
             )
 
     return _RouteEligibility(
@@ -2573,14 +2609,11 @@ def _arbitrate_mode_conflicts(
                 f"{prior.explanation} {conflict_reasons} "
                 "Cooling remains eligible through an independent delivery route."
             )
-            cooling.zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_decisions[zone_id] = replace(
+                prior,
                 status=ZoneDecisionStatus.REQUESTED,
                 demand=True,
-                aggregation=prior.aggregation,
                 explanation=cooling.zone_reasons[zone_id],
-                humidity_aggregation=prior.humidity_aggregation,
-                dew_point=prior.dew_point,
-                condensation_margin=prior.condensation_margin,
                 interlocks=(
                     *prior.interlocks,
                     *(conflict_interlocks[item.interlock_id] for item in affected),
@@ -2589,14 +2622,11 @@ def _arbitrate_mode_conflicts(
             continue
         cooling.zone_demands[zone_id] = False
         cooling.zone_reasons[zone_id] = conflict_reasons
-        cooling.zone_decisions[zone_id] = ZoneDecision(
+        cooling.zone_decisions[zone_id] = replace(
+            prior,
             status=ZoneDecisionStatus.SENSOR_BLOCKED,
             demand=False,
-            aggregation=prior.aggregation,
             explanation=conflict_reasons,
-            humidity_aggregation=prior.humidity_aggregation,
-            dew_point=prior.dew_point,
-            condensation_margin=prior.condensation_margin,
             interlocks=(
                 *prior.interlocks,
                 *(conflict_interlocks[item.interlock_id] for item in affected),
@@ -2687,15 +2717,11 @@ def _coordinate_mode_routing(
                 continue
             cooling.zone_demands[zone_id] = False
             cooling.zone_reasons[zone_id] = f"Cooling blocked: {transition_reason}"
-            cooling.zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_decisions[zone_id] = replace(
+                prior,
                 status=ZoneDecisionStatus.MODE_BLOCKED,
                 demand=False,
-                aggregation=prior.aggregation,
                 explanation=cooling.zone_reasons[zone_id],
-                humidity_aggregation=prior.humidity_aggregation,
-                dew_point=prior.dew_point,
-                condensation_margin=prior.condensation_margin,
-                interlocks=prior.interlocks,
             )
     elif target_mode is PlantMode.HEATING and not independent_dual_mode:
         for zone_id, prior in list(cooling.zone_decisions.items()):
@@ -2705,15 +2731,11 @@ def _coordinate_mode_routing(
             cooling.zone_reasons[zone_id] = (
                 f"Cooling blocked: the plant is operating in {PlantMode.HEATING.value} mode."
             )
-            cooling.zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_decisions[zone_id] = replace(
+                prior,
                 status=ZoneDecisionStatus.MODE_BLOCKED,
                 demand=False,
-                aggregation=prior.aggregation,
                 explanation=cooling.zone_reasons[zone_id],
-                humidity_aggregation=prior.humidity_aggregation,
-                dew_point=prior.dew_point,
-                condensation_margin=prior.condensation_margin,
-                interlocks=prior.interlocks,
             )
     elif target_mode is PlantMode.COOLING:
         for zone_id, prior in list(heating.zone_decisions.items()):
