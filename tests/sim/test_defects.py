@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import pytest
 from hydronicus_core.model import (
     RUNS_WITH_ZONE,
     DigitalThermostat,
@@ -51,11 +50,6 @@ ON = SwitchTarget(True)
 OFF = SwitchTarget(False)
 
 
-def _stub(reason: str) -> pytest.MarkDecorator:
-    """Red until R3 replaces the stub ``step()`` and ``reconcile()``, which never act."""
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"R2 stub: {reason}")
-
-
 def _order(sim: Sim, first: str, then: str) -> None:
     """``then`` turned off only after ``first`` had turned off."""
     first_off = [t for t, on in sim.switched(first) if not on]
@@ -74,7 +68,6 @@ def _running_reference(*, living_demands: bool) -> Sim:
     return sim
 
 
-@_stub("the stub never stops the seeded pumps after Control equipment turns off")
 def test_defect_1_safe_shutdown_stops_every_pump_before_closing_their_valves() -> None:
     """Two pumps in overrun: both stop, and no valve closes under a running pump."""
     sim = _running_reference(living_demands=False)
@@ -97,7 +90,6 @@ def test_defect_1_safe_shutdown_stops_every_pump_before_closing_their_valves() -
     assert len(sim.world.calls) == calls, "Dry run sends nothing once the Plant has stopped"
 
 
-@_stub("the stub reconciler never sends, let alone retries, the pump stop")
 def test_defect_2_a_rejected_pump_stop_keeps_its_valve_open_and_is_retried() -> None:
     sim = _running_reference(living_demands=False)
     sim.seed_running("living_area.floor")
@@ -120,14 +112,14 @@ def test_defect_2_a_rejected_pump_stop_keeps_its_valve_open_and_is_retried() -> 
     )
 
 
-@_stub("the stub never stops the shared pump after its overrun")
 def test_defect_3_a_failed_valve_open_does_not_drop_the_pump_stop() -> None:
     sim = Sim(plant(SHARED_PUMP), mode=Mode.HEAT)
     sim.set_zone_temperature("study", 21.5)
     sim.set_zone_temperature("lounge", 19.0)
     sim.seed_running("study.radiator")
-    sim.start()
+    # The lounge calls from the start, so its valve fails from the first open.
     sim.fault("switch.lounge_radiator_valve", FaultKind.REJECT, 3600.0)
+    sim.start()
     sim.run_until_true(
         lambda: not sim.is_on("switch.radiator_pump"),
         180.0 + 2 * REACTION,
@@ -145,7 +137,6 @@ def test_defect_3_a_failed_valve_open_does_not_drop_the_pump_stop() -> None:
     )
 
 
-@_stub("the stub never drops the boiler request after the circulator is lost")
 def test_defect_4_the_source_request_drops_when_its_pump_is_lost() -> None:
     sim = Sim(plant(BOILER), mode=Mode.HEAT)
     sim.set_zone_temperature("flat", 19.0)
@@ -163,7 +154,6 @@ def test_defect_4_the_source_request_drops_when_its_pump_is_lost() -> None:
     sim.always_for(lambda: not sim.world.requested, 600.0, "and stays off without the pump")
 
 
-@_stub("the stub opens no valve, so the healthy floor loop never runs")
 def test_defect_5_a_dropped_loop_neither_opens_nor_runs() -> None:
     sim = Sim(
         plant(THREE_LOOPS),
@@ -193,7 +183,6 @@ def test_defect_5_a_dropped_loop_neither_opens_nor_runs() -> None:
     )
 
 
-@_stub("the stub never stops the blocked office pump")
 def test_defect_6_a_blocked_chilled_water_pump_stops_without_overrun() -> None:
     sim = Sim(plant(TWO_CEILINGS), mode=Mode.COOL)
     for zone in ("office", "den"):
@@ -217,7 +206,6 @@ def test_defect_6_a_blocked_chilled_water_pump_stops_without_overrun() -> None:
     sim.always_for(lambda: sim.flowing("den.ceiling"), 300.0, "the den keeps cooling")
 
 
-@_stub("the stub desires the running floor pump off on the first evaluation")
 def test_defect_7_a_reload_leaves_a_running_pump_alone() -> None:
     sim = _running_reference(living_demands=True)
     for ref in ("living_area.floor", "living_area.ceiling"):
@@ -237,7 +225,6 @@ def test_defect_7_a_reload_leaves_a_running_pump_alone() -> None:
     assert touched == [], "neither the floor pump nor its valve is ever commanded"
 
 
-@_stub("the stub desires the running floor pump off before the edit")
 def test_defect_8_editing_a_zone_keeps_the_plant_armed_and_running() -> None:
     sim = _running_reference(living_demands=True)
     for ref in ("living_area.floor", "living_area.ceiling"):

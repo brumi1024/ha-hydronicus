@@ -12,13 +12,27 @@ Exemptions and bounds, all in physical seconds:
 - A spontaneous physical change, such as a relay turning off by itself, exempts
   invariant 3 for ``SPONTANEOUS_GRACE`` after it; invariants 2 and 4 need no
   exemption because a valve closing by itself still passes flow for its travel
-  time, which is when the controller must have reacted.
+  time, which is when the controller must have reacted. When the controller may
+  command neither the pump's stop output nor the valve that closed by itself,
+  because they are unarmed, unavailable, or the Plant is in Dry run, it cannot
+  react without breaking invariant 1, and invariants 2 and 4 are exempt for that
+  pump until one reaction, ``SPONTANEOUS_GRACE``, after one of them could be
+  commanded again.
+- Invariant 3 is exempt while the controller desires the source request off
+  but cannot get it off: the request has been unarmed, unavailable, or under a
+  call fault within the last ``CALL_TIMEOUT + LATENCY``, or an off call to it
+  has failed since it was last on. Keeping a pump running for the source then
+  would carry water through a loop the controller is stopping, such as a
+  cooling loop whose condensation guard blocks, against invariant 6.
 - Invariant 6 allows a cooling loop to flow on while its guard blocks for one
   call, a valve's travel, and a second of slack, and not at all otherwise,
   except a loop of a source-driven pump during the source's post-run, and
   except while an output that stops the loop (its valves, its pump's switch,
   the source request) has been unarmed, unavailable, or failing calls since
-  the guard blocked, because then no controller can stop the flow.
+  the guard blocked, because then no controller can stop the flow. While no
+  evaluation can run, because the event loop is blocked or the runtime is down,
+  no controller can react either, so the bound counts only the time in which
+  evaluations can run.
 - Invariant 7 requires an output whose target is unmet after
   ``REPAIR_AFTER`` failed calls to be reported ``REPAIR_GRACE`` after the last
   one, and every armed output to match its target once the trace has settled.
@@ -43,6 +57,7 @@ from hydronicus_core.model import (
     OutputRole,
     OutputTarget,
     Plant,
+    Pump,
     SwitchTarget,
     Zone,
 )
@@ -123,8 +138,15 @@ class Checker:
         self.blocked_since: dict[LoopRef, float] = {}
         # When each output was last unarmed, unavailable, or under a call fault.
         self.impaired_at: dict[str, float] = {}
+        # When each output was last unarmed, unavailable, or in Dry run.
+        self.uncommandable_at: dict[str, float] = {}
         self.unmet: dict[str, Unmet] = {}
         self.started = False
+        # The controller desires the source request off, and an off call to it has failed.
+        self.release_wanted = False
+        self.release_failed = False
+        # Evaluations cannot run before this time: a blocked event loop or a downtime.
+        self.paused_until = -math.inf
 
     @property
     def plant(self) -> Plant:
@@ -147,6 +169,13 @@ class Checker:
             self.stopping = not self.world.all_stopped()
             self.dry = not self.stopping
 
+    def pause(self, until: float) -> None:
+        """No evaluation runs from now until ``until``, which the guard bound does not count."""
+        pause = max(0.0, until - max(self.world.t, self.paused_until))
+        self.paused_until = max(self.paused_until, until)
+        for ref, since in self.blocked_since.items():
+            self.blocked_since[ref] = since + pause
+
     def on_desired(self, desired: Desired) -> None:
         """Check the shape of a desired state and take its mode as the label of new flows."""
         outputs = self.plant.outputs()
@@ -160,6 +189,7 @@ class Checker:
         label = _mode_label(desired.mode)
         if label is not None:
             self.label = label
+        self.release_wanted = not desired.source_request
 
     def on_dispatch(self, call: Call) -> None:
         t = self.world.t
@@ -167,6 +197,11 @@ class Checker:
             raise InvariantViolation(1, t, f"unarmed output {call.entity} was sent {call.target}")
         if self.dry:
             raise InvariantViolation(1, t, f"{call.entity} was sent {call.target} in Dry run")
+        source = self.plant.source
+        if source is not None and call.entity == source.request:
+            self.release_failed = call.target == SwitchTarget(False) and (
+                call.failed or self.release_failed
+            )
         unmet = self.unmet.get(call.entity)
         if unmet is not None and unmet.target == call.target and call.failed:
             unmet.failed += 1
@@ -216,6 +251,8 @@ class Checker:
                 or world.fault_for(entity, t) is not None
             ):
                 self.impaired_at[entity] = t
+            if self.dry or entity not in world.armed or (body is not None and not body.available):
+                self.uncommandable_at[entity] = t
 
     def _check_flows(self, t: float) -> None:
         """Invariant 5: heating and cooling flows never overlap and keep the dwell apart."""
@@ -271,11 +308,38 @@ class Checker:
             if pump.min_flow is not MinFlow.PATH or not self.world.pump_running(pump):
                 continue
             loops = self.plant.pump_loops(pump.slug)
-            if any(self.world.path_open(loop) for loop in loops):
+            if any(self.world.path_open(loop) for loop in loops) or self._beyond_control(pump, t):
                 continue
             number = 4 if pump.driven_by_source else 2
             why = self._source_phase() if pump.driven_by_source else "switched on"
             raise InvariantViolation(number, t, f"pump {pump.slug} runs ({why}) with no open path")
+
+    def _beyond_control(self, pump: Pump, t: float) -> bool:
+        """A valve closed by itself under a pump, and no output that could react was commandable.
+
+        The pump's stop output and every such valve must have been uncommandable
+        within one reaction, ``SPONTANEOUS_GRACE``.
+        """
+        world = self.world
+        valves = {
+            valve.entity for loop in self.plant.pump_loops(pump.slug) for valve in loop.valves
+        }
+        closed = {entity for _, entity in world.spontaneous if entity in valves}
+        source = self.plant.source
+        stop = pump.switch or (source.request if source is not None else None)
+        return bool(closed) and all(
+            t - self.uncommandable_at.get(entity, -math.inf) <= SPONTANEOUS_GRACE
+            for entity in (*closed, stop)
+            if entity is not None
+        )
+
+    def _release_impossible(self, t: float) -> bool:
+        """The controller desires the source request off, and nothing it sends can do that."""
+        source = self.plant.source
+        if source is None or not self.release_wanted:
+            return False
+        impaired = self.impaired_at.get(source.request, -math.inf)
+        return self.release_failed or t - impaired <= CALL_TIMEOUT + LATENCY
 
     def _source_phase(self) -> str:
         return "source requested" if self.world.requested else "source post-run"
@@ -283,8 +347,11 @@ class Checker:
     def _check_source(self, t: float) -> None:
         """Invariant 3: the source is requested only with a ready loop of the mode and its pump."""
         if not self.world.requested:
+            self.release_failed = False
             return
         if any(t - when <= SPONTANEOUS_GRACE for when, _ in self.world.spontaneous):
+            return
+        if self._release_impossible(t):
             return
         label = self.label
         for loop in self.plant.all_loops:
@@ -305,7 +372,7 @@ class Checker:
             if not self.guard_blocked(loop):
                 self.blocked_since.pop(loop.ref, None)
                 continue
-            since = self.blocked_since.setdefault(loop.ref, t)
+            since = self.blocked_since.setdefault(loop.ref, max(t, self.paused_until))
             flow = self.flows.get(loop.ref)
             if flow is None or flow.label is not Mode.COOL:
                 continue

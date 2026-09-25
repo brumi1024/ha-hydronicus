@@ -1,8 +1,8 @@
 """The simulator itself: physics, service calls, persistence, and the invariant checks.
 
-These pass against the stub ``step()``. The checks are exercised with a scripted
-controller that sends exactly the calls a test gives it, so each invariant is
-shown to catch the violation it names.
+The checks are exercised with a scripted controller that sends exactly the calls
+a test gives it, so each invariant is shown to catch the violation it names and
+to exempt only what no controller could prevent.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from hydronicus_core.reconcile import (
     Attempt,
     Reconciled,
     ReconcileState,
-    dry_run_view,
+    step_view,
 )
 from hydronicus_core.step import (
     DemandState,
@@ -35,6 +35,7 @@ from hydronicus_core.step import (
     Observations,
     OptionState,
     OutputState,
+    Sent,
     State,
     SwitchState,
     ValueState,
@@ -176,11 +177,12 @@ def _fault(entity: str, kind: FaultKind, delay: float = 0.0) -> Fault:
 # The runtime loop and persistence
 
 
-def test_the_stub_runs_under_the_harness_and_persists_json() -> None:
+def test_the_core_runs_under_the_harness_and_persists_json() -> None:
     sim = Sim(reference_plant(), mode=Mode.HEAT)
     sim.run_for(60.0)
     evaluations = sim.evaluations
-    sim.set_zone_temperature("living_area", 19.0)
+    # A change inside the hysteresis band changes no output.
+    sim.set_zone_temperature("living_area", 21.2)
     sim.run_for(1.0)
     assert sim.evaluations == evaluations + 1, "a change of observation triggers one evaluation"
     assert State.from_dict(json.loads(sim.store["state"])) == sim.state
@@ -193,12 +195,14 @@ def test_step_and_reconcile_states_round_trip_through_json() -> None:
         live=True,
         mode=Mode.COOL,
         last_mode=Mode.HEAT,
-        last_mode_ended=12.5,
+        flowing=True,
+        flow_ended=12.5,
         source_request=True,
         source_changed=10.0,
-        demands={"living_area": DemandState(True, 3.0)},
+        demands={"living_area": DemandState(Mode.HEAT, True, 3.0)},
         guards={"living_area.ceiling": GuardState(False, 4.0)},
         overruns={"floor": 5.0},
+        ready={"switch.valve": 6.0},
     )
     assert State.from_dict(json.loads(json.dumps(state.to_dict()))) == state
     assert State.from_dict({}) == State()
@@ -222,17 +226,23 @@ def test_step_and_reconcile_states_round_trip_through_json() -> None:
     assert ReconcileState.from_dict({}) == ReconcileState()
 
 
-def test_dry_run_view_shows_proposed_outputs_only_while_control_is_off() -> None:
+def test_the_step_view_shows_proposed_outputs_only_while_control_is_off() -> None:
     real = SwitchState(False, 1.0)
     proposed = SwitchState(True, 2.0)
     observations = Observations(
         mode=Mode.HEAT, control=False, armed=frozenset(), outputs={"switch.a": real}
     )
     state = ReconcileState(dry_run={"switch.a": proposed})
-    assert dry_run_view(observations, state).outputs["switch.a"] == proposed
+    assert step_view(observations, state).outputs["switch.a"] == proposed
     live = replace(observations, control=True)
-    assert dry_run_view(live, state) is live
-    assert dry_run_view(observations, ReconcileState()) is observations
+    assert step_view(live, state) is live
+    assert step_view(observations, ReconcileState()) is observations
+
+
+def test_the_step_view_shows_the_calls_in_flight() -> None:
+    observations = Observations(mode=Mode.HEAT, control=True, armed=frozenset())
+    state = ReconcileState(attempts={"switch.a": Attempt(ON, 2, 6.0)})
+    assert step_view(observations, state).sent == {"switch.a": Sent(ON, 6.0)}
 
 
 # The invariant checks, driven by a scripted controller
@@ -342,6 +352,33 @@ def test_invariant_2_catches_a_valve_closed_under_a_running_pump(scripted: Scrip
         sim.run_for(1.0)
 
 
+def test_invariant_2_exempts_a_valve_closing_by_itself_that_nothing_may_command(
+    scripted: Scripted,
+) -> None:
+    sim = Sim(plant(SMALL), mode=Mode.HEAT, armed=[])
+    sim.seed_running("room.floor")
+    sim.start()
+    sim.spontaneous_off("switch.room_floor_valve")
+    sim.run_for(200.0)
+    # Once the pump may be commanded, the controller has one reaction to stop it.
+    sim.set_armed(["switch.floor_pump"])
+    sim.run_for(20.0)
+    with _violation(2):
+        sim.run_for(1.0)
+
+
+def test_invariant_2_catches_a_valve_closing_by_itself_that_nobody_reopens(
+    scripted: Scripted,
+) -> None:
+    sim = Sim(plant(SMALL), mode=Mode.HEAT)
+    sim.seed_running("room.floor")
+    sim.start()
+    sim.spontaneous_off("switch.room_floor_valve")
+    sim.run_for(179.0)
+    with _violation(2):
+        sim.run_for(2.0)
+
+
 def test_invariant_4_catches_a_post_run_without_a_path(scripted: Scripted) -> None:
     sim = Sim(plant(SMALL), mode=Mode.HEAT)
     sim.seed_running("room.ceiling")
@@ -400,6 +437,27 @@ def test_invariant_5_catches_a_mode_change_inside_the_dwell(scripted: Scripted) 
         sim.run_for(1.0)
 
 
+def test_invariant_3_exempts_a_release_the_controller_cannot_get_through(
+    scripted: Scripted,
+) -> None:
+    """The controller desires the boiler off, but the release is rejected."""
+    sim = Sim(plant(BOILER), mode=Mode.HEAT)
+    sim.seed_running("flat.radiators")
+    sim.seed_on("switch.boiler_request")
+    sim.start()
+    sim.fault("switch.boiler_request", FaultKind.REJECT, 1000.0)
+    scripted.send(sim, "switch.boiler_request", OFF)
+    sim.run_for(1.0)
+    scripted.send(sim, "switch.circulator_pump", OFF)
+    sim.run_for(600.0)
+    # Once the controller asks for the boiler again, invariant 3 applies after one call.
+    sim.world.faults.clear()
+    scripted.send(sim, "switch.boiler_request", ON)
+    sim.run_for(10.0)
+    with _violation(3):
+        sim.run_for(1.0)
+
+
 def test_invariant_6_catches_cooling_on_after_the_guard_blocks(scripted: Scripted) -> None:
     sim = Sim(plant(TWO_CEILINGS), mode=Mode.COOL)
     for zone in ("office", "den"):
@@ -438,6 +496,32 @@ def _failing_circulator(controller: Scripted) -> Sim:
         controller.send(sim, "switch.circulator_pump", OFF)
         sim.run_for(10.0)
     return sim
+
+
+def test_invariant_6_does_not_count_time_in_which_no_evaluation_can_run(
+    scripted: Scripted,
+) -> None:
+    sim = Sim(plant(TWO_CEILINGS), mode=Mode.COOL)
+    for zone in ("office", "den"):
+        sim.seed_running(f"{zone}.ceiling")
+        sim.set_zone_temperature(zone, 26.0)
+        sim.set_sensor(f"sensor.{zone}_supply", 18.0)
+    sim.start()
+    sim.run_for(60.0)
+    sim.suspend(600.0)
+    sim.set_sensor("sensor.office_supply", 15.0)
+    sim.run_for(790.0)
+    with _violation(6):
+        sim.run_for(2.0)
+
+
+def test_repairs_outlive_a_restart_with_downtime(scripted: Scripted) -> None:
+    scripted.repairs = frozenset({"switch.circulator_pump"})
+    sim = _failing_circulator(scripted)
+    sim.run_for(40.0)
+    sim.restart(downtime=600.0)
+    sim.run_for(600.0)
+    assert sim.repairs() == {"switch.circulator_pump"}
 
 
 def test_invariant_7_catches_a_difference_left_after_settling(scripted: Scripted) -> None:

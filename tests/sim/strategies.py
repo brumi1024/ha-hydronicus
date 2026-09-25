@@ -336,6 +336,26 @@ class Suspend:
 
 
 @dataclass(frozen=True)
+class Season:
+    """A change of season: the Plant mode with the thermostats, every zone's
+    temperature, and every supply and surface temperature."""
+
+    mode: Mode
+    temperature: float
+    reference: float
+
+    def apply(self, sim: Sim) -> None:
+        sim.set_mode(self.mode)
+        for zone in sim.plant.zones:
+            for sensor in zone.temperature:
+                sim.set_sensor(sensor.entity, self.temperature)
+            if isinstance(zone.thermostat, ExternalThermostat):
+                sim.set_action(zone.slug, self.mode)
+        for entity in _references(sim.plant):
+            sim.set_sensor(entity, self.reference)
+
+
+@dataclass(frozen=True)
 class Trace:
     """Initial inputs, loops found running, and timed events."""
 
@@ -510,6 +530,52 @@ def _fair(events: list[tuple[float, Event]]) -> tuple[tuple[float, Event], ...]:
         if not isinstance(event, SpontaneousOff)
         or not any(start <= t <= end for start, end in windows)
     )
+
+
+@st.composite
+def seasonal_traces(draw: st.DrawFn, plant: Plant) -> Trace:
+    """A trace that starts heating and changes season a few times.
+
+    Every zone calls in heating at 18 °C and in cooling at 26 °C, and the
+    references move between a supply that blocks cooling at 26 °C and 50 % and
+    one that permits it. The random events of ``traces`` may run alongside.
+    """
+    trace = draw(traces(plant))
+    events = list(trace.events) if draw(st.booleans()) else []
+    t = 0.0
+    for _ in range(draw(st.integers(1, 5))):
+        t += draw(st.sampled_from([60, 400, 2000, 4000]))
+        mode = draw(st.sampled_from([Mode.HEAT, Mode.COOL, Mode.COOL, Mode.OFF]))
+        temperature = 18.0 if mode is Mode.HEAT else 26.0
+        events.append((t, Season(mode, temperature, draw(st.sampled_from([15.0, 22.0, 22.0])))))
+    events.sort(key=lambda item: item[0])
+    references = _references(plant)
+    return Trace(
+        mode=Mode.HEAT,
+        control=True,
+        armed=frozenset(plant.outputs()) if draw(st.booleans()) else trace.armed,
+        running=trace.running,
+        sensors=tuple(
+            (entity, 22.0 if entity in references else 50.0 if "humidity" in entity else 18.0)
+            for entity, _ in trace.sensors
+        ),
+        thermostats=tuple(
+            (
+                zone.slug,
+                ExternalThermostatState(Mode.HEAT)
+                if isinstance(zone.thermostat, ExternalThermostat)
+                else DigitalThermostatState(Mode.HEAT, 21.0),
+            )
+            for zone in plant.zones
+        ),
+        events=_fair(events),
+    )
+
+
+def _references(plant: Plant) -> set[str]:
+    found = {pump.supply_temperature for pump in plant.pumps}
+    found.update(loop.surface_temperature for loop in plant.all_loops)
+    return {entity for entity in found if entity is not None}
 
 
 # Running a trace

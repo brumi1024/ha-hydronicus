@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Final
 
 from hydronicus_core.model import Desired, LoopRef, Mode, Plant
-from hydronicus_core.reconcile import Reconciled, ReconcileState, dry_run_view, reconcile
+from hydronicus_core.reconcile import Reconciled, ReconcileState, reconcile, step_view
 from hydronicus_core.step import (
     DigitalThermostatState,
     ExternalThermostatState,
@@ -90,6 +90,7 @@ class Sim:
         self.checker = Checker(self.world, self.repairs)
         self.evaluations = 0
         self.suspended_until = 0.0
+        self._repairs: frozenset[str] = frozenset()
         self._scheduled: list[_Scheduled] = []
         self._seq = itertools.count()
 
@@ -114,9 +115,8 @@ class Sim:
         return self.runtime.state
 
     def repairs(self) -> frozenset[str]:
-        if self.runtime is None or self.runtime.result is None:
-            return frozenset()
-        return self.runtime.result.repairs
+        """The Repairs last reported; like Home Assistant's issues, they outlive a restart."""
+        return self._repairs
 
     def is_on(self, entity: str) -> bool:
         return self.world.is_on(entity)
@@ -243,6 +243,7 @@ class Sim:
     def suspend(self, seconds: float) -> None:
         """Let no evaluation run for ``seconds``, as when the event loop is blocked."""
         self.suspended_until = self.t + seconds
+        self.checker.pause(self.suspended_until)
         self.schedule(self.suspended_until, lambda: None)
 
     def restart(self, *, downtime: float = 0.0, plant: Plant | None = None) -> list[Call]:
@@ -260,6 +261,7 @@ class Sim:
             self.world.adopt(plant)
         self.runtime = None
         if downtime > 0:
+            self.checker.pause(self.t + downtime)
             self.schedule(self.t + downtime, lambda: self._boot(new_plant))
             return []
         calls = self._boot(new_plant)
@@ -365,7 +367,7 @@ class Sim:
         assert runtime is not None
         now = world.wall()
         observations = world.observe()
-        view = dry_run_view(observations, runtime.reconcile_state)
+        view = step_view(observations, runtime.reconcile_state)
         state, desired, due = step(runtime.plant, view, runtime.state, now)
         if due is not None and not (math.isfinite(due) and due >= 0):
             raise InvariantViolation("K2", self.t, f"step() returned a due time of {due}")
@@ -381,6 +383,7 @@ class Sim:
         )
         runtime.state, runtime.reconcile_state = state, result.state
         runtime.desired, runtime.result = desired, result
+        self._repairs = result.repairs
         self.store["state"] = json.dumps(state.to_dict())
         self.store["reconcile"] = json.dumps(result.state.to_dict())
         runtime.seen_version = world.version

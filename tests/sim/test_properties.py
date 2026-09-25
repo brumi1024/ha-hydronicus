@@ -13,7 +13,7 @@ from hydronicus_core.model import MinFlow, Plant, RunKind
 from hypothesis import HealthCheck, Phase, find, given, settings
 from hypothesis import strategies as st
 
-from tests.sim.strategies import Trace, plants, run, traces
+from tests.sim.strategies import Trace, plants, run, seasonal_traces, traces
 
 # Hypothesis 6.156 on Python 3.14 misjudges its own PRNG as garbage when it
 # first seeds one for a derandomized run; the warning is about Hypothesis itself.
@@ -45,18 +45,22 @@ def cases(draw: st.DrawFn) -> tuple[Plant, Trace]:
     return plant, draw(traces(plant))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "R2 stub: step() never goes live and desires every output off, and reconcile() sends "
-        "nothing, so with Control equipment on the Plant is never live, loops found running "
-        "never stop (invariant 7), and a zone calling for heat never gets it (progress)"
-    ),
-)
 @SIM
 @given(cases())
 def test_the_invariants_hold_on_random_plants_and_traces(case: tuple[Plant, Trace]) -> None:
+    run(*case)
+
+
+@st.composite
+def seasonal_cases(draw: st.DrawFn) -> tuple[Plant, Trace]:
+    plant = draw(plants().filter(lambda plant: any(loop.cools for loop in plant.all_loops)))
+    return plant, draw(seasonal_traces(plant))
+
+
+@SIM
+@given(seasonal_cases())
+def test_the_invariants_hold_through_changes_of_season(case: tuple[Plant, Trace]) -> None:
+    """Random traces rarely both heat and cool; these change between the two on purpose."""
     run(*case)
 
 

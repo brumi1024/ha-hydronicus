@@ -54,8 +54,10 @@ Do not add speculative schema aliases or migration paths without a concrete pers
 The redesign in [the redesign plan](redesign-plan.md) replaces the model below phase by phase.
 `custom_components/hydronicus/core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs.
 `custom_components/hydronicus/core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into config entry data and zone subentry data, and `from_storage` joins them again.
-`custom_components/hydronicus/core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output; `custom_components/hydronicus/core/reconcile.py` turns the desired state into the service calls to send, with retries and Dry run.
-Until phase R3 both are stubs that never act.
+`custom_components/hydronicus/core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
+`custom_components/hydronicus/core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
+`custom_components/hydronicus/core/reconcile.py` turns the desired state into the service calls to send in dependency order, keeps at most one call per output in flight, retries with backoff, reports Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
+A decision never counts on a call having acted: a call that no observation has confirmed may act until `CALL_TIMEOUT` after it was sent.
 Until the runtime, flows, and platforms move to the new model, they run on the v0.1 modules in `custom_components/hydronicus/core/legacy/`, which nothing new may import and which each phase deletes once their last consumer is gone.
 
 `custom_components/hydronicus/core/legacy/configuration.py` decodes only the canonical persisted objects into typed domain values.
@@ -82,6 +84,7 @@ Multi-step behavior with a fake clock belongs under `tests/scenarios/` and shoul
 Safety invariants that must hold across many topology shapes or timings belong in property-based tests.
 The redesigned control is checked in `tests/sim/`, a simulator that owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts the plan's invariants after every event over generated Plants and traces.
 Its Hypothesis profile `sim-ci` is deterministic; set `HYPOTHESIS_SIM_PROFILE=sim-dev` to explore many more examples locally.
+The stages of `step()` and the reconciler's ordering, backoff, and Repairs also have unit tests in `tests/core/`.
 The large synthetic benchmark covers pure compilation, pure evaluation, Home Assistant setup, runtime refresh, reconciliation, entity publication, memory, and zero-service-call Dry run behavior.
 
 The current coverage threshold applies only to `custom_components/hydronicus/core`.

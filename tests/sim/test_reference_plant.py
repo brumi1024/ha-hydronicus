@@ -5,7 +5,6 @@ Every scenario also checks the invariants after every event.
 
 from __future__ import annotations
 
-import pytest
 from hydronicus_core.model import Mode
 
 from tests.sim.harness import Sim
@@ -28,11 +27,6 @@ OPENING = 180.0
 POST_RUN = 180.0
 MIN_ON = 600.0
 DWELL = 3600.0
-
-
-def _stub(reason: str) -> pytest.MarkDecorator:
-    """Red until R3 replaces the stub ``step()`` and ``reconcile()``, which never act."""
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"R2 stub: {reason}")
 
 
 def _heating() -> Sim:
@@ -87,7 +81,6 @@ def _heat_living_area(sim: Sim) -> float:
     )
 
 
-@_stub("the stub opens no valve, so the living area's valves never open")
 def test_heating_a_zone_opens_its_loops_then_runs_its_pump_and_the_source() -> None:
     sim = _heating()
     sim.always_for(lambda: _all_off(sim), 60.0, "nothing runs while no zone calls")
@@ -113,7 +106,6 @@ def test_heating_a_zone_opens_its_loops_then_runs_its_pump_and_the_source() -> N
     )
 
 
-@_stub("the stub opens no valve, so the living area's ceiling valve never opens")
 def test_cooling_a_zone_stops_at_the_condensation_guard() -> None:
     sim = _cooling()
     sim.set_zone_temperature("living_area", 26.0)
@@ -150,7 +142,6 @@ def test_cooling_a_zone_stops_at_the_condensation_guard() -> None:
         assert sim.switched(entity) == [], f"{entity} never runs in cooling"
 
 
-@_stub("the stub opens no valve, so heating never starts before the change")
 def test_a_mode_change_releases_heating_and_waits_for_the_dwell() -> None:
     sim = _heating()
     requested = _heat_living_area(sim)
@@ -180,7 +171,6 @@ def test_a_mode_change_releases_heating_and_waits_for_the_dwell() -> None:
     assert sim.world.option(SOURCE_MODE) == "Cool"
 
 
-@_stub("the stub never requests the heat pump for the basement")
 def test_the_towel_dryer_runs_with_the_source_and_its_overrun() -> None:
     sim = _heating()
     sim.set_zone_temperature("basement", 19.5)
@@ -207,7 +197,6 @@ def test_the_towel_dryer_runs_with_the_source_and_its_overrun() -> None:
     assert stopped - released >= 120.0 - REACTION
 
 
-@_stub("the stub never requests the heat pump for the bedroom area")
 def test_the_min_flow_path_serves_the_heat_pump_while_no_zone_calls() -> None:
     sim = _heating()
     sim.set_zone_temperature("bedroom_area", 19.5)
