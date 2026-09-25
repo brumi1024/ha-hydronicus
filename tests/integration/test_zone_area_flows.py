@@ -582,6 +582,24 @@ async def test_the_zone_step_edits_areas_and_removes_a_missing_one(hass, home) -
     ]
 
 
+async def test_a_cleared_zone_name_stays_cleared_when_the_form_returns(hass, home) -> None:
+    """The frontend leaves out a field the user cleared, so a returned form must not refill it."""
+    _temperature(hass, UPSTAIRS.temperature_sensor)
+    entry = await _setup(
+        hass, plant_entry(plant_data(_area_topology([{"area_id": "kitchen"}], sensors=False)))
+    )
+
+    result = await _menu(hass, entry, GROUND.zone_id, "zone")
+    assert form_value(result, CONF_NAME) == "Ground floor"
+    submission = {**frontend_submission(result), "areas": ["hall", "bedroom"]}
+    del submission[CONF_NAME]
+    result = await _configure(hass, result, submission)
+
+    assert result["errors"] == {CONF_NAME: "zone_name_required"}
+    assert form_value(result, CONF_NAME) is None
+    assert form_value(result, "areas") == ["hall", "bedroom"]
+
+
 async def test_the_zone_step_needs_a_temperature_source_for_a_hydronicus_thermostat(
     hass, home
 ) -> None:

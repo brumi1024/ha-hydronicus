@@ -351,10 +351,36 @@ def with_submitted_values(
     schema: vol.Schema,
     user_input: Mapping[str, Any] | None,
 ) -> vol.Schema:
-    """Re-show a rejected form with the values the user just submitted."""
+    """Re-show a rejected form with the values the user just submitted.
+
+    The frontend leaves out an optional field the user cleared, and Home
+    Assistant keeps a field's own suggested value when the submission has none,
+    so a cleared field that the form prefilled is shown empty here instead of
+    showing the prefilled value again.
+    """
     if user_input is None:
         return schema
-    return flow.add_suggested_values_to_schema(schema, user_input)
+    return flow.add_suggested_values_to_schema(_without_cleared(schema, user_input), user_input)
+
+
+def _without_cleared(schema: vol.Schema, user_input: Mapping[str, Any]) -> vol.Schema:
+    """Drop the suggested value of every optional field that ``user_input`` leaves out."""
+    fields: dict[Any, Any] = {}
+    for key, value in schema.schema.items():
+        name = str(key)
+        if isinstance(value, section):
+            nested = user_input.get(name)
+            if isinstance(nested, Mapping):
+                value = section(_without_cleared(value.schema, nested), value.options)
+        elif (
+            isinstance(key, vol.Optional)
+            and name not in user_input
+            and isinstance(key.description, Mapping)
+            and "suggested_value" in key.description
+        ):
+            key = vol.Optional(key.schema, default=key.default, description=None)
+        fields[key] = value
+    return vol.Schema(fields, required=schema.required, extra=schema.extra)
 
 
 def subentry_handle(draft: Mapping[str, Any]) -> dict[str, str]:
