@@ -47,7 +47,10 @@ export interface Alert {
  */
 export interface ZoneArea {
   id: string;
+  /** The area's name; a missing area keeps its last known name, or else its id. */
   name: string;
+  /** True when the area no longer exists in Home Assistant; a repair then asks to remove it. */
+  missing: boolean;
   temperature: number | null;
   /** Relative humidity in percent. */
   humidity: number | null;
@@ -104,6 +107,10 @@ export interface PlantSnapshot {
     id: string;
     name: string;
     status: string;
+    /**
+     * "healthy", "degraded" (a zone area repair is open), "blocked",
+     * "unavailable" (an entity binding is unresolved), "initializing", or "stopped".
+     */
     health: string;
     requested_mode: string;
     active_mode: string;

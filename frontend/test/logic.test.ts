@@ -201,7 +201,7 @@ describe("Alert titles", () => {
 });
 
 describe("area lines", () => {
-  const area = { id: "kitchen", name: "Kitchen", temperature: 20, humidity: 45, temperature_entity_id: "sensor.kitchen", humidity_entity_id: null };
+  const area = { id: "kitchen", name: "Kitchen", missing: false, temperature: 20, humidity: 45, temperature_entity_id: "sensor.kitchen", humidity_entity_id: null };
 
   it("shows a line per area only for a Zone that covers several areas", () => {
     expect(zoneAreaLines({ areas: [] })).toEqual([]);

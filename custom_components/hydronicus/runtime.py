@@ -23,7 +23,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util.unit_conversion import TemperatureConverter
 
-from .areas import AreaResolution, zone_area_problems
+from .areas import AreaResolution, ZoneAreaProblem, zone_area_problems
 from .const import (
     ACTUATOR_COMMAND_TIMEOUT_SECONDS,
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
@@ -417,7 +417,7 @@ class HydronicRuntime:
         async_sync_area_repairs(
             hass,
             self.plant_id,
-            zone_area_problems(self.plant, self.area_resolution),
+            self.area_problems,
             plant_name=self.name,
             areas=self.area_resolution,
         )
@@ -605,6 +605,11 @@ class HydronicRuntime:
         aggregation = self.zone_aggregation(zone_id)
         return aggregation.value if aggregation is not None else None
 
+    @property
+    def area_problems(self) -> tuple[ZoneAreaProblem, ...]:
+        """Return the area problems that the area repairs of this Plant report."""
+        return zone_area_problems(self.plant, self.area_resolution)
+
     def zone_area_sensors(self, zone_id: str) -> list[dict[str, str | None]]:
         """Return the sensors each area of a zone resolves to, in the zone's area order."""
         zone = self.plant.zones.get(zone_id)
@@ -631,6 +636,7 @@ class HydronicRuntime:
 
         A reading is the value the controller used in its last evaluation, so a
         sensor it judged unusable, such as a stale or unavailable one, reads None.
+        An area that no longer exists is marked ``missing`` and keeps its last name.
         """
         zone = self.plant.zones.get(zone_id)
         if zone is None:
@@ -638,6 +644,7 @@ class HydronicRuntime:
         heating = self.zone_decision(zone_id)
         cooling = self.cooling_zone_decision(zone_id)
         snapshot = self.snapshot
+        missing = set(self.area_resolution.missing_area_ids)
         result: list[dict[str, object]] = []
         for area in zone.areas:
             sensors = self.area_resolution.area_sensors.get(area.area_id, AreaSensors())
@@ -645,6 +652,7 @@ class HydronicRuntime:
                 {
                     "id": area.area_id,
                     "name": self.area_resolution.name(area.area_id),
+                    "missing": area.area_id in missing,
                     "temperature": _used_reading(
                         sensors.temperature_entity_id,
                         heating.aggregation if heating is not None else None,

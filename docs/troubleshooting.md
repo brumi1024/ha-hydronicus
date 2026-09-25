@@ -110,21 +110,24 @@ A sensor listed in `excluded_optional_sensor_ids` was stale or unavailable, and 
 
 ### A zone covers a missing area
 
-The repair `Zone Bedroom covers a missing area` means an area the zone covers was deleted.
-The zone gets no reading from it, and the rest of its areas and sensors keep working.
+The repair `Home, zone Bedroom: missing area Kids room` means an area that zone Bedroom of Plant Home covers was deleted.
+Every area repair names its Plant and zone first, because several Plants can have zones and areas with the same names.
+The zone gets no reading from the area, and the rest of its areas and sensors keep working.
 Select **Submit** in the repair to open the zone's edit menu, choose **Name, areas, thermostat owner, and sensors**, remove the entry shown as **Unknown area selected**, and save.
-Creating an area with the same ID also clears the repair, and Home Assistant gives a new area the ID made from its first name, such as `kids_room` for `Kids room`.
-The zone card shows a missing area by its ID, with dashes for its readings, until the area is removed.
+Creating the area again also clears the repair, but Home Assistant makes a new area's ID from its name and offers no way to choose the ID.
+The repair therefore names the area to create, such as `Kids room` for the ID `kids_room`, and you can rename the area afterwards without changing its ID.
+The repair and the zone card show a missing area by the name it last had, or by its ID after Home Assistant restarts, and the card shows dashes for its readings until the area is removed.
+The Plant header reports the Plant as `degraded` while an area repair is open, and the zone shows the problem as an alert.
 
 ### A zone has no temperature sensor
 
-The repair `Zone Bedroom has no temperature sensor` means that none of the zone's areas names a temperature sensor that Hydronicus can follow, and the zone has no extra temperature sensor.
+The repair `Home, zone Bedroom: no temperature sensor` means that none of the zone's areas names a temperature sensor that Hydronicus can follow, and the zone has no extra temperature sensor.
 The zone is blocked and neither heats nor cools, and its card shows `Blocked: no usable temperature sensors remain.`
 Choose a temperature sensor in the settings of one of its areas, or select **Submit** in the repair to add an extra temperature sensor or another area.
 
 ### An area names a Hydronicus sensor
 
-The repair `Area Bedroom names a Hydronicus sensor` means that the area settings name a sensor that Hydronicus provides, such as a zone's **Combined temperature**.
+The repair `Home, zone Bedroom: area Bedroom names a Hydronicus sensor` means that the area settings name a sensor that Hydronicus provides, such as a zone's **Combined temperature**.
 Following it would feed the Plant back into itself, so every zone that covers the area ignores it, and each of those zones reports it.
 A zone device that Hydronicus put in the area makes its **Combined temperature** appear in the area's sensor list, which is the usual way this happens.
 Open the area settings and choose a sensor that measures the room.
@@ -132,7 +135,7 @@ Open the area settings and choose a sensor that measures the room.
 ### A repair says an area sensor is missing
 
 Home Assistant does not update an area's sensors when the sensor's entity ID is renamed, so the area still names the old ID.
-The repair `Missing area sensor for Bedroom` names the area; open its area settings, choose the sensor under its new ID, and save.
+The repair `Home, zone Bedroom: missing temperature sensor of area Bedroom` names the area; open its area settings, choose the sensor under its new ID, and save.
 The repair clears as soon as the sensor is available again.
 
 ### A repair or card shows an old area name

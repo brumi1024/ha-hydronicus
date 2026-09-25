@@ -567,8 +567,12 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
         "binding": "readiness feedback of Living valve",
         "owner": "Living room",
     }
-    binding_keys = [key for key in issues if key.startswith("missing_")]
-    assert len(binding_keys) == 11
+    # An area sensor repair names its Plant and zone first instead, like every
+    # area repair, because several Plants can have the same zone and area names.
+    binding_keys = [
+        key for key in issues if key.startswith("missing_") and key != "missing_area_sensor_binding"
+    ]
+    assert len(binding_keys) == 10
     for key in binding_keys:
         issue = issues[key]
         titles = [issue["title"]]

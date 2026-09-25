@@ -22,6 +22,8 @@ from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
+from homeassistant.util import slugify
+from homeassistant.util.hass_dict import HassKey
 
 from .const import (
     CONF_AREA_ID,
@@ -35,6 +37,11 @@ from .const import (
 )
 from .core.model import AreaSensors, CompiledPlant, HydronicusThermostatConfig
 from .flows.common import is_hydronicus_owned
+
+# The name each covered area last had, so a removed area is still named in a
+# message. Home Assistant forgets a removed area, and this memory lasts until
+# Home Assistant stops.
+_LAST_AREA_NAMES: HassKey[dict[str, str]] = HassKey("hydronicus_last_area_names")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +57,7 @@ class AreaResolution:
     missing_area_ids: tuple[str, ...] = ()
     self_provided: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # Names are for messages only, so renaming an area never reloads the Plant.
+    # A missing area keeps the name it last had while Home Assistant ran.
     area_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -75,8 +83,20 @@ class AreaResolution:
         return frozenset(named | set(self.self_provided_entity_ids))
 
     def name(self, area_id: str) -> str:
-        """Return an area's name, or its ID when it does not exist."""
+        """Return an area's name, its last name when it is missing, or else its ID."""
         return self.area_names.get(area_id, area_id)
+
+    def recreate_name(self, area_id: str) -> str:
+        """Return a name that gives a new area this ID again.
+
+        Home Assistant makes a new area's ID from its name, so a missing area
+        comes back by its last name when that still makes its ID, and otherwise
+        by a name spelled from the ID, such as ``Kids room`` for ``kids_room``.
+        """
+        for name in (self.area_names.get(area_id), area_id.replace("_", " ").capitalize()):
+            if name and slugify(name) == area_id:
+                return name
+        return area_id
 
     def fingerprint(self) -> dict[str, Any]:
         """Return the JSON-serializable part of the resolution that shapes the Plant."""
@@ -124,6 +144,7 @@ def covered_area_ids(data: Mapping[str, Any]) -> tuple[str, ...]:
 def resolve_area_sensors(hass: HomeAssistant, area_ids: Iterable[str]) -> AreaResolution:
     """Resolve the sensors that Home Assistant currently names for each area."""
     registry = ar.async_get(hass)
+    last_names = hass.data.setdefault(_LAST_AREA_NAMES, {})
     area_sensors: dict[str, AreaSensors] = {}
     missing: list[str] = []
     self_provided: dict[str, tuple[str, ...]] = {}
@@ -132,8 +153,10 @@ def resolve_area_sensors(hass: HomeAssistant, area_ids: Iterable[str]) -> AreaRe
         area = registry.async_get_area(area_id)
         if area is None:
             missing.append(area_id)
+            if area_id in last_names:
+                names[area_id] = last_names[area_id]
             continue
-        names[area_id] = area.name
+        names[area_id] = last_names[area_id] = area.name
         named = (area.temperature_entity_id, area.humidity_entity_id)
         own = tuple(
             entity_id for entity_id in named if entity_id and is_hydronicus_owned(hass, entity_id)
@@ -365,8 +388,9 @@ def area_review_warnings(
                         area_id,
                         (zone_id,),
                         f"Zone {zone_name} covers area {area_id}, which does not exist in "
-                        "Home Assistant, so it adds no reading until an area with this ID "
-                        "is created.",
+                        "Home Assistant, so it adds no reading until the area exists. Home "
+                        "Assistant makes a new area's ID from its name, so an area named "
+                        f"{resolution.recreate_name(area_id)} gets this ID.",
                         needs_confirmation=True,
                     )
                 )

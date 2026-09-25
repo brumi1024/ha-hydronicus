@@ -100,7 +100,7 @@ The area settings offer only the sensors that belong to the area, so first set t
 A zone that covers an area follows the sensors the area names, as long as the area names them:
 
 - When the Plant loads, each zone takes the temperature sensor and the humidity sensor that each of its areas names, after the extra sensors of the zone.
-- Choosing another sensor in an area's settings, clearing one, removing a covered area, or creating an area with a covered ID reloads every Plant that covers the area, once, and the Plant then follows the new choice.
+- Choosing another sensor in an area's settings, clearing one, removing a covered area, or creating an area whose name gives a covered ID reloads every Plant that covers the area, once, and the Plant then follows the new choice.
   A change to an area that no zone covers, or one that leaves the named sensors as they were, such as a new name or icon, reloads nothing.
 - Renaming an area changes no sensor, so it does not reload the Plant; Repairs and the cards keep the old name until the Plant reloads for another reason.
 - Renaming a sensor's entity ID does not update the area, because Home Assistant keeps the old ID in the area settings.

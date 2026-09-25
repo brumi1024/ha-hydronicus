@@ -44,6 +44,7 @@ export function makeArea(overrides: Partial<ZoneArea> = {}): ZoneArea {
   return {
     id: "kitchen",
     name: "Kitchen",
+    missing: false,
     temperature: 20.5,
     humidity: 45,
     temperature_entity_id: "sensor.kitchen_temperature",

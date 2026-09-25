@@ -250,7 +250,7 @@ The review checks the areas against the Home Assistant instance you import into:
 
 | Review warning | Needs a confirmation |
 | --- | --- |
-| An area that does not exist, such as `Zone Ground floor covers area study, which does not exist in Home Assistant, so it adds no reading until an area with this ID is created.` | Yes |
+| An area that does not exist, such as `Zone Ground floor covers area study, which does not exist in Home Assistant, so it adds no reading until the area exists. Home Assistant makes a new area's ID from its name, so an area named Study gets this ID.` | Yes |
 | An area without a humidity sensor in a zone that a cooling loop serves | Yes |
 | An area without a temperature sensor | No |
 | An area that several zones cover | No |

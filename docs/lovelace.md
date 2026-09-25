@@ -96,7 +96,8 @@ A Zone that covers two or more Home Assistant areas shows one line per area belo
 A dash stands for a reading the controller could not use, such as a stale one, and for a sensor the area does not name.
 Selecting an area's name opens the more-info dialog of the temperature sensor the area names, or of its humidity sensor when it names no temperature sensor.
 The lines follow the zone's area order, and a Zone over one area shows no area lines, because its temperatures are that area's.
-An area that no longer exists shows its ID with dashes until it is removed from the Zone, and a renamed area keeps its old name until the Plant reloads.
+An area that no longer exists shows the name it last had, or its ID after Home Assistant restarts, with dashes until it is removed from the Zone.
+A renamed area keeps its old name until the Plant reloads.
 It shows the same loading, unavailable, not found, no access, and reconnecting states as the Plant card.
 When the Plant snapshot has no Zone with that id, the card shows Zone not found.
 The snapshot leaves out Zones you may not read, so a Zone you have no access to also shows Zone not found.
@@ -158,6 +159,9 @@ The operation section distinguishes proposed, executed, suppressed, failed, and 
 
 The presentation schema is version 2.
 Each thermostat in the snapshot carries its `hvac_mode`, and a Hydronicus thermostat also carries `hvac_modes`, the modes its climate entity supports.
+The Plant's `health` is `healthy`, `degraded` while a zone area repair is open, `blocked`, `unavailable` while an entity binding is unresolved, `initializing`, or `stopped`.
+Each open zone area repair also adds an alert scoped to its Zone: `zone_area_missing` and `zone_without_temperature_source` as errors, and `zone_area_self_feed` as a warning.
+Each area of a Zone carries `missing`, which is true when the area no longer exists in Home Assistant.
 Every temperature in the snapshot is in degrees Celsius.
 The card shows temperatures in the unit system of the Home Assistant instance, and formats numbers with the number format from the user's profile.
 Target changes are sent in that unit system, which Home Assistant converts for the climate entity.

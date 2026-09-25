@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from homeassistant.helpers import entity_registry as entity_registry_helper
 
+from .areas import ZoneAreaProblemKind, listed
 from .const import DOMAIN
 from .core.executor import (
     ActuatorExecutionFailure,
@@ -114,6 +115,9 @@ def build_plant_summary(runtime: Any) -> dict[str, object]:
         health = "blocked"
     elif status in {"initializing", "stopped"}:
         health = status
+    elif runtime.area_problems:
+        # A zone area repair is open: the Plant runs, but a zone lacks a reading.
+        health = "degraded"
     else:
         health = "healthy"
 
@@ -629,6 +633,9 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
             "plant",
             "One or more configured bindings are unavailable; control is blocked.",
         )
+    for (kind, zone_id), area_ids in _area_problems_by_zone(runtime).items():
+        severity, message = _area_problem_alert(runtime, kind, area_ids)
+        add(kind.value, severity, zone_id, message)
     if evaluation is None:
         return _sorted_alerts(alerts.values())
     for zone_id, decision in sorted(evaluation.diagnostics.zone_decisions.items()):
@@ -670,6 +677,39 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
                 "and not executed.",
             )
     return _sorted_alerts(alerts.values())
+
+
+def _area_problems_by_zone(runtime: Any) -> dict[tuple[ZoneAreaProblemKind, str], list[str]]:
+    """Group the area problems of a Plant by kind and zone, keeping area order."""
+    grouped: dict[tuple[ZoneAreaProblemKind, str], list[str]] = {}
+    for problem in runtime.area_problems:
+        area_ids = grouped.setdefault((problem.kind, problem.zone_id), [])
+        if problem.area_id is not None:
+            area_ids.append(problem.area_id)
+    return grouped
+
+
+def _area_problem_alert(
+    runtime: Any, kind: ZoneAreaProblemKind, area_ids: list[str]
+) -> tuple[str, str]:
+    """Return the severity and message of one zone's area problem, like its repair."""
+    if kind is ZoneAreaProblemKind.NO_TEMPERATURE_SOURCE:
+        return "error", (
+            "No area of the zone names a temperature sensor that Hydronicus can follow, "
+            "so the zone is blocked."
+        )
+    names = listed([runtime.area_resolution.name(area_id) for area_id in area_ids])
+    several = len(area_ids) > 1
+    if kind is ZoneAreaProblemKind.AREA_MISSING:
+        return "error", (
+            f"{'Areas' if several else 'Area'} {names} no longer "
+            f"{'exist' if several else 'exists'} in Home Assistant, so the zone gets no "
+            f"reading from {'them' if several else 'it'}."
+        )
+    return "warning", (
+        f"{'Areas' if several else 'Area'} {names} {'name' if several else 'names'} a "
+        "sensor that Hydronicus provides, so the zone ignores it."
+    )
 
 
 def _sorted_alerts(alerts: Any) -> list[dict[str, object]]:

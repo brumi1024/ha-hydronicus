@@ -149,6 +149,7 @@ def async_sync_repairs(
                 if entry is not None
                 else binding.area_id
             )
+            placeholders["sensor"] = binding.label.removeprefix("area ")
         elif entry is not None and subentry_id is not None:
             data[ISSUE_DATA_ENTRY_ID] = entry.entry_id
             data[ISSUE_DATA_SUBENTRY_ID] = subentry_id
@@ -170,6 +171,12 @@ def async_sync_repairs(
             translation_key=translation_key,
             translation_placeholders=placeholders,
         )
+
+
+def _covered_areas(areas: AreaResolution, area_ids: list[str]) -> str:
+    """Name the areas a zone covers as a sentence does, such as ``areas Hall and Den``."""
+    noun = "area" if len(area_ids) == 1 else "areas"
+    return f"{noun} {listed([areas.name(area_id) for area_id in area_ids])}"
 
 
 def _area_issue_id(plant_id: str, problem: ZoneAreaProblem) -> str:
@@ -205,7 +212,9 @@ def async_sync_area_repairs(
             "plant": plant_name,
             "zone": zone.name if zone is not None else problem.zone_id,
             "area": areas.name(problem.area_id) if problem.area_id is not None else "",
-            "areas": listed([areas.name(area.area_id) for area in zone.areas])
+            "area_id": problem.area_id or "",
+            "recreate_name": areas.recreate_name(problem.area_id) if problem.area_id else "",
+            "areas": _covered_areas(areas, [area.area_id for area in zone.areas])
             if zone is not None and zone.areas
             else "",
             "entity_ids": ", ".join(problem.entity_ids),

@@ -944,17 +944,17 @@
       }
     },
     "missing_area_sensor_binding": {
-      "title": "Missing area sensor for {object_name}",
-      "description": "In Plant {plant}, zone {object_name} follows the sensors of area {area}, and the {binding} that the area names is missing or renamed. Renaming an entity does not update the area, so open the settings of area {area}, choose the current sensor, and save. The repair clears automatically as soon as the sensor is available again."
+      "title": "{plant}, zone {object_name}: missing {sensor} of area {area}",
+      "description": "In Plant {plant}, zone {object_name} follows the sensors of area {area}, and the {sensor} that the area names is missing or renamed. Renaming an entity does not update the area, so open the settings of area {area}, choose the current sensor, and save. The repair clears automatically as soon as the sensor is available again."
     },
     "zone_area_missing": {
-      "title": "Zone {zone} covers a missing area",
-      "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Remove the area from the zone, or create an area with this ID again. The repair clears automatically once the zone no longer covers a missing area.",
+      "title": "{plant}, zone {zone}: missing area {area}",
+      "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Remove the area from the zone, or create an area named {recreate_name} again: Home Assistant makes a new area's ID from its name, and that name gives the ID {area_id} that the zone covers. You can rename the area afterwards. The repair clears automatically once the zone no longer covers a missing area.",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Zone {zone} covers a missing area",
-            "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Select Submit to edit {owner} and remove the area. Creating an area with this ID again also works; the repair clears automatically once the zone no longer covers a missing area."
+            "title": "{plant}, zone {zone}: missing area {area}",
+            "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Select Submit to edit {owner} and remove the area. Creating an area named {recreate_name} again also works, because that name gives the ID {area_id} that the zone covers; the repair clears automatically once the zone no longer covers a missing area."
           }
         },
         "abort": {
@@ -964,13 +964,13 @@
       }
     },
     "zone_without_temperature_source": {
-      "title": "Zone {zone} has no temperature sensor",
-      "description": "In Plant {plant}, zone {zone} covers {areas}, but none of these areas names a temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Choose a temperature sensor in the settings of one of these areas, or add a temperature sensor to the zone. The repair clears automatically once the zone has a temperature sensor.",
+      "title": "{plant}, zone {zone}: no temperature sensor",
+      "description": "In Plant {plant}, zone {zone} covers {areas}, but the area settings name no temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Choose a temperature sensor in the area settings, or add a temperature sensor to the zone. The repair clears automatically once the zone has a temperature sensor.",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Zone {zone} has no temperature sensor",
-            "description": "In Plant {plant}, zone {zone} covers {areas}, but none of these areas names a temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Select Submit to edit {owner} and add a temperature sensor or another area. Choosing a temperature sensor in the settings of one of these areas also works; the repair clears automatically once the zone has a temperature sensor."
+            "title": "{plant}, zone {zone}: no temperature sensor",
+            "description": "In Plant {plant}, zone {zone} covers {areas}, but the area settings name no temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Select Submit to edit {owner} and add a temperature sensor or another area. Choosing a temperature sensor in the area settings also works; the repair clears automatically once the zone has a temperature sensor."
           }
         },
         "abort": {
@@ -980,7 +980,7 @@
       }
     },
     "zone_area_self_feed": {
-      "title": "Area {area} names a Hydronicus sensor",
+      "title": "{plant}, zone {zone}: area {area} names a Hydronicus sensor",
       "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
     },
     "output_conflict": {

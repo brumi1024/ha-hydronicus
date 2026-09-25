@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -238,7 +240,8 @@ async def test_a_removed_area_raises_a_repair_and_the_plant_keeps_loading(hass, 
     issue = _area_issues(hass)["zone_area_missing"]
     assert issue.is_fixable is True
     assert issue.translation_placeholders["zone"] == "Ground floor"
-    assert issue.translation_placeholders["area"] == "kitchen"
+    # Home Assistant forgets a removed area, but the repair keeps its last name.
+    assert issue.translation_placeholders["area"] == "Kitchen"
     assert issue.data["subentry_id"] == subentry_id_for(GROUND.zone_id)
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     zones = diagnostics["compiled_topology"]["relationships"]["zones"]
@@ -283,7 +286,7 @@ async def test_a_zone_whose_areas_name_no_temperature_sensor_is_blocked(hass, ho
         "Blocked: no usable temperature sensors remain."
     )
     issue = _area_issues(hass)["zone_without_temperature_source"]
-    assert issue.translation_placeholders["areas"] == "Study"
+    assert issue.translation_placeholders["areas"] == "area Study"
     assert issue.is_fixable is True
 
     ar.async_get(hass).async_update("study", temperature_entity_id="sensor.spare_temperature")
@@ -483,6 +486,7 @@ async def test_the_zone_snapshot_lists_each_area_in_zone_order(hass, home) -> No
         {
             "id": "hall",
             "name": "Hall",
+            "missing": False,
             "temperature": 22.0,
             "humidity": 50.0,
             "temperature_entity_id": "sensor.hall_temperature",
@@ -492,6 +496,7 @@ async def test_the_zone_snapshot_lists_each_area_in_zone_order(hass, home) -> No
         {
             "id": "study",
             "name": "Study",
+            "missing": False,
             "temperature": None,
             "humidity": None,
             "temperature_entity_id": None,
@@ -500,6 +505,7 @@ async def test_the_zone_snapshot_lists_each_area_in_zone_order(hass, home) -> No
         {
             "id": "kitchen",
             "name": "Kitchen",
+            "missing": False,
             "temperature": 20.0,
             "humidity": 45.0,
             "temperature_entity_id": "sensor.kitchen_temperature",
@@ -508,6 +514,7 @@ async def test_the_zone_snapshot_lists_each_area_in_zone_order(hass, home) -> No
         {
             "id": "attic",
             "name": "attic",
+            "missing": True,
             "temperature": None,
             "humidity": None,
             "temperature_entity_id": None,
@@ -602,4 +609,167 @@ async def test_the_stream_hides_area_sensors_the_user_may_not_read(hass, home) -
     ] == [
         (20.0, 45.0, "sensor.kitchen_temperature", None),
         (22.0, 50.0, None, "sensor.hall_humidity"),
+    ]
+
+
+# Area repairs and the Plant header
+
+
+_ISSUE_STRINGS = json.loads(
+    (Path(__file__).parents[2] / "custom_components/hydronicus/strings.json").read_text()
+)["issues"]
+
+
+def _rendered(issue: ir.IssueEntry, part: str = "description") -> str:
+    """Render one issue text the way the frontend does, failing on a missing placeholder."""
+    strings = _ISSUE_STRINGS[issue.translation_key]
+    text = strings[part] if part in strings else strings["fix_flow"]["step"]["confirm"][part]
+    return text.format_map(issue.translation_placeholders)
+
+
+async def _plant_with_every_area_problem(hass) -> MockConfigEntry:
+    """Give Ground floor a missing and a self-feeding area, and Upstairs a lost area sensor."""
+    registry = er.async_get(hass)
+    den = registry.async_get_or_create("sensor", "test", "den", suggested_object_id="den")
+    _temperature(hass, den.entity_id, 20.0)
+    _area(hass, "Den", temperature=den.entity_id)
+    topology = _topology(["study", "attic"])
+    topology["zones"][1]["areas"] = [{"area_id": "den"}]
+    entry = await _loaded(hass, topology)
+    upstairs = _combined_temperature(hass, UPSTAIRS.zone_id)
+    ar.async_get(hass).async_update("study", temperature_entity_id=upstairs.entity_id)
+    await hass.async_block_till_done()
+    hass.states.async_remove(den.entity_id)
+    await hass.async_block_till_done()
+    await entry.runtime_data.async_refresh(hass)
+    return entry
+
+
+async def test_every_area_repair_title_names_its_plant_and_zone(hass, home) -> None:
+    await _plant_with_every_area_problem(hass)
+
+    issues = _area_issues(hass)
+    assert set(issues) == _AREA_ISSUES
+    titles = {key: _rendered(issue, "title") for key, issue in issues.items()}
+    # A list of repairs cuts a long title short, so the Plant and zone come first.
+    for key, title in titles.items():
+        assert title.startswith("Hydronic plant, zone "), key
+    assert titles["zone_area_missing"] == ("Hydronic plant, zone Ground floor: missing area attic")
+    assert titles["zone_without_temperature_source"] == (
+        "Hydronic plant, zone Ground floor: no temperature sensor"
+    )
+    assert titles["zone_area_self_feed"] == (
+        "Hydronic plant, zone Ground floor: area Study names a Hydronicus sensor"
+    )
+    assert titles["missing_area_sensor_binding"] == (
+        "Hydronic plant, zone Upstairs: missing temperature sensor of area Den"
+    )
+
+
+async def test_a_zone_without_temperature_source_reads_well_with_one_area(hass, home) -> None:
+    await _loaded(hass, _topology(["study"]))
+
+    issue = _area_issues(hass)["zone_without_temperature_source"]
+    for text in (_rendered(issue), _rendered(issue, "description")):
+        assert "covers area Study, but" in text
+        assert "these areas" not in text
+
+
+async def test_a_zone_without_temperature_source_lists_several_areas(hass, home) -> None:
+    _area(hass, "Porch")
+    await _loaded(hass, _topology(["study", "porch"]))
+
+    issue = _area_issues(hass)["zone_without_temperature_source"]
+    assert "covers areas Study and Porch, but" in _rendered(issue)
+
+
+async def test_a_missing_area_repair_advises_a_name_that_recreates_its_id(hass, home) -> None:
+    """Home Assistant makes a new area's ID from its name, so the advice names the area."""
+    await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    kids = _area(hass, "Kids room", temperature="sensor.spare_temperature")
+    entry = await _loaded(hass, _topology(["kitchen", kids.id, "attic_2"]))
+
+    ar.async_get(hass).async_delete(kids.id)
+    await hass.async_block_till_done()
+
+    issues = [
+        issue
+        for issue in ir.async_get(hass).issues.values()
+        if issue.translation_key == "zone_area_missing"
+    ]
+    by_area = {issue.translation_placeholders["area_id"]: issue for issue in issues}
+    # The area's last known name, and a name made from an ID never seen.
+    assert by_area["kids_room"].translation_placeholders["area"] == "Kids room"
+    assert by_area["kids_room"].translation_placeholders["recreate_name"] == "Kids room"
+    assert by_area["attic_2"].translation_placeholders["area"] == "attic_2"
+    assert by_area["attic_2"].translation_placeholders["recreate_name"] == "Attic 2"
+    text = _rendered(by_area["kids_room"])
+    assert "create an area named Kids room again" in text
+    assert "with this ID" not in text
+
+    # Following the advice resolves the repair.
+    _area(hass, "Kids room", temperature="sensor.spare_temperature")
+    await hass.async_block_till_done()
+    assert {
+        issue.translation_placeholders["area_id"]
+        for issue in ir.async_get(hass).issues.values()
+        if issue.translation_key == "zone_area_missing"
+    } == {"attic_2"}
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_area_repairs_put_the_plant_header_in_need_of_attention(hass, home) -> None:
+    for entity_id in (GROUND.valve_entity, UPSTAIRS.valve_entity, "switch.manifold_pump"):
+        hass.states.async_set(entity_id, "off")
+    entry = await _loaded(hass, _topology(["kitchen", "hall"]))
+    assert entry.runtime_data.presentation_snapshot(hass)["plant"]["health"] == "healthy"
+
+    ar.async_get(hass).async_delete("hall")
+    await hass.async_block_till_done()
+
+    snapshot = entry.runtime_data.presentation_snapshot(hass)
+    assert snapshot["plant"]["health"] == "degraded"
+    (alert,) = [alert for alert in snapshot["alerts"] if alert["code"] == "zone_area_missing"]
+    assert alert["severity"] == "error"
+    assert alert["scope"] == GROUND.zone_id
+    assert alert["name"] == "Ground floor"
+    assert alert["message"] == (
+        "Area Hall no longer exists in Home Assistant, so the zone gets no reading from it."
+    )
+
+    _area(hass, "Hall", temperature="sensor.hall_temperature")
+    await hass.async_block_till_done()
+    snapshot = entry.runtime_data.presentation_snapshot(hass)
+    assert snapshot["plant"]["health"] == "healthy"
+    assert not [alert for alert in snapshot["alerts"] if alert["code"].startswith("zone_area")]
+
+
+async def test_every_area_problem_raises_an_alert(hass, home) -> None:
+    entry = await _plant_with_every_area_problem(hass)
+
+    snapshot = entry.runtime_data.presentation_snapshot(hass)
+    alerts = {(alert["code"], alert["scope"]): alert for alert in snapshot["alerts"]}
+    assert alerts[("zone_area_missing", GROUND.zone_id)]["severity"] == "error"
+    assert alerts[("zone_without_temperature_source", GROUND.zone_id)]["severity"] == "error"
+    self_feed = alerts[("zone_area_self_feed", GROUND.zone_id)]
+    assert self_feed["severity"] == "warning"
+    assert self_feed["message"] == (
+        "Area Study names a sensor that Hydronicus provides, so the zone ignores it."
+    )
+    # The lost area sensor is an unresolved binding, which already marks the Plant.
+    assert snapshot["plant"]["health"] == "unavailable"
+    assert ("binding_unavailable", "plant") in alerts
+
+
+async def test_a_missing_area_on_the_zone_card_is_flagged_with_its_last_name(hass, home) -> None:
+    entry = await _loaded(hass, _topology(["hall", "kitchen", "attic"]))
+
+    ar.async_get(hass).async_delete("kitchen")
+    await hass.async_block_till_done()
+
+    areas = _zone_snapshot(hass, entry, GROUND.zone_id)["areas"]
+    assert [(area["id"], area["name"], area["missing"]) for area in areas] == [
+        ("hall", "Hall", False),
+        ("kitchen", "Kitchen", True),
+        ("attic", "attic", True),
     ]
