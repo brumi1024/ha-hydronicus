@@ -483,18 +483,28 @@ def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteres
     blocked, desired, _ = run(plant, running, replace(state, source_request=True))
     assert blocked.guards["a.ceiling"] == GuardState(True, NOW)
     assert not desired.source_request, "the guard overrides the minimum on time"
-    assert desired.reasons["a.ceiling.guard"].startswith("condensation guard blocks")
+    assert desired.reasons["a.ceiling.guard"] == (
+        "condensation guard blocks: reference 16.0 °C below 16.8 °C"
+    )
+    assert desired.reasons["source"] == "a condensation guard blocks a loop the source drives"
     assert desired.outputs["switch.a_ceiling"] == ON, "held for the post-run"
 
     # 17.5 °C is above the threshold but not 1 K above it: still blocked.
     above = {"sensor.supply": Reading(17.5, NOW)}
     later = NOW + GUARD_MIN_BLOCKED
     ready_above = replace(ready, sensors={**ready.sensors, **above})
-    assert run(plant, ready_above, blocked, later)[0].guards["a.ceiling"].blocked
+    held, desired, _ = run(plant, ready_above, blocked, later)
+    assert held.guards["a.ceiling"].blocked
+    assert desired.reasons["a.ceiling.guard"] == (
+        "condensation guard blocks: reference 17.5 °C, releases at 17.8 °C"
+    )
     clear = {"sensor.supply": Reading(18.0, NOW)}
     ready_clear = replace(ready, sensors={**ready.sensors, **clear})
-    early, _, due = run(plant, ready_clear, blocked, NOW + 10)
+    early, desired, due = run(plant, ready_clear, blocked, NOW + 10)
     assert early.guards["a.ceiling"].blocked and due == pytest.approx(GUARD_MIN_BLOCKED - 10 + TICK)
+    assert desired.reasons["a.ceiling.guard"] == (
+        "condensation guard blocks: reference 18.0 °C, held for its minimum blocked time"
+    )
     assert not run(plant, ready_clear, blocked, later)[0].guards["a.ceiling"].blocked
 
     stale = {"sensor.supply": Reading(20.0, NOW - 1801)}

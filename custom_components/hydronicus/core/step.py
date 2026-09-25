@@ -525,9 +525,17 @@ class _Evaluation:
             reason = "no usable condensation reference or dew point"
         else:
             threshold = max(known) + CONDENSATION_MARGIN
-            blocking = min(usable) < threshold
-            releasing = min(usable) >= threshold + GUARD_RELEASE
-            reason = f"reference {min(usable):.1f} °C against {threshold:.1f} °C"
+            reference = min(usable)
+            blocking = reference < threshold
+            releasing = reference >= threshold + GUARD_RELEASE
+            if blocking:
+                reason = f"reference {reference:.1f} °C below {threshold:.1f} °C"
+            elif releasing:
+                reason = f"reference {reference:.1f} °C, held for its minimum blocked time"
+            else:
+                reason = (
+                    f"reference {reference:.1f} °C, releases at {threshold + GUARD_RELEASE:.1f} °C"
+                )
         if previous is None or not previous.blocked:
             guard = GuardState(blocking, now) if previous is None or blocking else previous
         elif releasing and self.reached(previous.since + GUARD_MIN_BLOCKED):
@@ -802,7 +810,16 @@ class _Plan:
                 reasons["source"] = "waiting for the source mode"
                 return False
         if any(self.blocked[pump.slug] for pump in driven):
-            reasons["source"] = "a source-driven pump would run a loop in the wrong mode"
+            wrong_mode = any(
+                self.label not in loop.modes and (not loop.valves or ev.may_pass(loop))
+                for pump in driven
+                for loop in ev.loops_of(pump)
+            )
+            reasons["source"] = (
+                "a source-driven pump would run a loop in the wrong mode"
+                if wrong_mode
+                else "a condensation guard blocks a loop the source drives"
+            )
             return False
         if any(
             self.guard_blocked[loop] and (not loop.valves or loop in self.paths[pump.slug])
