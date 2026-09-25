@@ -82,6 +82,12 @@ export function isFlowingState(state: string): boolean {
   return FLOWING_STATES.has(state.toLowerCase());
 }
 
+/** What a Room is asking for: cooling, heating, or nothing. */
+export function zoneDemandKind(zone: Pick<ZoneSnapshot, "demand" | "cooling"> | undefined): "cooling" | "heating" | "none" {
+  if (!zone) return "none";
+  return zone.cooling.demand ? "cooling" : zone.demand ? "heating" : "none";
+}
+
 /**
  * Build a target change. `temperature` is in the user's unit system, because
  * Home Assistant converts `climate.set_temperature` from that unit.

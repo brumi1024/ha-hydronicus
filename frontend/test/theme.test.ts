@@ -96,6 +96,11 @@ describe("theme token contract", () => {
   it("does not paint an ambient glow by default", () => {
     expect(css).toContain("--_hy-ambient-opacity: var(--hydronicus-ambient-opacity, 0);");
   });
+
+  it("does not animate the card in, like stock Home Assistant cards", () => {
+    expect(css).not.toMatch(/card-enter/);
+    expect(css).not.toMatch(/ha-card \{[^}]*animation:/);
+  });
 });
 
 type CardElement = HTMLElement & { hass?: unknown; setConfig(config: Record<string, unknown>): void; updateComplete: Promise<boolean> };

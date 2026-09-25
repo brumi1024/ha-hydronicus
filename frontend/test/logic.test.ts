@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneHvacModes } from "../src/logic";
+import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneDemandKind, zoneHvacModes } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
@@ -148,6 +148,13 @@ describe("Room HVAC modes", () => {
     const external: ZoneSnapshot = { ...zone, thermostat: { ...zone.thermostat, kind: "external_climate", control_entity_id: null, hvac_modes: ["off", "heat"] } };
     expect(zoneHvacModes(external)).toEqual([]);
     expect(actionForHvacMode(external, "heat")).toBeNull();
+  });
+
+  it("names what a Room is asking for, with cooling before heating", () => {
+    expect(zoneDemandKind(zone)).toBe("heating");
+    expect(zoneDemandKind({ ...zone, demand: false })).toBe("none");
+    expect(zoneDemandKind({ ...zone, cooling: { ...zone.cooling, demand: true } })).toBe("cooling");
+    expect(zoneDemandKind(undefined)).toBe("none");
   });
 
   it("labels modes with Home Assistant's climate translations or readable fallbacks", () => {

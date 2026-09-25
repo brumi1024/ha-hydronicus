@@ -49,6 +49,10 @@ export const cardStyles = css`
     --_hy-glass-opacity: var(--hydronicus-glass-opacity, 100%);
     --_hy-flow-duration: var(--hydronicus-flow-duration, 2.2s);
     --_hy-ambient-duration: var(--hydronicus-ambient-duration, 16s);
+    /* Internal: state colours as text, mixed toward the text colour so small labels stay legible. */
+    --_hy-warning-ink: color-mix(in srgb, var(--_hy-warning) 52%, var(--_hy-text));
+    --_hy-success-ink: color-mix(in srgb, var(--_hy-success) 70%, var(--_hy-text));
+    --_hy-danger-ink: color-mix(in srgb, var(--_hy-danger) 85%, var(--_hy-text));
     /* Internal: the colour of the current state, and the inline-start side. */
     --_hy-state: var(--_hy-idle);
     --_hy-inline-start: left;
@@ -77,7 +81,6 @@ export const cardStyles = css`
     -webkit-backdrop-filter: blur(var(--_hy-glass-blur)) var(--ha-card-backdrop-filter,);
     backdrop-filter: blur(var(--_hy-glass-blur)) var(--ha-card-backdrop-filter,);
     padding: var(--ha-space-4, 16px);
-    animation: hydronicus-card-enter 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
 
   ha-card::before {
@@ -119,7 +122,7 @@ export const cardStyles = css`
   h3 { font-size: var(--ha-font-size-m, 0.95rem); }
   h4 { font-size: var(--ha-font-size-m, 0.9rem); }
   .muted, .meta { color: var(--_hy-text-muted); font-size: var(--ha-font-size-s, 0.8rem); line-height: 1.45; }
-  .eyebrow { margin-block-end: 0.12rem; color: color-mix(in srgb, var(--_hy-state) 78%, var(--_hy-text)); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+  .eyebrow { margin-block-end: 0.12rem; color: color-mix(in srgb, var(--_hy-state) 65%, var(--_hy-text)); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
   .plant-heading { align-items: flex-start; }
   .plant-mark {
     position: relative;
@@ -170,11 +173,11 @@ export const cardStyles = css`
   .source-line strong { color: var(--_hy-text); font-weight: 600; }
   .badge, .phase, .state { border: 1px solid var(--_hy-line); border-radius: 999px; padding: 0.24rem 0.55rem; font-size: 0.72rem; line-height: 1.2; white-space: nowrap; }
   .badge { font-weight: 700; letter-spacing: 0.02em; background: color-mix(in srgb, var(--_hy-warning) 12%, transparent); }
-  .badge.dry-run, .state.proposed { color: var(--_hy-warning); }
-  .badge.mixed, .badge.live, .state.blocked, .state.mismatch { color: var(--_hy-danger); }
+  .badge.dry-run, .state.proposed { color: var(--_hy-warning-ink); }
+  .badge.mixed, .badge.live, .state.blocked, .state.mismatch { color: var(--_hy-danger-ink); }
   .badge.mixed, .badge.live { background: color-mix(in srgb, var(--_hy-danger) 10%, transparent); }
   .phase.off { color: var(--_hy-text-muted); }
-  .badge.active, .state.active, .state.ready { color: var(--_hy-success); }
+  .badge.active, .state.active, .state.ready { color: var(--_hy-success-ink); }
   .controls { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.45rem; }
   .mode-control { display: flex; align-items: center; min-block-size: 2.5rem; box-sizing: border-box; border: var(--_hy-control-border); border-radius: var(--_hy-radius-control); background: var(--_hy-control-surface); box-shadow: var(--_hy-control-shadow); color: var(--_hy-control-color); padding-inline-start: 0.62rem; }
   .control-label { color: var(--_hy-text-muted); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -185,18 +188,18 @@ export const cardStyles = css`
   button:active { transform: translateY(1px); }
   button:disabled, select:disabled { cursor: not-allowed; opacity: 0.5; }
   button:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--_hy-accent); outline-offset: 2px; }
-  .shutdown { position: relative; overflow: hidden; color: var(--_hy-danger); touch-action: none; user-select: none; -webkit-user-select: none; }
+  .shutdown { position: relative; overflow: hidden; color: var(--_hy-danger-ink); touch-action: none; user-select: none; -webkit-user-select: none; }
   .shutdown.quiet { color: var(--_hy-text-muted); }
-  .shutdown.quiet:hover, .shutdown.quiet:focus-visible, .shutdown.quiet.is-holding { color: var(--_hy-danger); }
+  .shutdown.quiet:hover, .shutdown.quiet:focus-visible, .shutdown.quiet.is-holding { color: var(--_hy-danger-ink); }
   .shutdown::after { content: ""; position: absolute; inset: 0; z-index: 0; background: color-mix(in srgb, var(--_hy-danger) 18%, transparent); transform: scaleX(0); transform-origin: var(--_hy-inline-start); }
   .shutdown.is-holding::after { animation: hydronicus-hold 1.2s linear forwards; }
   .button-label { position: relative; z-index: 1; }
-  .hold-progress { flex-basis: 100%; text-align: end; font-size: 0.7rem; color: var(--_hy-danger); }
+  .hold-progress { flex-basis: 100%; text-align: end; font-size: 0.7rem; color: var(--_hy-danger-ink); }
   .alert, .error, .boundary, .notice { margin-block-start: 0.9rem; border: 1px solid var(--_hy-line); border-radius: var(--_hy-radius-inner); background: var(--_hy-surface-raised); padding: 0.68rem 0.75rem; }
   .alert, .notice, .action-error { position: relative; overflow: hidden; padding-inline-start: 0.9rem; }
   .alert::before, .notice::before, .action-error::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: 0; inline-size: 3px; background: var(--_hy-warning); }
   .alert.error::before, .action-error::before { background: var(--_hy-danger); }
-  .action-error { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-block-start: 0.9rem; border: 1px solid color-mix(in srgb, var(--_hy-danger) 40%, var(--_hy-line)); border-radius: var(--_hy-radius-inner); padding-block: 0.4rem; padding-inline-end: 0.4rem; color: var(--_hy-danger); font-size: 0.85rem; }
+  .action-error { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-block-start: 0.9rem; border: 1px solid color-mix(in srgb, var(--_hy-danger) 40%, var(--_hy-line)); border-radius: var(--_hy-radius-inner); padding-block: 0.4rem; padding-inline-end: 0.4rem; color: var(--_hy-danger-ink); font-size: 0.85rem; }
   .action-error button { min-block-size: 2.2rem; color: inherit; }
   .boundary { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.65rem; }
   .boundary-orb { display: grid; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; border-radius: var(--_hy-radius-inner); background: color-mix(in srgb, var(--_hy-state) 14%, transparent); color: var(--_hy-state); }
@@ -204,7 +207,9 @@ export const cardStyles = css`
   .boundary-copy { min-inline-size: 0; align-items: baseline; flex-wrap: wrap; gap: 0.35rem; }
   .boundary-copy strong { font-size: 0.82rem; font-weight: 600; }
   section { margin-block-start: 1.05rem; }
-  .section-head { justify-content: space-between; margin-block-end: 0.5rem; }
+  .section-head { flex-wrap: wrap; justify-content: space-between; row-gap: 0.2rem; margin-block-end: 0.5rem; }
+  /* A long section note wraps below the title instead of squeezing it. */
+  .section-head > .meta { margin-inline-start: auto; }
   .section-kicker { display: flex; align-items: center; gap: 0.42rem; }
   .zone-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 245px), 1fr)); gap: 0.7rem; }
   .zone, .path, .actuator, details { border: var(--_hy-tile-border); border-radius: var(--_hy-radius-inner); background: var(--_hy-surface-raised); box-shadow: var(--_hy-tile-shadow); }
@@ -234,11 +239,12 @@ export const cardStyles = css`
   .zone-note { margin-block-start: 0.28rem; }
   .diagnostic-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-block-start: 0.45rem; }
   .diagnostic-chip { border: 1px solid var(--_hy-line); border-radius: 999px; padding: 0.2rem 0.45rem; color: var(--_hy-text-muted); font-size: 0.7rem; }
-  .diagnostic-chip.warning { color: var(--_hy-warning); border-color: color-mix(in srgb, var(--_hy-warning) 30%, var(--_hy-line)); }
-  .diagnostic-chip.danger { color: var(--_hy-danger); border-color: color-mix(in srgb, var(--_hy-danger) 30%, var(--_hy-line)); }
-  .coupling-note { display: inline-flex; align-items: center; gap: 0.3rem; margin-block-start: 0.38rem; color: color-mix(in srgb, var(--_hy-warning) 80%, var(--_hy-text-muted)); }
-  .hvac-modes { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-block-start: 0.62rem; padding: 0.2rem; border: var(--_hy-control-border); border-radius: var(--_hy-radius-control); background: var(--_hy-control-surface); box-shadow: var(--_hy-control-shadow); }
-  .hvac-mode { flex: 1 1 auto; min-block-size: 2.2rem; padding-inline: 0.4rem; border: 1px solid transparent; border-radius: max(0px, calc(var(--_hy-radius-control) - 0.2rem)); background: transparent; box-shadow: none; font-size: 0.8rem; white-space: nowrap; }
+  .diagnostic-chip.warning { color: var(--_hy-warning-ink); border-color: color-mix(in srgb, var(--_hy-warning) 30%, var(--_hy-line)); }
+  .diagnostic-chip.danger { color: var(--_hy-danger-ink); border-color: color-mix(in srgb, var(--_hy-danger) 30%, var(--_hy-line)); }
+  .coupling-note { display: inline-flex; align-items: center; gap: 0.3rem; margin-block-start: 0.38rem; color: var(--_hy-warning-ink); }
+  /* Equal segments; a narrow tile wraps them into even rows, and the corner stops at a one-row pill so two rows stay a rounded box. */
+  .hvac-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 4.75rem), 1fr)); gap: 0.25rem; margin-block-start: 0.62rem; padding: 0.2rem; border: var(--_hy-control-border); border-radius: min(var(--_hy-radius-control), 1.35rem); background: var(--_hy-control-surface); box-shadow: var(--_hy-control-shadow); }
+  .hvac-mode { min-inline-size: 0; min-block-size: 2.2rem; padding-inline: 0.4rem; border: 1px solid transparent; border-radius: max(0px, calc(min(var(--_hy-radius-control), 1.35rem) - 0.2rem)); background: transparent; box-shadow: none; font-size: 0.8rem; white-space: nowrap; }
   /* A selected segment keeps its per-mode tint unless the theme sets a selected background. */
   .hvac-mode[data-mode="heat"] { --_hy-selected-background: var(--hydronicus-selected-background, color-mix(in srgb, var(--_hy-heating) 16%, transparent)); }
   .hvac-mode[data-mode="cool"] { --_hy-selected-background: var(--hydronicus-selected-background, color-mix(in srgb, var(--_hy-cooling) 16%, transparent)); }
@@ -256,19 +262,23 @@ export const cardStyles = css`
   .path-head { justify-content: space-between; flex-wrap: wrap; }
   .path-heading { display: flex; align-items: center; gap: 0.42rem; min-inline-size: 0; }
   .path-heading::before { content: ""; flex: 0 0 auto; inline-size: 0.43rem; block-size: 0.43rem; border-radius: 50%; background: color-mix(in srgb, var(--_hy-text-muted) 55%, transparent); }
+  /* A path takes the colour of its own Room's demand. */
+  .path[data-demand-kind="heating"] { --_hy-state: var(--_hy-heating); }
+  .path[data-demand-kind="cooling"] { --_hy-state: var(--_hy-cooling); }
   .path[data-flowing="true"] .path-heading::before { background: var(--_hy-state); animation: hydronicus-pulse 2.4s ease-out infinite; }
   .path[data-status="blocked"] .path-heading::before { background: var(--_hy-danger); }
   .path-track { display: flex; align-items: stretch; margin-block-start: 0.62rem; overflow-x: auto; overscroll-behavior-inline: contain; padding-block: 0.08rem 0.25rem; padding-inline: 0.03rem; scroll-snap-type: inline proximity; scrollbar-width: thin; }
   .path-step { display: contents; }
-  .node { display: grid; align-content: start; flex: 0 0 clamp(5.4rem, 13cqi, 6.75rem); min-inline-size: 0; border: 1px solid var(--_hy-line); border-radius: calc(var(--_hy-radius-inner) * 0.75); padding: 0.48rem 0.52rem; font-size: 0.76rem; overflow-wrap: anywhere; scroll-snap-align: start; transition: border-color 220ms ease, background-color 220ms ease; }
+  .node { display: grid; align-content: start; box-sizing: border-box; flex: 0 0 clamp(5.4rem, 13cqi, 6.75rem); min-inline-size: 0; border: 1px solid var(--_hy-line); border-radius: calc(var(--_hy-radius-inner) * 0.75); padding: 0.48rem 0.52rem; font-size: 0.76rem; overflow-wrap: anywhere; scroll-snap-align: start; transition: border-color 220ms ease, background-color 220ms ease; }
   .node[data-flowing="true"] { border-color: color-mix(in srgb, var(--_hy-state) 34%, var(--_hy-line)); background: color-mix(in srgb, var(--_hy-state) 8%, transparent); }
   .node[data-state="blocked"], .node[data-state="unavailable"] { border-color: color-mix(in srgb, var(--_hy-danger) 36%, var(--_hy-line)); }
   .node-kind { color: var(--_hy-text-muted); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
   .node-name { margin-block-start: 0.18rem; font-weight: 600; line-height: 1.25; }
   .node-state { display: flex; align-items: center; gap: 0.28rem; margin-block-start: 0.3rem; color: var(--_hy-text-muted); font-size: 0.68rem; }
   .node-state::before { content: ""; inline-size: 0.3rem; block-size: 0.3rem; border-radius: 50%; background: currentColor; }
-  .node[data-flowing="true"] .node-state { color: color-mix(in srgb, var(--_hy-state) 78%, var(--_hy-text)); }
-  .flow-link { position: relative; flex: 1 0 clamp(1.2rem, 4cqi, 2.4rem); min-inline-size: 1.2rem; align-self: center; block-size: 2px; margin-inline: 0.12rem; overflow: hidden; background: color-mix(in srgb, var(--_hy-text-muted) 24%, transparent); }
+  .node[data-flowing="true"] .node-state { color: color-mix(in srgb, var(--_hy-state) 60%, var(--_hy-text)); }
+  /* A connector grows only to a short cap, so a path reads as a compact chain from the start at any width. */
+  .flow-link { position: relative; flex: 1 0 clamp(1rem, 4cqi, 2.4rem); min-inline-size: 1rem; max-inline-size: 2.4rem; align-self: center; block-size: 2px; margin-inline: 0.12rem; overflow: hidden; background: color-mix(in srgb, var(--_hy-text-muted) 24%, transparent); }
   :host(:dir(rtl)) .flow-link { transform: scaleX(-1); }
   .flow-link::before { content: ""; position: absolute; inset-inline-end: 0; inset-block-start: 50%; inline-size: 0.34rem; block-size: 0.34rem; border-block-start: 1px solid var(--_hy-text-muted); border-inline-end: 1px solid var(--_hy-text-muted); transform: translateY(-50%) rotate(45deg); }
   .flow-link::after { content: ""; position: absolute; inset-block: -1px; inset-inline-start: 0; inline-size: 58%; background: linear-gradient(90deg, transparent, var(--_hy-state), transparent); opacity: 0; transform: translateX(-120%); }
@@ -276,7 +286,7 @@ export const cardStyles = css`
   .path[data-flowing="true"] .flow-link::before { border-color: var(--_hy-state); }
   .path[data-flowing="true"] .flow-link::after { opacity: 0.95; animation: hydronicus-flow var(--_hy-flow-duration) linear infinite; }
   .path[data-status="blocked"] .flow-link { background: color-mix(in srgb, var(--_hy-danger) 30%, transparent); }
-  .path-problem { margin-block-start: 0.5rem; color: var(--_hy-danger); }
+  .path-problem { margin-block-start: 0.5rem; color: var(--_hy-danger-ink); }
   .actuator-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
   .actuator-state { display: inline-flex; align-items: center; gap: 0.3rem; }
   .consumer-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-block-start: 0.48rem; }
@@ -324,16 +334,12 @@ export const cardStyles = css`
     .section-head > .meta { text-align: end; }
   }
   @media (prefers-reduced-motion: reduce) {
-    ha-card, ha-card::before, .plant-mark::before, .status-dot, .path-heading::before, .path[data-flowing="true"] .flow-link::after, details[open] .operation, .loading-mark, .skeleton { animation: none !important; }
+    ha-card::before, .plant-mark::before, .status-dot, .path-heading::before, .path[data-flowing="true"] .flow-link::after, details[open] .operation, .loading-mark, .skeleton { animation: none !important; }
     button, select, .zone, .node { transition-duration: 0.01ms !important; }
     .path[data-flowing="true"] .flow-link::after { opacity: 0.65; transform: translateX(40%); }
     .shutdown.is-holding::after { animation: none; transform: scaleX(1); }
   }
 
-  @keyframes hydronicus-card-enter {
-    from { opacity: 0; transform: translateY(8px) scale(0.992); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-  }
   @keyframes hydronicus-ambient {
     from { transform: translate3d(-2%, -1%, 0) scale(1.02); }
     to { transform: translate3d(3%, 2%, 0) scale(1.08); }

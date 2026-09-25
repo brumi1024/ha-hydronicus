@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { formatNumber } from "../format";
-import { actionForMode, alertTitle, boundaryClass, boundaryLabel, isFlowingState, nodeKindLabel, operationLabel, prioritizedAlerts, sentenceLabel, sourceSummary, stateLabel } from "../logic";
+import { actionForMode, alertTitle, boundaryClass, boundaryLabel, isFlowingState, nodeKindLabel, operationLabel, prioritizedAlerts, sentenceLabel, sourceSummary, stateLabel, zoneDemandKind } from "../logic";
 import type { PlantSnapshot } from "../types";
 import type { RenderContext } from "./context";
 import { renderRoom } from "./room";
@@ -78,11 +78,15 @@ export function renderRooms(context: RenderContext, snapshot: PlantSnapshot): Te
 
 export function renderPaths(snapshot: PlantSnapshot): Rendered {
   if (!snapshot.delivery_paths.length) return nothing;
-  return html`<section part="section" aria-labelledby="hydronicus-paths"><div class="section-head"><div class="section-kicker"><h3 part="section-title" id="hydronicus-paths">Hydraulic Flow</h3></div><span class="meta" dir="auto">Room → Loop → Valve → Pump → Source</span></div><div class="path-list">${snapshot.delivery_paths.map((path) => html`<article class="path" part="path" data-status=${path.status} data-flowing=${String(isFlowingState(path.status))}>
-    <div class="path-head"><div class="path-heading"><strong>${snapshot.zones.find((zone) => zone.id === path.zone_id)?.name ?? path.zone_id}</strong></div><div class="status-line"><span class="state ${path.status}" part="badge">${sentenceLabel(path.status)}</span>${path.coupled ? html`<span class="meta">shares equipment</span>` : nothing}</div></div>
+  return html`<section part="section" aria-labelledby="hydronicus-paths"><div class="section-head"><div class="section-kicker"><h3 part="section-title" id="hydronicus-paths">Hydraulic Flow</h3></div><span class="meta" dir="auto">Room → Loop → Valve → Pump → Source</span></div><div class="path-list">${snapshot.delivery_paths.map((path) => {
+    const zone = snapshot.zones.find((candidate) => candidate.id === path.zone_id);
+    // A path takes the colour of its own Room's demand, not the Plant's.
+    return html`<article class="path" part="path" data-status=${path.status} data-flowing=${String(isFlowingState(path.status))} data-demand-kind=${zoneDemandKind(zone)}>
+    <div class="path-head"><div class="path-heading"><strong>${zone?.name ?? path.zone_id}</strong></div><div class="status-line"><span class="state ${path.status}" part="badge">${sentenceLabel(path.status)}</span>${path.coupled ? html`<span class="meta">shares equipment</span>` : nothing}</div></div>
     <ol class="path-track" aria-label="Ordered hydraulic delivery path">${path.nodes.map((node, index) => html`<li class="path-step">${index ? html`<span class="flow-link" aria-hidden="true"></span>` : nothing}<span class="node" part="node" data-kind=${node.kind} data-state=${node.state} data-flowing=${String(isFlowingState(node.state))}><span class="node-kind">${nodeKindLabel(node.kind)}</span><span class="node-name">${node.name}</span><span class="node-state">${sentenceLabel(node.state)}</span></span></li>`)}</ol>
     ${path.problem ? html`<p class="meta path-problem" dir="auto">${path.problem}</p>` : nothing}
-  </article>`)}</div></section>`;
+  </article>`;
+  })}</div></section>`;
 }
 
 export function renderEquipment(snapshot: PlantSnapshot): Rendered {

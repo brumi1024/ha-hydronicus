@@ -205,9 +205,12 @@ A Plant card that shows none of the `rooms`, `paths`, and `equipment` sections s
 A Room card spans half a section by default, like a thermostat card, at least four columns, and its height follows its content.
 In the masonry view the Plant card reports a height estimate based on the Rooms, paths, equipment, alerts, and operations it shows.
 The card uses a responsive Room grid, horizontally scrollable hydraulic paths, and controls that collapse for narrow layouts.
+A hydraulic path is a compact chain from the start of its row, with short connectors at any card width.
+Each path takes the heating or cooling color of its own Room's demand.
 The `comfortable` and `compact` density values provide a readable default and a denser dashboard option.
 Each card renders inside `ha-card` and uses Home Assistant theme variables, so it follows light, dark, and custom themes.
 Heating and cooling colors follow the theme's climate state colors.
+Text in a state color, such as the Dry run badge or a warning, is mixed toward the text color so small labels keep enough contrast.
 Heating, cooling, idle, and attention colors are derived from the real Plant snapshot and do not change controller behavior.
 The layout uses logical CSS properties, so it mirrors in right-to-left languages, including the direction of the flow animation.
 Active, requested, waiting, and overrun delivery paths animate in the flow direction.
@@ -224,6 +227,7 @@ The card disables ambient, flow, loading, and state animations when the operatin
 Without a theme, both cards look like stock Home Assistant cards.
 They use the frame, radius, border, shadow, surface, font, and colors of the active Home Assistant theme, with a flat surface and no decorative glow.
 The Plant mark, the status dot, and the flow animation stay, because they show the Plant and path state.
+Like stock cards, they appear without an entrance animation.
 
 A Home Assistant theme restyles the cards through theme keys, so no `card_mod` is needed for colors, shapes, fonts, and frames.
 

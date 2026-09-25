@@ -532,6 +532,26 @@ describe("C11 theme and badge", () => {
   });
 });
 
+describe("Hydraulic Flow", () => {
+  it("colours each path by its own Room's demand, not the Plant's", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const cooling = makeZone({ id: "zone-2", name: "Study", demand: false, phase: "cooling", cooling: { ...makeZone().cooling, demand: true } });
+    const path = (id: string, zoneId: string) => ({ id, zone_id: zoneId, circuit_id: `${id}-loop`, status: "active", problem: null, coupled: false, nodes: [{ kind: "zone", id: zoneId, name: zoneId, state: "active" }] });
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone(), cooling], delivery_paths: [path("heat", "zone-1"), path("cool", "zone-2"), path("gone", "zone-9")] }));
+
+    const kinds = [...root(card).querySelectorAll<HTMLElement>(".path")].map((element) => element.dataset.demandKind);
+    expect(kinds).toEqual(["heating", "cooling", "none"]);
+  });
+
+  it("caps the connectors so a path stays a compact chain at any width", () => {
+    const styles = (customElements.get(TAG) as unknown as { styles: { cssText: string } }).styles.cssText;
+    expect(styles).toMatch(/\.flow-link \{[^}]*max-inline-size: 2\.4rem;/);
+    // Node widths include their padding and border, so four fit a half-width card.
+    expect(styles).toMatch(/\.node \{[^}]*box-sizing: border-box;/);
+  });
+});
+
 describe("C13 right-to-left layouts", () => {
   it("uses only logical properties for the inline direction", () => {
     const styles = (customElements.get(TAG) as unknown as { styles: { cssText: string } }).styles.cssText;

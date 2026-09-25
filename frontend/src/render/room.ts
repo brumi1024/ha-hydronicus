@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { CELSIUS, formatNumber, formatTemperature, formatTemperatureDelta, targetStep } from "../format";
-import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, hvacModeLabel, sentenceLabel, zoneHvacModes, zonePresets } from "../logic";
+import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, hvacModeLabel, sentenceLabel, zoneDemandKind, zoneHvacModes, zonePresets } from "../logic";
 import type { ZoneSnapshot } from "../types";
 import type { RenderContext } from "./context";
 
@@ -38,7 +38,7 @@ function choosePreset(context: RenderContext, zone: ZoneSnapshot, event: Event):
 export function renderRoom(context: RenderContext, zone: ZoneSnapshot, options: RoomOptions): TemplateResult {
   const thermostat = zone.thermostat;
   const internal = thermostat.kind === "hydronicus";
-  const demandKind = zone.cooling.demand ? "cooling" : zone.demand ? "heating" : "none";
+  const demandKind = zoneDemandKind(zone);
   const hasDemand = demandKind !== "none";
   const off = thermostat.hvac_mode === "off";
   const { unit, locale, localize } = context;
