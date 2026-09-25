@@ -253,6 +253,25 @@ async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
     assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
 
 
+async def test_presentation_offers_the_climate_entity_cooling_modes(hass) -> None:
+    """A cooling-capable Room offers the same HVAC modes as its climate entity."""
+    hass.states.async_set("sensor.living_temperature", "25.0")
+    hass.states.async_set("sensor.living_humidity", "50.0")
+    hass.states.async_set("sensor.cooling_supply", "18.0")
+    entry = _cooling_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
+
+    thermostat = entry.runtime_data.presentation_snapshot(hass)["zones"][0]["thermostat"]
+    (climate,) = hass.states.async_all("climate")
+
+    assert thermostat["hvac_mode"] == "cool"
+    assert thermostat["hvac_modes"] == ["off", "heat", "cool", "heat_cool"]
+    assert thermostat["hvac_modes"] == [str(mode) for mode in climate.attributes["hvac_modes"]]
+
+
 async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
     """Shared mode conflicts are explained without issuing any physical call."""
     calls: list[tuple[str, str, str]] = []

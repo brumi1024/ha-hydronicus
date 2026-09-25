@@ -20,9 +20,11 @@ from .core.model import (
     ModeChangeoverPhase,
     PumpState,
     SafeShutdownPhase,
+    ThermostatHvacMode,
     ZoneDecision,
     ZoneDecisionStatus,
 )
+from .core.topology import thermostat_hvac_modes
 
 PRESENTATION_SCHEMA_VERSION = 2
 
@@ -206,17 +208,23 @@ def _zone_snapshots(
             )
             preset = runtime.zone_preset_modes.get(zone_id, "none")
             preset_modes = sorted(zone.thermostat.preset_targets)
+            hvac_mode: str | None = runtime.zone_hvac_modes.get(
+                zone_id, ThermostatHvacMode.OFF
+            ).value
+            hvac_modes = [mode.value for mode in thermostat_hvac_modes(runtime.plant, zone_id)]
             thermostat_available = thermostat_state is not None
-            ownership = "Hydronicus owns this Zone's digital thermostat."
+            ownership = "Hydronicus owns this Room's thermostat."
         else:
             target = external_state.target_temperature
             preset = None
             preset_modes = []
+            hvac_mode = external_state.hvac_mode.value if external_state.hvac_mode else None
+            hvac_modes = []
             external_decision = (
                 cooling if external_state.hvac_action is ExternalHvacAction.COOLING else heating
             )
             thermostat_available = external_state.available and external_state.hvac_mode_valid
-            ownership = "External thermostat owns this Zone. " + (
+            ownership = "External thermostat owns this Room. " + (
                 external_decision.explanation if external_decision else external_state.explanation
             )
         blocked = (
@@ -242,6 +250,8 @@ def _zone_snapshots(
                     ),
                     "preset": preset,
                     "preset_modes": preset_modes,
+                    "hvac_mode": hvac_mode,
+                    "hvac_modes": hvac_modes,
                     "control_entity_id": zone_entity_ids.get(zone_id) if internal else None,
                     "explanation": ownership,
                 },

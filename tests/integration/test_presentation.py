@@ -154,3 +154,24 @@ async def test_presentation_updates_include_execution_boundary_and_alert_priorit
         snapshot["alerts"], key=lambda alert: (alert["priority"], alert["code"], alert["scope"])
     )
     assert any(zone["phase"] == "blocked" for zone in snapshot["zones"])
+
+
+async def test_presentation_carries_thermostat_hvac_mode_and_modes(hass) -> None:
+    """Each Hydronicus thermostat reports its HVAC mode and the modes it offers."""
+    hass.states.async_set("sensor.synthetic_zone_a", "18")
+    hass.states.async_set("sensor.synthetic_zone_b", "18")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+    await runtime.async_set_zone_hvac_mode(ZONE_A, ThermostatHvacMode.HEAT, hass=hass)
+    snapshot = runtime.presentation_snapshot(hass)
+
+    thermostats = {zone["id"]: zone["thermostat"] for zone in snapshot["zones"]}
+    assert thermostats[ZONE_A]["hvac_mode"] == "heat"
+    assert thermostats[ZONE_B]["hvac_mode"] == "off"
+    assert thermostats[ZONE_A]["hvac_modes"] == ["off", "heat"]
+    assert thermostats[ZONE_A]["explanation"] == "Hydronicus owns this Room's thermostat."
