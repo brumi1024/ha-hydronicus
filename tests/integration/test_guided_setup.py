@@ -81,6 +81,7 @@ async def async_guided_reference(hass: HomeAssistant) -> ConfigEntry:
     assert result["step_id"] == "source_mode"
     result = await async_submit(flow, result, {"heat": "Heat", "cool": "Cool"})
     assert result["step_id"] == "pump"
+    assert result["description_placeholders"]["pumps"] == "none yet"
     result = await async_submit(
         flow,
         result,
@@ -91,9 +92,11 @@ async def async_guided_reference(hass: HomeAssistant) -> ConfigEntry:
             "add_another": True,
         },
     )
+    assert result["description_placeholders"]["pumps"] == "Heat pump"
     result = await async_submit(
         flow, result, {"name": "Floor", "switch": FLOOR_PUMP, "overrun": 180, "add_another": True}
     )
+    assert result["description_placeholders"]["pumps"] == "Heat pump, Floor"
     result = await async_submit(
         flow, result, {"name": "Towel dryer", "switch": TOWEL_PUMP, "overrun": 120}
     )

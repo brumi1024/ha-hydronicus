@@ -293,7 +293,8 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
                     if user_input.get("add_another"):
                         return await self.async_step_pump()
                     return await self.async_step_zoning()
-        return self._form("pump", schema, checked)
+        names = [docs.title(pump, key) for key, pump in docs.pumps(self._document).items()]
+        return self._form("pump", schema, checked, {"pumps": ", ".join(names) or "none yet"})
 
     # Zoning and zones
 

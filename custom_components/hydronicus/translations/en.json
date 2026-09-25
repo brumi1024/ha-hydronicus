@@ -61,7 +61,7 @@
       },
       "pump": {
         "title": "Pump",
-        "description": "A pump is a circulator that Hydronicus switches, or one that the source runs by itself. Every loop runs on one pump.",
+        "description": "A pump is a circulator that Hydronicus switches, or one that the source runs by itself. Every loop runs on one pump.\n\nPumps of the Plant: {pumps}.",
         "data": {
           "name": "Pump name",
           "switch": "Pump switch",
@@ -181,7 +181,7 @@
         },
         "menu_option_descriptions": {
           "plant_loop": "Add a loop that runs with the source or with zones.",
-          "loops_done": "Go on to the review."
+          "loops_done": "Finish the loops and review the Plant."
         }
       },
       "plant_loop": {
