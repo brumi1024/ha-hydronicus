@@ -15,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import HydronicConfigEntry
 from .core.model import PumpState, ValveState, ZoneRuntime
 from .entity_device import plant_device_info, topology_device_info
+from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime
 
 # Entities render one atomic runtime evaluation and never poll or call out.
@@ -448,12 +449,17 @@ async def async_setup_entry(
     ]
     subentry_entities: dict[str, list[BinarySensorEntity]] = {}
     for zone in runtime.plant.zones.values():
-        entities = [
+        entities: list[BinarySensorEntity] = [
             ZoneDemandBinarySensor(entry, zone.id, zone.name),
             ZoneBlockedBinarySensor(entry, zone.id, zone.name),
-            ZoneCoolingDemandBinarySensor(entry, zone.id, zone.name),
-            ZoneCoolingBlockedBinarySensor(entry, zone.id, zone.name),
         ]
+        if runtime.plant.zone_can_cool(zone.id):
+            entities.extend(
+                (
+                    ZoneCoolingDemandBinarySensor(entry, zone.id, zone.name),
+                    ZoneCoolingBlockedBinarySensor(entry, zone.id, zone.name),
+                )
+            )
         if subentry_id := runtime.subentry_id_for(zone.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
@@ -488,6 +494,6 @@ async def async_setup_entry(
                 ActuatorBlockedBinarySensor(entry, pump.id, pump.name),
             )
         )
-    async_add_entities(parent_entities)
-    for subentry_id, entities in subentry_entities.items():
-        async_add_entities(entities, config_subentry_id=subentry_id)
+    async_add_plant_entities(
+        runtime, "binary_sensor", async_add_entities, parent_entities, subentry_entities
+    )

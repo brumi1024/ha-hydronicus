@@ -709,14 +709,11 @@ def _unused_equipment_warnings(
 def thermostat_hvac_modes(plant: CompiledPlant, zone_id: str) -> tuple[ThermostatHvacMode, ...]:
     """Return the HVAC modes a Hydronicus thermostat offers for one zone.
 
-    Every thermostat can be off or heat; a zone with a route to a
-    cooling-enabled circuit can also cool and run heat_cool.
+    Every thermostat can be off or heat; a zone that can cool, as
+    ``CompiledPlant.zone_can_cool`` decides, can also cool and run heat_cool.
     """
     modes = (ThermostatHvacMode.OFF, ThermostatHvacMode.HEAT)
-    if any(
-        route.zone_id == zone_id and plant.circuits[route.circuit_id].cooling_enabled
-        for route in plant.routes
-    ):
+    if plant.zone_can_cool(zone_id):
         modes += (ThermostatHvacMode.COOL, ThermostatHvacMode.HEAT_COOL)
     return modes
 

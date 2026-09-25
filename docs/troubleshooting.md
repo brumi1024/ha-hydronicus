@@ -87,8 +87,8 @@ A loop, valve, or pump that no enabled Delivery Route reaches is accepted, repor
 ### The room is unavailable or demand is off
 
 An unavailable, unknown, non-numeric, non-finite, untimestamped, or stale required sensor blocks the room immediately.
-The blocked binary sensor turns on, the blocked-reason sensor explains the failure, and the room releases demand even during a minimum-active hold.
-An unusable optional sensor is excluded from aggregation and appears in the aggregate-temperature and blocked-state attributes.
+The room **Blocked** binary sensor turns on, the diagnostic **Blocked reason** sensor explains the failure, and the room releases demand even during a minimum-active hold.
+An unusable optional sensor is excluded from aggregation and appears in the attributes of the room **Temperature** and **Blocked** entities.
 If no usable sensor remains, the room blocks even when every configured observation is optional.
 
 Check the sensor state in **Settings > Tools > States**.
@@ -104,11 +104,11 @@ Any other unit, including a misspelled one such as `C` or `degC`, makes the obse
 This is deliberate: Hydronicus fails closed rather than guessing what an unknown unit means.
 Fix the unit on the source entity, for example in the template sensor definition, and the room recovers on the next state change.
 A value without a unit is assumed to be Celsius, so a unit-less sensor that reports Fahrenheit produces a wrong temperature rather than a blocked room; add the unit to such a sensor.
-The blocked-reason sensor names the cause, for example `sensor.living_temperature (unsupported unit 'degC')`.
+The **Blocked reason** sensor names the cause, for example `sensor.living_temperature (unsupported unit 'degC')`.
 
 ### A sensor is reported as an implausible value
 
-The blocked-reason sensor shows `implausible value` with the reading converted to Celsius, or to percent for humidity.
+The **Blocked reason** sensor shows `implausible value` with the reading converted to Celsius, or to percent for humidity.
 The reading has a supported unit but lies outside the [plausible range](configuration.md#plausible-observation-ranges) for its observation type.
 Typical causes are a disconnected probe that reports a fault value such as -127 °C, a template that reports 0 K when its source is unavailable, and a sensor whose unit does not match its value, such as a Celsius value labelled `K`.
 Hydronicus fails closed for such a reading: a required sensor blocks the room, a loop reference blocks cooling, and a Source temperature disqualifies the Source.
@@ -134,7 +134,7 @@ Mean and median use all usable calibrated readings selected for the room.
 Minimum and maximum intentionally bias the aggregate toward one extreme.
 Designated reference requires exactly one configured reference observation.
 Weighted mean uses the positive weights configured through detailed sensor editing.
-Inspect the aggregate-temperature sensor attributes to confirm which observations were usable or excluded.
+Inspect the room **Temperature** sensor attributes to confirm which observations were usable or excluded.
 
 ### Demand remains on or off after crossing the threshold
 
@@ -161,6 +161,17 @@ Hydronicus never calls the external climate entity.
 If the external entity is missing, the room appears in Repairs as an unresolved thermostat binding.
 
 ## Warnings, explanations, and virtual states
+
+### An explanation or reason entity is not on the dashboard
+
+Explanations and reasons are diagnostic entities.
+Open the room or Plant device page and look under **Diagnostic** for **Explanation**, **Blocked reason**, **Cooling blocked reason**, **Mode changeover explanation**, and **Source recommendation**.
+
+### A room has no cooling entities, or the Plant has no source entities
+
+A room has cooling entities, and its thermostat offers cool modes, only when it routes to a loop with cooling turned on.
+The Plant has source entities only when it has at least one source.
+Turning off a loop's cooling or removing the last source removes the matching entities on the next reload.
 
 ### Demand is on but the real valve or pump does not move
 

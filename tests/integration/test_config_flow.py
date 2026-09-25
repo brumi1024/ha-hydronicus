@@ -214,7 +214,7 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
     runtime = entry.runtime_data
     assert runtime.dry_run is True
     assert runtime.subentry_id_for(pump["id"]) is None
-    assert hass.states.get("climate.manifold_bedroom") is not None
+    assert hass.states.get("climate.bedroom") is not None
 
 
 async def test_guided_setup_without_warnings_needs_no_confirmation(hass) -> None:

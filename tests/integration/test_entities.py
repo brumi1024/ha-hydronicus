@@ -41,7 +41,10 @@ PUMP_ID = "00000000-0000-4000-8000-000000000004"
 CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 SOURCE_ID = "00000000-0000-4000-8000-000000000007"
-CLIMATE = "climate.hydronic_plant_living"
+CLIMATE = "climate.living"
+# The room sensor already holds sensor.living_temperature, so the room's own
+# Temperature entity takes the next free entity ID.
+TEMPERATURE = "sensor.living_temperature_2"
 
 
 def _entry() -> MockConfigEntry:
@@ -147,66 +150,66 @@ EXPECTED_ENTITIES: dict[str, tuple[str, str]] = {
         "Hydronic plant Mode changeover lockout",
     ),
     f"{PLANT_ID}_{ZONE_ID}_demand": (
-        "binary_sensor.hydronic_plant_living_demand",
-        "Hydronic plant Living Demand",
+        "binary_sensor.living_heating_demand",
+        "Living Heating demand",
     ),
     f"{PLANT_ID}_{ZONE_ID}_blocked": (
-        "binary_sensor.hydronic_plant_living_blocked",
-        "Hydronic plant Living Blocked",
+        "binary_sensor.living_blocked",
+        "Living Blocked",
     ),
     f"{PLANT_ID}_{ZONE_ID}_cooling_demand": (
-        "binary_sensor.hydronic_plant_living_cooling_demand",
-        "Hydronic plant Living Cooling demand",
+        "binary_sensor.living_cooling_demand",
+        "Living Cooling demand",
     ),
     f"{PLANT_ID}_{ZONE_ID}_cooling_blocked": (
-        "binary_sensor.hydronic_plant_living_cooling_blocked",
-        "Hydronic plant Living Cooling blocked",
+        "binary_sensor.living_cooling_blocked",
+        "Living Cooling blocked",
     ),
     f"{PLANT_ID}_{SOURCE_ID}_demand": (
-        "binary_sensor.hydronic_plant_boiler_demand",
-        "Hydronic plant Boiler Demand",
+        "binary_sensor.boiler_demand",
+        "Boiler Demand",
     ),
     f"{PLANT_ID}_{SOURCE_ID}_available": (
-        "binary_sensor.hydronic_plant_boiler_available",
-        "Hydronic plant Boiler Available",
+        "binary_sensor.boiler_available",
+        "Boiler Available",
     ),
     f"{PLANT_ID}_{SOURCE_ID}_active": (
-        "binary_sensor.hydronic_plant_boiler_active",
-        "Hydronic plant Boiler Active",
+        "binary_sensor.boiler_active",
+        "Boiler Active",
     ),
     f"{PLANT_ID}_{SOURCE_ID}_blocked": (
-        "binary_sensor.hydronic_plant_boiler_blocked",
-        "Hydronic plant Boiler Blocked",
+        "binary_sensor.boiler_blocked",
+        "Boiler Blocked",
     ),
     f"{PLANT_ID}_valve_{VALVE_ID}_requested": (
-        "binary_sensor.hydronic_plant_cooling_valve_requested",
-        "Hydronic plant Cooling valve Requested",
+        "binary_sensor.cooling_valve_requested",
+        "Cooling valve Requested",
     ),
     f"{PLANT_ID}_{VALVE_ID}_mismatch": (
-        "binary_sensor.hydronic_plant_cooling_valve_mismatch",
-        "Hydronic plant Cooling valve Mismatch",
+        "binary_sensor.cooling_valve_mismatch",
+        "Cooling valve Mismatch",
     ),
     f"{PLANT_ID}_{VALVE_ID}_blocked": (
-        "binary_sensor.hydronic_plant_cooling_valve_blocked",
-        "Hydronic plant Cooling valve Blocked",
+        "binary_sensor.cooling_valve_blocked",
+        "Cooling valve Blocked",
     ),
     f"{PLANT_ID}_pump_{PUMP_ID}_requested": (
-        "binary_sensor.hydronic_plant_cooling_pump_requested",
-        "Hydronic plant Cooling pump Requested",
+        "binary_sensor.cooling_pump_requested",
+        "Cooling pump Requested",
     ),
     f"{PLANT_ID}_{PUMP_ID}_mismatch": (
-        "binary_sensor.hydronic_plant_cooling_pump_mismatch",
-        "Hydronic plant Cooling pump Mismatch",
+        "binary_sensor.cooling_pump_mismatch",
+        "Cooling pump Mismatch",
     ),
     f"{PLANT_ID}_{PUMP_ID}_blocked": (
-        "binary_sensor.hydronic_plant_cooling_pump_blocked",
-        "Hydronic plant Cooling pump Blocked",
+        "binary_sensor.cooling_pump_blocked",
+        "Cooling pump Blocked",
     ),
     f"{PLANT_ID}_safe_shutdown": (
         "button.hydronic_plant_safe_shutdown",
         "Hydronic plant Safe shutdown",
     ),
-    f"{PLANT_ID}_{ZONE_ID}_climate": (CLIMATE, "Hydronic plant Living"),
+    f"{PLANT_ID}_{ZONE_ID}_climate": (CLIMATE, "Living"),
     f"{PLANT_ID}_requested_mode": (
         "select.hydronic_plant_requested_mode",
         "Hydronic plant Requested mode",
@@ -252,40 +255,40 @@ EXPECTED_ENTITIES: dict[str, tuple[str, str]] = {
         "Hydronic plant Source recommendation",
     ),
     f"{PLANT_ID}_{SOURCE_ID}_blocked_reason": (
-        "sensor.hydronic_plant_boiler_blocked_reason",
-        "Hydronic plant Boiler Blocked reason",
+        "sensor.boiler_blocked_reason",
+        "Boiler Blocked reason",
     ),
     f"{PLANT_ID}_{ZONE_ID}_explanation": (
-        "sensor.hydronic_plant_living_explanation",
-        "Hydronic plant Living Explanation",
+        "sensor.living_explanation",
+        "Living Explanation",
     ),
     f"{PLANT_ID}_{ZONE_ID}_aggregate_temperature": (
-        "sensor.hydronic_plant_living_aggregate_temperature",
-        "Hydronic plant Living Aggregate temperature",
+        TEMPERATURE,
+        "Living Temperature",
     ),
     f"{PLANT_ID}_{ZONE_ID}_blocked_reason": (
-        "sensor.hydronic_plant_living_blocked_reason",
-        "Hydronic plant Living Blocked reason",
+        "sensor.living_blocked_reason",
+        "Living Blocked reason",
     ),
     f"{PLANT_ID}_{ZONE_ID}_cooling_blocked_reason": (
-        "sensor.hydronic_plant_living_cooling_blocked_reason",
-        "Hydronic plant Living Cooling blocked reason",
+        "sensor.living_cooling_blocked_reason",
+        "Living Cooling blocked reason",
     ),
     f"{PLANT_ID}_{ZONE_ID}_dew_point": (
-        "sensor.hydronic_plant_living_cooling_dew_point",
-        "Hydronic plant Living Cooling dew point",
+        "sensor.living_cooling_dew_point",
+        "Living Cooling dew point",
     ),
     f"{PLANT_ID}_{ZONE_ID}_condensation_margin": (
-        "sensor.hydronic_plant_living_cooling_condensation_margin",
-        "Hydronic plant Living Cooling condensation margin",
+        "sensor.living_cooling_condensation_margin",
+        "Living Cooling condensation margin",
     ),
     f"{PLANT_ID}_{VALVE_ID}_feedback_reason": (
-        "sensor.hydronic_plant_cooling_valve_feedback_reason",
-        "Hydronic plant Cooling valve Feedback reason",
+        "sensor.cooling_valve_feedback_reason",
+        "Cooling valve Feedback reason",
     ),
     f"{PLANT_ID}_{PUMP_ID}_feedback_reason": (
-        "sensor.hydronic_plant_cooling_pump_feedback_reason",
-        "Hydronic plant Cooling pump Feedback reason",
+        "sensor.cooling_pump_feedback_reason",
+        "Cooling pump Feedback reason",
     ),
 }
 
@@ -317,7 +320,7 @@ async def test_condensation_margin_converts_as_a_temperature_delta(hass, actuato
     await hass.async_block_till_done()
 
     assert entry.runtime_data.zone_condensation_margin(ZONE_ID) == pytest.approx(4.1484, abs=1e-3)
-    state = hass.states.get("sensor.hydronic_plant_living_cooling_condensation_margin")
+    state = hass.states.get("sensor.living_cooling_condensation_margin")
     assert state.attributes["unit_of_measurement"] == "°F"
     assert float(state.state) == pytest.approx(7.47, abs=0.01)
     assert state.attributes["device_class"] == "temperature_delta"
@@ -510,7 +513,7 @@ async def test_existing_condensation_margin_keeps_its_unit_and_converts_as_a_del
         "sensor",
         DOMAIN,
         f"{PLANT_ID}_{ZONE_ID}_condensation_margin",
-        suggested_object_id="hydronic_plant_living_cooling_condensation_margin",
+        suggested_object_id="living_cooling_condensation_margin",
         config_entry=entry,
         original_device_class="temperature",
         unit_of_measurement=registered_unit,
@@ -523,7 +526,7 @@ async def test_existing_condensation_margin_keeps_its_unit_and_converts_as_a_del
     await entry.runtime_data.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.COOL, hass=hass)
     await hass.async_block_till_done()
 
-    state = hass.states.get("sensor.hydronic_plant_living_cooling_condensation_margin")
+    state = hass.states.get("sensor.living_cooling_condensation_margin")
     assert state.attributes["unit_of_measurement"] == registered_unit
     assert float(state.state) == pytest.approx(expected_value, abs=0.01)
     assert actuator_calls == []
@@ -532,26 +535,32 @@ async def test_existing_condensation_margin_keeps_its_unit_and_converts_as_a_del
 # Entity ID -> (device class, entity category); every other entity has neither.
 EXPECTED_CLASSES: dict[str, tuple[str | None, str | None]] = {
     "binary_sensor.hydronic_plant_mode_changeover_lockout": (None, "diagnostic"),
-    "binary_sensor.hydronic_plant_living_blocked": ("problem", "diagnostic"),
-    "binary_sensor.hydronic_plant_living_cooling_blocked": ("problem", "diagnostic"),
-    "binary_sensor.hydronic_plant_boiler_available": (None, "diagnostic"),
-    "binary_sensor.hydronic_plant_boiler_active": ("running", None),
-    "binary_sensor.hydronic_plant_boiler_blocked": ("problem", "diagnostic"),
-    "binary_sensor.hydronic_plant_cooling_valve_mismatch": ("problem", "diagnostic"),
-    "binary_sensor.hydronic_plant_cooling_valve_blocked": ("problem", "diagnostic"),
-    "binary_sensor.hydronic_plant_cooling_pump_mismatch": ("problem", "diagnostic"),
-    "binary_sensor.hydronic_plant_cooling_pump_blocked": ("problem", "diagnostic"),
+    "binary_sensor.living_blocked": ("problem", "diagnostic"),
+    "binary_sensor.living_cooling_blocked": ("problem", "diagnostic"),
+    "binary_sensor.boiler_available": (None, "diagnostic"),
+    "binary_sensor.boiler_active": ("running", None),
+    "binary_sensor.boiler_blocked": ("problem", "diagnostic"),
+    "binary_sensor.cooling_valve_mismatch": ("problem", "diagnostic"),
+    "binary_sensor.cooling_valve_blocked": ("problem", "diagnostic"),
+    "binary_sensor.cooling_pump_mismatch": ("problem", "diagnostic"),
+    "binary_sensor.cooling_pump_blocked": ("problem", "diagnostic"),
     "sensor.hydronic_plant_controller_status": ("enum", "diagnostic"),
     "sensor.hydronic_plant_reconciliation_status": ("enum", "diagnostic"),
     "sensor.hydronic_plant_topology_preview": (None, "diagnostic"),
     "sensor.hydronic_plant_operating_mode": ("enum", None),
     "sensor.hydronic_plant_source_changeover": ("enum", None),
     "sensor.hydronic_plant_source_dwell": ("duration", "diagnostic"),
-    "sensor.hydronic_plant_living_aggregate_temperature": ("temperature", None),
-    "sensor.hydronic_plant_living_cooling_dew_point": ("temperature", None),
-    "sensor.hydronic_plant_living_cooling_condensation_margin": ("temperature_delta", None),
-    "sensor.hydronic_plant_cooling_valve_feedback_reason": (None, "diagnostic"),
-    "sensor.hydronic_plant_cooling_pump_feedback_reason": (None, "diagnostic"),
+    "sensor.hydronic_plant_source_recommendation": (None, "diagnostic"),
+    "sensor.hydronic_plant_mode_changeover_explanation": (None, "diagnostic"),
+    "sensor.boiler_blocked_reason": (None, "diagnostic"),
+    "sensor.living_explanation": (None, "diagnostic"),
+    "sensor.living_blocked_reason": (None, "diagnostic"),
+    "sensor.living_cooling_blocked_reason": (None, "diagnostic"),
+    TEMPERATURE: ("temperature", None),
+    "sensor.living_cooling_dew_point": ("temperature", None),
+    "sensor.living_cooling_condensation_margin": ("temperature_delta", None),
+    "sensor.cooling_valve_feedback_reason": (None, "diagnostic"),
+    "sensor.cooling_pump_feedback_reason": (None, "diagnostic"),
 }
 
 
@@ -582,9 +591,9 @@ async def test_temperature_sensors_suggest_one_decimal(hass) -> None:
     registry = er.async_get(hass)
 
     for entity_id in (
-        "sensor.hydronic_plant_living_aggregate_temperature",
-        "sensor.hydronic_plant_living_cooling_dew_point",
-        "sensor.hydronic_plant_living_cooling_condensation_margin",
+        TEMPERATURE,
+        "sensor.living_cooling_dew_point",
+        "sensor.living_cooling_condensation_margin",
     ):
         options = registry.async_get(entity_id).options["sensor"]
         assert options["suggested_display_precision"] == 1, entity_id
@@ -687,16 +696,16 @@ async def test_volatile_attributes_are_excluded_from_the_recorder(hass) -> None:
         "sensor.hydronic_plant_controller_status": {"operations"},
         "binary_sensor.hydronic_plant_dry_run": {"operations"},
         "sensor.hydronic_plant_topology_preview": {"logic_summary", "warnings"},
-        "sensor.hydronic_plant_living_explanation": {"aggregation_explanation", "deadline"},
-        "sensor.hydronic_plant_living_cooling_dew_point": {"interlocks"},
+        "sensor.living_explanation": {"aggregation_explanation", "deadline"},
+        "sensor.living_cooling_dew_point": {"interlocks"},
         "sensor.hydronic_plant_operating_mode": {"explanation", "changeover_deadline"},
         "sensor.hydronic_plant_source_changeover": {"explanation", "dwell_remaining_seconds"},
-        "sensor.hydronic_plant_cooling_valve_feedback_reason": {
+        "sensor.cooling_valve_feedback_reason": {
             "execution_failure",
             "stale_feedback",
         },
         "binary_sensor.hydronic_plant_mode_changeover_lockout": {"reason", "deadline"},
-        "binary_sensor.hydronic_plant_cooling_valve_blocked": {
+        "binary_sensor.cooling_valve_blocked": {
             "reason",
             "execution_failure",
             "stale_feedback",
@@ -709,7 +718,7 @@ async def test_volatile_attributes_are_excluded_from_the_recorder(hass) -> None:
     # Low-cardinality structured state stays recorded.
     for entity_id, attribute in (
         ("sensor.hydronic_plant_controller_status", "dry_run"),
-        ("binary_sensor.hydronic_plant_living_blocked", "blocking_required_sensor_ids"),
+        ("binary_sensor.living_blocked", "blocking_required_sensor_ids"),
         ("sensor.hydronic_plant_operating_mode", "requested_mode"),
     ):
         state = hass.states.get(entity_id)

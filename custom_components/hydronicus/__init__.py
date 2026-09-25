@@ -18,6 +18,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
+from .entity_registration import async_remove_unprovided_entities
 from .entry_configuration import (
     GRAPH_EDIT_ERRORS,
     invalidate_output_authorization,
@@ -205,6 +206,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
         _ensure_plant_device(hass, entry, runtime)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         forwarded = True
+        # Entities are conditional on the graph, so an edit such as turning off
+        # a loop's cooling leaves registry entries that nothing provides now.
+        async_remove_unprovided_entities(hass, entry, runtime)
         await runtime.async_finish_start(hass)
         register_runtime(hass, runtime)
         registered = True

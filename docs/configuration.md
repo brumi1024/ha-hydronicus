@@ -200,17 +200,22 @@ Direct source demand can execute only outside Dry run and after a valid pump pat
 ## Observe the result
 
 After setup, Hydronicus exposes entities associated with the Plant.
-Entity IDs come from the Plant name and the object names, so the trial Plant has entities such as `climate.trial_plant_bedroom` and `binary_sensor.trial_plant_bedroom_loop_valve_requested`.
+Each room, valve, pump, and source is a device named after the object alone, under the Plant device that carries the Plant name.
+Entity IDs come from those device names, so the trial Plant has entities such as `climate.bedroom`, `binary_sensor.bedroom_heating_demand`, and `binary_sensor.bedroom_loop_valve_requested`, while Plant-wide entities such as `select.trial_plant_requested_mode` keep the Plant name.
+If an entity ID is already taken, for example `sensor.bedroom_temperature` by your own room sensor, Home Assistant adds a suffix such as `_2`.
 
 The useful states for a first simulation are:
 
 - The room climate entity, which reports the aggregate current temperature and target.
-- The room demand binary sensor, which reports the calculated virtual heat demand.
-- The aggregate-temperature sensor, which identifies usable and excluded observations in its attributes.
-- The blocked binary sensor and blocked-reason sensor, which expose fail-closed sensor decisions without parsing prose.
+- The room **Heating demand** binary sensor, which reports the calculated virtual heat demand.
+- The room **Temperature** sensor, which reports the aggregate the controller uses and identifies usable and excluded observations in its attributes.
 - The valve requested and pump requested binary sensors, which report virtual requests.
-- The topology preview sensor, which reports room and loop counts, such as `2 rooms, 2 loops`, and exposes compiled logic and structured warnings as separate attributes.
-- The room explanation sensor, which reports why demand is requested, idle, or blocked.
+
+Explanations and reasons are diagnostic entities, listed under **Diagnostic** on the device page:
+
+- The room **Blocked** binary sensor and **Blocked reason** sensor, which expose fail-closed sensor decisions without parsing prose.
+- The room **Explanation** sensor, which reports why demand is requested, idle, or blocked.
+- The **Topology preview** sensor, which reports room and loop counts, such as `2 rooms, 2 loops`, and exposes compiled logic and structured warnings as separate attributes.
 
 Change the synthetic temperature below the target and wait for the configured virtual valve opening time.
 The virtual sequence is:
@@ -225,6 +230,9 @@ The pump enters virtual overrun before it becomes idle, and the valve closes aft
 No physical service call is dispatched while Dry run remains enabled.
 
 Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
+A room has cooling entities only when it routes to a loop with cooling turned on, which is also when its thermostat offers cool modes.
+The Plant has source entities, such as **Recommended source** and **Source changeover**, only when it has at least one source.
+When a change removes an object's reason for an entity, such as turning off a loop's cooling, the reload removes that entity from Home Assistant.
 Source-selector operations remain Dry run only.
 When Dry run is off, valves and pumps in heating and cooling, and a configured direct source-demand output, can execute after the required confirmation and pump-path checks.
 

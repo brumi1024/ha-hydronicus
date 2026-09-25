@@ -209,10 +209,7 @@ async def test_verbose_actuator_entities_are_opt_in(hass) -> None:
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
-    assert (
-        hass.states.get("sensor.private_solymar_plant_private_manifold_valve_feedback_reason")
-        is None
-    )
+    assert hass.states.get("sensor.private_manifold_valve_feedback_reason") is None
 
 
 async def test_diagnostics_name_the_owner_of_every_object_without_room_titles(hass) -> None:

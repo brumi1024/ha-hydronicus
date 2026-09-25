@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicConfigEntry
 from .entity_device import plant_device_info
+from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime
 
 # The runtime serializes the shutdown sequence under its own operation lock.
@@ -46,4 +47,6 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Publish one plant-level safe-shutdown action."""
-    async_add_entities([SafeShutdownButton(entry)])
+    async_add_plant_entities(
+        entry.runtime_data, "button", async_add_entities, [SafeShutdownButton(entry)]
+    )

@@ -302,4 +302,4 @@ async def test_initial_setup_creates_one_room_that_owns_its_loop_and_valve(hass)
     runtime = entry.runtime_data
     assert runtime.subentry_id_for(valve["id"]) == room.subentry_id
     assert runtime.subentry_id_for(pump["id"]) is None
-    assert hass.states.get("climate.study_plant_study") is not None
+    assert hass.states.get("climate.study") is not None

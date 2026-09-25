@@ -17,6 +17,7 @@ from .const import (
 )
 from .core.model import PlantMode, SourceSelectionPhase
 from .entity_device import plant_device_info, topology_device_info
+from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime
 
 # Entities render one atomic runtime evaluation and never poll or call out.
@@ -185,6 +186,7 @@ class ZoneExplanationSensor(_HydronicSensor):
     """Expose the last controller explanation for a comfort zone."""
 
     _attr_translation_key = "zone_explanation"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind a diagnostic entity to one zone."""
@@ -240,6 +242,7 @@ class ZoneBlockedReasonSensor(_HydronicSensor):
     """Expose the structured sensor-health reason for one zone."""
 
     _attr_translation_key = "zone_blocked_reason"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the blocked reason to one comfort zone."""
@@ -296,6 +299,7 @@ class SourceRecommendationExplanationSensor(_HydronicSensor):
     """Expose the explanation for the source recommendation."""
 
     _attr_translation_key = "source_recommendation"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the explanation to the current runtime."""
@@ -407,6 +411,7 @@ class SourceBlockedReasonSensor(_HydronicSensor):
     """Expose a bounded source-specific block explanation."""
 
     _attr_translation_key = "source_blocked_reason"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
         super().__init__(entry)
@@ -438,6 +443,7 @@ class ZoneCoolingBlockedReasonSensor(_HydronicSensor):
     """Expose the cooling interlock explanation for one comfort zone."""
 
     _attr_translation_key = "zone_cooling_blocked_reason"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         """Bind the cooling explanation to one comfort zone."""
@@ -648,6 +654,7 @@ class ModeChangeoverExplanationSensor(_HydronicSensor):
     """Explain why a requested mode is active, idle, or locked."""
 
     _attr_translation_key = "mode_changeover_explanation"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the explanation to the plant runtime."""
@@ -694,30 +701,39 @@ async def async_setup_entry(
         TopologyPreviewSensor(entry),
         PlantModeSensor(entry),
         ModeChangeoverExplanationSensor(entry),
-        ActiveSourceSensor(entry),
-        SourceChangeoverSensor(entry),
-        SourceDwellSensor(entry),
     ]
-    parent_entities.extend(
-        [RecommendedSourceSensor(entry), SourceRecommendationExplanationSensor(entry)]
-    )
-    source_subentry_entities: dict[str, list[SensorEntity]] = {}
+    # Source selection has nothing to report on a Plant without a source.
+    if runtime.plant.sources:
+        parent_entities.extend(
+            (
+                ActiveSourceSensor(entry),
+                SourceChangeoverSensor(entry),
+                SourceDwellSensor(entry),
+                RecommendedSourceSensor(entry),
+                SourceRecommendationExplanationSensor(entry),
+            )
+        )
+    subentry_entities: dict[str, list[SensorEntity]] = {}
     for source in runtime.plant.sources.values():
         entity = SourceBlockedReasonSensor(entry, source.id, source.name)
         if subentry_id := runtime.subentry_id_for(source.id):
-            source_subentry_entities.setdefault(subentry_id, []).append(entity)
+            subentry_entities.setdefault(subentry_id, []).append(entity)
         else:
             parent_entities.append(entity)
-    subentry_entities: dict[str, list[SensorEntity]] = {}
     for zone in runtime.plant.zones.values():
-        entities = [
+        entities: list[SensorEntity] = [
             ZoneExplanationSensor(entry, zone.id, zone.name),
             ZoneAggregateTemperatureSensor(entry, zone.id, zone.name),
             ZoneBlockedReasonSensor(entry, zone.id, zone.name),
-            ZoneCoolingBlockedReasonSensor(entry, zone.id, zone.name),
-            ZoneDewPointSensor(entry, zone.id, zone.name),
-            ZoneCondensationMarginSensor(entry, zone.id, zone.name),
         ]
+        if runtime.plant.zone_can_cool(zone.id):
+            entities.extend(
+                (
+                    ZoneCoolingBlockedReasonSensor(entry, zone.id, zone.name),
+                    ZoneDewPointSensor(entry, zone.id, zone.name),
+                    ZoneCondensationMarginSensor(entry, zone.id, zone.name),
+                )
+            )
         if subentry_id := runtime.subentry_id_for(zone.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
@@ -734,11 +750,9 @@ async def async_setup_entry(
             ActuatorFeedbackReasonSensor(entry, pump.id, pump.name)
             for pump in runtime.plant.pumps.values()
         )
-    async_add_entities(parent_entities)
-    for subentry_id, entities in source_subentry_entities.items():
-        subentry_entities.setdefault(subentry_id, []).extend(entities)
-    for subentry_id, entities in subentry_entities.items():
-        async_add_entities(entities, config_subentry_id=subentry_id)
+    async_add_plant_entities(
+        runtime, "sensor", async_add_entities, parent_entities, subentry_entities
+    )
 
 
 def _cooling_diagnostic_attributes(runtime: HydronicRuntime, zone_id: str) -> dict[str, object]:

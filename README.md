@@ -48,7 +48,7 @@ The current implementation includes:
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
 - Cooling condensation diagnostics and Dry run source recommendations.
 - Explicit, idempotent switch and native-valve executor operations behind the Plant Dry run control.
-- Dry run climate, demand, aggregate-temperature, blocked-state, actuator-request, topology-preview, and explanation entities.
+- Dry run climate, heating demand, temperature, blocked-state, actuator-request, topology-preview, and explanation entities, with cooling and source entities only where the Plant has them.
 - Structured non-fatal warnings when shared valves or pumps limit independent control, and for unused Plant equipment.
 
 Home Assistant Repairs for unresolved bindings, redacted downloadable diagnostics, startup reconciliation, and bounded command-failure handling are implemented.
@@ -132,10 +132,10 @@ The new Plant starts in Dry run.
 
 ### Exercise the simulation
 
-1. Set `climate.trial_plant_bedroom` to heat, because a fresh Hydronicus thermostat starts off with a 21 °C target.
+1. Set `climate.bedroom` to heat, because a fresh Hydronicus thermostat starts off with a 21 °C target.
 2. Lower `input_number.hydronicus_trial_bedroom_temperature` to 18 °C.
-3. Check that `binary_sensor.trial_plant_bedroom_demand` and `binary_sensor.trial_plant_bedroom_loop_valve_requested` turn on, while the Living room entities stay off.
-4. After the valve's 30 second default opening time, check that `binary_sensor.trial_plant_circulation_pump_requested` turns on.
+3. Check that `binary_sensor.bedroom_heating_demand` and `binary_sensor.bedroom_loop_valve_requested` turn on, while the Living room entities stay off.
+4. After the valve's 30 second default opening time, check that `binary_sensor.circulation_pump_requested` turns on.
 5. Raise the bedroom temperature to 22 °C.
    Demand ends, the virtual pump follows its 120 second default overrun, and then the virtual valve closes.
 

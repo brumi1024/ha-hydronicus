@@ -33,6 +33,7 @@ from .core.model import (
 )
 from .core.topology import thermostat_hvac_modes
 from .entity_device import topology_device_info
+from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime
 
 # The runtime serializes thermostat changes under its own operation lock.
@@ -267,9 +268,9 @@ async def async_setup_entry(
             subentry_entities.setdefault(subentry_id, []).append(entity)
         else:
             parent_entities.append(entity)
-    async_add_entities(parent_entities)
-    for subentry_id, entities in subentry_entities.items():
-        async_add_entities(entities, config_subentry_id=subentry_id)
+    async_add_plant_entities(
+        runtime, "climate", async_add_entities, parent_entities, subentry_entities
+    )
 
 
 def _usable_target(value: object) -> float | None:

@@ -460,6 +460,45 @@ def _version_2_registrations(object_id: str) -> list[tuple[str, str, str]]:
     ]
 
 
+# A version 2 install registered cooling entities for every room. No loop of the
+# evidence Plant cools, so setup after the migration removes exactly these.
+_COOLING_SUFFIXES = (
+    "_cooling_demand",
+    "_cooling_blocked",
+    "_cooling_blocked_reason",
+    "_dew_point",
+    "_condensation_margin",
+)
+
+
+def _is_unprovided_cooling_entity(unique_id: str) -> bool:
+    """Return whether a room entity exists only for rooms that can cool."""
+    return unique_id.endswith(_COOLING_SUFFIXES)
+
+
+def _unprovided_cooling_entities(hass, entity_ids: dict[str, str]) -> dict[str, str]:
+    """Return entity ID -> registration id of the entities setup removes as unprovided."""
+    registry = er.async_get(hass)
+    return {
+        entity_id: registry.async_get(entity_id).id
+        for unique_id, entity_id in entity_ids.items()
+        if _is_unprovided_cooling_entity(unique_id)
+    }
+
+
+def _assert_only_cleaned_up(
+    hass,
+    entry: MockConfigEntry,
+    registrations: set[tuple[str, str]],
+    removals: list[tuple[str, str]],
+    cleaned_up: dict[str, str],
+) -> None:
+    """Assert that setup removed the unprovided cooling entities and nothing else."""
+    assert sorted(removals) == sorted(("entity", entity_id) for entity_id in cleaned_up)
+    removed = {("entity", registration_id) for registration_id in cleaned_up.values()}
+    assert registrations - removed <= _registration_ids(hass, entry)
+
+
 CUSTOMIZED_ROOM_ENTITY = "binary_sensor.bedroom_heat_call"
 CUSTOMIZED_PLANT_ENTITY = "binary_sensor.bedroom_valve_open"
 
@@ -605,6 +644,9 @@ def _assert_migrated_evidence_plant(
         assert device.config_subentry_id == target, object_id
         for domain, unique_id, _slug in _version_2_registrations(object_id):
             registry_entry = entities.async_get(entity_ids[unique_id])
+            if _is_unprovided_cooling_entity(unique_id):
+                assert registry_entry is None, unique_id
+                continue
             assert registry_entry is not None, unique_id
             assert registry_entry.unique_id == unique_id
             assert registry_entry.domain == domain
@@ -640,14 +682,15 @@ async def test_cross_wired_version_2_manifold_migrates_without_losing_registrati
     entity_ids = _install_version_2_registry(hass, entry)
     registrations = _registration_ids(hass, entry)
     removals = _record_removals(hass)
+    cleaned_up = _unprovided_cooling_entities(hass, entity_ids)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
     _assert_migrated_evidence_plant(hass, entry, entity_ids)
-    # Every registration was moved in place, never removed and restored.
-    assert removals == []
-    assert registrations <= _registration_ids(hass, entry)
+    # Every registration was moved in place, never removed and restored; only the
+    # cooling entities that nothing provides any more were removed after it.
+    _assert_only_cleaned_up(hass, entry, registrations, removals, cleaned_up)
 
 
 async def test_entity_without_an_object_id_under_a_legacy_handle_moves_to_the_plant(
@@ -712,14 +755,14 @@ async def test_interrupted_migration_resumes_to_the_same_final_state(
     entity_ids = _install_version_2_registry(hass, entry)
     registrations = _registration_ids(hass, entry)
     removals = _record_removals(hass)
+    cleaned_up = _unprovided_cooling_entities(hass, entity_ids)
     _run_until_interrupted(hass, entry, completed_steps)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
     _assert_migrated_evidence_plant(hass, entry, entity_ids)
-    assert removals == []
-    assert registrations <= _registration_ids(hass, entry)
+    _assert_only_cleaned_up(hass, entry, registrations, removals, cleaned_up)
 
 
 @pytest.mark.parametrize(
