@@ -168,6 +168,8 @@ export const cardStyles = css`
   .status-line { flex-wrap: wrap; margin-block-start: 0.48rem; gap: 0.35rem; }
   .status-primary { display: inline-flex; align-items: center; gap: 0.38rem; font-size: 0.86rem; font-weight: 600; }
   .status-dot { inline-size: 0.45rem; block-size: 0.45rem; border-radius: 50%; background: var(--_hy-state); animation: hydronicus-pulse 2.8s ease-out infinite; }
+  .health { font-size: 0.78rem; font-weight: 600; color: var(--_hy-warning-ink); }
+  .health[data-health="unavailable"] { color: var(--_hy-danger-ink); }
   .mode-detail { border-inline-start: 1px solid var(--_hy-line); padding-inline-start: 0.55rem; }
   .source-line { margin-block-start: 0.35rem; }
   .source-line strong { color: var(--_hy-text); font-weight: 600; }
@@ -236,15 +238,23 @@ export const cardStyles = css`
   .metric-value { font-size: clamp(1.22rem, 5cqi, 1.6rem); font-weight: 600; letter-spacing: -0.02em; }
   .metric-unit { margin-inline-start: 0.15rem; color: var(--_hy-text-muted); font-size: 0.75rem; }
   .metric-label { display: block; margin-block-start: 0.06rem; color: var(--_hy-text-muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
-  /* One compact line per area: a name that shortens, then readings in aligned columns. */
-  .area-list { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.75rem; margin-block-end: 0.3rem; font-size: var(--ha-font-size-s, 0.8rem); line-height: 1.45; }
-  .area-list[data-humidity="true"] { grid-template-columns: minmax(0, 1fr) auto auto; }
+  /*
+   * One compact line per area: a name that shortens, then readings in aligned
+   * columns. The name column is only as wide as the longest name, so in a wide
+   * tile the readings stay next to their names instead of at the far edge.
+   */
+  .area-list { display: grid; grid-template-columns: minmax(0, max-content) auto; justify-content: start; column-gap: 1rem; margin-block-end: 0.3rem; font-size: var(--ha-font-size-s, 0.8rem); line-height: 1.45; }
+  .area-list[data-humidity="true"] { grid-template-columns: minmax(0, max-content) auto auto; }
   .area { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding-block: 0.2rem; border-block-start: 1px solid color-mix(in srgb, var(--_hy-line) 60%, transparent); }
   .area:first-child { border-block-start: 0; }
   ha-card.compact .area { padding-block: 0.1rem; }
   .area-name { min-inline-size: 0; overflow: hidden; color: var(--_hy-text-muted); text-overflow: ellipsis; white-space: nowrap; }
   .area-name button.link { max-inline-size: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   .area-value { text-align: end; white-space: nowrap; }
+  /* A missing area's tag takes the place of its readings. */
+  .area-missing { grid-column: 2 / -1; justify-self: end; border: 1px solid color-mix(in srgb, var(--_hy-warning) 34%, var(--_hy-line)); border-radius: 999px; padding: 0 0.42rem; color: var(--_hy-warning-ink); font-size: 0.7rem; line-height: 1.5; white-space: nowrap; }
+  .zone-alerts { display: grid; gap: 0.35rem; margin-block: 0.45rem 0.1rem; }
+  .zone-alerts > .alert { margin-block-start: 0; padding-block: 0.42rem; font-size: var(--ha-font-size-s, 0.8rem); line-height: 1.4; }
   .zone-note { margin-block-start: 0.28rem; }
   .diagnostic-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-block-start: 0.45rem; }
   .diagnostic-chip { border: 1px solid var(--_hy-line); border-radius: 999px; padding: 0.2rem 0.45rem; color: var(--_hy-text-muted); font-size: 0.7rem; }
@@ -272,6 +282,8 @@ export const cardStyles = css`
   .path-heading { display: flex; align-items: center; gap: 0.42rem; min-inline-size: 0; }
   .path-heading::before { content: ""; flex: 0 0 auto; inline-size: 0.43rem; block-size: 0.43rem; border-radius: 50%; background: color-mix(in srgb, var(--_hy-text-muted) 55%, transparent); }
   /* A path takes the colour of its own Zone's demand. */
+  /* A path of a Zone without demand is idle, even where a shared pump runs for another Zone. */
+  .path[data-demand-kind="none"] { --_hy-state: var(--_hy-idle); }
   .path[data-demand-kind="heating"] { --_hy-state: var(--_hy-heating); }
   .path[data-demand-kind="cooling"] { --_hy-state: var(--_hy-cooling); }
   .path[data-flowing="true"] .path-heading::before { background: var(--_hy-state); animation: hydronicus-pulse 2.4s ease-out infinite; }

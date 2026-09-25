@@ -1,7 +1,7 @@
 import { html, type TemplateResult } from "lit";
 import { HydronicusCardElement } from "./card-base";
 import { validateZoneConfig, ZONE_EDITOR_TAG, zoneStubConfig } from "./config";
-import { zoneTileSize, zoneVisualState } from "./logic";
+import { zoneAlerts, zoneTileSize, zoneVisualState } from "./logic";
 import { renderActionError, renderState, renderStreamNotice, renderUnservedPlant, showableSnapshot } from "./render/state";
 import { renderZone } from "./render/zone";
 import type { HomeAssistantLike, ZoneCardConfig } from "./types";
@@ -74,10 +74,11 @@ export class HydronicusZoneCard extends HydronicusCardElement {
       // looks the same as one that was removed.
       return renderState(EYEBROW, "Zone not found", "This Zone is not in the Plant, or you do not have access to it. Choose another Zone in the card editor.", "alert");
     }
-    return html`<ha-card part="card" class="zone-card ${config.density ?? "comfortable"}" data-visual=${zoneVisualState(zone)}>
+    const alerts = zoneAlerts(snapshot, zone.id);
+    return html`<ha-card part="card" class="zone-card ${config.density ?? "comfortable"}" data-visual=${zoneVisualState(zone, alerts)}>
       ${renderStreamNotice(state.status)}
       ${renderActionError(this._actionError, this.dismissActionError)}
-      ${renderZone(this.renderContext, zone, { headingLevel: 2 })}
+      ${renderZone(this.renderContext, zone, { headingLevel: 2, alerts })}
     </ha-card>`;
   }
 }

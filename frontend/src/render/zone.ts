@@ -1,7 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { CELSIUS, formatNumber, formatTemperature, formatTemperatureDelta, targetStep } from "../format";
-import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, hvacModeLabel, sentenceLabel, zoneAreaLines, zoneDemandKind, zoneHvacModes, zonePresets } from "../logic";
-import type { ZoneArea, ZoneSnapshot } from "../types";
+import { actionForHvacMode, actionForPreset, actionForTarget, adjustTarget, alertLabel, hvacModeLabel, sentenceLabel, zoneAreaLines, zoneBadge, zoneDemandKind, zoneHvacModes, zonePresets } from "../logic";
+import type { Alert, ZoneArea, ZoneSnapshot } from "../types";
 import type { RenderContext } from "./context";
 
 export interface ZoneOptions {
@@ -10,6 +10,8 @@ export interface ZoneOptions {
    * Plant and Zones headings, and 2 when the Zone is a card of its own.
    */
   headingLevel: 2 | 4;
+  /** The alerts about this Zone, most urgent first. */
+  alerts: readonly Alert[];
 }
 
 function temperature(context: RenderContext, celsius: number | null, label: string, className: string): TemplateResult {
@@ -32,7 +34,19 @@ function areaReading(value: string | null, unit: string, sensor: string | null, 
   return html`<span class="area-value">${value}<span class="metric-unit">${unit}</span></span>`;
 }
 
+/**
+ * An area that no longer exists: its name and a Missing tag in place of the
+ * readings, since it has no sensor to read or open until it is removed.
+ */
+function renderMissingArea(area: ZoneArea): TemplateResult {
+  return html`<li class="area" part="area" data-missing="true">
+    <span class="area-name" dir="auto">${area.name}</span>
+    <span class="area-missing" title="This area no longer exists in Home Assistant.">Missing<span class="visually-hidden"> - removed from Home Assistant</span></span>
+  </li>`;
+}
+
 function renderArea(context: RenderContext, area: ZoneArea, humidity: boolean): TemplateResult {
+  if (area.missing) return renderMissingArea(area);
   const { unit, locale } = context;
   // The area's temperature sensor opens, or its humidity sensor when the user sees only that.
   const sensor = area.temperature_entity_id ?? area.humidity_entity_id;
@@ -52,6 +66,15 @@ function renderAreas(context: RenderContext, zone: ZoneSnapshot): TemplateResult
   if (!areas.length) return nothing;
   const humidity = areas.some((area) => area.humidity !== null || area.humidity_entity_id !== null);
   return html`<ul class="area-list" data-humidity=${String(humidity)} aria-label="Areas">${areas.map((area) => renderArea(context, area, humidity))}</ul>`;
+}
+
+/** The alerts about a Zone, as the Plant card's alert section shows them. */
+function renderZoneAlerts(zone: ZoneSnapshot, alerts: readonly Alert[]): TemplateResult | typeof nothing {
+  if (!alerts.length) return nothing;
+  return html`<ul class="zone-alerts" aria-label=${`${zone.name} alerts`}>${alerts.map((alert) => {
+    const urgent = alert.severity === "error" || alert.severity === "critical";
+    return html`<li class="alert ${urgent ? "error" : ""}" part="notice" data-severity=${alert.severity} dir="auto"><strong>${alertLabel(alert.code)}</strong><span> · ${alert.message}</span></li>`;
+  })}</ul>`;
 }
 
 function adjust(context: RenderContext, zone: ZoneSnapshot, direction: 1 | -1): void {
@@ -84,8 +107,9 @@ export function renderZone(context: RenderContext, zone: ZoneSnapshot, options: 
   const presets = zonePresets(zone);
   const hvacModes = zoneHvacModes(zone);
   const modeLabel = thermostat.hvac_mode ? hvacModeLabel(localize, thermostat.hvac_mode) : null;
-  // An Off thermostat reads as Off rather than as an idle Zone.
-  const phase = off && !zone.blocked ? (modeLabel ?? "Off") : sentenceLabel(zone.phase);
+  const badge = zoneBadge(zone, localize);
+  // A blocked reason that an alert already carries is not repeated as a note.
+  const blockedNote = zone.blocked_reason && !options.alerts.some((alert) => alert.message === zone.blocked_reason) ? zone.blocked_reason : null;
   const demandNote = hasDemand ? `${demandKind === "cooling" ? "Cooling" : "Heating"} demand active` : off ? "Thermostat off" : "No demand";
   const headingId = `zone-${zone.id}`;
   const name = controlEntity
@@ -95,12 +119,13 @@ export function renderZone(context: RenderContext, zone: ZoneSnapshot, options: 
     ? html`<h2 class="zone-title" part="zone-title" id=${headingId}>${name}</h2>`
     : html`<h4 class="zone-title" part="zone-title" id=${headingId}>${name}</h4>`;
   return html`<article class="zone" part="zone" data-phase=${zone.phase} data-hvac-mode=${thermostat.hvac_mode ?? "unknown"} data-demand=${String(hasDemand)} data-demand-kind=${demandKind} data-blocked=${String(zone.blocked)} aria-labelledby=${headingId}>
-    <div class="row"><div>${heading}<p class="meta zone-owner">${internal ? "Hydronicus thermostat" : `External thermostat · read-only${modeLabel ? ` · ${modeLabel}` : ""}`}</p></div><span class=${`phase${zone.blocked ? " state blocked" : ""}${off ? " off" : ""}`} part="badge">${phase}</span></div>
+    <div class="row"><div>${heading}<p class="meta zone-owner">${internal ? "Hydronicus thermostat" : `External thermostat · read-only${modeLabel ? ` · ${modeLabel}` : ""}`}</p></div><span class=${`phase${badge.kind === "blocked" ? " state blocked" : ""}${badge.kind === "off" ? " off" : ""}`} part="badge">${badge.label}</span></div>
     <div class="temperature-panel">
       ${temperature(context, thermostat.current_temperature, "Current", "metric")}
       ${temperature(context, thermostat.target_temperature, "Target", "metric target")}
     </div>
     ${renderAreas(context, zone)}
+    ${renderZoneAlerts(zone, options.alerts)}
     <p class="meta zone-note" dir="auto">${internal ? demandNote : `${demandNote} · ${thermostat.explanation}`}</p>
     <ul class="diagnostic-list" aria-label="Zone diagnostics">
       <li part="chip" class="diagnostic-chip" dir="auto">${formatNumber(zone.sensor_status.usable, locale, 0)} sensor${zone.sensor_status.usable === 1 ? "" : "s"} ready</li>
@@ -110,7 +135,7 @@ export function renderZone(context: RenderContext, zone: ZoneSnapshot, options: 
       ${zone.cooling.condensation_margin === null ? nothing : html`<li part="chip" class="diagnostic-chip ${zone.cooling.blocked ? "danger" : ""}" dir="auto">Margin ${formatTemperatureDelta(zone.cooling.condensation_margin, unit, locale)} ${unit}</li>`}
     </ul>
     ${thermostat.preset && thermostat.preset !== "none" ? html`<p class="meta zone-note" dir="auto">Preset: ${sentenceLabel(thermostat.preset)}</p>` : nothing}
-    ${zone.blocked_reason ? html`<p class="meta zone-note" dir="auto">${zone.blocked_reason}</p>` : nothing}
+    ${blockedNote ? html`<p class="meta zone-note" dir="auto">${blockedNote}</p>` : nothing}
     ${zone.coupling_group_ids.length ? html`<p class="meta coupling-note" dir="auto">Coupled delivery - this Zone shares hydraulic equipment.</p>` : nothing}
     ${internal
       ? html`${hvacModes.length

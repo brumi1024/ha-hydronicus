@@ -96,7 +96,8 @@ A Zone that covers two or more Home Assistant areas shows one line per area belo
 A dash stands for a reading the controller could not use, such as a stale one, and for a sensor the area does not name.
 Selecting an area's name opens the more-info dialog of the temperature sensor the area names, or of its humidity sensor when it names no temperature sensor.
 The lines follow the zone's area order, and a Zone over one area shows no area lines, because its temperatures are that area's.
-An area that no longer exists shows the name it last had, or its ID after Home Assistant restarts, with dashes until it is removed from the Zone.
+An area that no longer exists shows the name it last had, or a name spelled from its ID after Home Assistant restarts, such as Kids room for `kids_room`, with a Missing tag in place of its readings until it is removed from the Zone.
+The readings stay next to the area names, so the lines read as a compact table in a wide tile too.
 A renamed area keeps its old name until the Plant reloads.
 It shows the same loading, unavailable, not found, no access, and reconnecting states as the Plant card.
 When the Plant snapshot has no Zone with that id, the card shows Zone not found.
@@ -148,10 +149,15 @@ When a Plant is deleted, its streams end with a `plant_not_found` status event.
 
 The card says Loop where the snapshot and the core code say Circuit.
 The header shows the Plant name, operational status, requested mode, and execution boundary.
+It names the Plant health next to the status when the Plant is degraded or an entity is unavailable, and the Plant mark and status dot then take the attention color.
 It adds the active mode only when an explicit requested mode is not active yet, for example during a changeover.
 It shows the active and recommended source only when the Plant has sources.
+The Zones section and the Hydraulic Flow section list Zones in the order they were set up, which is also the order of the Zone subentries.
 The Zones section shows thermostat ownership, the HVAC mode, current and target temperatures when available, one line per area for a Zone over several areas, presets for Hydronicus thermostats, heating or cooling demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
-A Zone whose thermostat is off shows Off instead of an idle phase.
+A Zone whose thermostat is off shows Off instead of its phase, even when the Zone is blocked, because an off thermostat requests nothing.
+A blocked Zone whose thermostat is on shows Blocked.
+A Zone tile shows the alerts about its Zone, most urgent first, in the same style as the alert section, and a Zone card with an error alert takes the attention color.
+A blocked reason that one of those alerts already gives is not repeated below them.
 The Hydraulic Flow section renders the ordered Zone to Loop to Valve to Pump to Source route.
 The Equipment section shows each valve and pump with the Loops that currently use it.
 The alert and explanation sections surface stable priority-ordered diagnostics and controller reasoning.
@@ -159,8 +165,11 @@ The operation section distinguishes proposed, executed, suppressed, failed, and 
 
 The presentation schema is version 2.
 Each thermostat in the snapshot carries its `hvac_mode`, and a Hydronicus thermostat also carries `hvac_modes`, the modes its climate entity supports.
-The Plant's `health` is `healthy`, `degraded` while a zone area repair is open, `blocked`, `unavailable` while an entity binding is unresolved, `initializing`, or `stopped`.
+The Plant's `health` is `healthy`, `degraded` while a zone area repair is open or a sensor is missing, `blocked`, `unavailable` while a thermostat, actuator, or feedback entity is missing, `initializing`, or `stopped`.
 Each open zone area repair also adds an alert scoped to its Zone: `zone_area_missing` and `zone_without_temperature_source` as errors, and `zone_area_self_feed` as a warning.
+A missing thermostat, actuator, or feedback entity adds the Plant alert `binding_unavailable`, because it blocks every path through it.
+A missing sensor adds an alert scoped to its Zone or Loop instead: `sensor_unavailable` as an error for a required sensor, and `optional_sensor_unavailable` as a warning for an optional one, which Hydronicus leaves out instead of blocking control.
+What a missing required sensor blocks is reported by the controller's own alerts, such as `zone_sensor_blocked`.
 Each area of a Zone carries `missing`, which is true when the area no longer exists in Home Assistant.
 Every temperature in the snapshot is in degrees Celsius.
 The card shows temperatures in the unit system of the Home Assistant instance, and formats numbers with the number format from the user's profile.

@@ -1,5 +1,5 @@
 import { CELSIUS, steppedTarget, type TemperatureUnit } from "./format";
-import type { PlantSnapshot, ZoneSnapshot } from "./types";
+import type { Alert, Localize, PlantSnapshot, ZoneSnapshot } from "./types";
 
 export const PRESENTATION_SCHEMA_VERSION = 2;
 
@@ -53,13 +53,11 @@ export function plantVisualState(
   snapshot: Pick<PlantSnapshot, "alerts" | "plant" | "safe_shutdown">,
 ): PlantVisualState {
   const health = snapshot.plant.health.toLowerCase();
-  const hasCriticalAlert = snapshot.alerts.some(
-    (alert) => alert.severity === "critical" || alert.severity === "error",
-  );
+  const hasCriticalAlert = snapshot.alerts.some(isUrgent);
   if (
     snapshot.safe_shutdown.active ||
     hasCriticalAlert ||
-    ["blocked", "critical", "error", "failed", "unhealthy"].includes(health)
+    ["blocked", "critical", "degraded", "error", "failed", "unavailable", "unhealthy"].includes(health)
   ) {
     return "attention";
   }
@@ -70,9 +68,24 @@ export function plantVisualState(
   return "idle";
 }
 
-/** A Zone card's presentation state, from its own demand and blocking. */
-export function zoneVisualState(zone: Pick<ZoneSnapshot, "blocked" | "demand" | "cooling">): PlantVisualState {
-  if (zone.blocked) return "attention";
+function isUrgent(alert: Pick<Alert, "severity">): boolean {
+  return alert.severity === "critical" || alert.severity === "error";
+}
+
+/** The alerts about one Zone, most urgent first. */
+export function zoneAlerts(snapshot: Pick<PlantSnapshot, "alerts">, zoneId: string): Alert[] {
+  return prioritizedAlerts(snapshot).filter((alert) => alert.scope === zoneId);
+}
+
+/**
+ * A Zone card's presentation state, from its own demand and blocking, and
+ * the alerts about it: an error, such as a missing area, needs attention.
+ */
+export function zoneVisualState(
+  zone: Pick<ZoneSnapshot, "blocked" | "demand" | "cooling">,
+  alerts: readonly Pick<Alert, "severity">[] = [],
+): PlantVisualState {
+  if (zone.blocked || alerts.some(isUrgent)) return "attention";
   if (zone.cooling.demand) return "cooling";
   if (zone.demand) return "heating";
   return "idle";
@@ -208,6 +221,37 @@ export function zoneTileSize(zone: Pick<ZoneSnapshot, "areas">): number {
   return 5 + Math.ceil(zoneAreaLines(zone).length / 2);
 }
 
+export interface ZoneBadge {
+  label: string;
+  /** "off" and "blocked" style the badge; "phase" shows the Zone's phase as is. */
+  kind: "off" | "blocked" | "phase";
+}
+
+/**
+ * The badge of a Zone. An off thermostat requests nothing, so Off wins over
+ * any phase, even when the Zone is blocked: its alerts and notes say why.
+ * A blocked Zone that is on reads Blocked whatever its phase, so a blocked
+ * Zone never reads Idle.
+ */
+export function zoneBadge(zone: Pick<ZoneSnapshot, "thermostat" | "blocked" | "phase">, localize: Localize | undefined): ZoneBadge {
+  if (zone.thermostat.hvac_mode === "off") return { label: hvacModeLabel(localize, "off"), kind: "off" };
+  if (zone.blocked) return { label: "Blocked", kind: "blocked" };
+  return { label: sentenceLabel(zone.phase), kind: "phase" };
+}
+
+const HEALTH_LABELS: Record<string, string> = {
+  degraded: "Degraded",
+  unavailable: "Entity unavailable",
+};
+
+/**
+ * The Plant health the header names, or null when the status line already
+ * says it: a healthy, blocked, starting, or stopped Plant.
+ */
+export function healthLabel(health: string): string | null {
+  return HEALTH_LABELS[health] ?? null;
+}
+
 /** The short badge label for the execution boundary. */
 export function boundaryLabel(boundary: PlantSnapshot["plant"]["execution_boundary"]): string {
   if (boundary.dry_run || boundary.mode === "dry_run") return "Dry run";
@@ -250,11 +294,21 @@ const ALERT_LABELS: Record<string, string> = {
   actuator_mismatch: "Equipment mismatch",
   actuator_blocked: "Equipment blocked",
   mode_changeover: "Mode changeover",
+  sensor_unavailable: "Sensor missing",
+  optional_sensor_unavailable: "Optional sensor missing",
+  zone_area_missing: "Area missing",
+  zone_without_temperature_source: "No temperature sensor",
+  zone_area_self_feed: "Area sensor ignored",
 };
+
+/** The readable label of an alert code, without what the alert is about. */
+export function alertLabel(code: string): string {
+  return ALERT_LABELS[code] ?? sentenceLabel(code);
+}
 
 /** The title of an alert, naming what it is about when that is not the whole Plant. */
 export function alertTitle(alert: { code: string; scope: string; name?: string }): string {
-  const label = ALERT_LABELS[alert.code] ?? sentenceLabel(alert.code);
+  const label = alertLabel(alert.code);
   return alert.scope !== "plant" && alert.name ? `${alert.name} · ${label}` : label;
 }
 

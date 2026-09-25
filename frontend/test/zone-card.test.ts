@@ -183,6 +183,70 @@ describe("Zone card areas", () => {
   });
 });
 
+describe("Zone card problems", () => {
+  function areaLines(card: CardElement): string[] {
+    return [...root(card).querySelectorAll(".area-list > li")].map((line) => (line.textContent ?? "").replace(/\s+/g, " ").trim());
+  }
+
+  it("marks a missing area by name instead of showing it like an area without readings", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const missing = makeArea({ id: "kids_room", name: "Kids room", missing: true, temperature: null, humidity: null, temperature_entity_id: null, humidity_entity_id: null });
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone({ areas: [makeArea(), missing] })] }));
+
+    const line = root(card).querySelectorAll<HTMLElement>(".area-list > li")[1];
+    expect(line.dataset.missing).toBe("true");
+    expect(line.querySelector("button")).toBeNull();
+    expect(line.querySelector(".area-value")).toBeNull();
+    expect(areaLines(card)[1]).toBe("Kids room Missing - removed from Home Assistant");
+    expect(line.querySelector(".area-missing")?.getAttribute("title")).toBe("This area no longer exists in Home Assistant.");
+  });
+
+  it("shows the alerts about the Zone in its tile, like the Plant's alerts", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const reason = "No usable temperature sensor.";
+    const alerts = [
+      { code: "zone_area_self_feed", severity: "warning" as const, priority: 2, scope: "zone-1", name: "Living room", message: "Area Study names a sensor that Hydronicus provides, so the zone ignores it." },
+      { code: "zone_area_missing", severity: "error" as const, priority: 1, scope: "zone-1", name: "Living room", message: "Area Kids room no longer exists in Home Assistant, so the zone gets no reading from it." },
+      { code: "zone_sensor_blocked", severity: "error" as const, priority: 1, scope: "zone-1", name: "Living room", message: reason },
+      { code: "zone_sensor_blocked", severity: "error" as const, priority: 1, scope: "zone-2", name: "Bath", message: "Other zone." },
+    ];
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone({ blocked: true, blocked_reason: reason })], alerts }));
+
+    const list = root(card).querySelector("ul.zone-alerts");
+    expect(list?.getAttribute("aria-label")).toBe("Living room alerts");
+    const notices = [...root(card).querySelectorAll<HTMLElement>(".zone-alerts > li")];
+    expect(notices.map((notice) => notice.getAttribute("part"))).toEqual(["notice", "notice", "notice"]);
+    expect(notices.map((notice) => notice.dataset.severity)).toEqual(["error", "error", "warning"]);
+    expect(notices.map((notice) => notice.classList.contains("error"))).toEqual([true, true, false]);
+    expect(notices[0].textContent?.replace(/\s+/g, " ").trim()).toBe("Area missing · Area Kids room no longer exists in Home Assistant, so the zone gets no reading from it.");
+    // The blocked reason is an alert already, so it is not repeated as a note.
+    expect([...root(card).querySelectorAll(".zone-note")].filter((note) => note.textContent?.includes(reason))).toEqual([]);
+    expect(text(card)).not.toContain("Other zone.");
+    expect(root(card).querySelector("ha-card")?.getAttribute("data-visual")).toBe("attention");
+  });
+
+  it("keeps the blocked reason as a note when no alert carries it", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection, makeSnapshot({ zones: [makeZone({ blocked: true, blocked_reason: "Waiting for the cooling interlock." })] }));
+    expect(root(card).querySelector("ul.zone-alerts")).toBeNull();
+    expect(text(card)).toContain("Waiting for the cooling interlock.");
+  });
+
+  it("shows Off for a blocked Zone whose thermostat is off", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const zone = makeZone({ demand: false, phase: "idle", blocked: true });
+    await deliver(card, hass.connection, makeSnapshot({ zones: [{ ...zone, thermostat: { ...zone.thermostat, hvac_mode: "off" } }] }));
+    const badge = root(card).querySelector(".zone .phase");
+    expect(badge?.textContent?.trim()).toBe("Off");
+    expect(badge?.classList.contains("off")).toBe(true);
+    expect(badge?.classList.contains("blocked")).toBe(false);
+  });
+});
+
 describe("Zone card controls", () => {
   it("sets the HVAC mode, target, and preset of the Zone's climate entity", async () => {
     const hass = makeHass();
@@ -478,6 +542,15 @@ describe("Zone card editor", () => {
 });
 
 describe("zone card layout", () => {
+  it("keeps area readings next to their names in a wide tile", () => {
+    // In a wide panel a full-width first column pushed the readings to the far edge.
+    const rule = cardStyles.cssText.match(/\.area-list \{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/grid-template-columns: minmax\(0, max-content\) auto;/);
+    expect(rule).toMatch(/justify-content: start;/);
+    const humidity = cardStyles.cssText.match(/\.area-list\[data-humidity="true"\] \{[^}]*\}/)?.[0] ?? "";
+    expect(humidity).toMatch(/grid-template-columns: minmax\(0, max-content\) auto auto;/);
+  });
+
   it("wraps the preset select onto its own row instead of shrinking it to its arrow", () => {
     // At a card width of about 190 px the preset select shared its row with the
     // target buttons and shrank until only its arrow showed.

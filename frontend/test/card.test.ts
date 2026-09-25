@@ -428,6 +428,34 @@ describe("Header", () => {
   });
 });
 
+describe("Plant health", () => {
+  it("says the Plant is degraded and marks it for attention", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const alerts = [{ code: "zone_area_self_feed", severity: "warning" as const, priority: 2, scope: "zone-1", name: "Living room", message: "Area Study names a sensor that Hydronicus provides, so the zone ignores it." }];
+    const snapshot = makeSnapshot({ alerts });
+    await deliver(card, hass.connection, { ...snapshot, plant: { ...snapshot.plant, health: "degraded" } });
+
+    expect(root(card).querySelector("ha-card")?.getAttribute("data-visual")).toBe("attention");
+    const health = root(card).querySelector<HTMLElement>(".status-line .health");
+    expect(health?.textContent?.replace(/\s+/g, " ").trim()).toBe("Health: Degraded");
+    expect(health?.dataset.health).toBe("degraded");
+    // The Zone the alert is about shows it too.
+    expect(root(card).querySelector(".zone .zone-alerts")?.textContent).toContain("Area sensor ignored");
+  });
+
+  it("names an unavailable entity and says nothing while healthy", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot();
+    await deliver(card, hass.connection, snapshot);
+    expect(root(card).querySelector(".status-line .health")).toBeNull();
+
+    await deliver(card, hass.connection, { ...snapshot, plant: { ...snapshot.plant, health: "unavailable" } });
+    expect(root(card).querySelector(".status-line .health")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Health: Entity unavailable");
+  });
+});
+
 describe("Zone and Loop wording", () => {
   it("uses Zone and Loop instead of Room and Circuit", async () => {
     const hass = makeHass();
@@ -543,6 +571,12 @@ describe("Hydraulic Flow", () => {
 
     const kinds = [...root(card).querySelectorAll<HTMLElement>(".path")].map((element) => element.dataset.demandKind);
     expect(kinds).toEqual(["heating", "cooling", "none"]);
+  });
+
+  it("keeps an idle Zone's path in the idle colour, not the Plant's attention colour", () => {
+    // A shared pump running for another Zone showed in the Plant's red on an idle path.
+    const styles = (customElements.get(TAG) as unknown as { styles: { cssText: string } }).styles.cssText;
+    expect(styles).toMatch(/\.path\[data-demand-kind="none"\] \{ --_hy-state: var\(--_hy-idle\); \}/);
   });
 
   it("caps the connectors so a path stays a compact chain at any width", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneAreaLines, zoneDemandKind, zoneHvacModes, zoneTileSize } from "../src/logic";
+import { actionForHvacMode, actionForMode, alertTitle, zoneAlerts, zoneBadge, zoneVisualState, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneAreaLines, zoneDemandKind, zoneHvacModes, zoneTileSize } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
@@ -213,5 +213,68 @@ describe("area lines", () => {
     expect(zoneTileSize({ areas: [area] })).toBe(5);
     expect(zoneTileSize({ areas: [area, area] })).toBe(6);
     expect(zoneTileSize({ areas: [area, area, area] })).toBe(7);
+  });
+});
+
+describe("Plant and Zone attention", () => {
+  const alert = (code: string, severity: "error" | "warning", scope: string) => ({ code, severity, priority: severity === "error" ? 1 : 2, scope, name: "Living room", message: code });
+
+  it("needs attention while the Plant is degraded or an entity is unavailable", () => {
+    // Only a warning is open, so the health alone must mark the Plant.
+    const warned = { ...snapshot, alerts: [alert("zone_area_self_feed", "warning", "zone-1")] };
+    expect(plantVisualState({ ...warned, plant: { ...snapshot.plant, health: "degraded" } })).toBe("attention");
+    expect(plantVisualState({ ...warned, plant: { ...snapshot.plant, health: "unavailable" } })).toBe("attention");
+    expect(plantVisualState(warned)).toBe("heating");
+  });
+
+  it("lists the alerts about one Zone, most urgent first", () => {
+    const alerts = [
+      alert("zone_area_self_feed", "warning", "zone-1"),
+      alert("zone_sensor_blocked", "error", "zone-2"),
+      alert("zone_area_missing", "error", "zone-1"),
+      alert("binding_unavailable", "error", "plant"),
+    ];
+    expect(zoneAlerts({ alerts }, "zone-1").map((item) => item.code)).toEqual(["zone_area_missing", "zone_area_self_feed"]);
+  });
+
+  it("needs attention for a Zone with an error, but not for a warning", () => {
+    const idle = { ...zone, demand: false, phase: "idle" };
+    expect(zoneVisualState(idle, [alert("zone_area_missing", "error", "zone-1")])).toBe("attention");
+    expect(zoneVisualState(idle, [alert("zone_area_self_feed", "warning", "zone-1")])).toBe("idle");
+    expect(zoneVisualState(idle)).toBe("idle");
+  });
+
+  it("labels the area alerts and a missing sensor", () => {
+    expect(alertTitle({ code: "zone_area_missing", scope: "zone-1", name: "Home" })).toBe("Home · Area missing");
+    expect(alertTitle({ code: "zone_without_temperature_source", scope: "zone-1", name: "Home" })).toBe("Home · No temperature sensor");
+    expect(alertTitle({ code: "zone_area_self_feed", scope: "zone-1", name: "Home" })).toBe("Home · Area sensor ignored");
+    expect(alertTitle({ code: "optional_sensor_unavailable", scope: "zone-1", name: "Home" })).toBe("Home · Optional sensor missing");
+    expect(alertTitle({ code: "sensor_unavailable", scope: "zone-1", name: "Home" })).toBe("Home · Sensor missing");
+  });
+});
+
+describe("Zone badge", () => {
+  const off = { ...zone.thermostat, hvac_mode: "off" };
+
+  it("shows Off for an off thermostat, even when the Zone is blocked and idle", () => {
+    expect(zoneBadge({ ...zone, thermostat: off, phase: "idle" }, undefined)).toEqual({ label: "Off", kind: "off" });
+    expect(zoneBadge({ ...zone, thermostat: off, phase: "idle", blocked: true }, undefined)).toEqual({ label: "Off", kind: "off" });
+    expect(zoneBadge({ ...zone, thermostat: off, phase: "blocked", blocked: true }, undefined)).toEqual({ label: "Off", kind: "off" });
+  });
+
+  it("shows Blocked for a blocked Zone that is on, whatever its phase", () => {
+    expect(zoneBadge({ ...zone, phase: "idle", blocked: true }, undefined)).toEqual({ label: "Blocked", kind: "blocked" });
+    expect(zoneBadge({ ...zone, phase: "blocked", blocked: true }, undefined)).toEqual({ label: "Blocked", kind: "blocked" });
+  });
+
+  it("shows the phase of a Zone that is on and not blocked", () => {
+    expect(zoneBadge(zone, undefined)).toEqual({ label: "Heating", kind: "phase" });
+    expect(zoneBadge({ ...zone, phase: "idle" }, undefined)).toEqual({ label: "Idle", kind: "phase" });
+    expect(zoneBadge({ ...zone, thermostat: { ...zone.thermostat, hvac_mode: null }, phase: "idle" }, undefined)).toEqual({ label: "Idle", kind: "phase" });
+  });
+
+  it("uses Home Assistant's translation of Off", () => {
+    const localize = (key: string) => (key === "component.climate.entity_component._.state.off" ? "Aus" : "");
+    expect(zoneBadge({ ...zone, thermostat: off }, localize).label).toBe("Aus");
   });
 });
