@@ -372,15 +372,15 @@ async def test_room_binding_repair_opens_the_room_reconfigure_flow(
     assert issue_id in _issues(hass)
 
 
-async def test_room_reconfigure_stub_aborts_until_the_room_flow_exists(hass) -> None:
-    """Until rooms can be edited, the room flow explains that and changes nothing."""
+async def test_room_reconfigure_opens_the_room_menu_without_changes(hass) -> None:
+    """The repair target is the room menu, which changes nothing until a step is saved."""
     entry, subentry_id, _issue_id = await _setup_with_unresolved_subentry_valve(hass)
     data = dict(entry.data)
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
 
-    assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "room_flow_pending"
+    assert result["type"] == FlowResultType.MENU
+    assert "edit_loop" in result["menu_options"]
     assert dict(entry.data) == data
 
 

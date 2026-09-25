@@ -192,6 +192,13 @@ class _Resolver:
                 values |= self.resolve(module, value, depth + 1)
             return values
         if isinstance(node, ast.Subscript):
+            if (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, int)
+            ):
+                # One element of a helper's tuple result, such as (errors, placeholders).
+                return self._function_returns(module, node.value, depth, index=node.slice.value)
             return self.resolve(module, node.value, depth + 1)
         if isinstance(node, ast.Name):
             return self._resolve_name(module, node, depth)
@@ -236,6 +243,15 @@ class _Resolver:
                     for t in child.targets
                 ):
                     yield child.value
+                # errors, placeholders = helper(...) binds one element of the helper's result.
+                for target in child.targets:
+                    if isinstance(target, ast.Tuple) and isinstance(child.value, ast.Call):
+                        for index, element in enumerate(target.elts):
+                            if isinstance(element, ast.Name) and element.id == name:
+                                yield ast.copy_location(
+                                    ast.Subscript(value=child.value, slice=ast.Constant(index)),
+                                    child,
+                                )
             elif isinstance(child, ast.AnnAssign | ast.NamedExpr):
                 target = child.target
                 if isinstance(target, ast.Name) and target.id == name:
@@ -261,7 +277,12 @@ class _Resolver:
                     values |= self.resolve(other, argument, depth + 1)
         return values
 
-    def _function_returns(self, module: _Module, call: ast.Call, depth: int) -> set[str]:
+    def _function_returns(
+        self, module: _Module, call: ast.Call, depth: int, index: int | None = None
+    ) -> set[str]:
+        """Resolve what a helper returns, or one element of the tuples it returns."""
+        if depth > 8:
+            raise Unresolved(module.location(call))
         name = _call_name(call)
         # A helper is looked up in the calling module first, then in the modules it imports from.
         for owner in (module, *(other for other in self.modules if other is not module)):
@@ -272,8 +293,15 @@ class _Resolver:
                 ):
                     values: set[str] = set()
                     for node in ast.walk(function):
-                        if isinstance(node, ast.Return) and node.value is not None:
-                            values |= self.resolve(owner, node.value, depth + 1)
+                        if not isinstance(node, ast.Return) or node.value is None:
+                            continue
+                        value = node.value
+                        if index is not None and isinstance(value, ast.Tuple):
+                            values |= self.resolve(owner, value.elts[index], depth + 1)
+                        elif index is not None and isinstance(value, ast.Call):
+                            values |= self._function_returns(owner, value, depth + 1, index)
+                        else:
+                            values |= self.resolve(owner, value, depth + 1)
                     return values
         raise Unresolved(module.location(call))
 
@@ -515,7 +543,25 @@ def test_static_discovery_sees_the_flow_contract() -> None:
     } <= paths
     assert "config_subentries.source.error.dry_run_shutdown_in_progress" in paths
     assert "config_subentries.source.abort.reconfigure_successful" in paths
-    assert "config_subentries.room.abort.room_flow_pending" in paths
+    assert {
+        "config_subentries.room.abort.no_pumps",
+        "config_subentries.room.error.delivery_required",
+        # Returned inside an (errors, placeholders) tuple by a room helper.
+        "config_subentries.room.error.actuator_entity_in_use",
+    } <= paths
+    assert found.form_steps["config_subentries.room"] == {
+        "user",
+        "review",
+        "reconfigure",
+        "room",
+        "thermostat",
+        "sensors",
+        "sensor_metadata",
+        "sensor_policy",
+        "edit_loop",
+        "loop",
+        "valve_details",
+    }
     assert found.form_steps["config_subentries.source"] == {"user", "reconfigure", "review"}
 
 
@@ -565,6 +611,12 @@ class _FormAudit:
                 for option in select["options"]:
                     value = option if isinstance(option, str) else option["value"]
                     self._need(f"selector.{key}.options.{value}")
+
+    def check_menu(self, result: Mapping[str, Any]) -> None:
+        step = f"{self.flow_prefix}.step.{result['step_id']}"
+        self._need(f"{step}.title")
+        for option in result["menu_options"]:
+            self._need(f"{step}.menu_options.{option}")
 
     def check(self, result: Mapping[str, Any]) -> Mapping[str, Any]:
         if result["type"] == FlowResultType.FORM:
@@ -791,10 +843,51 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
 
     room = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ROOM}")
-    result = await _subentry_flow(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
-    assert result["reason"] == "room_flow_pending"
-    result = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
-    assert result["reason"] == "room_flow_pending"
+    # Every change carries the shared valve and pump warnings, so every save is reviewed.
+    for option, steps in {
+        "room": [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_room"]}],
+        "thermostat": [{}],
+        "sensors": [
+            {"temperature_aggregation": "mean", "configure_sensor_metadata": True},
+            {"sensor_entity": "sensor.missing_room"},
+            {"temperature_aggregation": "mean"},
+        ],
+        "edit_loop": [
+            {"loop": FLOOR_CIRCUIT_ID},
+            {
+                CONF_NAME: "Floor loop",
+                "valves": ["switch.floor_valve"],
+                "pump": PUMP_ID,
+                "configure_valve_feedback": True,
+            },
+            {},
+        ],
+    }.items():
+        result = await _reconfigure(
+            hass,
+            entry,
+            SUBENTRY_TYPE_ROOM,
+            room,
+            [{"next_step_id": option}, *steps, {"confirm": True}],
+        )
+        assert result["reason"] == "reconfigure_successful"
+    menu = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
+    room.steps.add(menu["step_id"])
+    room.check_menu(menu)
+    hass.config_entries.subentries.async_abort(menu["flow_id"])
+    bedroom = {
+        CONF_NAME: "Bedroom",
+        "temperature_sensors": ["sensor.bedroom"],
+        "valves": ["switch.return_valve"],
+    }
+    result = await _subentry_flow(
+        hass,
+        entry,
+        SUBENTRY_TYPE_ROOM,
+        room,
+        [{**bedroom, CONF_NAME: " "}, bedroom, {"confirm": False}, {"confirm": True}],
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
 
     source = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_SOURCE}")
     boiler = {CONF_NAME: "Boiler", "source_type": "external", "priority": 1}
@@ -805,7 +898,19 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     result = await _reconfigure(hass, entry, SUBENTRY_TYPE_SOURCE, source, [boiler])
     assert result["reason"] == "reconfigure_successful"
 
-    assert room.steps == set()
+    assert room.steps == {
+        "user",
+        "review",
+        "reconfigure",
+        "room",
+        "thermostat",
+        "sensors",
+        "sensor_metadata",
+        "sensor_policy",
+        "edit_loop",
+        "loop",
+        "valve_details",
+    }
     assert source.steps == {"user", "reconfigure"}
     assert [*room.missing, *source.missing] == []
 
