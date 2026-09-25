@@ -87,11 +87,16 @@ _AREA_ISSUES = frozenset(
 )
 
 
+def _area_kind(issue: ir.IssueEntry) -> str:
+    """The repair's kind, whether or not it is fixable."""
+    return (issue.translation_key or "").removesuffix("_fixable")
+
+
 def _area_issues(hass) -> dict[str, ir.IssueEntry]:
     return {
-        issue.translation_key: issue
+        _area_kind(issue): issue
         for (domain, _issue_id), issue in ir.async_get(hass).issues.items()
-        if domain == DOMAIN and issue.translation_key in _AREA_ISSUES
+        if domain == DOMAIN and _area_kind(issue) in _AREA_ISSUES
     }
 
 
@@ -274,7 +279,7 @@ def _issue_id(hass, translation_key: str) -> str:
     return next(
         issue_id
         for (domain, issue_id), issue in ir.async_get(hass).issues.items()
-        if domain == DOMAIN and issue.translation_key == translation_key
+        if domain == DOMAIN and _area_kind(issue) == translation_key
     )
 
 
@@ -697,7 +702,7 @@ async def test_a_missing_area_repair_advises_a_name_that_recreates_its_id(hass, 
     issues = [
         issue
         for issue in ir.async_get(hass).issues.values()
-        if issue.translation_key == "zone_area_missing"
+        if _area_kind(issue) == "zone_area_missing"
     ]
     by_area = {issue.translation_placeholders["area_id"]: issue for issue in issues}
     # The area's last known name, and a name made from an ID never seen.
@@ -706,7 +711,7 @@ async def test_a_missing_area_repair_advises_a_name_that_recreates_its_id(hass, 
     assert by_area["attic_2"].translation_placeholders["area"] == "Attic 2"
     assert by_area["attic_2"].translation_placeholders["recreate_name"] == "Attic 2"
     text = _rendered(by_area["kids_room"])
-    assert "create an area named Kids room again" in text
+    assert "an area named Kids room again" in text
     assert "with this ID" not in text
 
     # Following the advice resolves the repair.
@@ -715,7 +720,7 @@ async def test_a_missing_area_repair_advises_a_name_that_recreates_its_id(hass, 
     assert {
         issue.translation_placeholders["area_id"]
         for issue in ir.async_get(hass).issues.values()
-        if issue.translation_key == "zone_area_missing"
+        if _area_kind(issue) == "zone_area_missing"
     } == {"attic_2"}
     assert entry.state is ConfigEntryState.LOADED
 

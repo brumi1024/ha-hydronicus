@@ -591,6 +591,16 @@ def test_every_section_entry_is_a_nonempty_string() -> None:
     assert empty == []
 
 
+def test_every_issue_has_either_a_description_or_a_fix_flow() -> None:
+    """hassfest rejects an issue translation that carries both, or neither."""
+    mixed = sorted(
+        key
+        for key, issue in _strings()["issues"].items()
+        if ("description" in issue) == ("fix_flow" in issue)
+    )
+    assert mixed == []
+
+
 # --------------------------------------------------------------------------
 # Dynamic discovery through real flows and a loaded plant
 # --------------------------------------------------------------------------

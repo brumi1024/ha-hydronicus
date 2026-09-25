@@ -233,7 +233,9 @@ def async_sync_area_repairs(
         subentry_id = entry.runtime_data.subentry_id_for(problem.zone_id) if entry else None
         self_feed = problem.kind is ZoneAreaProblemKind.SELF_FEED
         fixable = not self_feed and subentry_id is not None
+        translation_key = _AREA_TRANSLATION_KEYS[problem.kind]
         if fixable and entry is not None and subentry_id is not None:
+            translation_key += _FIXABLE_SUFFIX
             data[ISSUE_DATA_ENTRY_ID] = entry.entry_id
             data[ISSUE_DATA_SUBENTRY_ID] = subentry_id
             placeholders["owner"] = entry.subentries[subentry_id].title
@@ -245,7 +247,7 @@ def async_sync_area_repairs(
             is_fixable=fixable,
             is_persistent=False,
             severity=ir.IssueSeverity.WARNING if self_feed else ir.IssueSeverity.ERROR,
-            translation_key=_AREA_TRANSLATION_KEYS[problem.kind],
+            translation_key=translation_key,
             translation_placeholders=placeholders,
         )
 

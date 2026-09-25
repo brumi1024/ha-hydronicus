@@ -526,7 +526,7 @@ def _area_topology(areas: list[dict[str, Any]], *, sensors: bool = True) -> dict
 
 def _area_issue_keys(hass) -> set[str]:
     return {
-        issue.translation_key
+        issue.translation_key.removesuffix("_fixable")
         for (domain, _issue_id), issue in ir.async_get(hass).issues.items()
         if domain == DOMAIN and issue.translation_key and issue.translation_key.startswith("zone_")
     }
