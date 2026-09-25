@@ -123,7 +123,8 @@ The Plant header reports the Plant as `degraded` while an area repair is open, a
 ### A zone has no temperature sensor
 
 The repair `Home, zone Bedroom: no temperature sensor` means that none of the zone's areas names a temperature sensor that Hydronicus can follow, and the zone has no extra temperature sensor.
-The zone is blocked and neither heats nor cools, and its card shows `Blocked: no usable temperature sensors remain.`
+The zone is blocked and neither heats nor cools, and its card says so once, with the alert `No temperature sensor`.
+The diagnostic **Blocked reason** sensor of the zone reads `Blocked: no usable temperature sensors remain.`
 Choose a temperature sensor in the settings of one of its areas, or select **Submit** in the repair to add an extra temperature sensor or another area.
 
 ### An area names a Hydronicus sensor
@@ -291,6 +292,8 @@ Download redacted diagnostics from the Hydronicus config entry or device page be
 Diagnostics count each zone's areas, the area sensors it follows, its missing areas, and the Hydronicus sensors its areas name, without the area or sensor names.
 Hydronicus also creates Repairs issues for unresolved configured entity bindings and for the [area problems](#areas) of zones, and removes them once the problem is gone.
 Each repair names the Plant and the entity it misses, such as `the switch bound to Bedroom loop valve`.
+A missing required sensor or any other missing binding is an error, because it blocks what depends on it.
+A missing optional sensor is a warning that says Hydronicus leaves the sensor out instead of blocking control, like the `optional_sensor_unavailable` alert on the cards.
 A repair for a zone's binding opens that zone's edit menu, and a repair for a pump opens the Plant settings.
 A repair for a shared loop, a shared valve, or the source selector cannot open a form; edit the binding with **Edit plant file** in the Plant settings, or restore the original entity.
 If diagnostics are unavailable or a binding problem does not produce a Repair, capture the first relevant log exception and report it as a runtime problem.

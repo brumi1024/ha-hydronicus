@@ -841,6 +841,25 @@
       "title": "Missing sensor for {object_name}",
       "description": "In Plant {plant}, the {binding} is missing or renamed, so the heating or cooling path that depends on it is blocked. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
+    "missing_optional_sensor_binding": {
+      "title": "Missing sensor for {object_name}",
+      "description": "In Plant {plant}, the {binding} is missing or renamed. It is optional, so Hydronicus leaves it out instead of blocking control. {object_name} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change or remove the binding, and apply the file. Alternatively, restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+    },
+    "missing_optional_sensor_binding_fixable": {
+      "title": "Missing sensor for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing sensor for {object_name}",
+            "description": "In Plant {plant}, the {binding} is missing or renamed. It is optional, so Hydronicus leaves it out instead of blocking control. Select Submit to edit {owner}, choose the current sensor or remove it, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "{owner} is open for editing. The repair clears after a valid sensor is saved for {object_name}, or the sensor is removed.",
+          "subentry_not_found": "The zone or source that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
+    },
     "missing_sensor_binding_fixable": {
       "title": "Missing sensor for {object_name}",
       "fix_flow": {

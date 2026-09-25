@@ -194,6 +194,7 @@ def _zone_snapshots(
     zone_entity_ids: Mapping[str, str],
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
+    without_source = _zones_without_temperature_source(runtime)
     for zone_id in _zone_ids(runtime):
         zone = runtime.plant.zones[zone_id]
         heating = diagnostics.zone_decisions.get(zone_id) if diagnostics else None
@@ -273,7 +274,11 @@ def _zone_snapshots(
                 ),
                 "blocked": runtime.zone_is_blocked(zone_id)
                 or runtime.cooling_zone_is_blocked(zone_id),
-                "blocked_reason": runtime.zone_blocked_reason(zone_id)
+                # A zone whose areas name no temperature sensor is blocked for
+                # that reason, which its area alert states in these words.
+                "blocked_reason": _NO_TEMPERATURE_SOURCE_MESSAGE
+                if zone_id in without_source
+                else runtime.zone_blocked_reason(zone_id)
                 or runtime.cooling_zone_blocked_reason(zone_id),
                 "sensor_status": {
                     "usable": len(aggregation.usable_sensor_ids) if aggregation else 0,
@@ -665,13 +670,19 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
         add(kind.value, severity, zone_id, message)
     if evaluation is None:
         return _sorted_alerts(alerts.values())
+    # The area alert already explains why a zone without a temperature source is
+    # blocked, so the sensor block it causes is not reported again.
+    without_source = _zones_without_temperature_source(runtime)
     for zone_id, decision in sorted(evaluation.diagnostics.zone_decisions.items()):
         if decision.status is ZoneDecisionStatus.SENSOR_BLOCKED:
-            add("zone_sensor_blocked", "error", zone_id, decision.explanation)
+            if zone_id not in without_source:
+                add("zone_sensor_blocked", "error", zone_id, decision.explanation)
         elif decision.status is ZoneDecisionStatus.MODE_BLOCKED:
             add("zone_mode_blocked", "warning", zone_id, decision.explanation)
     for zone_id, decision in sorted(evaluation.diagnostics.cooling_zone_decisions.items()):
-        if decision.status in {ZoneDecisionStatus.SENSOR_BLOCKED, ZoneDecisionStatus.MODE_BLOCKED}:
+        if decision.status is ZoneDecisionStatus.MODE_BLOCKED or (
+            decision.status is ZoneDecisionStatus.SENSOR_BLOCKED and zone_id not in without_source
+        ):
             add("cooling_blocked", "warning", zone_id, decision.explanation)
     for actuator_id, diagnostic in sorted(evaluation.diagnostics.actuator_diagnostics.items()):
         if diagnostic.mismatch:
@@ -757,6 +768,21 @@ def _missing_sensor_alert(
     )
 
 
+_NO_TEMPERATURE_SOURCE_MESSAGE = (
+    "No area of the zone names a temperature sensor that Hydronicus can follow, "
+    "so the zone is blocked."
+)
+
+
+def _zones_without_temperature_source(runtime: Any) -> frozenset[str]:
+    """Return the zones that are blocked because their areas name no temperature sensor."""
+    return frozenset(
+        problem.zone_id
+        for problem in runtime.area_problems
+        if problem.kind is ZoneAreaProblemKind.NO_TEMPERATURE_SOURCE
+    )
+
+
 def _area_problems_by_zone(runtime: Any) -> dict[tuple[ZoneAreaProblemKind, str], list[str]]:
     """Group the area problems of a Plant by kind and zone, keeping area order."""
     grouped: dict[tuple[ZoneAreaProblemKind, str], list[str]] = {}
@@ -772,10 +798,7 @@ def _area_problem_alert(
 ) -> tuple[str, str]:
     """Return the severity and message of one zone's area problem, like its repair."""
     if kind is ZoneAreaProblemKind.NO_TEMPERATURE_SOURCE:
-        return "error", (
-            "No area of the zone names a temperature sensor that Hydronicus can follow, "
-            "so the zone is blocked."
-        )
+        return "error", _NO_TEMPERATURE_SOURCE_MESSAGE
     names = listed([runtime.area_resolution.name(area_id) for area_id in area_ids])
     several = len(area_ids) > 1
     if kind is ZoneAreaProblemKind.AREA_MISSING:

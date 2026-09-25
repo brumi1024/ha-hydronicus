@@ -21,6 +21,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from custom_components.hydronicus.areas import resolve_area_sensors
 from custom_components.hydronicus.const import DOMAIN
+from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.websocket import WS_SUBSCRIBE_PLANT, ws_subscribe_plant
 from tests.integration.flow_forms import form_fields
@@ -782,3 +783,22 @@ async def test_a_missing_area_on_the_zone_card_is_flagged_with_its_last_name(has
         ("kitchen", "Kitchen", True),
         ("attic", "Attic", True),
     ]
+
+
+@pytest.mark.parametrize("hvac_mode", [ThermostatHvacMode.OFF, ThermostatHvacMode.HEAT])
+async def test_a_zone_without_temperature_source_is_explained_once(hass, home, hvac_mode) -> None:
+    """The area alert explains the block, so the snapshot does not repeat it in other words."""
+    for entity_id in (GROUND.valve_entity, UPSTAIRS.valve_entity, "switch.manifold_pump"):
+        hass.states.async_set(entity_id, "off")
+    entry = await _loaded(hass, _topology(["study"]))
+    runtime = entry.runtime_data
+    await runtime.async_set_zone_hvac_mode(GROUND.zone_id, hvac_mode, hass=hass)
+    await hass.async_block_till_done()
+
+    snapshot = runtime.presentation_snapshot(hass)
+    alerts = [alert for alert in snapshot["alerts"] if alert["scope"] == GROUND.zone_id]
+    assert [alert["code"] for alert in alerts] == ["zone_without_temperature_source"]
+    zone = _zone_snapshot(hass, entry, GROUND.zone_id)
+    assert zone["blocked"] is True
+    # The card leaves out a blocked reason that an alert already carries.
+    assert zone["blocked_reason"] == alerts[0]["message"]

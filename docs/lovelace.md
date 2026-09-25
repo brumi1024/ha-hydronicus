@@ -170,6 +170,7 @@ Each open zone area repair also adds an alert scoped to its Zone: `zone_area_mis
 A missing thermostat, actuator, or feedback entity adds the Plant alert `binding_unavailable`, because it blocks every path through it.
 A missing sensor adds an alert scoped to its Zone or Loop instead: `sensor_unavailable` as an error for a required sensor, and `optional_sensor_unavailable` as a warning for an optional one, which Hydronicus leaves out instead of blocking control.
 What a missing required sensor blocks is reported by the controller's own alerts, such as `zone_sensor_blocked`.
+A Zone with `zone_without_temperature_source` gets no `zone_sensor_blocked` alert, and its `blocked_reason` repeats the area alert's message, so the card explains the block once.
 Each area of a Zone carries `missing`, which is true when the area no longer exists in Home Assistant.
 Every temperature in the snapshot is in degrees Celsius.
 The card shows temperatures in the unit system of the Home Assistant instance, and formats numbers with the number format from the user's profile.

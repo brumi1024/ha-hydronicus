@@ -542,7 +542,9 @@ async def test_zone_loop_sensor_repair_belongs_to_the_zone(hass) -> None:
     repairs = _issues(hass)
     assert len(repairs) == 1
     (issue,) = repairs.values()
-    assert issue.translation_key == "missing_sensor_binding_fixable"
+    # A loop that does not cool only reads its supply reference, so it is optional.
+    assert issue.translation_key == "missing_optional_sensor_binding_fixable"
+    assert issue.severity is issue_registry.IssueSeverity.WARNING
     assert issue.data is not None
     assert issue.data["object_id"] == CIRCUIT_B
     assert issue.data["subentry_id"] == subentry_id_for(ZONE_B)
@@ -552,6 +554,48 @@ async def test_zone_loop_sensor_repair_belongs_to_the_zone(hass) -> None:
         "binding": "supply temperature reference of Zone B circuit",
         "owner": "Zone B",
     }
+
+
+async def test_an_optional_zone_sensor_repair_says_it_is_left_out(hass) -> None:
+    """An optional sensor set on the zone is left out, so its repair is a warning, not a block."""
+    _set_healthy_parent_states(hass)
+    entry = _entry()
+    data = deepcopy(dict(entry.data))
+    data["topology"]["zones"][1]["temperature_sensor_metadata"].append(
+        {"entity_id": "sensor.zone_b_spare", "required": False}
+    )
+    entry = plant_entry(data, title="Synthetic plant")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    (issue,) = _issues(hass).values()
+    assert issue.translation_key == "missing_optional_sensor_binding_fixable"
+    assert issue.severity is issue_registry.IssueSeverity.WARNING
+    assert issue.translation_placeholders["binding"] == "temperature sensor of Zone B"
+    strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
+    issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
+    text = issues["missing_optional_sensor_binding_fixable"]["fix_flow"]["step"]["confirm"]
+    assert "blocked" not in text["description"]
+    assert "leaves it out" in text["description"]
+    assert "blocked" not in issues["missing_optional_sensor_binding"]["description"]
+
+
+async def test_a_required_zone_sensor_repair_is_an_error(hass) -> None:
+    """A required sensor blocks what depends on it, so its repair stays an error."""
+    hass.states.async_set("sensor.zone_b_temperature", "18.0")
+    for entity_id in (MISSING_VALVE, MISSING_READINESS, "switch.zone_b_valve"):
+        hass.states.async_set(entity_id, "off")
+    for entity_id in ("switch.zone_a_pump", "switch.zone_b_pump"):
+        hass.states.async_set(entity_id, "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    (issue,) = _issues(hass).values()
+    assert issue.translation_key == "missing_sensor_binding_fixable"
+    assert issue.severity is issue_registry.IssueSeverity.ERROR
 
 
 def test_binding_repair_titles_fit_on_one_header_line() -> None:
@@ -572,7 +616,7 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
     binding_keys = [
         key for key in issues if key.startswith("missing_") and key != "missing_area_sensor_binding"
     ]
-    assert len(binding_keys) == 10
+    assert len(binding_keys) == 12
     for key in binding_keys:
         issue = issues[key]
         titles = [issue["title"]]

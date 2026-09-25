@@ -133,7 +133,14 @@ def async_sync_repairs(
             "binding_key": binding.binding_key,
             "binding_category": binding.category.value,
         }
-        translation_key = _TRANSLATION_KEYS[binding.category]
+        # A missing optional sensor is left out instead of blocking control, as
+        # its optional_sensor_unavailable alert says, so its repair is a warning.
+        optional_sensor = binding.category is BindingCategory.SENSOR and not binding.required
+        translation_key = (
+            "missing_optional_sensor_binding"
+            if optional_sensor
+            else _TRANSLATION_KEYS[binding.category]
+        )
         placeholders = {
             "plant": plant_name,
             "object_name": binding.object_name,
@@ -167,7 +174,7 @@ def async_sync_repairs(
             data=data,
             is_fixable=fixable,
             is_persistent=False,
-            severity=ir.IssueSeverity.ERROR,
+            severity=ir.IssueSeverity.WARNING if optional_sensor else ir.IssueSeverity.ERROR,
             translation_key=translation_key,
             translation_placeholders=placeholders,
         )
