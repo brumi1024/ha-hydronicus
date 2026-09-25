@@ -95,6 +95,8 @@ proportional_band: 2}}
         pump: primary
         modes: [cool]
   lab:
+    temperature: [sensor.lab]
+    humidity: [sensor.lab_humidity]
     thermostat: {external: climate.lab}
     loops:
       bench:
@@ -316,8 +318,8 @@ def test_a_zone_with_an_external_thermostat_needs_no_temperature_sensor() -> Non
     document = reference_document()
     basement = document["zones"]["basement"]
     del basement["areas"]
-    basement["humidity"] = ["sensor.basement_humidity"]
     basement["thermostat"] = {"external": "climate.basement"}
+    basement["loops"]["ceiling"]["modes"] = ["heat"]
 
     assert parse_plant(document).zone("basement").thermostat == ExternalThermostat(
         "climate.basement"
@@ -653,6 +655,62 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         "humidity sensor or an area",
     ),
     (
+        "cooling zone without a temperature source",
+        _both(
+            _delete("zones.basement.areas"),
+            _set("zones.basement.humidity", ["sensor.b_rh"]),
+            _set("zones.basement.thermostat", {"external": "climate.basement"}),
+        ),
+        "zones.basement.temperature",
+        "temperature sensor or an area",
+    ),
+    (
+        "zone a cooling plant loop runs with, without a humidity source",
+        _both(
+            _set("zones.basement.loops.ceiling.modes", ["heat"]),
+            _delete("zones.basement.areas"),
+            _set("zones.basement.temperature", ["sensor.b"]),
+            _set(
+                "loops.hall",
+                {
+                    "valves": ["switch.hall_valve"],
+                    "pump": "heat_pump",
+                    "runs": {"with_zones": ["bedroom_area", "basement"]},
+                    "modes": ["heat", "cool"],
+                },
+            ),
+        ),
+        "zones.basement.humidity",
+        "because loop hall cools with it",
+    ),
+    (
+        "zone a cooling plant loop runs with, without a temperature source",
+        _both(
+            _set("zones.basement.loops.ceiling.modes", ["heat"]),
+            _delete("zones.basement.areas"),
+            _set("zones.basement.humidity", ["sensor.b_rh"]),
+            _set("zones.basement.thermostat", {"external": "climate.basement"}),
+            _set(
+                "loops.hall",
+                {"pump": "heat_pump", "runs": {"with_zones": ["basement"]}, "modes": ["cool"]},
+            ),
+        ),
+        "zones.basement.temperature",
+        "Zone basement needs a temperature sensor or an area",
+    ),
+    (
+        "zone a cooling plant loop runs with the source, without a humidity source",
+        _both(
+            _set("zones.basement.loops.ceiling.modes", ["heat"]),
+            _delete("zones.basement.areas"),
+            _set("zones.basement.temperature", ["sensor.b"]),
+            _set("loops.towel_dryer.modes", ["heat", "cool"]),
+            _set("pumps.towel_dryer.supply_temperature", "sensor.towel_supply"),
+        ),
+        "zones.basement.humidity",
+        "because loop towel_dryer cools with it",
+    ),
+    (
         "thermostat with both kinds",
         _set("zones.basement.thermostat", {"digital": {}, "external": "climate.x"}),
         "zones.basement.thermostat",
@@ -883,6 +941,8 @@ def test_entity_paths_name_where_each_entity_is_bound() -> None:
         "sensor.office_humidity": "zones.office.humidity.0",
         "switch.office_valve_a": "zones.office.loops.radiators.valves.0",
         "switch.office_valve_b": "zones.office.loops.radiators.valves.1",
+        "sensor.lab": "zones.lab.temperature.0",
+        "sensor.lab_humidity": "zones.lab.humidity.0",
         "climate.lab": "zones.lab.thermostat.external",
     }
 

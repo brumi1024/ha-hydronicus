@@ -280,7 +280,8 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
 A zone with a digital thermostat needs a temperature sensor or an area.
-A zone with a loop that cools needs a humidity sensor or an area, for its dew point.
+A zone with a loop that cools needs a humidity sensor or an area, and a temperature sensor or an area, for its dew point.
+So does each zone that a plant loop that cools runs with, or every zone when that plant loop runs with the source, because the loop's condensation guard reads their dew points.
 A zone may have no loop of its own when a plant loop runs with it.
 
 ### Areas

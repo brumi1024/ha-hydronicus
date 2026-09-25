@@ -519,8 +519,10 @@ class _Evaluation:
         pump = self._pumps[loop.pump]
         references = [e for e in (pump.supply_temperature, loop.surface_temperature) if e]
         values = [fresh(obs.sensors.get(e), DEFAULT_MAX_AGE, self.reached) for e in references]
-        zones = [plant.zone(loop.zone)] if loop.zone is not None else list(plant.zones)
-        points = [worst_dew_point(zone, obs.areas, obs.sensors, self.reached) for zone in zones]
+        points = [
+            worst_dew_point(zone, obs.areas, obs.sensors, self.reached)
+            for zone in plant.dew_point_zones(loop)
+        ]
         usable = [value for value in values if value is not None]
         known = [point for point in points if point is not None]
         previous = self.state.guards.get(str(loop.ref))

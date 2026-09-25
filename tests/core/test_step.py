@@ -526,6 +526,40 @@ def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteres
     )
 
 
+# A heat pump cooling a hall loop with the zones it runs with; zone b has no humidity sensor.
+HALL = """
+hydronicus: 2
+name: Hall
+source: {request: switch.hp, min_on: 0, min_off: 0}
+pumps:
+  hp: {driven_by: source, min_flow: guaranteed, supply_temperature: sensor.supply}
+loops:
+  hall: {valves: [switch.hall], pump: hp, runs: {with_zones: [a]}, modes: [heat, cool]}
+zones:
+  a: {temperature: [sensor.a], humidity: [sensor.a_rh]}
+  b: {temperature: [sensor.b]}
+"""
+
+
+def test_a_plant_loop_is_guarded_by_the_dew_points_of_the_zones_it_runs_with() -> None:
+    plant = _plant(HALL)
+    warm = observe(plant, mode=Mode.COOL, temperatures={"a": 26.0, "b": 26.0})
+    state, _, _ = run(plant, warm)
+    assert not state.guards["hall"].blocked, "zone b has no dew point but the hall ignores it"
+
+    with_source = _plant(
+        HALL.replace("runs: {with_zones: [a]}", "runs: with_source").replace(
+            "b: {temperature: [sensor.b]}", "b: {temperature: [sensor.b], humidity: [sensor.b_rh]}"
+        )
+    )
+    # 26 °C at 95 % has a dew point of 25.1 °C, above the 20 °C supply.
+    humid = replace(warm, sensors={**warm.sensors, "sensor.b_rh": Reading(95.0, NOW)})
+    state, desired, _ = run(with_source, humid)
+    assert state.guards["hall"].blocked, "a loop that runs with the source guards every zone"
+    assert desired.reasons["hall.guard"].startswith("condensation guard blocks: reference 20.0")
+    assert not run(plant, humid)[0].guards["hall"].blocked
+
+
 def test_cooling_pumps_have_no_overrun() -> None:
     plant = read_plant_file(
         RADIATOR.replace("pump: pump}", "pump: pump, modes: [heat, cool]}").replace(

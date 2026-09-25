@@ -160,7 +160,7 @@ Add it with **A separator guarantees its flow**, give it loops, then change its 
 ### Cooling is not offered
 
 The **Mode** select offers cool only when a loop of the Plant cools, and a loop may cool only with a condensation reference: its pump's **Supply temperature sensor** or its own **Surface temperature sensor**.
-A zone that cools also needs a humidity sensor or an area.
+A zone that cools also needs a humidity sensor or an area, and so does each zone a plant loop that cools runs with, or every zone when that loop runs with the source.
 
 ## Sensors
 
@@ -186,7 +186,7 @@ If the area names a sensor that does not exist, a Repair says so.
 The loop's condensation guard blocks when its coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
 The **Dew point** sensor shows the zone's worst-case dew point, and the `.guard` reason in the **Status** sensor's `reasons` shows the reference and the threshold.
 A missing or stale reference, or a zone without a usable humidity reading, also blocks.
-For a plant loop that cools, every zone's dew point counts, so every zone needs a humidity reading.
+For a plant loop that cools, the dew points of the zones it runs with count, or of every zone when it runs with the source, so each of those zones needs a humidity reading.
 
 ## Logs and diagnostics
 

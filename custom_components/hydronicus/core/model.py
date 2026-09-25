@@ -314,6 +314,20 @@ class Plant:
     def loop(self, ref: LoopRef) -> Loop:
         return _find(self.all_loops, lambda loop: loop.ref == ref, str(ref))
 
+    def dew_point_zones(self, loop: Loop) -> tuple[Zone, ...]:
+        """Return the zones whose worst-case dew point guards a loop while it cools.
+
+        A zone loop cools its own zone, a plant loop that runs with zones cools
+        those, and one that runs with the source may cool while any zone calls.
+        """
+        match loop.runs.kind:
+            case RunKind.ZONE:
+                return tuple(zone for zone in self.zones if zone.slug == loop.zone)
+            case RunKind.WITH_ZONES:
+                return tuple(zone for zone in self.zones if zone.slug in loop.runs.zones)
+            case _:
+                return self.zones
+
     def pump_loops(self, slug: str) -> tuple[Loop, ...]:
         """Return every loop that a pump drives."""
         return tuple(loop for loop in self.all_loops if loop.pump == slug)

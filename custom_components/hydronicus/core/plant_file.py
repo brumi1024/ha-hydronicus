@@ -581,6 +581,10 @@ def validate_plant(plant: Plant) -> None:
         _check_loop(plant, loop)
     for zone in plant.zones:
         _check_zone(zone)
+    for loop in plant.loops:
+        if loop.cools:
+            for zone in plant.dew_point_zones(loop):
+                _check_dew_point(zone, loop)
     _check_roles(plant)
 
 
@@ -691,6 +695,27 @@ def _check_zone(zone: Zone) -> None:
         raise PlantFileError(
             _join(path, "humidity"),
             "A zone that cools needs a humidity sensor or an area for its dew point.",
+        )
+    if zone.cools and not zone.temperature and not zone.areas:
+        raise PlantFileError(
+            _join(path, "temperature"),
+            "A zone that cools needs a temperature sensor or an area for its dew point.",
+        )
+
+
+def _check_dew_point(zone: Zone, loop: Loop) -> None:
+    """Refuse a zone whose dew point a cooling plant loop's guard needs and cannot have."""
+    path = f"zones.{zone.slug}"
+    because = f"because loop {loop.slug} cools with it"
+    if not zone.humidity and not zone.areas:
+        raise PlantFileError(
+            _join(path, "humidity"),
+            f"Zone {zone.slug} needs a humidity sensor or an area for its dew point, {because}.",
+        )
+    if not zone.temperature and not zone.areas:
+        raise PlantFileError(
+            _join(path, "temperature"),
+            f"Zone {zone.slug} needs a temperature sensor or an area for its dew point, {because}.",
         )
 
 

@@ -164,12 +164,13 @@ Switching the Plant to off stops the current mode with the same sequence.
 
 A loop may cool only when it has a condensation reference: its pump's supply temperature sensor, or its own surface temperature sensor.
 A loop without either runs heat only.
-A zone that cools needs a humidity reading, from a humidity sensor or from its areas.
+A zone that cools needs a humidity reading and a temperature reading, from its own sensors or from its areas.
 
 Each loop that cools has a condensation guard, checked on every evaluation:
 
 - The zone's worst-case dew point is the dew point of its warmest temperature and its highest humidity, because the zone may span rooms whose readings are not paired.
-  For a plant loop, the highest dew point of all zones counts, so every zone then needs a humidity reading.
+  For a plant loop that runs with zones, the highest dew point of those zones counts, and for one that runs with the source, the highest of every zone.
+  Each zone that counts needs a humidity reading and a temperature reading, from its own sensors or its areas.
 - The guard blocks when the coldest reference is below that dew point plus a 2 K margin.
 - It releases only once the coldest reference is at least 1 K above that threshold, and only after it has blocked for at least 5 minutes.
 - A missing or stale reference blocks the guard, and so does a zone without a usable dew point.
