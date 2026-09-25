@@ -44,7 +44,7 @@ SOURCE_ID = "00000000-0000-4000-8000-000000000007"
 CLIMATE = "climate.living"
 # The room sensor already holds sensor.living_temperature, so the room's own
 # Temperature entity takes the next free entity ID.
-TEMPERATURE = "sensor.living_temperature_2"
+TEMPERATURE = "sensor.living_combined_temperature"
 
 
 def _entry() -> MockConfigEntry:
@@ -264,7 +264,7 @@ EXPECTED_ENTITIES: dict[str, tuple[str, str]] = {
     ),
     f"{PLANT_ID}_{ZONE_ID}_aggregate_temperature": (
         TEMPERATURE,
-        "Living Temperature",
+        "Living Combined temperature",
     ),
     f"{PLANT_ID}_{ZONE_ID}_blocked_reason": (
         "sensor.living_blocked_reason",

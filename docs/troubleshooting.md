@@ -88,7 +88,7 @@ A loop, valve, or pump that no enabled Delivery Route reaches is accepted, repor
 
 An unavailable, unknown, non-numeric, non-finite, untimestamped, or stale required sensor blocks the room immediately.
 The room **Blocked** binary sensor turns on, the diagnostic **Blocked reason** sensor explains the failure, and the room releases demand even during a minimum-active hold.
-An unusable optional sensor is excluded from aggregation and appears in the attributes of the room **Temperature** and **Blocked** entities.
+An unusable optional sensor is excluded from aggregation and appears in the attributes of the room **Combined temperature** and **Blocked** entities.
 If no usable sensor remains, the room blocks even when every configured observation is optional.
 
 Check the sensor state in **Settings > Tools > States**.
@@ -134,7 +134,7 @@ Mean and median use all usable calibrated readings selected for the room.
 Minimum and maximum intentionally bias the aggregate toward one extreme.
 Designated reference requires exactly one configured reference observation.
 Weighted mean uses the positive weights configured through detailed sensor editing.
-Inspect the room **Temperature** sensor attributes to confirm which observations were usable or excluded.
+Inspect the room **Combined temperature** sensor attributes to confirm which observations were usable or excluded.
 
 ### Demand remains on or off after crossing the threshold
 

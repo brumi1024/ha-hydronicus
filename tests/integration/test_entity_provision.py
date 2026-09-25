@@ -267,24 +267,30 @@ async def test_a_platform_that_fails_to_set_up_keeps_its_registrations(hass) -> 
 
 
 async def test_a_room_never_reads_its_own_entity_as_an_observation(hass) -> None:
-    """A room Temperature that takes a missing sensor's entity ID is not read back."""
+    """A room sensor that takes a missing sensor's entity ID is not read back."""
     for room in (LIVING, BEDROOM):
         hass.states.async_set(room.valve_entity, "off")
     hass.states.async_set(BEDROOM.temperature_sensor, "22.0")
     hass.states.async_set(MANIFOLD_PUMP_ENTITY, "off")
-    entry = plant_entry(plant_data(manifold_topology(("Living room", "Bedroom"))))
+    # Bind Living room to the entity ID its own Combined temperature will claim.
+    own_entity_id = "sensor.living_room_combined_temperature"
+    data = plant_data(manifold_topology(("Living room", "Bedroom")))
+    for zone in data["topology"]["zones"]:
+        if zone["id"] == LIVING.zone_id:
+            zone["temperature_sensor_metadata"] = [{"entity_id": own_entity_id}]
+    entry = plant_entry(data)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    # The room sensor did not exist, so the room's own Temperature took its entity ID.
+    # The bound sensor did not exist, so the room's own sensor took its entity ID.
     own = _registered(hass, "sensor", f"{PLANT_ID}_{LIVING.zone_id}_aggregate_temperature")
     assert own is not None
-    assert own.entity_id == LIVING.temperature_sensor
+    assert own.entity_id == own_entity_id
     runtime = entry.runtime_data
     assert runtime.zone_is_blocked(LIVING.zone_id)
-    assert LIVING.temperature_sensor in runtime.unavailable_entity_ids
+    assert own_entity_id in runtime.unavailable_entity_ids
     assert any(
         issue.translation_key == "missing_sensor_binding_fixable"
         for issue in ir.async_get(hass).issues.values()

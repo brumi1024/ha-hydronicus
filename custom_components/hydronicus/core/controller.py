@@ -2220,7 +2220,9 @@ def _evaluate_heating_zones(
             next_zone_runtime = ZoneRuntime(False, transition_at)
             status = ZoneDecisionStatus.SATISFIED
             deadline = None
-            reason = f"Hydronicus thermostat is {thermostat_state.hvac_mode.value}; heating is off."
+            mode = thermostat_state.hvac_mode
+            setting = "off" if mode is ThermostatHvacMode.OFF else f"set to {mode.value}"
+            reason = f"Thermostat is {setting}; heating is off."
         elif aggregation.blocking_required_sensor_ids or aggregation.value is None:
             # Sensor safety takes precedence over any comfort timing hold.
             demand = False

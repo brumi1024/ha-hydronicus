@@ -212,13 +212,14 @@ Direct source demand can execute only outside Dry run and after a valid pump pat
 After setup, Hydronicus exposes entities associated with the Plant.
 Each room, valve, pump, and source is a device named after the object alone, under the Plant device that carries the Plant name.
 Entity IDs come from those device names, so the trial Plant has entities such as `climate.bedroom`, `binary_sensor.bedroom_heating_demand`, and `binary_sensor.bedroom_loop_valve_requested`, while Plant-wide entities such as `select.trial_plant_requested_mode` keep the Plant name.
-If an entity ID is already taken, for example `sensor.bedroom_temperature` by your own room sensor, Home Assistant adds a suffix such as `_2`.
+The room's combined temperature is `sensor.bedroom_combined_temperature`, so it does not take the entity ID of a room sensor such as `sensor.bedroom_temperature`.
+If an entity ID is already taken, Home Assistant adds a suffix such as `_2`.
 
 The useful states for a first simulation are:
 
 - The room climate entity, which reports the aggregate current temperature and target.
 - The room **Heating demand** binary sensor, which reports the calculated virtual heat demand.
-- The room **Temperature** sensor, which reports the aggregate the controller uses and identifies usable and excluded observations in its attributes.
+- The room **Combined temperature** sensor, which reports the aggregate the controller uses and identifies usable and excluded observations in its attributes.
 - The valve requested and pump requested binary sensors, which report virtual requests.
 
 Explanations and reasons are diagnostic entities, listed under **Diagnostic** on the device page:
