@@ -813,6 +813,30 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
     result = await submit(result, pump)
     assert result["reason"] == "reconfigure_successful"
 
+    # A pump entity another Plant binds is reviewed before it is saved.
+    other_pump = {
+        "id": "00000000-0000-4000-8000-0000000000fd",
+        "name": "Other pump",
+        "entity_id": "switch.other_plant_pump",
+        "overrun_seconds": 0.0,
+    }
+    plant_entry(
+        plant_data(
+            {"pumps": [other_pump]},
+            name="Other plant",
+            plant_id="00000000-0000-4000-8000-0000000000fe",
+        )
+    ).add_to_hass(hass)
+    result = await menu("add_pump")
+    result = await submit(
+        result, {**pump, CONF_NAME: "Shared pump", "entity_id": "switch.other_plant_pump"}
+    )
+    assert result["step_id"] == "pump_review"
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await submit(result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+
     result = await menu("edit_pump")
     result = await submit(result, {"pump": PUMP_ID})
     result = await submit(
@@ -874,6 +898,7 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
         "dry_run",
         "dry_run_confirmation",
         "pump",
+        "pump_review",
         "edit_pump",
         "edit_plant",
         "edit_plant_review",

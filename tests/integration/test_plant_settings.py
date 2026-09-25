@@ -22,16 +22,20 @@ from custom_components.hydronicus.const import (
 )
 from custom_components.hydronicus.core.plant_document import export_plant_document
 from custom_components.hydronicus.entry_configuration import (
+    data_with_pump,
+    effective_plant,
     output_authorization,
     plant_ownership,
     topology_copy,
 )
+from custom_components.hydronicus.runtime import HydronicRuntime
 from tests.integration.plant_fixtures import (
     MANIFOLD_PUMP_ENTITY,
     MANIFOLD_PUMP_ID,
     PLANT_ID,
     manifold_entry,
     manifold_rooms,
+    manifold_topology,
     plant_data,
     plant_entry,
     room_subentry,
@@ -313,6 +317,206 @@ async def test_pump_form_keeps_the_flow_conventions(hass) -> None:
     )
     assert result["errors"] == {"base": "own_entity"}
     assert dict(entry.data) == data
+
+
+OTHER_PLANT_ID = "00000000-0000-4000-8000-00000000f001"
+OTHER_PLANT_OUTPUT = "switch.office_valve"
+
+
+def _other_plant_binding_an_output(hass) -> None:
+    """Store another Plant whose Office valve is ``OTHER_PLANT_OUTPUT``."""
+    other = plant_entry(
+        plant_data(manifold_topology(("Office",)), plant_id=OTHER_PLANT_ID), title="Plant 1"
+    )
+    other.add_to_hass(hass)
+    hass.states.async_set(OTHER_PLANT_OUTPUT, "off")
+
+
+async def _stored_spare_pump(hass, entry, entity_id: str = SPARE_PUMP_ENTITY) -> str:
+    """Add an unused spare pump through the pump form and return its id."""
+    result = await _open(hass, entry, "add_pump")
+    result = await _submit(
+        hass, result, {"name": "Spare pump", "entity_id": entity_id, "overrun_seconds": 0.0}
+    )
+    if result["type"] == FlowResultType.FORM and result["step_id"] == "pump_review":
+        result = await _submit(hass, result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+    (spare,) = [pump for pump in entry.data["topology"]["pumps"] if pump["entity_id"] == entity_id]
+    return str(spare["id"])
+
+
+async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None:
+    """A pump entity another Plant binds is confirmed before the pump is saved."""
+    _other_plant_binding_an_output(hass)
+    entry = await _loaded_manifold(hass)
+    data = deepcopy(dict(entry.data))
+
+    result = await _open(hass, entry, "add_pump")
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Spare pump", "entity_id": OTHER_PLANT_OUTPUT, "overrun_seconds": 0.0},
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "pump_review"
+    assert not result.get("errors")
+    warnings = result["description_placeholders"]["warnings"]
+    assert OTHER_PLANT_OUTPUT in warnings
+    assert "Plant 1" in warnings
+    assert dict(entry.data) == data
+    result = await _submit(hass, result, {"confirm": False})
+    assert result["step_id"] == "pump_review"
+    assert result["errors"] == {"base": "confirm_required"}
+    assert dict(entry.data) == data
+    result = await _submit(hass, result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+    assert [pump["entity_id"] for pump in entry.data["topology"]["pumps"]] == [
+        MANIFOLD_PUMP_ENTITY,
+        OTHER_PLANT_OUTPUT,
+    ]
+
+    # The shared output is confirmed on every edit, not only when it first appears.
+    spare_id = entry.data["topology"]["pumps"][1]["id"]
+    result = await _open(hass, entry, "edit_pump")
+    result = await _submit(hass, result, {"pump": spare_id})
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Reserve pump", "entity_id": OTHER_PLANT_OUTPUT, "overrun_seconds": 0.0},
+    )
+    assert result["step_id"] == "pump_review"
+    result = await _submit(hass, result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data["topology"]["pumps"][1]["name"] == "Reserve pump"
+
+
+async def test_a_pump_change_that_introduces_a_warning_is_reviewed(hass, monkeypatch) -> None:
+    """A compiler warning the pump change introduces needs a confirmation too."""
+    entry = await _loaded_manifold(hass)
+    introduced: list[tuple[Any, Any]] = []
+
+    def one_new_warning(compiled, before):
+        introduced.append((compiled, before))
+        return compiled.warnings[:1]
+
+    monkeypatch.setattr(
+        "custom_components.hydronicus.flows.plant.warnings_to_confirm", one_new_warning
+    )
+    result = await _open(hass, entry, "add_pump")
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Spare pump", "entity_id": SPARE_PUMP_ENTITY, "overrun_seconds": 0.0},
+    )
+
+    assert result["step_id"] == "pump_review"
+    # The proposed Plant is compared with the stored one.
+    ((compiled, before),) = introduced
+    assert before is not None
+    assert len(compiled.logic_summary) >= len(before.logic_summary)
+    assert "Manifold pump" in result["description_placeholders"]["warnings"]
+    assert SPARE_PUMP_ENTITY not in [pump["entity_id"] for pump in entry.data["topology"]["pumps"]]
+
+
+async def test_a_pump_change_without_new_warnings_saves_directly(hass) -> None:
+    """A warning the Plant already had, such as the shared manifold pump, is not asked again."""
+    entry = await _loaded_manifold(hass)
+    assert "shared_pump_limits_independent_control" in {
+        warning.code for warning in effective_plant(entry).compiled.warnings
+    }
+
+    result = await _open(hass, entry, "edit_pump")
+    result = await _submit(hass, result, {"pump": MANIFOLD_PUMP_ID})
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Main pump", "entity_id": MANIFOLD_PUMP_ENTITY, "overrun_seconds": 0.0},
+    )
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data["topology"]["pumps"][0]["name"] == "Main pump"
+
+
+async def test_editing_a_pump_removed_meanwhile_is_an_invalid_pump(hass) -> None:
+    """A pump another flow removed is not brought back by an open pump form."""
+    entry = await _loaded_manifold(hass)
+    spare_id = await _stored_spare_pump(hass, entry)
+    result = await _open(hass, entry, "edit_pump")
+    result = await _submit(hass, result, {"pump": spare_id})
+    hass.config_entries.async_update_entry(entry, data=data_with_pump(entry.data, spare_id, None))
+    await hass.async_block_till_done()
+    data = deepcopy(dict(entry.data))
+
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Spare pump", "entity_id": SPARE_PUMP_ENTITY, "overrun_seconds": 0.0},
+    )
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "pump"
+    assert result["errors"] == {"base": "invalid_pump"}
+    assert "removed meanwhile" in result["description_placeholders"]["error"]
+    assert dict(entry.data) == data
+
+
+async def test_a_pump_review_confirmed_after_the_pump_was_removed_returns_to_the_form(
+    hass,
+) -> None:
+    """A save-time graph error on the review is reported on the pump form."""
+    _other_plant_binding_an_output(hass)
+    entry = await _loaded_manifold(hass)
+    spare_id = await _stored_spare_pump(hass, entry, OTHER_PLANT_OUTPUT)
+    result = await _open(hass, entry, "edit_pump")
+    result = await _submit(hass, result, {"pump": spare_id})
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Reserve pump", "entity_id": OTHER_PLANT_OUTPUT, "overrun_seconds": 0.0},
+    )
+    assert result["step_id"] == "pump_review"
+    hass.config_entries.async_update_entry(entry, data=data_with_pump(entry.data, spare_id, None))
+    await hass.async_block_till_done()
+    data = deepcopy(dict(entry.data))
+
+    result = await _submit(hass, result, {"confirm": True})
+
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "pump"
+    assert result["errors"] == {"base": "invalid_pump"}
+    assert dict(entry.data) == data
+
+
+async def test_a_pump_review_waits_for_a_live_plant_to_reach_dry_run(hass, monkeypatch) -> None:
+    """A confirmed pump that cannot reach Dry run yet is not saved."""
+    _other_plant_binding_an_output(hass)
+    entry = await _loaded_manifold(hass, dry_run=False)
+    data = deepcopy(dict(entry.data))
+
+    async def shutdown_pending(self, dry_run, **kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(HydronicRuntime, "async_set_dry_run", shutdown_pending)
+    result = await _open(hass, entry, "add_pump")
+    result = await _submit(
+        hass,
+        result,
+        {"name": "Spare pump", "entity_id": OTHER_PLANT_OUTPUT, "overrun_seconds": 0.0},
+    )
+    assert result["step_id"] == "pump_review"
+    result = await _submit(hass, result, {"confirm": True})
+
+    assert result["step_id"] == "pump_review"
+    assert result["errors"] == {"base": "dry_run_shutdown_in_progress"}
+    assert dict(entry.data) == data
+
+    monkeypatch.undo()
+    result = await _submit(hass, result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_DRY_RUN] is True
+    assert OTHER_PLANT_OUTPUT in [pump["entity_id"] for pump in entry.data["topology"]["pumps"]]
 
 
 # --------------------------------------------------------------------------

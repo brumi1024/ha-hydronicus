@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Final, cast
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -32,6 +32,7 @@ from ..core.ownership import PlantOwnership
 from ..core.plant_document import PlantDocumentError, import_plant_document
 from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
+    canonical_id,
     data_with_room,
     effective_plant_from_data,
     exclusive_output_entity_ids,
@@ -105,13 +106,6 @@ def _logic_lines(compiled: CompiledPlant) -> str:
     return "\n".join(f"- {line}" for line in compiled.logic_summary) or "- None"
 
 
-def _canonical(object_id: str) -> str:
-    try:
-        return str(UUID(object_id))
-    except ValueError:
-        return object_id
-
-
 class SetupSteps(ConfigFlowBase):
     """Create a new Plant by guided setup or from a plant file."""
 
@@ -169,10 +163,10 @@ class SetupSteps(ConfigFlowBase):
 
     def _is_configured(self, plant_id: str) -> bool:
         """Return whether a Plant with this id already exists."""
-        plant_id = _canonical(plant_id)
+        plant_id = canonical_id(plant_id)
         for entry in self._async_current_entries(include_ignore=False):
             ids = {str(entry.data.get(CONF_PLANT_ID, "")), str(entry.unique_id or "")}
-            if plant_id in {_canonical(value) for value in ids}:
+            if plant_id in {canonical_id(value) for value in ids}:
                 return True
         return False
 

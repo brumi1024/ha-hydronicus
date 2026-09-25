@@ -58,7 +58,7 @@ Do not add speculative schema aliases or migration paths without a concrete pers
 `custom_components/hydronicus/core/configuration.py` decodes only the canonical persisted objects into typed domain values.
 `custom_components/hydronicus/core/ownership.py` assigns every graph object to the Plant or to one room so that removing a room always leaves a valid graph.
 `custom_components/hydronicus/entry_configuration.py` owns graph mutation, room and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
-`custom_components/hydronicus/migration.py` migrates stored config entries and moves entity and device registrations between subentries.
+`custom_components/hydronicus/migration.py` migrates stored config entries, moves entity and device registrations between subentries, and removes the registrations of objects a graph edit drops.
 `custom_components/hydronicus/config_flow.py` composes the flow step modules in `custom_components/hydronicus/flows/`.
 `custom_components/hydronicus/core/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
 `custom_components/hydronicus/core/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.

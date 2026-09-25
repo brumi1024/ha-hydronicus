@@ -171,6 +171,16 @@
           }
         }
       },
+      "pump_review": {
+        "title": "Review pump warnings",
+        "description": "Review these warnings before saving the pump:\n{warnings}\n\nSaving returns the Plant to Dry run.",
+        "data": {
+          "confirm": "I understand these warnings"
+        },
+        "data_description": {
+          "confirm": "Required to save a pump that has the warnings listed above."
+        }
+      },
       "edit_plant": {
         "title": "Edit plant file",
         "description": "Edit the whole Plant as a plant file. An object that keeps its id keeps its entities, and a new object without an id gets one from its slug. The next step lists the changes before anything is saved.",

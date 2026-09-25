@@ -9,11 +9,11 @@ zone. The legacy subentry type names live only in this module.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant, callback
@@ -46,8 +46,11 @@ from .core.model import PlantMode
 from .core.ownership import derive_ownership
 from .core.topology import compile_topology
 from .entry_configuration import (
+    canonical_id,
     invalidate_output_authorization,
     record_object_id,
+    records,
+    replace_record,
     topology_copy,
 )
 
@@ -94,31 +97,13 @@ def _required(data: Mapping[str, Any], key: str, owner: str) -> Any:
         raise StoredTopologyError(f"{owner} is missing required field {key!r}.") from error
 
 
-def _records(topology: Mapping[str, Any], collection: str) -> list[dict[str, Any]]:
-    records = topology[collection]
-    if not isinstance(records, list):
-        raise StoredTopologyError(f"Stored topology field {collection!r} must be a list.")
-    return records
-
-
-def _replace_record(
-    topology: dict[str, Any], collection: str, object_id: str, record: Mapping[str, Any]
-) -> None:
-    records = _records(topology, collection)
-    for index, current in enumerate(records):
-        if str(current.get("id")) == object_id:
-            records[index] = deepcopy(dict(record))
-            return
-    records.append(deepcopy(dict(record)))
-
-
 def _remove_records(
     topology: dict[str, Any],
     collection: str,
     predicate: Callable[[Mapping[str, Any]], bool],
 ) -> None:
     topology[collection] = [
-        record for record in _records(topology, collection) if not predicate(record)
+        record for record in records(topology, collection) if not predicate(record)
     ]
 
 
@@ -141,7 +126,9 @@ def _version_2_handles(data: Mapping[str, Any]) -> dict[str, str]:
 
 def _object_exists(topology: Mapping[str, Any], subentry_type: str, object_id: str) -> bool:
     collection = _COLLECTION_BY_SUBENTRY_TYPE[subentry_type]
-    return any(str(record.get("id")) == object_id for record in _records(topology, collection))
+    return any(
+        canonical_id(record.get("id")) == object_id for record in records(topology, collection)
+    )
 
 
 def _route_flag(route: Mapping[str, Any]) -> dict[str, Any]:
@@ -169,11 +156,13 @@ def _apply_zone(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
         "configure_sensor_metadata",
     ):
         canonical.pop(key, None)
-    _replace_record(topology, CONF_ZONES, zone_id, canonical)
-    _remove_records(topology, CONF_ROUTES, lambda route: str(route.get("zone_id")) == zone_id)
+    replace_record(topology, CONF_ZONES, zone_id, canonical)
+    _remove_records(
+        topology, CONF_ROUTES, lambda route: canonical_id(route.get("zone_id")) == zone_id
+    )
     for raw_route in routes:
         circuit_id = _route_endpoint(raw_route, "circuit_id", "Zone draft")
-        _records(topology, CONF_ROUTES).append(
+        records(topology, CONF_ROUTES).append(
             {
                 "id": record_object_id(raw_route, "Zone draft route"),
                 "zone_id": zone_id,
@@ -181,10 +170,10 @@ def _apply_zone(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
                 **_route_flag(raw_route),
             }
         )
-    if {str(value) for value in circuit_ids} != {
-        str(route["circuit_id"])
-        for route in _records(topology, CONF_ROUTES)
-        if str(route.get("zone_id")) == zone_id
+    if {canonical_id(value) for value in circuit_ids} != {
+        canonical_id(route["circuit_id"])
+        for route in records(topology, CONF_ROUTES)
+        if canonical_id(route.get("zone_id")) == zone_id
     }:
         raise StoredTopologyError("Zone draft routes must match its selected circuit ids.")
     return zone_id
@@ -199,11 +188,13 @@ def _apply_circuit(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
     canonical = deepcopy(dict(draft))
     canonical.pop(CONF_ZONE_IDS, None)
     canonical.pop(CONF_ROUTES, None)
-    _replace_record(topology, CONF_CIRCUITS, circuit_id, canonical)
-    _remove_records(topology, CONF_ROUTES, lambda route: str(route.get("circuit_id")) == circuit_id)
+    replace_record(topology, CONF_CIRCUITS, circuit_id, canonical)
+    _remove_records(
+        topology, CONF_ROUTES, lambda route: canonical_id(route.get("circuit_id")) == circuit_id
+    )
     for raw_route in routes:
         zone_id = _route_endpoint(raw_route, "zone_id", "Circuit draft")
-        _records(topology, CONF_ROUTES).append(
+        records(topology, CONF_ROUTES).append(
             {
                 "id": record_object_id(raw_route, "Circuit draft route"),
                 "zone_id": zone_id,
@@ -211,10 +202,10 @@ def _apply_circuit(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
                 **_route_flag(raw_route),
             }
         )
-    if {str(value) for value in zone_ids} != {
-        str(route["zone_id"])
-        for route in _records(topology, CONF_ROUTES)
-        if str(route.get("circuit_id")) == circuit_id
+    if {canonical_id(value) for value in zone_ids} != {
+        canonical_id(route["zone_id"])
+        for route in records(topology, CONF_ROUTES)
+        if canonical_id(route.get("circuit_id")) == circuit_id
     }:
         raise StoredTopologyError("Circuit draft routes must match its selected zone ids.")
     return circuit_id
@@ -234,20 +225,20 @@ def _apply_actuator(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
     canonical = deepcopy(dict(draft))
     canonical.pop(CONF_ACTUATOR_KIND, None)
     canonical.pop(CONF_CIRCUIT_IDS, None)
-    _replace_record(topology, CONF_VALVES, actuator_id, canonical)
+    replace_record(topology, CONF_VALVES, actuator_id, canonical)
     known_circuit_ids = {
-        record_object_id(circuit, "Stored circuit") for circuit in _records(topology, CONF_CIRCUITS)
+        record_object_id(circuit, "Stored circuit") for circuit in records(topology, CONF_CIRCUITS)
     }
     if unknown := selected_circuit_ids - known_circuit_ids:
         raise StoredTopologyError(
             "Actuator draft references unknown circuits: " + ", ".join(sorted(unknown)) + "."
         )
-    for circuit in _records(topology, CONF_CIRCUITS):
+    for circuit in records(topology, CONF_CIRCUITS):
         circuit_id = record_object_id(circuit, "Stored circuit")
         raw_valve_ids = circuit.get("valve_ids", [])
         if not isinstance(raw_valve_ids, list):
             raise StoredTopologyError("Stored circuit valve ids must be a list.")
-        valve_ids = [str(value) for value in raw_valve_ids if str(value) != actuator_id]
+        valve_ids = [str(value) for value in raw_valve_ids if canonical_id(value) != actuator_id]
         if circuit_id in selected_circuit_ids:
             valve_ids.append(actuator_id)
         circuit["valve_ids"] = valve_ids
@@ -256,7 +247,7 @@ def _apply_actuator(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
 
 def _apply_source(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
     source_id = record_object_id(draft, "Source draft")
-    _replace_record(topology, CONF_SOURCES, source_id, draft)
+    replace_record(topology, CONF_SOURCES, source_id, draft)
     return source_id
 
 
@@ -417,19 +408,23 @@ def _migration_started(entry: ConfigEntry) -> bool:
 def _remove_version_2_object(topology: dict[str, Any], subentry_type: str, object_id: str) -> None:
     """Remove one object the way version 2 removed it with its deleted handle."""
     collection = _COLLECTION_BY_SUBENTRY_TYPE[subentry_type]
-    _remove_records(topology, collection, lambda record: str(record.get("id")) == object_id)
+    _remove_records(
+        topology, collection, lambda record: canonical_id(record.get("id")) == object_id
+    )
     if subentry_type == SUBENTRY_TYPE_ZONE:
-        _remove_records(topology, CONF_ROUTES, lambda route: str(route.get("zone_id")) == object_id)
+        _remove_records(
+            topology, CONF_ROUTES, lambda route: canonical_id(route.get("zone_id")) == object_id
+        )
     elif subentry_type == SUBENTRY_TYPE_CIRCUIT:
         _remove_records(
-            topology, CONF_ROUTES, lambda route: str(route.get("circuit_id")) == object_id
+            topology, CONF_ROUTES, lambda route: canonical_id(route.get("circuit_id")) == object_id
         )
     elif subentry_type == SUBENTRY_TYPE_ACTUATOR:
-        for circuit in _records(topology, CONF_CIRCUITS):
+        for circuit in records(topology, CONF_CIRCUITS):
             raw_valve_ids = circuit.get("valve_ids", [])
             if isinstance(raw_valve_ids, list):
                 circuit["valve_ids"] = [
-                    valve_id for valve_id in raw_valve_ids if str(valve_id) != object_id
+                    valve_id for valve_id in raw_valve_ids if canonical_id(valve_id) != object_id
                 ]
 
 
@@ -485,12 +480,23 @@ def _owner_subentry_ids(entry: ConfigEntry, plan: RoomMigrationPlan) -> dict[str
     return resolved
 
 
+_PLANT: Final = "plant"
+
+
 def _object_of_unique_id(unique_id: str, plant_id: str, owners: Mapping[str, Any]) -> str | None:
-    """Return the first object UUID, other than the Plant id, in an entity unique ID."""
-    for candidate in _UUID_PATTERN.findall(unique_id.lower()):
-        if candidate != plant_id and candidate in owners:
-            return candidate
-    return None
+    """Return the object an entity unique ID names, ``_PLANT``, or ``None`` when unknown.
+
+    The object is the first UUID in the unique ID, other than the Plant id, that
+    ``owners`` knows. A unique ID with no such UUID at all belongs to the Plant. A
+    unique ID naming only unknown objects is left alone: its object is gone, and
+    its registration goes with its handle or is removed with its object.
+    """
+    candidates = [
+        candidate for candidate in _UUID_PATTERN.findall(unique_id.lower()) if candidate != plant_id
+    ]
+    if not candidates:
+        return _PLANT
+    return next((candidate for candidate in candidates if candidate in owners), None)
 
 
 def _object_of_device(device: dr.DeviceEntry, plant_id: str) -> str | None:
@@ -512,7 +518,7 @@ def _async_move_entities(
         object_id = _object_of_unique_id(str(registry_entry.unique_id), plant_id, owners)
         if object_id is None:
             continue
-        target = owners[object_id]
+        target = None if object_id == _PLANT else owners[object_id]
         if registry_entry.config_subentry_id != target:
             registry.async_update_entity(
                 registry_entry.entity_id,
@@ -548,6 +554,31 @@ def async_move_object_registrations(
     """
     _async_move_entities(hass, entry, owners)
     _async_move_devices(hass, entry, owners)
+
+
+@callback
+def async_remove_object_registrations(
+    hass: HomeAssistant, entry: ConfigEntry, object_ids: Collection[str]
+) -> None:
+    """Remove the entities and devices of objects that no longer exist in the graph.
+
+    Graph edits that drop objects, such as removing a pump, a loop, or a valve,
+    call this in the same synchronous block that stores the edited graph.
+    """
+    if not object_ids:
+        return
+    plant_id = str(entry.data.get(CONF_PLANT_ID, ""))
+    entity_registry = er.async_get(hass)
+    for registry_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
+        if any(object_id in str(registry_entry.unique_id) for object_id in object_ids):
+            entity_registry.async_remove(registry_entry.entity_id)
+    device_registry = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+        if any(
+            identifier.split(":")[0] == plant_id and identifier.split(":")[-1] in object_ids
+            for _domain, identifier in device.identifiers
+        ):
+            device_registry.async_remove_device(device.id)
 
 
 @callback

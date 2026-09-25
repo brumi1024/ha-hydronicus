@@ -241,6 +241,7 @@ Building, storing, and `on_stored(previous, stored)` run with no `await` in betw
 A graph edit error that `build` raises stores nothing and reaches the flow, which shows the drafting form again with the mapped error.
 `data_with_plant` also refuses an object whose id belonged to an object of another kind, because that id's handles and registrations belong to the old object.
 `migration.py` provides `async_move_object_registrations(hass, entry, owners)`, which moves the entities and devices of every object id in `owners` to the given subentry id, or to the parent for `None`; migration and plant file edits share it.
+It also provides `async_remove_object_registrations(hass, entry, object_ids)`, which removes the entities and devices of objects a graph edit dropped; plant file edits, pump removal, and room edits call it in the `on_stored` block of the save.
 
 ### K5 Plant file format
 
@@ -435,6 +436,7 @@ Parent reconfigure flow in module `flows/plant.py`, built by W4.
 | `add_pump` | step | Opens `pump` empty. |
 | `edit_pump` | form | `pump`, a select of Plant pumps, which opens `pump` prefilled. |
 | `pump` | form | `name`, `entity_id`, `overrun_seconds`, section `feedback` with the stored pump feedback fields, and `remove_pump` when editing. |
+| `pump_review` | form | `confirm`, with placeholder `warnings`; shown only when the pump change introduces a warning or its entity is bound by another Plant, and a save that the Plant as changed meanwhile rejects returns to `pump`. |
 | `export_plant` | abort | Reason `plant_exported`, with placeholder `document` holding the YAML in a fenced block. |
 | `edit_plant` | form | `document`, an object selector prefilled with the current export. |
 | `edit_plant_review` | form | `confirm`, with placeholders `changes`, `logic`, `warnings`. |

@@ -10,6 +10,7 @@ import pytest
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -830,6 +831,74 @@ async def test_loops_can_be_added_share_room_valves_and_be_removed(hass) -> None
     result = await _configure(hass, result, {"loop": added["circuits"][1]})
     result = await _configure(hass, result, {**frontend_submission(result), "remove_loop": True})
     assert result["errors"] == {"base": "delivery_required"}
+
+
+def _object_registrations(hass, entry: MockConfigEntry, object_id: str) -> list[str]:
+    """Return the entity unique IDs and device identifiers that name one object."""
+    entities = [
+        registry_entry.unique_id
+        for registry_entry in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+        if object_id in registry_entry.unique_id
+    ]
+    devices = [
+        identifier
+        for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+        for _domain, identifier in device.identifiers
+        if identifier.endswith(f":{object_id}")
+    ]
+    return entities + devices
+
+
+async def test_objects_a_room_edit_drops_leave_no_registrations(hass) -> None:
+    """Dropping a valve entity or removing a loop removes the registrations of what it drops."""
+    entry = await _setup(hass, _pump_only_entry())
+    await _add_room(
+        hass,
+        entry,
+        {**LIVING_INPUT, "valves": [LIVING.valve_entity, "switch.living_room_valve_2"]},
+    )
+    zone_id = _zone_id(entry, "Living room")
+    result = await _menu(hass, entry, zone_id, "add_loop")
+    result = await _configure(
+        hass,
+        result,
+        {
+            "name": "Ceiling loop",
+            "valves": ["switch.living_room_extra_valve"],
+            "pump": MANIFOLD_PUMP_ID,
+            "valve_opening_time_seconds": 30.0,
+        },
+    )
+    assert (await _confirmed(hass, result))["reason"] == "reconfigure_successful"
+    ids = _ids(entry, zone_id)
+    floor_loop, ceiling_loop = ids["circuits"]
+    kept_valve = ids["valves"][LIVING.valve_entity]
+    dropped_valve = ids["valves"]["switch.living_room_valve_2"]
+    ceiling_valve = ids["valves"]["switch.living_room_extra_valve"]
+    for valve_id in (kept_valve, dropped_valve, ceiling_valve):
+        assert _object_registrations(hass, entry, valve_id), valve_id
+    kept_zone = _object_registrations(hass, entry, zone_id)
+    assert kept_zone
+
+    result = await _menu(hass, entry, zone_id, "edit_loop")
+    result = await _configure(hass, result, {"loop": floor_loop})
+    result = await _configure(
+        hass, result, {**frontend_submission(result), "valves": [LIVING.valve_entity]}
+    )
+    assert (await _confirmed(hass, result))["reason"] == "reconfigure_successful"
+    assert _object_registrations(hass, entry, dropped_valve) == []
+    assert _object_registrations(hass, entry, kept_valve)
+    assert _object_registrations(hass, entry, ceiling_valve)
+
+    result = await _menu(hass, entry, zone_id, "edit_loop")
+    result = await _configure(hass, result, {"loop": ceiling_loop})
+    result = await _configure(hass, result, {**frontend_submission(result), "remove_loop": True})
+    assert (await _confirmed(hass, result))["reason"] == "reconfigure_successful"
+    assert _ids(entry, zone_id)["circuits"] == [floor_loop]
+    assert _object_registrations(hass, entry, ceiling_loop) == []
+    assert _object_registrations(hass, entry, ceiling_valve) == []
+    assert _object_registrations(hass, entry, kept_valve)
+    assert _object_registrations(hass, entry, zone_id) == kept_zone
 
 
 async def test_loop_form_reports_required_fields(hass) -> None:

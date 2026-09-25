@@ -173,9 +173,13 @@ def record_object_id(data: Mapping[str, Any], owner: str) -> str:
     return _uuid(_required(data, "id", owner), f"{owner} id")
 
 
-def _stored_id(record: Mapping[str, Any]) -> str:
-    """Return a record id in the canonical form the core decoder uses."""
-    raw = str(record.get("id"))
+def canonical_id(object_id: Any) -> str:
+    """Return a stored id in the canonical UUID form the core decoder uses.
+
+    A value that is not a UUID is returned as its string, so a malformed stored
+    id still compares and reports as written; the decoder rejects it.
+    """
+    raw = str(object_id)
     try:
         return str(UUID(raw))
     except ValueError:
@@ -233,16 +237,19 @@ def plant_ownership(data: Mapping[str, Any]) -> PlantOwnership:
     return PlantOwnership(room_objects=room_objects(data))
 
 
-def _records(topology: Mapping[str, Any], collection: str) -> list[dict[str, Any]]:
-    records = topology[collection]
-    if not isinstance(records, list):
+def records(topology: Mapping[str, Any], collection: str) -> list[dict[str, Any]]:
+    """Return one stored topology collection, the list itself rather than a copy."""
+    stored = topology[collection]
+    if not isinstance(stored, list):
         raise StoredTopologyError(f"Stored topology field {collection!r} must be a list.")
-    return records
+    return stored
 
 
 def _record_by_id(topology: Mapping[str, Any], collection: str, object_id: str) -> dict[str, Any]:
     matches = [
-        record for record in _records(topology, collection) if _stored_id(record) == object_id
+        record
+        for record in records(topology, collection)
+        if canonical_id(record.get("id")) == object_id
     ]
     if len(matches) != 1:
         raise StoredTopologyError(
@@ -251,22 +258,28 @@ def _record_by_id(topology: Mapping[str, Any], collection: str, object_id: str) 
     return deepcopy(matches[0])
 
 
-def _replace_record(
+def replace_record(
     topology: dict[str, Any], collection: str, object_id: str, record: Mapping[str, Any]
 ) -> None:
-    records = _records(topology, collection)
-    for index, current in enumerate(records):
-        if _stored_id(current) == object_id:
-            records[index] = deepcopy(dict(record))
+    """Replace the record with the canonical id ``object_id`` in place, or append it."""
+    stored = records(topology, collection)
+    for index, current in enumerate(stored):
+        if canonical_id(current.get("id")) == object_id:
+            stored[index] = deepcopy(dict(record))
             return
-    records.append(deepcopy(dict(record)))
+    stored.append(deepcopy(dict(record)))
 
 
 def _all_handles(topology: Mapping[str, Any]) -> dict[str, str]:
     """Give every zone a room handle and every source a source handle."""
-    handles = {_stored_id(zone): SUBENTRY_TYPE_ROOM for zone in _records(topology, CONF_ZONES)}
+    handles = {
+        canonical_id(zone.get("id")): SUBENTRY_TYPE_ROOM for zone in records(topology, CONF_ZONES)
+    }
     handles.update(
-        {_stored_id(source): SUBENTRY_TYPE_SOURCE for source in _records(topology, CONF_SOURCES)}
+        {
+            canonical_id(source.get("id")): SUBENTRY_TYPE_SOURCE
+            for source in records(topology, CONF_SOURCES)
+        }
     )
     return handles
 
@@ -390,8 +403,8 @@ def room_draft(data: Mapping[str, Any], zone_id: str) -> RoomDraft:
     def private(collection: str) -> list[dict[str, Any]]:
         return [
             deepcopy(record)
-            for record in _records(topology, collection)
-            if owners.get(_stored_id(record)) == zone_id
+            for record in records(topology, collection)
+            if owners.get(canonical_id(record.get("id"))) == zone_id
         ]
 
     return RoomDraft(
@@ -400,14 +413,14 @@ def room_draft(data: Mapping[str, Any], zone_id: str) -> RoomDraft:
         valves=private(CONF_VALVES),
         routes=[
             deepcopy(route)
-            for route in _records(topology, CONF_ROUTES)
+            for route in records(topology, CONF_ROUTES)
             if _uuid(route.get("zone_id"), "Stored route zone id") == zone_id
         ],
     )
 
 
 def _merged(
-    records: list[dict[str, Any]],
+    stored: list[dict[str, Any]],
     replaceable_ids: set[str],
     drafted: Iterable[Mapping[str, Any]],
     collection: str,
@@ -419,14 +432,14 @@ def _merged(
         if object_id in new_by_id:
             raise StoredTopologyError(f"Room {collection} repeat id {object_id}.")
         new_by_id[object_id] = deepcopy(dict(record))
-    stored_ids = {_stored_id(record) for record in records}
+    stored_ids = {canonical_id(record.get("id")) for record in stored}
     if taken := sorted((set(new_by_id) & stored_ids) - replaceable_ids):
         raise StoredTopologyError(
             f"Room {collection} " + ", ".join(taken) + " belong to the Plant or another room."
         )
     merged: list[dict[str, Any]] = []
-    for record in records:
-        object_id = _stored_id(record)
+    for record in stored:
+        object_id = canonical_id(record.get("id"))
         if object_id not in replaceable_ids:
             merged.append(record)
         elif object_id in new_by_id:
@@ -450,8 +463,8 @@ def data_with_room(data: Mapping[str, Any], draft: RoomDraft) -> dict[str, Any]:
         CONF_CIRCUITS: private_ids,
         CONF_VALVES: private_ids,
         CONF_ROUTES: {
-            _stored_id(route)
-            for route in _records(topology, CONF_ROUTES)
+            canonical_id(route.get("id"))
+            for route in records(topology, CONF_ROUTES)
             if _uuid(route.get("zone_id"), "Stored route zone id") == zone_id
         },
     }
@@ -461,9 +474,9 @@ def data_with_room(data: Mapping[str, Any], draft: RoomDraft) -> dict[str, Any]:
         CONF_VALVES: draft.valves,
         CONF_ROUTES: draft.routes,
     }
-    for collection, records in drafted.items():
+    for collection, drafted_records in drafted.items():
         topology[collection] = _merged(
-            _records(topology, collection), replaceable[collection], records, collection
+            records(topology, collection), replaceable[collection], drafted_records, collection
         )
     owners = {object_id: owner for object_id, owner in owners.items() if owner != zone_id}
     for record in (*draft.circuits, *draft.valves):
@@ -486,18 +499,20 @@ def data_with_pump(
     if record is None:
         _record_by_id(topology, CONF_PUMPS, pump_id)
         if users := tuple(
-            str(circuit.get(CONF_NAME, _stored_id(circuit)))
-            for circuit in _records(topology, CONF_CIRCUITS)
+            str(circuit.get(CONF_NAME, canonical_id(circuit.get("id"))))
+            for circuit in records(topology, CONF_CIRCUITS)
             if str(circuit.get("pump_id")) == pump_id
         ):
             raise EquipmentInUseError(users)
         topology[CONF_PUMPS] = [
-            pump for pump in _records(topology, CONF_PUMPS) if _stored_id(pump) != pump_id
+            pump
+            for pump in records(topology, CONF_PUMPS)
+            if canonical_id(pump.get("id")) != pump_id
         ]
     else:
         if "id" in record and record_object_id(record, "Pump record") != pump_id:
             raise StoredTopologyError("A pump record id must match its pump id.")
-        _replace_record(topology, CONF_PUMPS, pump_id, {"id": pump_id, **record})
+        replace_record(topology, CONF_PUMPS, pump_id, {"id": pump_id, **record})
     updated[CONF_TOPOLOGY] = topology
     return _finalized(updated)
 
@@ -507,7 +522,7 @@ def data_with_source(data: Mapping[str, Any], record: Mapping[str, Any]) -> dict
     source_id = record_object_id(record, "Source record")
     updated = deepcopy(dict(data))
     topology = topology_copy(updated)
-    _replace_record(topology, CONF_SOURCES, source_id, record)
+    replace_record(topology, CONF_SOURCES, source_id, record)
     handles = subentry_objects(updated)
     handles[source_id] = SUBENTRY_TYPE_SOURCE
     updated[CONF_TOPOLOGY] = topology
@@ -518,10 +533,15 @@ def data_with_source(data: Mapping[str, Any], record: Mapping[str, Any]) -> dict
 def _objects_by_id(topology: Mapping[str, Any]) -> dict[str, tuple[str, Mapping[str, Any]]]:
     """Return object id -> (kind, record) for every zone, loop, valve, pump, and source."""
     return {
-        _stored_id(record): (kind, record)
+        canonical_id(record.get("id")): (kind, record)
         for collection, kind in _OBJECT_KINDS
-        for record in _records(topology, collection)
+        for record in records(topology, collection)
     }
+
+
+def object_ids(data: Mapping[str, Any]) -> set[str]:
+    """Return the id of every zone, loop, valve, pump, and source of stored data."""
+    return set(_objects_by_id(topology_copy(data)))
 
 
 def data_with_plant(data: Mapping[str, Any], imported: ImportedPlantLike) -> dict[str, Any]:
@@ -619,7 +639,9 @@ def _data_without_room(data: Mapping[str, Any], zone_id: str) -> dict[str, Any]:
     topology = topology_copy(updated)
     for collection, object_ids in kept_ids.items():
         topology[collection] = [
-            record for record in _records(topology, collection) if _stored_id(record) in object_ids
+            record
+            for record in records(topology, collection)
+            if canonical_id(record.get("id")) in object_ids
         ]
     updated[CONF_TOPOLOGY] = topology
     updated[CONF_ROOM_OBJECTS] = dict(ownership.room_objects)
@@ -630,7 +652,9 @@ def _data_without_source(data: Mapping[str, Any], source_id: str) -> dict[str, A
     updated = deepcopy(dict(data))
     topology = topology_copy(updated)
     topology[CONF_SOURCES] = [
-        record for record in _records(topology, CONF_SOURCES) if _stored_id(record) != source_id
+        record
+        for record in records(topology, CONF_SOURCES)
+        if canonical_id(record.get("id")) != source_id
     ]
     updated[CONF_TOPOLOGY] = topology
     return updated
@@ -675,7 +699,7 @@ def output_authorization(data: Mapping[str, Any]) -> dict[str, Any]:
     ).hexdigest()
     outputs: list[dict[str, str]] = []
     for kind, collection in (("valve", CONF_VALVES), ("pump", CONF_PUMPS)):
-        for record in _records(topology, collection):
+        for record in records(topology, collection):
             entity_id = record.get("entity_id")
             if isinstance(entity_id, str) and entity_id:
                 outputs.append(
@@ -685,7 +709,7 @@ def output_authorization(data: Mapping[str, Any]) -> dict[str, Any]:
                         "entity_id": entity_id,
                     }
                 )
-    for record in _records(topology, CONF_SOURCES):
+    for record in records(topology, CONF_SOURCES):
         entity_id = record.get("source_demand_entity")
         if isinstance(entity_id, str) and entity_id:
             outputs.append(

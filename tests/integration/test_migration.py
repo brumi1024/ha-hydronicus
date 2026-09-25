@@ -650,6 +650,41 @@ async def test_cross_wired_version_2_manifold_migrates_without_losing_registrati
     assert registrations <= _registration_ids(hass, entry)
 
 
+async def test_entity_without_an_object_id_under_a_legacy_handle_moves_to_the_plant(
+    hass,
+) -> None:
+    """An entity whose unique ID names no object belongs to the Plant (K3 step 4).
+
+    Removing the legacy handle in step 6 must not take such an entity with it.
+    """
+    _set_evidence_states(hass)
+    entry = _evidence_version_2_entry()
+    entry.add_to_hass(hass)
+    _install_version_2_registry(hass, entry)
+    plant_entity = er.async_get(hass).async_get_or_create(
+        "binary_sensor",
+        DOMAIN,
+        f"{PLANT_ID}_dry_run",
+        suggested_object_id="customized_plant_dry_run",
+        config_entry=entry,
+        config_subentry_id=LEGACY_BEDROOM,
+    )
+    er.async_get(hass).async_update_entity(plant_entity.entity_id, name="Plant dry run")
+    removals = _record_removals(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (entry.version, entry.minor_version) == (3, 0)
+    migrated = er.async_get(hass).async_get(plant_entity.entity_id)
+    assert migrated is not None
+    assert migrated.id == plant_entity.id
+    assert migrated.unique_id == f"{PLANT_ID}_dry_run"
+    assert migrated.config_subentry_id is None
+    assert migrated.name == "Plant dry run"
+    assert ("entity", plant_entity.entity_id) not in removals
+
+
 # 0 means only the removal of objects deleted before migration has run.
 _INTERRUPTIONS = range(len(ROOM_MIGRATION_STEPS))
 _INTERRUPTION_IDS = ["after_version_2_removals"] + [

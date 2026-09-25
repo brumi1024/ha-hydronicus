@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, Literal
-from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -17,82 +16,34 @@ from homeassistant.helpers import entity_registry as entity_registry_helper
 from homeassistant.helpers import selector
 
 from ..const import (
-    CONF_AWAY_TARGET,
-    CONF_CALIBRATION_OFFSET,
-    CONF_CIRCUIT_IDS,
-    CONF_COMFORT_TARGET,
-    CONF_CONDENSATION_MARGIN,
-    CONF_CONFIGURE_SENSOR_METADATA,
-    CONF_COOLING_ENABLED,
-    CONF_COOLING_START_DELTA,
-    CONF_COOLING_STOP_DELTA,
-    CONF_DESIGNATED_REFERENCE,
     CONF_DRY_RUN,
     CONF_DRY_RUN_CONFIRMATION,
-    CONF_ECO_TARGET,
     CONF_ENTITY_ID,
-    CONF_EXTERNAL_CLIMATE_ENTITY,
     CONF_FAULT_FEEDBACK_ENTITY,
     CONF_FLOW_FEEDBACK_ENTITY,
-    CONF_HEATING_START_DELTA,
-    CONF_HEATING_STOP_DELTA,
-    CONF_HUMIDITY_SENSOR_METADATA,
     CONF_HUMIDITY_SENSORS,
-    CONF_INITIAL_PRESET,
-    CONF_INITIAL_TARGET_TEMPERATURE,
-    CONF_MAX_AGE,
-    CONF_MINIMUM_ACTIVE_DURATION,
-    CONF_MINIMUM_IDLE_DURATION,
     CONF_NAME,
     CONF_POSITION_FEEDBACK_ENTITY,
-    CONF_POSITION_FEEDBACK_MAX_AGE,
     CONF_POWER_FEEDBACK_ENTITY,
-    CONF_PRESET_TARGETS,
     CONF_PUMP_ENTITY,
-    CONF_REQUIRED,
-    CONF_ROUTES,
     CONF_SENSOR_ENTITY,
     CONF_SOURCE_AVAILABILITY_ENTITY,
     CONF_SOURCE_DEMAND_ENTITY,
     CONF_SOURCE_TEMPERATURE_ENTITY,
-    CONF_SUPPLY_TEMPERATURE_MAX_AGE,
     CONF_SUPPLY_TEMPERATURE_SENSOR,
-    CONF_SURFACE_TEMPERATURE_MAX_AGE,
     CONF_SURFACE_TEMPERATURE_SENSOR,
-    CONF_TEMPERATURE_AGGREGATION,
-    CONF_TEMPERATURE_SENSOR_METADATA,
     CONF_TEMPERATURE_SENSORS,
-    CONF_THERMOSTAT,
-    CONF_THERMOSTAT_KIND,
     CONF_VALVE_ENTITY,
     CONF_VALVE_READINESS_ENTITY,
     CONF_VALVES,
-    CONF_WEIGHT,
-    DEFAULT_CONDENSATION_MARGIN,
-    DEFAULT_COOLING_START_DELTA,
-    DEFAULT_COOLING_STOP_DELTA,
-    DEFAULT_HEATING_START_DELTA,
-    DEFAULT_HEATING_STOP_DELTA,
-    DEFAULT_MINIMUM_ACTIVE_DURATION,
-    DEFAULT_MINIMUM_IDLE_DURATION,
-    DEFAULT_REFERENCE_MAX_AGE,
-    DEFAULT_SENSOR_MAX_AGE,
-    DEFAULT_SENSOR_WEIGHT,
-    DEFAULT_TARGET_TEMPERATURE,
-    DEFAULT_TEMPERATURE_AGGREGATION,
     DOMAIN,
     SUBENTRY_TYPE_SOURCE,
-    THERMOSTAT_KIND_EXTERNAL_CLIMATE,
-    THERMOSTAT_KIND_HYDRONICUS,
 )
 from ..core.configuration import (
     StoredTopologyError,
 )
 from ..core.model import (
-    MAX_ZONE_TARGET_TEMPERATURE,
-    MIN_ZONE_TARGET_TEMPERATURE,
     CompiledPlant,
-    TemperatureAggregation,
 )
 from ..core.ownership import OwnershipError
 from ..core.topology import (
@@ -302,7 +253,7 @@ def number(
     return selector.NumberSelector(config)
 
 
-def _positive(number: selector.NumberSelector) -> vol.All:
+def positive(number: selector.NumberSelector) -> vol.All:
     """Keep the exclusive zero bound that a number selector cannot express."""
     return vol.All(number, vol.Range(min=0, min_included=False))
 
@@ -331,7 +282,7 @@ def seconds_selector() -> selector.NumberSelector:
 
 def max_age_selector() -> vol.All:
     """Return a strictly positive freshness limit in seconds."""
-    return _positive(number(step=1, unit=UnitOfTime.SECONDS, minimum=0))
+    return positive(number(step=1, unit=UnitOfTime.SECONDS, minimum=0))
 
 
 def temperature_delta_selector() -> selector.NumberSelector:
@@ -419,31 +370,6 @@ async def async_persist_entry_data(
     return True
 
 
-def routes_with_retained_fields(
-    existing_routes: Sequence[Mapping[str, Any]] | None,
-    *,
-    relationship_key: str,
-    relationship_ids: Sequence[str],
-) -> list[dict[str, Any]]:
-    """Create relationship records while preserving retained route metadata."""
-    routes_by_relationship = {
-        str(route[relationship_key]): route for route in existing_routes or []
-    }
-    return [
-        {
-            "id": str(routes_by_relationship.get(relationship_id, {}).get("id", uuid4())),
-            relationship_key: relationship_id,
-            **(
-                {"enabled": routes_by_relationship[relationship_id]["enabled"]}
-                if relationship_id in routes_by_relationship
-                and "enabled" in routes_by_relationship[relationship_id]
-                else {}
-            ),
-        }
-        for relationship_id in relationship_ids
-    ]
-
-
 def topology_select(
     options: list[selector.SelectOptionDict],
     *,
@@ -453,33 +379,6 @@ def topology_select(
     return selector.SelectSelector(
         selector.SelectSelectorConfig(options=options, multiple=multiple)
     )
-
-
-def cooling_reference_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
-    """Return the circuit cooling fields shared by initial and subentry forms."""
-    return {
-        vol.Optional(
-            CONF_COOLING_ENABLED, default=defaults.get(CONF_COOLING_ENABLED, False)
-        ): selector.BooleanSelector(),
-        optional_entity(CONF_SUPPLY_TEMPERATURE_SENSOR, defaults): sensor_selector(
-            SensorDeviceClass.TEMPERATURE
-        ),
-        optional_entity(CONF_SURFACE_TEMPERATURE_SENSOR, defaults): sensor_selector(
-            SensorDeviceClass.TEMPERATURE
-        ),
-        vol.Optional(
-            CONF_CONDENSATION_MARGIN,
-            default=defaults.get(CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN),
-        ): temperature_delta_selector(),
-        vol.Optional(
-            CONF_SUPPLY_TEMPERATURE_MAX_AGE,
-            default=defaults.get(CONF_SUPPLY_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
-        ): max_age_selector(),
-        vol.Optional(
-            CONF_SURFACE_TEMPERATURE_MAX_AGE,
-            default=defaults.get(CONF_SURFACE_TEMPERATURE_MAX_AGE, DEFAULT_REFERENCE_MAX_AGE),
-        ): max_age_selector(),
-    }
 
 
 def effective_topology_error(
@@ -548,390 +447,6 @@ def dry_run_confirmation_schema() -> vol.Schema:
             vol.Required(CONF_DRY_RUN_CONFIRMATION, default=False): selector.BooleanSelector(),
         }
     )
-
-
-def zone_data(
-    user_input: Mapping[str, Any],
-    zone_id: str,
-    existing_routes: list[Mapping[str, Any]] | None = None,
-    existing_metadata: list[Mapping[str, Any]] | None = None,
-    existing_humidity_metadata: list[Mapping[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Normalize one zone and preserve route UUIDs for retained circuits."""
-    user_input = flatten_sections(user_input)
-    circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
-    sensor_ids = [str(sensor_id) for sensor_id in user_input.get(CONF_TEMPERATURE_SENSORS, [])]
-    raw_metadata = user_input.get(CONF_TEMPERATURE_SENSOR_METADATA)
-    if raw_metadata is None:
-        metadata_by_entity = {
-            str(sensor_data.get("entity_id")): dict(sensor_data)
-            for sensor_data in existing_metadata or ()
-            if sensor_data.get("entity_id") is not None
-        }
-        metadata = [
-            metadata_by_entity.get(
-                sensor_id,
-                {
-                    "entity_id": sensor_id,
-                    CONF_REQUIRED: True,
-                    CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
-                    CONF_CALIBRATION_OFFSET: 0.0,
-                    CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
-                    CONF_DESIGNATED_REFERENCE: False,
-                },
-            )
-            for sensor_id in sensor_ids
-        ]
-    elif isinstance(raw_metadata, Mapping):
-        metadata = [
-            {"entity_id": str(sensor_id), **dict(sensor_data)}
-            for sensor_id, sensor_data in raw_metadata.items()
-            if isinstance(sensor_data, Mapping)
-        ]
-    elif isinstance(raw_metadata, list):
-        metadata = [dict(sensor_data) for sensor_data in raw_metadata]
-    else:
-        metadata = raw_metadata
-    humidity_sensor_ids = [
-        str(sensor_id) for sensor_id in user_input.get(CONF_HUMIDITY_SENSORS, [])
-    ]
-    raw_humidity_metadata = user_input.get(CONF_HUMIDITY_SENSOR_METADATA)
-    if raw_humidity_metadata is None or (not raw_humidity_metadata and humidity_sensor_ids):
-        existing_humidity_metadata = [
-            dict(sensor_data)
-            for sensor_data in existing_humidity_metadata or ()
-            if sensor_data.get("entity_id") in humidity_sensor_ids
-        ]
-        humidity_metadata = [
-            next(
-                (
-                    record
-                    for record in existing_humidity_metadata
-                    if record.get("entity_id") == sensor_id
-                ),
-                {
-                    "entity_id": sensor_id,
-                    CONF_REQUIRED: True,
-                    CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
-                    CONF_CALIBRATION_OFFSET: 0.0,
-                    CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
-                    CONF_DESIGNATED_REFERENCE: False,
-                },
-            )
-            for sensor_id in humidity_sensor_ids
-        ]
-    elif isinstance(raw_humidity_metadata, Mapping):
-        humidity_metadata = [
-            {"entity_id": str(sensor_id), **dict(sensor_data)}
-            for sensor_id, sensor_data in raw_humidity_metadata.items()
-            if isinstance(sensor_data, Mapping)
-        ]
-    elif isinstance(raw_humidity_metadata, list):
-        humidity_metadata = [dict(sensor_data) for sensor_data in raw_humidity_metadata]
-    else:
-        humidity_metadata = raw_humidity_metadata
-    raw_preset_targets = user_input.get(CONF_PRESET_TARGETS, {})
-    preset_targets = dict(raw_preset_targets) if isinstance(raw_preset_targets, Mapping) else {}
-    for preset_name in (CONF_COMFORT_TARGET, CONF_ECO_TARGET, CONF_AWAY_TARGET):
-        if preset_name in user_input and user_input[preset_name] is not None:
-            preset_targets[preset_name] = user_input[preset_name]
-    kind = str(user_input.get(CONF_THERMOSTAT_KIND, THERMOSTAT_KIND_HYDRONICUS))
-    if kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE:
-        thermostat: dict[str, Any] = {
-            "kind": kind,
-            "entity_id": str(user_input[CONF_EXTERNAL_CLIMATE_ENTITY]),
-        }
-    else:
-        thermostat = {
-            "kind": THERMOSTAT_KIND_HYDRONICUS,
-            CONF_INITIAL_TARGET_TEMPERATURE: DEFAULT_TARGET_TEMPERATURE,
-            CONF_HEATING_START_DELTA: user_input.get(
-                CONF_HEATING_START_DELTA, DEFAULT_HEATING_START_DELTA
-            ),
-            CONF_HEATING_STOP_DELTA: user_input.get(
-                CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA
-            ),
-            CONF_COOLING_START_DELTA: user_input.get(
-                CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA
-            ),
-            CONF_COOLING_STOP_DELTA: user_input.get(
-                CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA
-            ),
-            CONF_MINIMUM_ACTIVE_DURATION: user_input.get(
-                CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION
-            ),
-            CONF_MINIMUM_IDLE_DURATION: user_input.get(
-                CONF_MINIMUM_IDLE_DURATION, DEFAULT_MINIMUM_IDLE_DURATION
-            ),
-            CONF_PRESET_TARGETS: preset_targets,
-            CONF_INITIAL_PRESET: "none",
-        }
-    return {
-        "id": zone_id,
-        CONF_NAME: str(user_input[CONF_NAME]).strip(),
-        CONF_THERMOSTAT: thermostat,
-        CONF_TEMPERATURE_SENSOR_METADATA: metadata,
-        CONF_HUMIDITY_SENSOR_METADATA: humidity_metadata,
-        CONF_TEMPERATURE_AGGREGATION: user_input.get(
-            CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
-        ),
-        CONF_CIRCUIT_IDS: circuit_ids,
-        CONF_ROUTES: routes_with_retained_fields(
-            existing_routes,
-            relationship_key="circuit_id",
-            relationship_ids=circuit_ids,
-        ),
-    }
-
-
-def sensor_metadata_schema(
-    sensor_id: str,
-    defaults: Mapping[str, Any] | None = None,
-) -> vol.Schema:
-    """Build one explicit editor for one sensor's immutable metadata."""
-    defaults = defaults or {}
-    return vol.Schema(
-        {
-            vol.Required(
-                CONF_SENSOR_ENTITY,
-                default=defaults.get("entity_id", sensor_id),
-            ): sensor_selector(SensorDeviceClass.TEMPERATURE),
-            vol.Required(
-                CONF_REQUIRED,
-                default=defaults.get(CONF_REQUIRED, True),
-            ): selector.BooleanSelector(),
-            vol.Required(
-                CONF_WEIGHT,
-                default=defaults.get(CONF_WEIGHT, DEFAULT_SENSOR_WEIGHT),
-            ): _positive(number(step="any", minimum=0)),
-            vol.Required(
-                CONF_CALIBRATION_OFFSET,
-                default=defaults.get(CONF_CALIBRATION_OFFSET, 0.0),
-            ): number(step="any", unit=UnitOfTemperature.CELSIUS),
-            vol.Required(
-                CONF_MAX_AGE,
-                default=defaults.get(CONF_MAX_AGE, DEFAULT_SENSOR_MAX_AGE),
-            ): max_age_selector(),
-            vol.Required(
-                CONF_DESIGNATED_REFERENCE,
-                default=defaults.get(CONF_DESIGNATED_REFERENCE, False),
-            ): selector.BooleanSelector(),
-        }
-    )
-
-
-def sensor_metadata_record(user_input: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize one metadata form result for canonical persistence."""
-    return {
-        "entity_id": str(user_input[CONF_SENSOR_ENTITY]),
-        CONF_REQUIRED: bool(user_input[CONF_REQUIRED]),
-        CONF_WEIGHT: user_input[CONF_WEIGHT],
-        CONF_CALIBRATION_OFFSET: user_input[CONF_CALIBRATION_OFFSET],
-        CONF_MAX_AGE: user_input[CONF_MAX_AGE],
-        CONF_DESIGNATED_REFERENCE: bool(user_input[CONF_DESIGNATED_REFERENCE]),
-    }
-
-
-def _preset_targets_schema(defaults: Mapping[str, Any] | None = None) -> dict[Any, Any]:
-    """Return optional finite target fields for standard heating presets."""
-    defaults = defaults or {}
-    targets = defaults.get(CONF_PRESET_TARGETS, {})
-    if not isinstance(targets, Mapping):
-        targets = {}
-    fields: dict[Any, Any] = {}
-    for name in (CONF_COMFORT_TARGET, CONF_ECO_TARGET, CONF_AWAY_TARGET):
-        key: Any = vol.Optional(
-            name,
-            **({"default": targets[name]} if name in targets else {}),
-        )
-        fields[key] = number(
-            step=0.1,
-            unit=UnitOfTemperature.CELSIUS,
-            minimum=MIN_ZONE_TARGET_TEMPERATURE,
-            maximum=MAX_ZONE_TARGET_TEMPERATURE,
-        )
-    return fields
-
-
-def _zone_advanced_fields(defaults: Mapping[str, Any] | None = None) -> dict[Any, Any]:
-    """Return fields shared by initial and subentry zone forms."""
-    defaults = defaults or {}
-    return {
-        vol.Required(
-            CONF_HEATING_START_DELTA,
-            default=defaults.get(CONF_HEATING_START_DELTA, DEFAULT_HEATING_START_DELTA),
-        ): temperature_delta_selector(),
-        vol.Required(
-            CONF_HEATING_STOP_DELTA,
-            default=defaults.get(CONF_HEATING_STOP_DELTA, DEFAULT_HEATING_STOP_DELTA),
-        ): temperature_delta_selector(),
-        vol.Required(
-            CONF_MINIMUM_ACTIVE_DURATION,
-            default=defaults.get(CONF_MINIMUM_ACTIVE_DURATION, DEFAULT_MINIMUM_ACTIVE_DURATION),
-        ): seconds_selector(),
-        vol.Required(
-            CONF_MINIMUM_IDLE_DURATION,
-            default=defaults.get(CONF_MINIMUM_IDLE_DURATION, DEFAULT_MINIMUM_IDLE_DURATION),
-        ): seconds_selector(),
-        **_preset_targets_schema(defaults),
-        vol.Optional(SECTION_COOLING): collapsed_section(
-            {
-                vol.Required(
-                    CONF_COOLING_START_DELTA,
-                    default=defaults.get(CONF_COOLING_START_DELTA, DEFAULT_COOLING_START_DELTA),
-                ): temperature_delta_selector(),
-                vol.Required(
-                    CONF_COOLING_STOP_DELTA,
-                    default=defaults.get(CONF_COOLING_STOP_DELTA, DEFAULT_COOLING_STOP_DELTA),
-                ): temperature_delta_selector(),
-            }
-        ),
-    }
-
-
-def zone_temperature_sensor_defaults(defaults: Mapping[str, Any]) -> Any:
-    """Return list-form defaults from canonical metadata or the current form input."""
-    metadata = defaults.get(CONF_TEMPERATURE_SENSOR_METADATA)
-    if isinstance(metadata, list):
-        return [
-            str(record["entity_id"])
-            for record in metadata
-            if isinstance(record, Mapping) and record.get("entity_id")
-        ]
-    if CONF_TEMPERATURE_SENSORS in defaults:
-        return defaults[CONF_TEMPERATURE_SENSORS]
-    return vol.UNDEFINED
-
-
-def _zone_humidity_sensor_defaults(defaults: Mapping[str, Any]) -> list[str]:
-    """Return list-form defaults derived from canonical humidity metadata."""
-    metadata = defaults.get(CONF_HUMIDITY_SENSOR_METADATA)
-    if isinstance(metadata, list):
-        return [
-            str(record["entity_id"])
-            for record in metadata
-            if isinstance(record, Mapping) and record.get("entity_id")
-        ]
-    return [str(sensor_id) for sensor_id in defaults.get(CONF_HUMIDITY_SENSORS, [])]
-
-
-def _zone_temperature_aggregation_default(defaults: Mapping[str, Any]) -> str:
-    """Return the persisted or legacy-default aggregation policy."""
-    return str(defaults.get(CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION))
-
-
-def _zone_has_editable_sensor_metadata(defaults: Mapping[str, Any]) -> bool:
-    """Return whether a persisted zone can expose metadata-dependent policies."""
-    metadata = defaults.get(CONF_TEMPERATURE_SENSOR_METADATA)
-    return isinstance(metadata, list) and bool(metadata)
-
-
-def _temperature_aggregation_selector(
-    *, include_metadata_policies: bool = False
-) -> selector.SelectSelector:
-    """Build a policy selector with weighted mean gated by metadata editing."""
-    user_selectable = [
-        TemperatureAggregation.MEAN,
-        TemperatureAggregation.MEDIAN,
-        TemperatureAggregation.MINIMUM,
-        TemperatureAggregation.MAXIMUM,
-    ]
-    if include_metadata_policies:
-        user_selectable.extend(
-            [TemperatureAggregation.DESIGNATED_REFERENCE, TemperatureAggregation.WEIGHTED_MEAN]
-        )
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[policy.value for policy in user_selectable],
-            translation_key=CONF_TEMPERATURE_AGGREGATION,
-        )
-    )
-
-
-def sensor_policy_schema(zone_draft: Mapping[str, Any]) -> vol.Schema:
-    """Build the aggregation form offered after sensor metadata editing."""
-    return vol.Schema(
-        {
-            vol.Required(
-                CONF_TEMPERATURE_AGGREGATION,
-                default=_zone_temperature_aggregation_default(zone_draft),
-            ): _temperature_aggregation_selector(include_metadata_policies=True),
-        }
-    )
-
-
-def zone_schema(
-    circuit_options: list[selector.SelectOptionDict],
-    defaults: Mapping[str, Any] | None = None,
-    *,
-    thermostat_kind: str = THERMOSTAT_KIND_HYDRONICUS,
-    include_circuits: bool = True,
-) -> vol.Schema:
-    """Build the shared zone form schema."""
-    defaults = defaults or {}
-    thermostat_defaults = defaults.get(CONF_THERMOSTAT, {})
-    if not isinstance(thermostat_defaults, Mapping):
-        thermostat_defaults = {}
-    schema: dict[Any, Any] = {
-        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): name_selector(),
-        (vol.Required if thermostat_kind == THERMOSTAT_KIND_HYDRONICUS else vol.Optional)(
-            CONF_TEMPERATURE_SENSORS,
-            default=zone_temperature_sensor_defaults(defaults),
-        ): sensor_selector(SensorDeviceClass.TEMPERATURE, multiple=True),
-        vol.Optional(
-            CONF_HUMIDITY_SENSORS,
-            default=_zone_humidity_sensor_defaults(defaults),
-        ): sensor_selector(SensorDeviceClass.HUMIDITY, multiple=True),
-        vol.Required(
-            CONF_TEMPERATURE_AGGREGATION,
-            default=_zone_temperature_aggregation_default(defaults),
-        ): _temperature_aggregation_selector(
-            include_metadata_policies=_zone_has_editable_sensor_metadata(defaults)
-        ),
-        vol.Optional(
-            CONF_CONFIGURE_SENSOR_METADATA,
-            default=False,
-        ): selector.BooleanSelector(),
-    }
-    if include_circuits:
-        schema[
-            vol.Required(
-                CONF_CIRCUIT_IDS,
-                default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
-            )
-        ] = topology_select(circuit_options, multiple=True)
-    if thermostat_kind == THERMOSTAT_KIND_EXTERNAL_CLIMATE:
-        schema[
-            vol.Required(
-                CONF_EXTERNAL_CLIMATE_ENTITY,
-                default=thermostat_defaults.get("entity_id", vol.UNDEFINED),
-            )
-        ] = selector.EntitySelector(selector.EntitySelectorConfig(domain="climate"))
-    else:
-        schema.update(_zone_advanced_fields(thermostat_defaults or defaults))
-    return vol.Schema(schema)
-
-
-def requires_sensor_metadata_path(data: Mapping[str, Any]) -> bool:
-    """Return whether the selected policy requires the typed metadata editor."""
-    return data.get(CONF_TEMPERATURE_AGGREGATION) in {
-        TemperatureAggregation.DESIGNATED_REFERENCE.value,
-        TemperatureAggregation.WEIGHTED_MEAN.value,
-    }
-
-
-def valve_feedback_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
-    """Return optional valve feedback fields shared by initial and actuator forms."""
-    return {
-        optional_entity(CONF_VALVE_READINESS_ENTITY, defaults): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
-        ),
-        optional_entity(CONF_POSITION_FEEDBACK_ENTITY, defaults): sensor_selector(),
-        vol.Optional(
-            CONF_POSITION_FEEDBACK_MAX_AGE,
-            default=defaults.get(CONF_POSITION_FEEDBACK_MAX_AGE, DEFAULT_FEEDBACK_MAX_AGE),
-        ): max_age_selector(),
-    }
 
 
 if TYPE_CHECKING:

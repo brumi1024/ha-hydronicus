@@ -13,8 +13,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 
 from ..const import (
@@ -48,16 +46,19 @@ from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
     EquipmentInUseError,
     authorization_output_lines,
+    canonical_id,
     data_with_plant,
     data_with_pump,
     effective_plant,
+    effective_plant_from_data,
     invalidate_output_authorization,
+    object_ids,
     output_authorization,
     room_objects,
     subentry_sync,
     topology_copy,
 )
-from ..migration import async_move_object_registrations
+from ..migration import async_move_object_registrations, async_remove_object_registrations
 from ..plant_file import first_own_entity, parsed_plant_file, plant_file, plant_file_yaml
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
@@ -101,7 +102,6 @@ _CHANGE_KINDS: Final = (
     (CONF_PUMPS, "pump"),
     (CONF_SOURCES, "source"),
 )
-_OBJECT_COLLECTIONS: Final = (CONF_ZONES, CONF_CIRCUITS, CONF_VALVES, CONF_PUMPS, CONF_SOURCES)
 _SOURCE_SELECTOR: Final = "source_selector"
 
 
@@ -173,21 +173,17 @@ def _pump_record(
     return record
 
 
-def _object_id(record: Mapping[str, Any]) -> str:
-    """Return a stored record id in canonical UUID form."""
-    raw = str(record.get("id"))
-    try:
-        return str(UUID(raw))
-    except ValueError:
-        return raw
+# Every error a pump change can raise against the graph.
+_PUMP_EDIT_ERRORS: Final = (EquipmentInUseError, *GRAPH_EDIT_ERRORS)
 
 
-def _object_ids(data: Mapping[str, Any]) -> set[str]:
-    """Return the id of every zone, loop, valve, pump, and source of stored data."""
-    topology = topology_copy(data)
-    return {
-        _object_id(record) for collection in _OBJECT_COLLECTIONS for record in topology[collection]
-    }
+def _pump_edit_errors(error: Exception) -> tuple[dict[str, str], dict[str, str]]:
+    """Map a rejected pump change to the pump form field that can fix it."""
+    if isinstance(error, EquipmentInUseError):
+        return {CONF_REMOVE_PUMP: "equipment_in_use"}, {"users": ", ".join(error.users)}
+    if isinstance(error, DuplicateActuatorBindingError):
+        return {CONF_ENTITY_ID: "actuator_entity_in_use"}, {}
+    return {"base": "invalid_pump"}, {"error": str(error)}
 
 
 def _signature(data: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -220,11 +216,11 @@ def _plant_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
         lines.append(f"Renames the Plant from {before.get(CONF_NAME)} to {after.get(CONF_NAME)}")
     old_topology, new_topology = topology_copy(before), topology_copy(after)
     old_owners, new_owners = room_objects(before), room_objects(after)
-    old_zones = {_object_id(zone): zone for zone in old_topology[CONF_ZONES]}
-    new_zones = {_object_id(zone): zone for zone in new_topology[CONF_ZONES]}
+    old_zones = {canonical_id(zone.get("id")): zone for zone in old_topology[CONF_ZONES]}
+    new_zones = {canonical_id(zone.get("id")): zone for zone in new_topology[CONF_ZONES]}
     for collection, kind in _CHANGE_KINDS:
-        old = {_object_id(record): record for record in old_topology[collection]}
-        new = {_object_id(record): record for record in new_topology[collection]}
+        old = {canonical_id(record.get("id")): record for record in old_topology[collection]}
+        new = {canonical_id(record.get("id")): record for record in new_topology[collection]}
         for object_id, record in new.items():
             if object_id not in old:
                 lines.append(f"Adds {kind} {record.get(CONF_NAME)}")
@@ -278,36 +274,17 @@ def _handle_owners(
     topology = topology_copy(data)
     owners: dict[str, str | None] = {}
     for zone in topology[CONF_ZONES]:
-        owners[_object_id(zone)] = handles.get((SUBENTRY_TYPE_ROOM, _object_id(zone)))
+        zone_id = canonical_id(zone.get("id"))
+        owners[zone_id] = handles.get((SUBENTRY_TYPE_ROOM, zone_id))
     for collection in (CONF_CIRCUITS, CONF_VALVES, CONF_PUMPS):
         for record in topology[collection]:
-            owners[_object_id(record)] = None
+            owners[canonical_id(record.get("id"))] = None
     for source in topology[CONF_SOURCES]:
-        owners[_object_id(source)] = handles.get((SUBENTRY_TYPE_SOURCE, _object_id(source)))
+        source_id = canonical_id(source.get("id"))
+        owners[source_id] = handles.get((SUBENTRY_TYPE_SOURCE, source_id))
     for object_id, zone_id in room_objects(data).items():
         owners[object_id] = handles.get((SUBENTRY_TYPE_ROOM, zone_id))
     return owners
-
-
-@callback
-def _async_remove_object_registrations(
-    hass: HomeAssistant, entry: config_entries.ConfigEntry, object_ids: set[str]
-) -> None:
-    """Remove the entities and devices of objects that no longer exist."""
-    if not object_ids:
-        return
-    plant_id = str(entry.data.get(CONF_PLANT_ID, ""))
-    entity_registry = er.async_get(hass)
-    for registry_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-        if any(object_id in str(registry_entry.unique_id) for object_id in object_ids):
-            entity_registry.async_remove(registry_entry.entity_id)
-    device_registry = dr.async_get(hass)
-    for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
-        if any(
-            identifier.split(":")[0] == plant_id and identifier.split(":")[-1] in object_ids
-            for _domain, identifier in device.identifiers
-        ):
-            device_registry.async_remove_device(device.id)
 
 
 @callback
@@ -338,7 +315,7 @@ def async_apply_plant_handles(
         )
     kept = set(entry.subentries) - set(sync.remove)
     async_move_object_registrations(hass, entry, _handle_owners(entry, data, kept))
-    _async_remove_object_registrations(hass, entry, removed_object_ids)
+    async_remove_object_registrations(hass, entry, removed_object_ids)
     for subentry_id in sync.remove:
         hass.config_entries.async_remove_subentry(entry, subentry_id)
     for subentry_id, title in sync.retitle:
@@ -353,6 +330,9 @@ class PlantSettingsSteps(ConfigFlowBase):
     _requested_dry_run: bool
     _shown_authorization: dict[str, Any]
     _pump_id: str | None
+    _pump_input: dict[str, Any]  # the submitted pump form
+    _pump_edit: tuple[str, dict[str, Any] | None]  # pump id, new record or None to remove
+    _pump_review_warnings: str
     _imported: ImportedPlant
     _document: Any  # the submitted plant file
     _reviewed: tuple[Any, ...]  # the signature of the Plant the review showed
@@ -484,7 +464,8 @@ class PlantSettingsSteps(ConfigFlowBase):
             return []
         return [
             selector.SelectOptionDict(
-                value=_object_id(pump), label=str(pump.get(CONF_NAME, _object_id(pump)))
+                value=canonical_id(pump.get("id")),
+                label=str(pump.get(CONF_NAME, canonical_id(pump.get("id")))),
             )
             for pump in pumps
         ]
@@ -493,7 +474,7 @@ class PlantSettingsSteps(ConfigFlowBase):
         if self._pump_id is None:
             return {}
         for pump in topology_copy(entry.data)[CONF_PUMPS]:
-            if _object_id(pump) == self._pump_id:
+            if canonical_id(pump.get("id")) == self._pump_id:
                 return pump
         return {}
 
@@ -523,7 +504,7 @@ class PlantSettingsSteps(ConfigFlowBase):
     async def async_step_pump(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Add, edit, or remove one Plant pump."""
+        """Add, edit, or remove one Plant pump, reviewing the warnings it introduces."""
         entry = self._get_reconfigure_entry()
         existing = self._stored_pump(entry)
         editing = self._pump_id is not None
@@ -536,33 +517,23 @@ class PlantSettingsSteps(ConfigFlowBase):
             if not errors:
                 pump_id = self._pump_id or str(uuid4())
                 removing = editing and bool(user_input.get(CONF_REMOVE_PUMP, False))
-                record = None if removing else _pump_record(pump_id, existing, user_input)
-
-                def build(data: Mapping[str, Any]) -> dict[str, Any]:
-                    if editing and not any(
-                        _object_id(pump) == pump_id for pump in topology_copy(data)[CONF_PUMPS]
-                    ):
-                        # A pump deleted meanwhile must not come back.
-                        raise StoredTopologyError("The pump was removed meanwhile.")
-                    return data_with_pump(data, pump_id, record)
-
+                self._pump_input = dict(user_input)
+                self._pump_edit = (
+                    pump_id,
+                    None if removing else _pump_record(pump_id, existing, user_input),
+                )
                 try:
                     # Check the current Plant first, then save against the Plant as it
                     # is once the safe shutdown completes.
-                    build(entry.data)
-                    stored = await async_persist_entry_data(self, entry, build)
-                except EquipmentInUseError as error:
-                    errors[CONF_REMOVE_PUMP] = "equipment_in_use"
-                    placeholders["users"] = ", ".join(error.users)
-                except DuplicateActuatorBindingError:
-                    errors[CONF_ENTITY_ID] = "actuator_entity_in_use"
-                except GRAPH_EDIT_ERRORS as error:
-                    errors["base"] = "invalid_pump"
-                    placeholders["error"] = str(error)
+                    if warnings := self._pump_warnings(entry, self._pump_data(entry.data)):
+                        self._pump_review_warnings = warnings
+                        return self._pump_review_form()
+                    stored = await self._async_save_pump(entry)
+                except _PUMP_EDIT_ERRORS as error:
+                    graph, placeholders = _pump_edit_errors(error)
+                    errors.update(graph)
                 else:
                     if stored:
-                        if removing:
-                            _async_remove_object_registrations(self.hass, entry, {pump_id})
                         return self.async_abort(reason="reconfigure_successful")
                     errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
@@ -573,6 +544,85 @@ class PlantSettingsSteps(ConfigFlowBase):
             errors=errors,
             description_placeholders=placeholders,
         )
+
+    def _pump_data(self, data: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply the drafted pump change to Plant data, raising a graph edit error."""
+        pump_id, record = self._pump_edit
+        if self._pump_id is not None and not any(
+            canonical_id(pump.get("id")) == pump_id for pump in topology_copy(data)[CONF_PUMPS]
+        ):
+            # A pump deleted meanwhile must not come back.
+            raise StoredTopologyError("The pump was removed meanwhile.")
+        return data_with_pump(data, pump_id, record)
+
+    def _pump_warnings(self, entry: config_entries.ConfigEntry, proposed: Mapping[str, Any]) -> str:
+        """Describe what the pump change needs confirmed, or return an empty string.
+
+        That is a compiler warning the change introduces (Decision 11), or a pump
+        entity another Plant already binds, which is confirmed on every save.
+        """
+        compiled = effective_plant_from_data(proposed).compiled
+        _pump_id, record = self._pump_edit
+        sharing = (
+            other_plant_sharing_warnings(self.hass, entry.entry_id, (record[CONF_ENTITY_ID],))
+            if record is not None
+            else ()
+        )
+        try:
+            before: CompiledPlant | None = effective_plant(entry).compiled
+        except GRAPH_EDIT_ERRORS:
+            before = None
+        if sharing or warnings_to_confirm(compiled, before):
+            return warning_text(compiled, sharing)
+        return ""
+
+    async def _async_save_pump(self, entry: config_entries.ConfigEntry) -> bool:
+        """Store the drafted pump change once the Plant reached Dry run.
+
+        A removed pump leaves no entities or devices behind. A graph edit error
+        against a Plant that changed meanwhile stores nothing and is raised.
+        """
+        hass = self.hass
+
+        def on_stored(previous: Mapping[str, Any], stored: Mapping[str, Any]) -> None:
+            async_remove_object_registrations(
+                hass, entry, object_ids(previous) - object_ids(stored)
+            )
+
+        return await async_persist_entry_data(self, entry, self._pump_data, on_stored=on_stored)
+
+    def _pump_review_form(
+        self, errors: dict[str, str] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        return self.async_show_form(
+            step_id="pump_review",
+            data_schema=warning_review_schema(),
+            errors=errors,
+            description_placeholders={"warnings": self._pump_review_warnings},
+        )
+
+    async def async_step_pump_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Confirm the listed warnings before saving the pump.
+
+        A Plant that changed meanwhile so that the pump no longer fits sends the
+        user back to the pump form, which explains why.
+        """
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get(CONF_CONFIRM, False):
+                errors["base"] = "confirm_required"
+            else:
+                try:
+                    stored = await self._async_save_pump(entry)
+                except _PUMP_EDIT_ERRORS:
+                    return await self.async_step_pump(self._pump_input)
+                if stored:
+                    return self.async_abort(reason="reconfigure_successful")
+                errors["base"] = "dry_run_shutdown_in_progress"
+        return self._pump_review_form(errors)
 
     # Plant file
 
@@ -728,7 +778,7 @@ class PlantSettingsSteps(ConfigFlowBase):
             return data_with_plant(current, imported)
 
         def on_stored(previous: Mapping[str, Any], stored: Mapping[str, Any]) -> None:
-            removed = _object_ids(previous) - _object_ids(stored)
+            removed = object_ids(previous) - object_ids(stored)
             async_apply_plant_handles(hass, entry, stored, removed)
 
         return await async_persist_entry_data(self, entry, build, on_stored=on_stored)

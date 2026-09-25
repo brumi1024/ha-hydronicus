@@ -57,49 +57,51 @@ from ..entry_configuration import (
     GRAPH_EDIT_ERRORS,
     EffectivePlant,
     RoomDraft,
+    canonical_id,
     data_with_room,
     effective_plant,
     effective_plant_from_data,
+    object_ids,
     room_draft,
 )
+from ..migration import async_remove_object_registrations
 from .common import (
     SECTION_COOLING,
     OwnEntityPickerMixin,
     async_persist_entry_data,
     collapsed_section,
-    cooling_reference_fields,
     flatten_sections,
     name_selector,
     other_plant_sharing_warnings,
     own_entity_errors,
-    requires_sensor_metadata_path,
     seconds_selector,
-    sensor_metadata_record,
-    sensor_metadata_schema,
-    sensor_policy_schema,
     topology_select,
-    valve_feedback_fields,
     warning_review_schema,
     warning_text,
     warnings_to_confirm,
     with_submitted_values,
-    zone_schema,
 )
 from .room_form import (
     CONF_PUMP,
-    canonical_id,
+    cooling_reference_fields,
     graph_errors,
     new_route,
     new_valves,
     pump_options,
+    requires_sensor_metadata_path,
     room_draft_from_form,
     room_form_defaults,
     room_form_errors,
     room_form_schema,
     sensor_entity_ids,
     sensor_metadata_for,
+    sensor_metadata_record,
+    sensor_metadata_schema,
+    sensor_policy_schema,
     shared_loop_options,
     valve_entity_selector,
+    valve_feedback_fields,
+    zone_schema,
 )
 
 CONF_LOOP = "loop"
@@ -225,14 +227,23 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         draft = self._draft
         reconfiguring = self.source == config_entries.SOURCE_RECONFIGURE
 
+        hass = self.hass
+
         def build(data: Mapping[str, Any]) -> dict[str, Any]:
             if reconfiguring:
                 # A room deleted meanwhile must not come back.
                 self._room_subentry()
             return data_with_room(data, draft)
 
+        def on_stored(previous: Mapping[str, Any], stored: Mapping[str, Any]) -> None:
+            # A removed loop, or a valve whose entity the loop dropped, leaves no
+            # entities or devices behind.
+            async_remove_object_registrations(
+                hass, entry, object_ids(previous) - object_ids(stored)
+            )
+
         try:
-            if not await async_persist_entry_data(self, entry, build):
+            if not await async_persist_entry_data(self, entry, build, on_stored=on_stored):
                 return None
         except GRAPH_EDIT_ERRORS:
             return await self._origin()
@@ -362,7 +373,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     ) -> config_entries.SubentryFlowResult:
         """Change the Hydronicus thermostat settings."""
         room = self._room()
-        schema = _picked(zone_schema([], room.zone, include_circuits=False), _THERMOSTAT_FIELDS)
+        schema = _picked(zone_schema(room.zone), _THERMOSTAT_FIELDS)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
@@ -407,7 +418,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     ) -> config_entries.SubentryFlowResult:
         """Change the temperature aggregation and humidity sensors, or edit sensor metadata."""
         room = self._room()
-        schema = _picked(zone_schema([], room.zone, include_circuits=False), _SENSOR_FIELDS)
+        schema = _picked(zone_schema(room.zone), _SENSOR_FIELDS)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
