@@ -91,6 +91,8 @@ The source's mode select should show the option of the Plant mode.
 The source's request should be on once a loop that a zone calls for is ready in the Plant mode, its switched pump is seen running, the mode select shows the right option, and every source-driven pump has an open path.
 A plant loop that runs with the source never asks for heat by itself.
 The request stays on for at least its minimum on time, 600 seconds by default, while a ready loop remains, and stays off for at least its minimum off time, also 600 seconds, before it is asked again.
+The minimum on time also holds when the **Mode** select changes the mode.
+A blocking condensation guard, a loop that is no longer ready or whose pump stops, and turning **Control equipment** off release the request at once.
 After the request ends, the source's post-run, 180 seconds by default, keeps the loops of its own pumps open.
 
 ### 10. Timers
@@ -152,7 +154,8 @@ There is no automatic mode; an automation can set the select.
 
 A change between heating and cooling runs in order:
 
-1. No new loop starts in the old mode, the source's request is released, and the old mode's pumps finish their overrun or the source's post-run.
+1. No new loop starts in the old mode, the source's request is released once it has been on for its minimum on time, and the old mode's pumps finish their overrun or the source's post-run.
+   While the request is held, the loops it runs through stay open, as at the end of demand.
 2. The old mode's loops close, and the status reads `changing_over` with the reason `stopping heat before cool`.
 3. The mode dwell runs from the moment the old mode's flow ended, 3600 seconds by default, with the reason `waiting for the mode dwell before cool`.
 4. The new mode starts, and the source's mode select is set to the new mode's option before its request goes on.

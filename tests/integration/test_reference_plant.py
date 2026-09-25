@@ -145,3 +145,40 @@ async def test_the_reference_plant_heats_a_zone_end_to_end(
         if entity_id != "select.heat_pump_mode":
             assert hass.states.get(entity_id).state == "off", entity_id
     assert hass.states.get("sensor.home_status").state == "idle"
+
+
+async def test_switching_the_mode_off_keeps_the_source_for_its_minimum_on_time(
+    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
+) -> None:
+    """A mode the select changes waits for min_on, as the end of demand does."""
+    reference_world(hass, temperature=21.0)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    await async_set_options(hass, entry, armed=REFERENCE_OUTPUTS, control=True)
+    await async_call(hass, "select", "select_option", entity_id="select.home_mode", option="heat")
+    await async_call(
+        hass, "climate", "set_temperature", entity_id="climate.living_area", temperature=22.0
+    )
+    await async_call(
+        hass, "climate", "set_hvac_mode", entity_id="climate.living_area", hvac_mode="heat"
+    )
+    set_zone_temperature(hass, "living_area", 20.0)
+    await hass.async_block_till_done()
+    await async_advance(hass, freezer, 190, step=5)
+    requested_at = actuators.to(SOURCE_REQUEST)[0].at
+    actuators.clear()
+
+    await async_call(hass, "select", "select_option", entity_id="select.home_mode", option="off")
+    await async_advance(hass, freezer, 60, step=5)
+    assert actuators.to(SOURCE_REQUEST) == [], "the source keeps its minimum on time"
+    status = hass.states.get("sensor.home_status")
+    assert status.state == "changing_over"
+    assert status.attributes["reasons"]["source"] == "held for its minimum on time"
+
+    await async_advance(hass, freezer, 1200, step=5)
+    at = {call.short: call.at for call in actuators.calls}
+    assert requested_at + 600 <= at[f"{SOURCE_REQUEST}:off"] <= requested_at + 610
+    assert at[f"{LIVING_CEILING}:off"] >= at[f"{SOURCE_REQUEST}:off"] + 180
+    for entity_id in REFERENCE_OUTPUTS:
+        if entity_id != "select.heat_pump_mode":
+            assert hass.states.get(entity_id).state == "off", entity_id
+    assert hass.states.get("sensor.home_status").state == "off"

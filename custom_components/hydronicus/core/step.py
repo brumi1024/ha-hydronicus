@@ -431,6 +431,9 @@ class _Evaluation:
         mode, leaving = self.mode(flowing, flow_ended)
         label = mode if mode is not Mode.OFF else state.last_mode
         active = mode is not Mode.OFF and not leaving
+        # A mode the select changed keeps the source for its minimum on time, as the
+        # end of demand does; Control equipment off stops it at once.
+        winding_down = leaving and not self.forced_off
 
         blocked_by_guard = {
             loop: mode is Mode.COOL and guards.get(str(loop.ref), GuardState(False, now)).blocked
@@ -440,7 +443,7 @@ class _Evaluation:
             # A guard blocks only cooling; outside it, it only follows its reference.
             for key in [f"{ref}.guard" for ref in guards]:
                 self.reasons.pop(key, None)
-        plan = _Plan(self, mode, label, active, demands, blocked_by_guard)
+        plan = _Plan(self, mode, label, active, winding_down, demands, blocked_by_guard)
         outputs = plan.outputs()
 
         live = obs.control or (state.live and not self.finished())
@@ -552,10 +555,15 @@ class _Evaluation:
             self.reasons[f"{loop.ref}.guard"] = f"condensation guard blocks: {reason}"
         return guard
 
+    @property
+    def forced_off(self) -> bool:
+        """Control equipment is off while outputs are still commanded: the off sequence."""
+        return not self.obs.control and self.state.live
+
     def mode(self, flowing: bool, flow_ended: float | None) -> tuple[Mode, bool]:
         """Stage 3: the mode the outputs run in, and whether it is being left."""
         state, obs = self.state, self.obs
-        requested = obs.mode if obs.control or not state.live else Mode.OFF
+        requested = Mode.OFF if self.forced_off else obs.mode
         mode = state.mode
         if mode is not Mode.OFF and requested is not mode:
             if flowing:
@@ -603,10 +611,14 @@ class _Plan:
         mode: Mode,
         label: Mode,
         active: bool,
+        winding_down: bool,
         demands: Mapping[str, Demand],
         guard_blocked: Mapping[Loop, bool],
     ) -> None:
         self.ev, self.mode, self.label, self.active = ev, mode, label, active
+        # The mode is being left for another the select asked for, and a request
+        # already on may be held for its minimum on time.
+        self.winding_down = winding_down
         self.demands = demands
         self.guard_blocked = guard_blocked
         self.plant = ev.plant
@@ -805,7 +817,7 @@ class _Plan:
         if source is None:
             return False
         reasons = ev.reasons
-        if not self.active or not ev.usable(source.request):
+        if not (self.active or self.winding_down) or not ev.usable(source.request):
             reasons["source"] = "off"
             return False
         driven = [pump for pump in self.plant.pumps if pump.driven_by_source]

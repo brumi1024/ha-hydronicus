@@ -40,7 +40,8 @@ It does not simulate water, pressure, or temperature, and it cannot prove that a
 
 Turning **Control equipment** off stops the armed equipment in order: the source is released, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
 Only then does the Plant go to Dry run; the switch's `live` attribute shows when it has.
-Switching the **Mode** select to off stops the equipment the same way and keeps it stopped.
+Switching the **Mode** select to off stops the equipment the same way and keeps it stopped, except that the source's request stays on until it has been on for its minimum on time, as at the end of demand.
+**Control equipment** off, a blocking condensation guard, and a lost pump or path release the request at once.
 
 ## Failures are retried and surfaced
 

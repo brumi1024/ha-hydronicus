@@ -171,6 +171,33 @@ def test_a_mode_change_releases_heating_and_waits_for_the_dwell() -> None:
     assert sim.world.option(SOURCE_MODE) == "Cool"
 
 
+def test_a_mode_change_keeps_the_source_for_its_minimum_on_time() -> None:
+    sim = _heating()
+    requested = _heat_living_area(sim)
+    sim.run_until(requested + 60.0)
+
+    sim.set_mode(Mode.OFF)
+    sim.always_for(
+        lambda: sim.world.requested and sim.world.option(SOURCE_MODE) == "Heat",
+        MIN_ON - 60.0 - REACTION,
+        "a mode change keeps the source heating for its minimum on time",
+    )
+    released = sim.run_until_true(
+        lambda: not sim.world.requested,
+        2 * REACTION,
+        "the source is released once its minimum on time has passed",
+    )
+    assert released >= requested + MIN_ON
+    sim.run_until_true(
+        lambda: _all_off(sim),
+        POST_RUN + OPENING + 4 * REACTION,
+        "everything stops after the release",
+    )
+    assert _last(sim, LIVING_CEILING, False) > released + POST_RUN - REACTION, (
+        "the min-flow loop stays open through the post-run"
+    )
+
+
 def test_the_towel_dryer_runs_with_the_source_and_its_overrun() -> None:
     sim = _heating()
     sim.set_zone_temperature("basement", 19.5)

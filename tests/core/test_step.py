@@ -596,6 +596,39 @@ def test_a_mode_change_stops_the_old_mode_waits_for_the_dwell_and_starts_the_new
     assert run(plant, observe(plant), off)[1].mode is Mode.HEAT
 
 
+def test_a_mode_change_keeps_the_source_for_its_minimum_on_time_and_control_off_does_not() -> None:
+    plant = _plant(RADIATOR)
+    heating = State(
+        live=True,
+        mode=Mode.HEAT,
+        last_mode=Mode.HEAT,
+        flowing=True,
+        source_request=True,
+        source_changed=NOW - 250,
+    )
+    on = ["switch.valve", "switch.pump", "switch.boiler"]
+    for mode in (Mode.OFF, Mode.COOL):
+        changed = observe(plant, mode=mode, temperatures={"room": 19.0}, on=on)
+        state, desired, due = run(plant, changed, heating)
+        assert desired.mode is Mode.HEAT
+        assert desired.reasons["mode"] == f"stopping heat before {mode.value}"
+        assert desired.source_request, f"a change to {mode.value} keeps the minimum on time"
+        assert desired.reasons["source"] == "held for its minimum on time"
+        assert targets(desired, "switch.pump", "switch.valve") == [ON, ON]
+        assert due == pytest.approx(50.0 + TICK), "due when the minimum on time ends"
+        _, desired, _ = run(plant, changed, state, NOW + 50)
+        assert not desired.source_request and desired.reasons["source"] == "released"
+        assert desired.outputs["switch.pump"] == ON, "the pump overruns after the release"
+
+    # Control equipment off stops at once.
+    stopping = observe(plant, control=False, temperatures={"room": 19.0}, on=on)
+    _, desired, _ = run(plant, stopping, heating)
+    assert not desired.source_request and desired.reasons["source"] == "off"
+    # A lost path overrides the minimum on time too.
+    no_pump = observe(plant, mode=Mode.OFF, on=["switch.valve", "switch.boiler"])
+    assert not run(plant, no_pump, heating)[1].source_request
+
+
 def test_a_first_evaluation_adopts_the_requested_mode_for_loops_found_running() -> None:
     plant = _plant(RADIATOR)
     running = observe(plant, temperatures={"room": 19.0}, on=["switch.valve", "switch.pump"])
