@@ -16,6 +16,10 @@ SUBENTRY_TYPE_ZONE: Final = "zone"
 OPTION_ARMED_OUTPUTS: Final = "armed_outputs"
 OPTION_CONTROL: Final = "control"
 
+# The init data of a reconfigure flow that opens it at the form of a plant file
+# path, such as the loop that binds a missing valve.
+INIT_PATH: Final = "path"
+
 # The runtime's persisted state (``homeassistant.helpers.storage.Store``).
 STORE_VERSION: Final = 1
 STORE_SAVE_DELAY: Final = 1.0

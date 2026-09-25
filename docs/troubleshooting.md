@@ -100,7 +100,8 @@ This Repair appears once any output of the Plant is armed; a new Plant with noth
 
 The Plant binds an entity that Home Assistant does not have, such as a renamed valve.
 Whatever needs it is blocked: a loop with a missing output does not run, and a zone with a missing required sensor does not call.
-Restore the entity, or select **Submit** to open the reconfigure form of the zone or the Plant that binds it, and choose another one.
+Restore the entity, or select **Submit** to open the form that binds it and choose another one: the loop form of a valve, the pump form of a pump switch or supply sensor, the zone form of a zone sensor or thermostat, or **The Plant and its source** for a source entity.
+The form is part of the zone's or the Plant's **Reconfigure**, so the change is stored when you save it there.
 
 ### An area names a missing sensor
 
@@ -110,13 +111,13 @@ The area adds no reading until you open **Settings > Areas, labels & zones**, op
 ### A zone covers a missing area
 
 A zone covers an area that no longer exists, so the zone gets no reading from it.
-Select **Submit** to edit the zone and remove the area.
+Select **Submit** to open the zone's settings and remove the area.
 Creating an area with the name the Repair gives also works, because Home Assistant makes a new area's ID from its name.
 
 ### A zone has no temperature sensor
 
 A zone with a digital thermostat covers areas that name no temperature sensor Hydronicus can follow, and has no extra temperature sensor, so it does not heat or cool.
-Select **Submit** to edit the zone and add a sensor or another area, or choose a **Temperature sensor** in the area settings.
+Select **Submit** to open the zone's settings and add a sensor or another area, or choose a **Temperature sensor** in the area settings.
 
 ### An area names a Hydronicus sensor
 

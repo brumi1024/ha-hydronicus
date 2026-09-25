@@ -3,8 +3,9 @@
 Outputs awaiting confirmation arm the new outputs in the fix flow itself. An
 invalid Plant opens the entry's reconfigure flow, and a zone's area and binding
 problems open that zone's reconfigure flow, through the fix flow's
-``next_flow``. Output faults, missing area sensors, and self-feeding areas are
-fixed outside Hydronicus, so they stay informational.
+``next_flow``; a missing binding opens it at the form that binds it. Output
+faults, missing area sensors, and self-feeding areas are fixed outside
+Hydronicus, so they stay informational.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from tests.integration.helpers import (
     FLOOR_PUMP,
     LIVING_CEILING,
     REFERENCE_PLANT,
+    SOURCE_REQUEST,
     TOWEL_PUMP,
     async_choose,
     async_import,
@@ -197,6 +199,14 @@ async def test_a_missing_binding_opens_the_flow_that_binds_it(hass: HomeAssistan
     result = await manager.async_configure(result["flow_id"], {})
     assert result["reason"] == "reconfigure_opened"
     assert result["next_flow"][0] == "config_flow"
+    flow = hass.config_entries.flow
+    pump = await flow.async_configure(result["next_flow"][1])
+    assert pump["step_id"] == "pump", "the form that binds the missing entity"
+    assert suggested(pump, "switch") == "switch.pump"
+    pump = await flow.async_configure(
+        pump["flow_id"], {"name": "Pump", "switch": "switch.pump", "overrun": 180}
+    )
+    assert pump["step_id"] == "reconfigure"
 
     hass.states.async_set("switch.pump", "off")
     hass.states.async_remove("switch.study_valve")
@@ -211,9 +221,41 @@ async def test_a_missing_binding_opens_the_flow_that_binds_it(hass: HomeAssistan
     assert result["description_placeholders"]["path"] == "Zone Study, loop Radiator, valve 1"
     result = await manager.async_configure(result["flow_id"], {})
     assert result["reason"] == "zone_opened"
-    zone = await hass.config_entries.subentries.async_configure(result["next_flow"][1])
-    assert zone["handler"] == (entry.entry_id, "zone")
-    assert suggested(zone, "name") == "Study"
+    flows = hass.config_entries.subentries
+    loop = await flows.async_configure(result["next_flow"][1])
+    assert loop["handler"] == (entry.entry_id, "zone")
+    assert loop["step_id"] == "loop", "the loop that binds the missing valve"
+    assert suggested(loop, "valves") == ["switch.study_valve"]
+    loop = await flows.async_configure(
+        loop["flow_id"], {"name": "Radiator", "valves": ["switch.study_valve"], "pump": "pump"}
+    )
+    assert loop["step_id"] == "menu"
+
+
+async def test_a_missing_plant_loop_valve_opens_the_plant_loop(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    entry = await async_import(
+        hass,
+        REFERENCE_PLANT.replace(
+            "    pump: towel_dryer\n", "    valves: [switch.towel_valve]\n    pump: towel_dryer\n"
+        ),
+    )
+    issue = next(
+        issue
+        for (domain, _), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN
+        and issue.translation_key == IssueKind.MISSING_BINDING
+        and issue.translation_placeholders["entity_id"] == "switch.towel_valve"
+    )
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    result = await manager.async_init(DOMAIN, data={"issue_id": issue.issue_id})
+    result = await manager.async_configure(result["flow_id"], {})
+
+    loop = await hass.config_entries.flow.async_configure(result["next_flow"][1])
+    assert loop["step_id"] == "plant_loop"
+    assert suggested(loop, "valves") == ["switch.towel_valve"]
+    assert entry.state is ConfigEntryState.LOADED
 
 
 async def test_problems_fixed_outside_hydronicus_have_no_fix_flow(hass: HomeAssistant) -> None:
@@ -225,3 +267,25 @@ async def test_problems_fixed_outside_hydronicus_have_no_fix_flow(hass: HomeAssi
 
     issue = issue_of(hass, IssueKind.MISSING_AREA_SENSOR)
     assert not issue.is_fixable
+
+
+async def test_a_missing_source_request_opens_the_plant_and_its_source(
+    hass: HomeAssistant,
+) -> None:
+    reference_world(hass)
+    await async_import(hass, REFERENCE_PLANT.replace(SOURCE_REQUEST, "switch.gone_request"))
+    issue = next(
+        issue
+        for (domain, _), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN
+        and issue.translation_key == IssueKind.MISSING_BINDING
+        and issue.translation_placeholders["entity_id"] == "switch.gone_request"
+    )
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    result = await manager.async_init(DOMAIN, data={"issue_id": issue.issue_id})
+    result = await manager.async_configure(result["flow_id"], {})
+
+    plant = await hass.config_entries.flow.async_configure(result["next_flow"][1])
+    assert plant["step_id"] == "plant"
+    assert suggested(plant, "request") == "switch.gone_request"

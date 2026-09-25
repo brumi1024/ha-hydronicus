@@ -56,6 +56,7 @@ FIXABLE = frozenset(
 DATA_KIND = "kind"
 DATA_ENTRY_ID = "entry_id"
 DATA_ZONE = "zone"
+DATA_PATH = "path"
 
 _WARNINGS = frozenset(
     {
@@ -80,6 +81,8 @@ class Issue:
     placeholders: Mapping[str, str] = field(default_factory=dict)
     # The zone whose reconfigure flow fixes it, if any.
     zone: str | None = None
+    # The plant file path whose form fixes it, if any.
+    path: str | None = None
 
     def issue_id(self, entry_id: str) -> str:
         digest = hashlib.sha256(f"{self.kind}|{self.key}".encode()).hexdigest()[:16]
@@ -106,6 +109,8 @@ def async_sync_issues(hass: HomeAssistant, entry_id: str, issues: Iterable[Issue
         }
         if issue.zone is not None:
             data[DATA_ZONE] = issue.zone
+        if issue.path is not None:
+            data[DATA_PATH] = issue.path
         ir.async_create_issue(
             hass,
             DOMAIN,
@@ -160,6 +165,7 @@ def missing_binding(plant: Plant, entity_id: str, path: str) -> Issue:
             "path": describe_path(_document(plant), path),
         },
         zone=keys[1] if keys[0] == "zones" and len(keys) > 1 else None,
+        path=path,
     )
 
 

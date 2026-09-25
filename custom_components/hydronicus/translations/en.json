@@ -588,7 +588,7 @@
         "step": {
           "confirm": {
             "title": "{plant}: {entity_id} does not exist",
-            "description": "Plant {plant} binds {entity_id} as {path}, but Home Assistant has no such entity. Whatever needs it is blocked: a loop with a missing output does not run, and a zone with a missing required sensor does not call. Restore the entity, or select Submit to change the Plant to bind another one. The repair clears automatically once the entity exists or the Plant no longer binds it."
+            "description": "Plant {plant} binds {entity_id} as {path}, but Home Assistant has no such entity. Whatever needs it is blocked: a loop with a missing output does not run, and a zone with a missing required sensor does not call. Restore the entity, or select Submit to open the form that binds it and choose another one, then save the change. The repair clears automatically once the entity exists or the Plant no longer binds it."
           }
         },
         "abort": {

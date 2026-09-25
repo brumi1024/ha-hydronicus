@@ -5,9 +5,11 @@ outputs only. The other fix flows explain the problem and then open the flow
 that fixes it through ``next_flow``, which Home Assistant 2026.9 supports for a
 config flow, an options flow, and a config subentry flow: an invalid Plant and a
 Plant-level missing binding open the entry's reconfigure flow, and a zone's area
-problem or missing binding opens that zone's reconfigure flow. Opening another
-flow aborts the fix flow, so the Repair stays until the next evaluation finds
-the problem gone.
+problem or missing binding opens that zone's reconfigure flow. A missing
+binding passes its plant file path as the flow's init data, which Home
+Assistant hands the flow's first step, so the flow opens at the form that binds
+it, such as the loop of a missing valve. Opening another flow aborts the fix
+flow, so the Repair stays until the next evaluation finds the problem gone.
 """
 
 from __future__ import annotations
@@ -20,19 +22,20 @@ from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
-from .const import DOMAIN, OPTION_ARMED_OUTPUTS, SUBENTRY_TYPE_ZONE
+from .const import DOMAIN, INIT_PATH, OPTION_ARMED_OUTPUTS, SUBENTRY_TYPE_ZONE
 from .core.plant_file import PlantFileError
 from .flows.forms import arm_schema, output_labels
-from .issues import DATA_ENTRY_ID, DATA_KIND, DATA_ZONE, IssueKind
+from .issues import DATA_ENTRY_ID, DATA_KIND, DATA_PATH, DATA_ZONE, IssueKind
 from .storage import armed_outputs, plant_from_entry, zone_subentry_ids
 
 
 class _IssueFlow(RepairsFlow):
     """A fix flow of one Plant's issue."""
 
-    def __init__(self, entry_id: str, zone: str | None) -> None:
+    def __init__(self, entry_id: str, zone: str | None, path: str | None = None) -> None:
         self._entry_id = entry_id
         self._zone = zone
+        self._path = path
 
     def _entry(self) -> ConfigEntry | None:
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
@@ -101,9 +104,13 @@ class OpenFlow(_IssueFlow):
         entry = self._entry()
         if entry is None:
             return self.async_abort(reason="plant_not_found")
+        # The reconfigure flow's first step opens the form of this path.
+        init = {INIT_PATH: self._path} if self._path is not None else None
         if self._zone is None:
             result = await self.hass.config_entries.flow.async_init(
-                DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+                DOMAIN,
+                context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+                data=init,
             )
             return self.async_abort(
                 reason="reconfigure_opened",
@@ -116,6 +123,7 @@ class OpenFlow(_IssueFlow):
         zone_flow = await self.hass.config_entries.subentries.async_init(
             (entry.entry_id, SUBENTRY_TYPE_ZONE),
             context={"source": SOURCE_RECONFIGURE, "subentry_id": subentry_id},
+            data=init,
         )
         return self.async_abort(
             reason="zone_opened",
@@ -131,7 +139,9 @@ async def async_create_fix_flow(
     data = data or {}
     entry_id = str(data.get(DATA_ENTRY_ID, ""))
     zone = data.get(DATA_ZONE)
-    zone_slug = zone if isinstance(zone, str) else None
+    path = data.get(DATA_PATH)
     if data.get(DATA_KIND) == IssueKind.OUTPUTS_AWAITING_CONFIRMATION:
         return ArmOutputsFlow(entry_id, None)
-    return OpenFlow(entry_id, zone_slug)
+    return OpenFlow(
+        entry_id, zone if isinstance(zone, str) else None, path if isinstance(path, str) else None
+    )

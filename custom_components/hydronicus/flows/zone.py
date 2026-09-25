@@ -13,6 +13,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigSubentryFlow, SubentryFlowResult
 
+from ..const import INIT_PATH
 from ..core.plant_file import to_storage
 from ..storage import async_reload_if_failed, stored_document
 from . import documents as docs
@@ -59,9 +60,19 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Change a zone."""
+        """Change a zone, at its settings or at the loop that ``user_input``'s path names.
+
+        Only a Repair passes a path, as the flow's init data; the settings of the
+        zone come first otherwise.
+        """
         self._document = stored_document(self._get_entry())
-        self._zone = self._get_reconfigure_subentry().unique_id
+        self._zone = zone = self._get_reconfigure_subentry().unique_id
+        path = (user_input or {}).get(INIT_PATH)
+        keys = path.split(".") if isinstance(path, str) else []
+        loops = docs.zones(self._document).get(zone, {}).get("loops", {}) if zone else {}
+        if keys[:3] == ["zones", zone, "loops"] and len(keys) > 3 and keys[3] in loops:
+            self._editing = keys[3]
+            return await self.async_step_loop()
         return await self.async_step_zone()
 
     async def async_step_zone(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:

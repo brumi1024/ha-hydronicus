@@ -33,7 +33,13 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 
 from ..areas import areas_with_temperature_sensor, listed, zone_name_for_areas
-from ..const import CONFIG_ENTRY_MINOR_VERSION, CONFIG_ENTRY_VERSION, DOMAIN, SUBENTRY_TYPE_ZONE
+from ..const import (
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+    INIT_PATH,
+    SUBENTRY_TYPE_ZONE,
+)
 from ..core.plant_file import (
     PlantFileError,
     describe_path,
@@ -548,10 +554,17 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose what to change: the Plant, a pump, a plant loop, or all of it from a file."""
+        """Choose what to change: the Plant, a pump, a plant loop, or all of it from a file.
+
+        A Repair passes the path of a missing binding as the flow's init data,
+        which opens the form that binds it instead.
+        """
         entry = self._get_reconfigure_entry()
         if not self._loaded:
             self._loaded, self._document = True, stored_document(entry)
+            path = (user_input or {}).get(INIT_PATH)
+            if isinstance(path, str) and (opened := await self._open_path(path)) is not None:
+                return opened
         checked = self._check(self._document)
         status = "The Plant is valid."
         if pending := docs.unresolved_min_flow(self._document):
@@ -570,6 +583,19 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
             menu_options=["plant", "pump_pick", "plant_loop_pick", "replace", "save"],
             description_placeholders={"plant": entry.title, "status": status},
         )
+
+    async def _open_path(self, path: str) -> ConfigFlowResult | None:
+        """Open the form of a plant file path: a pump, a plant loop, or the Plant and source."""
+        keys = path.split(".")
+        if len(keys) > 1 and keys[0] == "pumps" and keys[1] in docs.pumps(self._document):
+            self._editing = keys[1]
+            return await self.async_step_pump()
+        if len(keys) > 1 and keys[0] == "loops" and keys[1] in docs.plant_loops(self._document):
+            self._editing = keys[1]
+            return await self.async_step_plant_loop()
+        if keys[0] == "source":
+            return await self.async_step_plant()
+        return None
 
     async def async_step_pump_pick(
         self, user_input: dict[str, Any] | None = None
