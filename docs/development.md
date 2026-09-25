@@ -2,96 +2,92 @@
 
 The supported local workflow uses Python 3.14.2 or newer, `uv`, and the commands in the root `Makefile`.
 The lockfile is the source of truth for exact development and test dependency versions.
+[The redesign plan](redesign-plan.md) records the decisions, contracts, and invariants the code implements, and [CONTEXT.md](../CONTEXT.md) is the glossary.
 
 ## First setup
 
-Install `uv` and Node.js with npm, then run:
+Install `uv`, then run:
 
 ```console
 make bootstrap
 make hooks
 ```
 
-`make bootstrap` creates or updates `.venv` from `uv.lock` and installs the frontend packages from `frontend/package-lock.json`.
+`make bootstrap` creates or updates `.venv` from `uv.lock`.
 `make hooks` installs the shared pre-commit hooks after bootstrapping the environment.
 
 ## Daily commands
 
-- `make test-core` runs deterministic topology and controller tests with core coverage.
-- `make test-integration` runs Home Assistant config, entity, and lifecycle adapter tests.
-- `make test-scenarios` runs named, time-ordered operating scenarios.
-- `make lint` checks Ruff linting, Python compilation, and repository JSON files.
-- `make format-check` checks the complete repository with the normal Ruff formatter configuration.
-- `make typecheck` checks the dependency-free controller package with mypy.
-- `make verify` runs the complete local quality gate used by CI.
+- `make test-core` runs the pure tests of the model, the plant file, `step()`, and the reconciler, with core coverage.
+- `make test-integration` runs the Home Assistant tests of setup, the runtime, persistence, arming, areas, entities, flows, and Repairs.
+- `make test-sim` runs the plant simulator: the invariants over generated Plants and event traces, the reproduced defects, and the reference plant.
+- `make lint` checks Ruff linting, Python compilation, and the repository's JSON files.
+- `make format-check` checks the whole repository with the Ruff formatter.
+- `make typecheck` checks the whole `custom_components/hydronicus` package with mypy.
+- `make release-check` and `make public-beta-check` build and inspect the HACS release archive and check the installation documentation.
+- `make test` runs every test with core coverage.
+- `make verify` runs the complete local quality gate that CI runs.
 
-Run the narrowest relevant target while developing and run `make verify` before handing off a chunk.
-The pre-commit hook applies Ruff formatting to every changed Python file.
-The CI format check covers the same complete source tree.
+Run the narrowest relevant target while developing, and `make verify` before handing off a change.
+The pre-commit hook formats changed Python files with Ruff, runs `make lint`, and runs the core tests.
 
-## Canonical configuration
+The simulator's property tests use the Hypothesis profile `sim-ci`, which is deterministic, so CI sees the same examples on every run.
+Set `HYPOTHESIS_SIM_PROFILE=sim-dev` to explore many more examples locally:
 
-Config-entry version 4 and minor version 0 are the supported persisted contract.
-The parent config entry owns one complete UUID-backed graph in `topology`, including every Zone, Circuit, Delivery Route, Valve, Pump, Source, and the source selector.
-`zone_objects` maps every zone-owned Circuit and Valve to its owning Zone, and every other object belongs to the Plant, as `core/legacy/ownership.py` defines.
-`subentry_objects` records which graph objects are exposed through Home Assistant config subentries.
-Each Zone has exactly one `zone` subentry, and a source may have one `source` subentry; each subentry is only a stable ownership handle containing `{"id": "<object UUID>"}`.
-No topology field is duplicated between the parent graph and a subentry.
-Ownership is deletion-closed: removing a zone subentry removes exactly its zone closure through `without_zone` and always leaves a graph that validates and compiles.
-Guided setup, plant file import and edits, zone and pump edits, and deletion build the proposed complete graph through the graph edit API in `entry_configuration.py`, which validates ownership and compiles it before it is persisted.
-If Home Assistant removes a subentry while a Plant is active, Hydronicus completes the ordered transition to Dry run against the old graph before deleting that zone or source from the parent graph.
-If the shutdown cannot complete, the parent graph and active runtime are retained and the failure is logged.
-Zone observations use typed temperature and humidity metadata collections rather than parallel legacy representations.
+```console
+HYPOTHESIS_SIM_PROFILE=sim-dev make test-sim
+```
 
-The plant file in `core/legacy/plant_document.py` is the portable form of the same graph, documented for users in [the plant file reference](plant-file.md).
-It maps slugs to objects, derives missing IDs with `uuid5` from the Plant ID and the slug, and exports the canonical form with every ID written, so an export and import round trip keeps every object ID and entity ID.
+## Stored configuration
 
-Entries of earlier development versions, below version 4, are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
-Do not add speculative schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
+Config entry version 5.0 is the supported persisted contract.
+The entry's data is the format 2 plant file without `zones`, and each zone is a `zone` subentry whose data is that zone's mapping plus its `slug`; the subentry's unique ID is the slug and its title is the zone's name.
+The entry's options hold `armed_outputs`, the confirmed output entity IDs, and `control`, the **Control equipment** state.
+The runtime's timers, the Plant mode, the reconciler's retry state, and the output memory are stored per Plant with `homeassistant.helpers.storage.Store`.
+
+Entries of earlier versions are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
+Do not add schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
 
 ## Architecture boundaries
 
-The redesign in [the redesign plan](redesign-plan.md) replaces the model below phase by phase.
-`custom_components/hydronicus/core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs.
-`custom_components/hydronicus/core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into config entry data and zone subentry data, and `from_storage` joins them again.
-`custom_components/hydronicus/core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
-`custom_components/hydronicus/core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
-`custom_components/hydronicus/core/reconcile.py` turns the desired state into the service calls to send in dependency order, keeps at most one call per output in flight, retries with backoff, reports Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
-A decision never counts on a call having acted: a call that no observation has confirmed may act until `CALL_TIMEOUT` after it was sent.
-Until the runtime, flows, and platforms move to the new model, they run on the v0.1 modules in `custom_components/hydronicus/core/legacy/`, which nothing new may import and which each phase deletes once their last consumer is gone.
+`custom_components/hydronicus/core/` is the pure core: it has no Home Assistant imports, keeps at least 90 percent test coverage, and the simulator loads it without Home Assistant.
 
-`custom_components/hydronicus/core/legacy/configuration.py` decodes only the canonical persisted objects into typed domain values.
-`custom_components/hydronicus/core/legacy/ownership.py` assigns every graph object to the Plant or to one zone so that removing a zone always leaves a valid graph.
-`custom_components/hydronicus/entry_configuration.py` owns graph mutation, zone and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
-`custom_components/hydronicus/registrations.py` moves entity and device registrations between subentries when a graph edit changes an object's owner, and removes the registrations of objects a graph edit drops.
-`custom_components/hydronicus/zone_area.py` puts a newly created zone climate entity in the one area its zone covers, after the entities have registered, and never assigns the zone device an area.
-`custom_components/hydronicus/areas.py` owns every area registry read: it resolves the sensors that covered areas name, drops sensors Hydronicus provides, and reports missing areas for the runtime, the reviews, diagnostics, and repairs.
-`custom_components/hydronicus/core/legacy/configuration.py` merges those resolved sensors after a zone's explicit sensors, while structural rules count an area as a sensor, so an area change never makes a stored graph invalid.
-`custom_components/hydronicus/config_flow.py` exposes the flows in `custom_components/hydronicus/flows/`: guided setup, import, and entry reconfigure in `plant.py`, the zone subentry flow in `zone.py`, and Plant settings in `settings.py`.
-Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a plant file problem onto the form field its path belongs to, or onto the form's base with the path in words from `describe_path`.
-`storage.async_store_plant` stores a Plant over an entry, creating, updating, and removing zone subentries by slug in an order that never lets the update listener prune a reference, and the listener reloads a loaded Plant once however many parts change.
-`custom_components/hydronicus/repairs.py` holds the fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`.
-`custom_components/hydronicus/core/legacy/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
-`custom_components/hydronicus/core/legacy/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.
-Its public evaluation result, diagnostics, deadlines, and command order are the contract; private phase helper structure is not.
-`custom_components/hydronicus/runtime.py` owns the Home Assistant boundary and runs snapshot, evaluate, execute, and publish stages in that order.
-One per-Plant operation lock serializes refresh, execution, reconciliation, safe shutdown, mode changes, Dry run changes, and teardown.
-Runtime deadline scheduling, target-aware command reconciliation, and late service completion remain adapter concerns because they depend on Home Assistant time, observations, and service results.
-Reload, unload, removal, and Home Assistant stop are deliberately command-free lifecycle boundaries and must never claim that physical shutdown occurred.
+- `core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs, and the desired state that `step()` returns.
+- `core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into entry data and zone subentry data, `from_storage` joins them again, and `describe_path` puts a problem's path in words.
+- `core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
+- `core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
+- `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
+
+A decision never counts on a call having acted: a call that no observation has confirmed may act until `CALL_TIMEOUT` after it was sent.
+
+The Home Assistant adapter lives beside the core:
+
+- `runtime.py` runs one Plant: it observes, calls `step()` and `reconcile()`, sends the actions outside the evaluation, persists the State, raises the Repairs, publishes the entities, and schedules the next evaluation.
+  Evaluations are coalesced and never await, so they need no lock.
+  Setup restores the stored State and the digital thermostats before the first evaluation, and stopping only cancels, never commands.
+- `observe.py` reads Home Assistant states as observations: output feedback, units and plausibility of sensors, external thermostats, and the output memory that keeps when an output last changed across restarts.
+- `areas.py` owns every area and floor registry read: it resolves the sensors that covered areas name on every evaluation, drops sensors Hydronicus provides, and reports area problems for the runtime, the reviews, and Repairs.
+  `zone_area.py` puts a new zone climate entity in the one area its zone covers.
+- `storage.py` moves the Plant in and out of the config entry and its zone subentries, prunes references to a removed zone, and holds the arming options.
+  `async_store_plant` stores a Plant over an entry in an order that never lets the update listener prune a reference, and the listener reloads a loaded Plant once however many parts change.
+- `bindings.py` refuses an entity Hydronicus provides and an output another Plant binds.
+- `config_flow.py` exposes the flows in `flows/`: guided setup, import, and the entry's reconfigure in `plant.py`, the zone subentry flow in `zone.py`, and Plant settings in `settings.py`.
+  Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a problem onto the field its path belongs to.
+- `issues.py` computes the Repairs of a Plant, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`.
+- `entity.py` and the platforms publish the [entity contract](entities.md); unique IDs derive from the Plant ID and object slugs.
+- `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` redacts the configuration, the last observations, the desired state, and the reconciler state.
+
+Reload, unload, removal, and Home Assistant stop are command-free lifecycle boundaries and must never claim that physical shutdown occurred.
 
 ## Test boundaries
 
-Pure controller behavior belongs under `tests/core/` and must use only the dependency-free controller interface.
-Home Assistant setup, subentry, entity, reload, and adapter behavior belongs under `tests/integration/`.
-Multi-step behavior with a fake clock belongs under `tests/scenarios/` and should use the reusable scenario harness.
-Safety invariants that must hold across many topology shapes or timings belong in property-based tests.
-The redesigned control is checked in `tests/sim/`, a simulator that owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts the plan's invariants after every event over generated Plants and traces.
-Its Hypothesis profile `sim-ci` is deterministic; set `HYPOTHESIS_SIM_PROFILE=sim-dev` to explore many more examples locally.
-The stages of `step()` and the reconciler's ordering, backoff, and Repairs also have unit tests in `tests/core/`.
-The large synthetic benchmark covers pure compilation, pure evaluation, Home Assistant setup, runtime refresh, reconciliation, entity publication, memory, and zero-service-call Dry run behavior.
+- `tests/core/` holds pure tests of the model, the plant file, `step()`'s stages, and the reconciler's ordering, backoff, and Repairs.
+- `tests/integration/` holds Home Assistant tests of setup, the runtime, persistence, arming, areas, entities, flows, and Repairs, with mocked actuators from `tests/integration/helpers.py`.
+- `tests/sim/` holds the simulator, which owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts the plan's invariants after every event, with the reference plant and the reproduced defects as named scenarios.
+- Root-level tests cover isolated units that need no Home Assistant harness, the release package, and the documentation.
 
-The current coverage threshold applies only to `custom_components/hydronicus/core`.
-This keeps the safety-critical deterministic package measurable without obscuring incomplete adapter milestones behind a repository-wide percentage.
+`tests/test_docs_examples.py` keeps the user documentation true: every plant file example imports, the documented error paths and messages are the real ones, the reference plant example matches the test fixture, and every bold UI label exists in `strings.json` or Home Assistant.
+Edit `strings.json`, then copy it to `translations/en.json` byte for byte.
 
 ## Dependency changes
 
@@ -104,3 +100,8 @@ make verify
 ```
 
 Commit `pyproject.toml` and `uv.lock` together.
+
+## History
+
+`docs/implementation-plan.md`, `docs/setup-redesign-plan.md`, `docs/zones-and-areas-plan.md`, `docs/ha-modernization-plan.md`, and `docs/home-server-staging.md` are the plans of earlier versions, kept as history.
+Where they conflict with [the redesign plan](redesign-plan.md), the redesign plan wins.

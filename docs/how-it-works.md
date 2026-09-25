@@ -1,226 +1,229 @@
 # How Hydronicus works
 
-Hydronicus turns a Home Assistant configuration into an explicit hydronic Plant model.
-It observes sensors, calculates demand, coordinates shared hydraulic paths, and publishes every decision back to Home Assistant.
-
-Every new Plant starts in Dry run.
-The Plant UI exposes one setting that can turn Dry run off for valves and pumps, in heating and cooling, and for an explicitly configured direct source-demand output.
-Automatic source selection remains Dry run only.
-Re-enabling Dry run performs an ordered safe shutdown before further commands are suppressed.
+Hydronicus coordinates a hydronic heating and cooling plant from Home Assistant.
+It decides, from what it observes, what every valve, pump, and source request should be now, and then drives those outputs there and checks that they got there.
+This page explains the model, one evaluation step by step, how outputs are commanded, and where the boundaries are.
 
 ## The model
 
-A Plant contains the complete coordinated installation.
-The UI speaks of zones and loops, and the controller underneath uses the terms in brackets.
+A Plant is one heating and cooling system, set up as one Hydronicus entry.
+It has:
 
-- A zone is the space one thermostat controls, with an identity, its observations, and its topology relationships.
-- An area is a Home Assistant area, usually one room; a zone covers zero or more areas, and an area may be covered by several zones.
-- A zone thermostat owns target state and demand semantics for exactly one zone.
-- A loop (Hydraulic Circuit) represents one hydraulic delivery path through one or more valves and one pump.
-- A Delivery Route connects a zone to a loop.
-- A valve controls part of a loop's path.
-- A pump circulates water for one or more loops.
-- A source represents equipment or stored heat that could supply the Plant.
+- An optional source: the heat pump or boiler that Hydronicus asks for heat or cooling through a request switch, and optionally switches between heating and cooling through a mode select.
+  Hydronicus reaches it only through generic Home Assistant entities, whatever integration provides them.
+  A Plant without a source still opens valves and runs switched pumps, which suits a boiler that follows its own controls.
+- Pumps: circulators that Hydronicus switches, or that the source drives by itself and Hydronicus never commands, such as a heat pump's own circulator.
+- Zones: each zone is the space one thermostat controls.
+  A zone covers zero or more Home Assistant areas and follows the temperature and humidity sensors those areas name, plus any extra sensors of its own.
+  Its thermostat is a digital thermostat that Hydronicus provides, or an existing Home Assistant climate entity that Hydronicus only reads.
+- Loops: a loop is a flow path, made of zero or more valves that open together and exactly one pump.
+  A zone owns its loops.
+  A loop with no valve is always open, and its pump is its only control.
+  A loop heats, cools, or both.
+- Plant loops: loops that no zone owns, which run whenever the source is requested, such as a towel dryer, or with a set of zones, such as a loop that several zones share.
 
-Relationships are stored using generated identifiers rather than display names.
-This allows objects to be renamed without changing their logical relationships.
+The [reference plant](examples/reference-plant.yaml) shows all of it: an air-to-water heat pump with its own circulator, three zones over Home Assistant areas with a ceiling loop each, an underfloor loop with its own pump, and a towel dryer with a pump and no valve.
 
-## Ownership
+Each output entity has exactly one role in one Plant: a valve of one loop, a pump's switch, or a source output.
+Hydronicus commands an output only once you have armed it.
 
-Every object belongs either to the Plant or to exactly one zone.
+## When the Plant evaluates
 
-- A zone owns itself, its Delivery Routes, and its private loops and valves.
-- Plant equipment belongs to the Plant: every pump, every source, the source selector, and the shared valves and shared loops that several zones can use.
-- A private loop uses valves of its own zone and shared valves.
-- A shared loop uses only shared valves.
-- A zone routes only to its own loops and to shared loops.
+The Plant evaluates again whenever something it observes changes: an output, a sensor, a thermostat, the area settings of a covered area, the **Mode** select, **Control equipment**, or the armed outputs.
+It also evaluates when a timer it is waiting for runs out, such as a valve's opening time or a pump's overrun, and when a command is due to be retried.
+Changes that arrive together share one evaluation.
 
-References therefore point only from a zone toward the Plant.
-This makes ownership deletion-closed: removing a zone removes exactly the zone, its routes, and its private loops and valves, and always leaves a valid Plant.
-Home Assistant lets a user delete a zone entry at any time, and this rule is why that is always safe for the graph.
+Each evaluation takes a snapshot of every entity the Plant reads, decides the desired state of every output, compares it with what the outputs show, sends what differs, stores its timers, and updates the entities.
 
-Plant equipment that no enabled route reaches is accepted as unused equipment.
-It is reported as a warning and never requested.
-A zone that no enabled route leaves is still an error, because it could never receive heat.
+## One evaluation, step by step
 
-Each zone is a Home Assistant config subentry, so its devices and entities are grouped under it and removed with it.
-Zones, their private loops and valves, pumps, and Dry run are edited in the UI.
-Shared loops, shared valves, and the source selector are edited through the [plant file](plant-file.md), which describes the whole Plant as YAML for import, export, and editing.
+### 1. Observe
 
-## Areas and observations
+Hydronicus reads every output, sensor, and thermostat.
+It converts temperatures to °C and humidity to percent, and a reading that is unavailable, stale, in an unsupported unit, or physically implausible counts as missing.
+It re-reads which sensors each covered area names, so a change in the area settings takes effect at once, without a reload.
 
-A zone's temperature and humidity observations come from two places: the extra sensors chosen for the zone, and the sensors that its areas name in their Home Assistant area settings.
-Home Assistant defines those area sensors as the ones that represent the area, which is the reading a thermostat needs, so a sensor is chosen once, in the area settings, and replacing a dead sensor takes one edit.
+### 2. Demand
 
-When a Plant loads, the adapter resolves every covered area to the sensors it names and hands them to the controller as ordinary observations, after the zone's extra sensors.
-The controller aggregates them exactly like extra sensors and does not know which came from an area.
-An area temperature is optional by default and an area humidity is always required, as described in [Areas](configuration.md#areas).
+Each zone combines its usable temperatures by its aggregation: mean, minimum, or maximum.
+A required sensor that is missing blocks the zone, and an optional one is left out.
+A digital thermostat demands heating once the temperature is `heat_start_delta` (0.3 K) below the target, and stops once it is `heat_stop_delta` (0.1 K) above; cooling works the same way the other side of the target.
+It can hold a decision for a minimum on or off time, and it reports a demand level from 0 to 1 from the distance to target over its proportional band.
+An external thermostat demands heating while its `hvac_action` is heating or preheating, cooling while it is cooling, and nothing while it is idle or off; anything else, or an unavailable thermostat, blocks the zone.
+A zone's demand counts only when its thermostat's mode matches the Plant mode; a zone that asks to cool while the Plant heats is shown as blocked.
 
-```text
-area settings in Home Assistant -> resolved area sensors --+
-                                                           +-> zone observations -> aggregation
-extra sensors of the zone ---------------------------------+
-```
+### 3. Mode
 
-The resolution is part of the Plant's configuration fingerprint.
-A change to a covered area that changes the resolved sensors, or removes or creates a covered area, reloads the Plant once through the same coalesced reload as a configuration edit, and a change that resolves to the same sensors reloads nothing.
-A reload is a command-free lifecycle boundary, so following an area never switches equipment by itself.
+The Plant mode is off, heat, or cool, chosen with the **Mode** select, and heating and cooling never run at the same time.
+A change between heating and cooling is sequenced, as described in [mode changes](#mode-changes).
 
-Resolution never makes a Plant fail to load.
-Structural rules, such as a Hydronicus thermostat needing a temperature source, count an area as a source whatever it names today.
-An area that is missing or names no sensor adds nothing, and a zone left without a usable reading is blocked by the same fail-closed aggregation as a zone whose sensors are unavailable.
-An area sensor that Hydronicus itself provides is dropped, because it would feed the Plant back into itself.
-Each of these cases has a Repair, described below.
+### 4. Wanted loops
 
-## The evaluation cycle
+A zone loop is wanted when its zone demands in the Plant mode and the loop runs in that mode.
+A plant loop that runs with zones is wanted when any of them demands, and one that runs with the source is wanted while the source's request is on.
+A wanted loop is dropped when an output it needs is not armed or not available, or when its [condensation guard](#cooling-and-the-condensation-guard) blocks.
 
-Hydronicus repeatedly performs the same deterministic cycle:
+### 5. Readiness
 
-```text
-snapshot Home Assistant entities
-  -> evaluate heating and cooling independently
-  -> filter and arbitrate Delivery Routes
-  -> coordinate shared-mode changeover
-  -> plan valves, then pumps
-  -> recommend and safely transition sources
-  -> assemble runtime, plan, deadlines, and diagnostics
-  -> execute or shadow ordered operations
-  -> publish only changed public state
-```
+A loop is ready once each of its valves has been seen open for its opening time, 180 seconds by default, or its readiness sensor reports it open.
+A loop with no valve is ready at once.
+Readiness comes only from what Home Assistant shows, never from a command having been sent.
 
-Running the cycle twice with unchanged input does not produce toggle behavior or duplicate commands.
-The controller package is pure and has no Home Assistant imports.
-The runtime adapter owns snapshots, service execution, timed wakeups, feedback reconciliation, Repairs, and entity publication.
-This separation keeps safety decisions reproducible while containing external side effects at one boundary.
+### 6. Minimum flow
 
-## Heating behavior
+A pump that needs an open loop while it runs keeps one, as described in [minimum flow](#minimum-flow).
 
-Hydronicus thermostat heating demand uses its runtime target, configured hysteresis, minimum active duration, and minimum idle duration.
-A required observation that is unknown, unavailable, invalid, or stale blocks the zone and releases demand immediately.
+### 7. Valves
 
-### Thermostat ownership
+Every valve of a wanted loop should be open.
+A valve also stays open while it is the last open path of a pump that may still be running.
 
-The Hydronicus thermostat is the only thermostat kind that Hydronicus publishes.
+### 8. Pumps
 
-It starts at 21.0 °C and off when no valid restored state exists.
+A switched pump should run while one of its wanted loops is ready.
+After heating ends it keeps running for its overrun, 180 seconds by default, with its loops held open.
+Cooling stops a pump without overrun.
+A pump never runs a loop in the wrong mode or through a blocked condensation guard.
 
-Its target, preset, and HVAC mode are runtime state restored through the Home Assistant entity lifecycle.
-The exact Celsius target is stored beside the displayed one, so a display in whole degrees Fahrenheit does not shift the target across restarts.
+### 9. Source
 
-An external thermostat is represented by one existing climate entity and is never controlled by Hydronicus.
+The source's mode select should show the option of the Plant mode.
+The source's request should be on once a loop that a zone calls for is ready in the Plant mode, its switched pump is seen running, the mode select shows the right option, and every source-driven pump has an open path.
+A plant loop that runs with the source never asks for heat by itself.
+The request stays on for at least its minimum on time, 600 seconds by default, while a ready loop remains, and stays off for at least its minimum off time, also 600 seconds, before it is asked again.
+After the request ends, the source's post-run, 180 seconds by default, keeps the loops of its own pumps open.
 
-The runtime adapter normalizes its state before the pure evaluator sees it.
+### 10. Timers
 
-`hvac_action` is authoritative for external demand.
+The evaluation records its timers, such as when each valve became ready and when each pump's overrun started, and works out when it next needs to look again.
 
-Heating and preheating request heating, cooling requests cooling, and idle or off request neither.
+Safe shutdown is the same evaluation with the Plant mode forced to off, so stopping always follows the same sequence as a normal end of demand.
 
-External target and current temperature values are diagnostic only.
+## How outputs are commanded
 
-Hydronicus does not apply its internal hysteresis or duration holds to external demand.
+Hydronicus compares the desired state of every output with what Home Assistant shows and sends a command for each difference.
+It keeps comparing on every evaluation, so a difference that remains is sent again until the output shows what is asked.
 
-Invalid or unavailable external input fails closed and releases demand immediately.
+Within one evaluation the commands go out in dependency order:
 
-The virtual hydraulic sequence is:
+1. The source request off.
+2. Pumps off.
+3. Valves open.
+4. Valves close.
+5. Pumps on.
+6. The source mode.
+7. The source request on.
 
-```text
-Zone demand
-  -> loop requested
-  -> required valves requested
-  -> valve readiness confirmed by feedback or configured delay
-  -> pump requested
-  -> source demand permitted only with a valid pump path
-```
+The waits between the steps are already part of the desired state.
+A pump is asked to run only once its loop is ready, a valve closes only once the pump that needs it is seen off, and the source is asked for heat only once its loop's pump is seen running.
+So heating starts with the valves, then the pumps, then the source, and it stops with the source, then the pumps, then the valves.
 
-The codebase contains a generic Home Assistant executor for switch and valve service calls.
-It is tested with synthetic and intercepted services.
-While Dry run is enabled, the executor records the complete plan as proposed operations and dispatches no service calls.
-The proposed valve and pump states then carry over from one evaluation to the next, because the untouched entities never report them, so a proposed operation appears once, when the plan changes.
+A command that returns without an error is not a confirmation; only the output's state in Home Assistant is.
+Each command may take up to 10 seconds, and until the output shows the result, Hydronicus assumes the command may still act: a pump it asked to start counts as possibly running, and one it asked to stop counts as possibly still running.
+At most one command per output is outstanding at a time.
 
-When Dry run is off, Hydronicus executes heating valves, pumps, and an explicitly configured direct source-demand output.
-Turning it off requires one confirmation of the displayed output set.
-Turning Dry run back on will perform the ordered safe shutdown before suppressing further commands.
+A command whose result is not seen is sent again after a wait that starts at 10 seconds and doubles up to 5 minutes, for as long as the difference remains.
+After three attempts without a result, Hydronicus raises a Repair saying that the output does not respond, and keeps retrying; the Repair clears once the output shows what is asked.
+Meanwhile a pump whose stop is not seen keeps its last path open, and a valve whose opening is not seen keeps its loop from counting as ready.
+An output that is unavailable gets no command until it returns.
 
-## Cooling behavior
+## Minimum flow
 
-Cooling demand uses zone temperature, humidity, the worst-case zone dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
-It blocks unsafe or incomplete paths and explains condensation and shared-equipment conflicts.
+Every pump has a minimum flow setting.
 
-When Dry run is off, Hydronicus opens the valves and starts the pumps of loops that deliver cooling, in the same order as for heating.
-It does not command the source: the chilled water must come from a source that is already in cooling mode.
-Direct source demand is only ever requested while the Plant is heating.
+- `guaranteed` means a hydraulic separator, low-loss header, buffer, or bypass gives the pump a path whatever the loops do.
+- `path` means the pump needs an open loop while it runs.
 
-A pump that served cooling stops as soon as its last cooling loop releases, without overrun, and its valves close right after it.
-Overrun only dissipates residual heat, and circulating chilled water after a condensation block is exactly what the block must prevent.
+A switched pump that needs a path simply never runs without a ready loop, and its last ready loop stays open until the pump is seen off.
 
-## Source behavior
+A pump that the source drives is different, because the source can run it at any time: while its request is on, during its post-run, and whenever Home Assistant shows the pump running.
+Such a pump with `path` names its min-flow loops, and Hydronicus holds them open whenever none of the pump's other loops is ready while the pump may run.
+Before the source is asked for heat, a min-flow loop is opened and becomes ready first.
 
-Hydronicus can rank available sources using stable priority, freshness, temperature qualification, hysteresis, and dwell rules.
-It publishes the recommended source and changeover reasoning.
+In the reference plant, the heat pump's own circulator holds the living area's ceiling loop open while no zone calls.
+If the separator protects that circulator, `min_flow: guaranteed` makes the min-flow loop unnecessary.
 
-Source-selector operations are explicitly kept in Dry run by the runtime.
-The source recommendation remains visible in both modes.
-Direct source-demand output can execute only when Dry run is off and a valid pump path exists.
+In cooling, a min-flow loop may carry chilled water during the source's post-run even when its condensation guard blocks, because the pump may still be running; a `guaranteed` pump avoids that.
 
-## Shared equipment
+## Mode changes
 
-Shared equipment is owned by its complete active-consumer set.
-One zone releasing demand cannot turn off an actuator that another requested loop still needs.
+The **Mode** select chooses off, heat, or cool, and cool is offered only when a loop of the Plant cools.
+There is no automatic mode; an automation can set the select.
 
-### Shared pump with independent valves
+A change between heating and cooling runs in order:
 
-```text
-Zone A -> Loop A -> Valve A -+
-                             +-> Shared pump
-Zone B -> Loop B -> Valve B -+
-```
+1. No new loop starts in the old mode, the source's request is released, and the old mode's pumps finish their overrun or the source's post-run.
+2. The old mode's loops close, and the status reads `changing_over` with the reason `stopping heat before cool`.
+3. The mode dwell runs from the moment the old mode's flow ended, 3600 seconds by default, with the reason `waiting for the mode dwell before cool`.
+4. The new mode starts, and the source's mode select is set to the new mode's option before its request goes on.
 
-The pump remains requested until both ready loop consumer sets are empty.
-This is the manifold that guided setup builds, and the review warns that the shared pump limits independent control.
+Returning to the mode that last ran, or starting the first mode of a new Plant, needs no dwell.
+Switching the Plant to off stops the current mode with the same sequence.
 
-### Shared valve and pump
+## Cooling and the condensation guard
 
-```text
-Zone A -> Loop A -+
-                  +-> Shared valve -> Shared pump
-Zone B -> Loop B -+
-```
+A loop may cool only when it has a condensation reference: its pump's supply temperature sensor, or its own surface temperature sensor.
+A loop without either runs heat only.
+A zone that cools needs a humidity reading, from a humidity sensor or from its areas.
 
-The topology is valid but physically coupled.
-Hydronicus warns that separate zone thermostats cannot independently control loops coupled by the same physical valve.
-A valve used by the loops of two zones is a shared valve, written in the plant file.
+Each loop that cools has a condensation guard, checked on every evaluation:
 
-### One zone with several loops
+- The zone's worst-case dew point is the dew point of its warmest temperature and its highest humidity, because the zone may span rooms whose readings are not paired.
+  For a plant loop, the highest dew point of all zones counts, so every zone then needs a humidity reading.
+- The guard blocks when the coldest reference is below that dew point plus a 2 K margin.
+- It releases only once the coldest reference is at least 1 K above that threshold, and only after it has blocked for at least 5 minutes.
+- A missing or stale reference blocks the guard, and so does a zone without a usable dew point.
 
-```text
-                +-> Floor loop -> Floor valve -> Floor pump
-Zone A ---------+
-                +-> Ceiling loop -> Ceiling valve -> Ceiling pump
-```
+A blocked guard drops the loop, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
+Pumps have no overrun in cooling, so a pump stops as soon as its last cooling loop releases.
 
-Each route is evaluated explicitly.
-The model does not infer water temperature, capacity, balancing, or manufacturer limits.
+## Arming, Control equipment, and Dry run
 
-## What Home Assistant exposes
+Hydronicus commands an output only when two things hold: you have armed that output, and **Control equipment** is on.
 
-The integration publishes Hydronicus climate targets, aggregate temperatures, heating and cooling demand, blocked states and reasons, virtual valve and pump requests, source recommendations, topology summaries, and decision explanations.
+- **Arm outputs** in the Plant settings lists every output with its role, and you confirm each one after checking it against the device it controls.
+  A loop runs only when every output it needs is armed.
+- **Control equipment** is a switch on the Plant device.
+  While it is on, Hydronicus commands the armed outputs.
+- A new Plant starts with no output armed and **Control equipment** off.
 
-Repairs identify configured entity bindings that are missing or unresolved, and the area problems of zones:
+While **Control equipment** is off, the Plant runs in Dry run.
+Every new Plant starts in Dry run.
+In Dry run Hydronicus sends nothing: it records each command it would send as proposed, and treats the proposal as if the output had followed it, so the sequence advances exactly as it would with real equipment.
+The **Status** sensor's `proposed` attribute shows the proposed state of each output, and the loop flowing sensors follow the proposals.
+Arm the outputs first, because a loop whose outputs are not armed is dropped in Dry run too.
 
-- `Zone {zone} covers a missing area` appears when a covered area no longer exists, and opens the zone's edit menu so the area can be removed.
-- `Zone {zone} has no temperature sensor` appears when no area of a zone with a Hydronicus thermostat names a temperature sensor it can follow and the zone has no extra one, so the zone is blocked; it opens the zone's edit menu.
-- `Area {area} names a Hydronicus sensor` is a warning without a form: choose another sensor in the area settings.
-- `Missing area sensor for {zone}` appears when an area names a sensor that does not exist, for example after its entity ID was renamed, and asks you to choose the sensor again in the area settings.
+Turning **Control equipment** on starts commanding at once, from what the outputs really show.
+Turning it off first runs the off-mode sequence on the armed outputs: the source is released, pumps finish their overrun or post-run, and valves close once their pumps are seen off.
+Only then does the Plant go to Dry run, and the switch's `live` attribute stays true until it has.
 
-Each of them clears itself once the problem is gone.
-A missing binding of a zone, its private loops, or its private valves opens that zone's reconfigure flow, and a source with its own entry opens that source.
-A missing pump binding opens the Plant settings.
-A missing binding of a shared loop, a shared valve, a source without its own entry, or the source selector cannot be fixed in a form, and the repair tells you to edit the plant file.
-Downloadable diagnostics provide bounded and redacted runtime information for troubleshooting.
+A new output, such as the valve of a new zone, starts unarmed.
+The loops that need it do not run until you arm it, while the rest of the Plant keeps running, and once any output of the Plant is armed, a Repair lists the ones that are not.
+Removing an output disarms it, and editing a thermostat, a sensor, a name, or a timing never changes what is armed.
+
+## Reloads and restarts
+
+A reload, an unload, and a Home Assistant restart never send a command; the equipment stays as it is while Hydronicus is not running.
+
+Hydronicus stores its timers, the Plant mode, its retry state, and when each output last changed, and restores them before the first evaluation.
+The first evaluation waits until Home Assistant has started and every digital thermostat has restored its target and mode.
+A valve that has been open for an hour therefore still counts as ready after a restart, and with unchanged observations the first evaluation sends no command.
+
+Changing a Plant's configuration reloads it.
+A change in the area settings or the armed outputs does not; the Plant just evaluates again.
+
+## What Home Assistant shows
+
+The Plant publishes a small set of entities: the **Mode** select, the **Control equipment** switch, and the **Status** sensor for the Plant, a thermostat, demand, temperature, and dew point for each zone, a flowing sensor for each loop, and a **Requested** sensor for the source.
+Their attributes carry the reasons behind every decision.
+See [the entities](entities.md) for the full list.
+
+Problems that need you are Repairs: an output that does not respond, an entity that does not exist, outputs awaiting confirmation, and area problems.
+See [troubleshooting](troubleshooting.md#repairs).
 
 ## What Dry run proves
 
-Dry run proves that Hydronicus can interpret the configured graph and produce an explainable software decision without dispatching actuator service calls.
-It does not prove that the graph matches the pipework, that a valve moves, that a pump produces flow, or that physical safety controls are adequate.
-
-Read [configuration and simulation](configuration.md) to create a Plant and [safety limits](safety.md) before using real sensor observations.
+Dry run shows what Hydronicus would command, in what order, and when, against the real states of your entities.
+It does not simulate water, pressure, or temperature, and it cannot prove that a valve opens, that a pump produces flow, or that the source delivers safe water.
+Treat it as a check of the configuration and the sequence, not of the plant.
+Read [safety limits](safety.md) before you turn **Control equipment** on.

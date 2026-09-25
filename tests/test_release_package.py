@@ -74,8 +74,8 @@ def test_public_control_boundary_is_documented_without_legacy_package(
     files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.1.0")
 
     assert "Every new Plant starts in Dry run" in how_it_works
-    assert "records the complete plan as proposed operations" in how_it_works
-    assert "stops as soon as its last cooling loop releases, without overrun" in how_it_works
-    assert "Source-selector operations are explicitly kept in Dry run" in how_it_works
-    assert "When Dry run is off" in how_it_works
+    assert "A new Plant starts with no output armed" in how_it_works
+    assert "records each command it would send as proposed" in how_it_works
+    assert "Cooling stops a pump without overrun" in how_it_works
+    assert "never send a command" in how_it_works
     assert all("hydronic_climate" not in path for path in files)

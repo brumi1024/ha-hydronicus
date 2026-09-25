@@ -8,12 +8,12 @@ zones:
   living_room:
     areas: [living_room]
     loops:
-      living_room_loop:
+      floor:
         valves: [switch.hydronicus_trial_living_room_valve]
         pump: circulation_pump
   bedroom:
     areas: [bedroom]
     loops:
-      bedroom_loop:
+      floor:
         valves: [switch.hydronicus_trial_bedroom_valve]
         pump: circulation_pump
