@@ -176,7 +176,7 @@ Every chosen valve must open before the pump may run.
 
 Select **Configure** on the Plant entry to open **Plant settings**, a menu that names the Plant, with these options:
 
-- **Dry run** turns Dry run on, or leaves it after confirming the exact heating outputs.
+- **Dry run** turns Dry run on, or leaves it after confirming the exact heating and cooling outputs.
 - **Add a pump** adds a pump with its **Pump name**, **Pump entity**, **Pump overrun**, and optional **Feedback** entities.
 - **Edit or remove a pump** changes a pump, and **Remove this pump** removes a pump that no loop uses.
   Removing a pump that a loop still uses is refused with the names of those loops.
