@@ -30,6 +30,7 @@ from custom_components.hydronicus.migration import (
     SUBENTRY_TYPE_ACTUATOR,
     SUBENTRY_TYPE_CIRCUIT,
     SUBENTRY_TYPE_ZONE,
+    async_complete_version_2_removals,
     migration_plan,
     room_migration_plan,
 )
@@ -649,25 +650,34 @@ async def test_cross_wired_version_2_manifold_migrates_without_losing_registrati
     assert registrations <= _registration_ids(hass, entry)
 
 
-@pytest.mark.parametrize(
-    "completed_steps",
-    range(1, len(ROOM_MIGRATION_STEPS)),
-    ids=[f"after_step_{step}" for step in range(2, len(ROOM_MIGRATION_STEPS) + 1)],
-)
+# 0 means only the removal of objects deleted before migration has run.
+_INTERRUPTIONS = range(len(ROOM_MIGRATION_STEPS))
+_INTERRUPTION_IDS = ["after_version_2_removals"] + [
+    f"after_step_{step}" for step in range(2, len(ROOM_MIGRATION_STEPS) + 1)
+]
+
+
+def _run_until_interrupted(hass, entry: MockConfigEntry, completed_steps: int) -> None:
+    """Run the removal step and the first migration steps, as before a restart."""
+    async_complete_version_2_removals(hass, entry)
+    plan = room_migration_plan(entry)
+    for step in ROOM_MIGRATION_STEPS[:completed_steps]:
+        step(hass, entry, plan)
+    assert (entry.version, entry.minor_version) == (2, 0)
+
+
+@pytest.mark.parametrize("completed_steps", _INTERRUPTIONS, ids=_INTERRUPTION_IDS)
 async def test_interrupted_migration_resumes_to_the_same_final_state(
     hass, completed_steps: int
 ) -> None:
-    """A restart after any of steps 2 to 6 resumes to the uninterrupted result."""
+    """A restart after the removal step or any of steps 2 to 6 resumes to the same result."""
     _set_evidence_states(hass)
     entry = _evidence_version_2_entry()
     entry.add_to_hass(hass)
     entity_ids = _install_version_2_registry(hass, entry)
     registrations = _registration_ids(hass, entry)
     removals = _record_removals(hass)
-    plan = room_migration_plan(entry)
-    for step in ROOM_MIGRATION_STEPS[:completed_steps]:
-        step(hass, entry, plan)
-    assert (entry.version, entry.minor_version) == (2, 0)
+    _run_until_interrupted(hass, entry, completed_steps)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -675,6 +685,98 @@ async def test_interrupted_migration_resumes_to_the_same_final_state(
     _assert_migrated_evidence_plant(hass, entry, entity_ids)
     assert removals == []
     assert registrations <= _registration_ids(hass, entry)
+
+
+@pytest.mark.parametrize(
+    "completed_steps", [None, *_INTERRUPTIONS], ids=["uninterrupted", *_INTERRUPTION_IDS]
+)
+async def test_objects_deleted_before_migration_are_not_resurrected(
+    hass, completed_steps: int | None
+) -> None:
+    """Handles deleted while a version 2 entry was unloaded delete their objects."""
+    _set_evidence_states(hass)
+    entry = _evidence_version_2_entry()
+    entry.add_to_hass(hass)
+    entity_ids = _install_version_2_registry(hass, entry)
+    # Deleting a subentry of an unloaded entry clears its registrations, but no
+    # reload runs to remove the objects from the stored graph.
+    assert hass.config_entries.async_remove_subentry(entry, LEGACY_BEDROOM)
+    assert hass.config_entries.async_remove_subentry(entry, LEGACY_BEDROOM_VALVE)
+    assert BEDROOM in {zone["id"] for zone in entry.data["topology"]["zones"]}
+    if completed_steps is not None:
+        _run_until_interrupted(hass, entry, completed_steps)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (entry.version, entry.minor_version) == (3, 0)
+    assert entry.state is ConfigEntryState.LOADED
+    topology = entry.data["topology"]
+    assert [zone["id"] for zone in topology["zones"]] == [LIVING]
+    assert [valve["id"] for valve in topology["valves"]] == [LIVING_VALVE]
+    assert [(circuit["id"], circuit["valve_ids"]) for circuit in topology["circuits"]] == [
+        (LIVING_LOOP, [LIVING_VALVE]),
+        (BEDROOM_LOOP, [LIVING_VALVE]),
+    ]
+    assert [route["id"] for route in topology["routes"]] == [
+        LIVING_TO_LIVING_LOOP,
+        LIVING_TO_BEDROOM_LOOP,
+    ]
+    assert entry.data[CONF_SUBENTRY_OBJECTS] == {
+        LIVING: SUBENTRY_TYPE_ROOM,
+        BOILER: SUBENTRY_TYPE_SOURCE,
+    }
+    assert entry.data[CONF_ROOM_OBJECTS] == {
+        LIVING_LOOP: LIVING,
+        BEDROOM_LOOP: LIVING,
+        LIVING_VALVE: LIVING,
+    }
+    assert entry.data[CONF_DRY_RUN] is True
+    assert "output_authorization" not in entry.data
+    assert sorted(
+        (subentry.subentry_type, subentry.unique_id) for subentry in entry.subentries.values()
+    ) == [(SUBENTRY_TYPE_ROOM, LIVING), (SUBENTRY_TYPE_SOURCE, BOILER)]
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    for object_id in (BEDROOM, BEDROOM_VALVE):
+        for _domain, unique_id, _slug in _version_2_registrations(object_id):
+            assert entities.async_get(entity_ids[unique_id]) is None, unique_id
+        assert (
+            devices.async_get_device_by_identifier(
+                (DOMAIN, f"{PLANT_ID}:{_KINDS[object_id]}:{object_id}"), entry.entry_id
+            )
+            is None
+        )
+    living_room = _room_id(entry, LIVING)
+    for _domain, unique_id, _slug in _version_2_registrations(LIVING_VALVE):
+        registry_entry = entities.async_get(entity_ids[unique_id])
+        assert registry_entry is not None
+        assert registry_entry.config_subentry_id == living_room
+    assert set(entry.runtime_data.plant.zones) == {LIVING}
+
+
+async def test_version_2_removals_that_break_the_graph_fail_migration(hass) -> None:
+    """A reconciled version 2 graph that does not compile fails like other bad graphs."""
+    entry = _evidence_version_2_entry()
+    entry.add_to_hass(hass)
+    data = deepcopy(dict(entry.data))
+    # The Bedroom loop uses only the Bedroom valve, so deleting the valve empties it.
+    data["topology"]["circuits"][1]["valve_ids"] = [BEDROOM_VALVE]
+    hass.config_entries.async_update_entry(entry, data=data)
+    assert hass.config_entries.async_remove_subentry(entry, LEGACY_BEDROOM_VALVE)
+    stored = deepcopy(dict(entry.data))
+
+    assert not await async_migrate_entry(hass, entry)
+
+    assert (entry.version, entry.minor_version) == (2, 0)
+    assert dict(entry.data) == stored
+    assert LEGACY_BEDROOM in entry.subentries
+    assert not [
+        subentry
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_TYPE_ROOM
+        or str(subentry.unique_id).startswith("legacy:")
+    ]
 
 
 async def test_version_3_rejects_legacy_subentry_types(hass) -> None:

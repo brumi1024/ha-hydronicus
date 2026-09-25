@@ -405,6 +405,70 @@ def _legacy_subentries(entry: ConfigEntry) -> list[ConfigSubentry]:
     ]
 
 
+def _migration_started(entry: ConfigEntry) -> bool:
+    """Return whether step 2 or later ran: a room exists or a legacy handle was renamed."""
+    return any(
+        subentry.subentry_type == SUBENTRY_TYPE_ROOM
+        or str(subentry.unique_id).startswith(LEGACY_UNIQUE_ID_PREFIX)
+        for subentry in entry.subentries.values()
+    )
+
+
+def _remove_version_2_object(topology: dict[str, Any], subentry_type: str, object_id: str) -> None:
+    """Remove one object the way version 2 removed it with its deleted handle."""
+    collection = _COLLECTION_BY_SUBENTRY_TYPE[subentry_type]
+    _remove_records(topology, collection, lambda record: str(record.get("id")) == object_id)
+    if subentry_type == SUBENTRY_TYPE_ZONE:
+        _remove_records(topology, CONF_ROUTES, lambda route: str(route.get("zone_id")) == object_id)
+    elif subentry_type == SUBENTRY_TYPE_CIRCUIT:
+        _remove_records(
+            topology, CONF_ROUTES, lambda route: str(route.get("circuit_id")) == object_id
+        )
+    elif subentry_type == SUBENTRY_TYPE_ACTUATOR:
+        for circuit in _records(topology, CONF_CIRCUITS):
+            raw_valve_ids = circuit.get("valve_ids", [])
+            if isinstance(raw_valve_ids, list):
+                circuit["valve_ids"] = [
+                    valve_id for valve_id in raw_valve_ids if str(valve_id) != object_id
+                ]
+
+
+@callback
+def async_complete_version_2_removals(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the objects whose version 2 handles were deleted while the entry was unloaded.
+
+    Deleting a subentry of an unloaded entry clears its registrations, but no reload
+    removes the object from the stored graph, and migration must not bring it back as
+    a room or as Plant equipment. This runs before step 2 and writes version 2 data,
+    so a restart finds nothing left to remove. Once step 2 has run it does nothing,
+    because after step 6 every legacy handle is gone and would look deleted.
+    """
+    if _migration_started(entry):
+        return
+    handles = _version_2_handles(entry.data)
+    present = {
+        (str(subentry.subentry_type), str(subentry.unique_id))
+        for subentry in entry.subentries.values()
+    }
+    deleted = [
+        (object_id, subentry_type)
+        for object_id, subentry_type in handles.items()
+        if (subentry_type, object_id) not in present
+    ]
+    if not deleted:
+        return
+    data = deepcopy(dict(entry.data))
+    topology = topology_copy(data)
+    for object_id, subentry_type in deleted:
+        _remove_version_2_object(topology, subentry_type, object_id)
+        del handles[object_id]
+    data[CONF_TOPOLOGY] = topology
+    data[CONF_SUBENTRY_OBJECTS] = handles
+    data = invalidate_output_authorization(data)
+    compile_topology(plant_configuration_from_entry_data(data))
+    hass.config_entries.async_update_entry(entry, data=data)
+
+
 def _owner_subentry_ids(entry: ConfigEntry, plan: RoomMigrationPlan) -> dict[str, str | None]:
     """Resolve every planned owner to the subentry id that now represents it."""
     resolved: dict[str, str | None] = {}
@@ -545,7 +609,8 @@ def _step_write_version_3(hass: HomeAssistant, entry: ConfigEntry, plan: RoomMig
     )
 
 
-# Steps 2 to 7 of the K3 migration, in order. Step 1 is ``room_migration_plan``.
+# Steps 2 to 7 of the K3 migration, in order. ``async_complete_version_2_removals``
+# runs first, then step 1 is ``room_migration_plan``.
 ROOM_MIGRATION_STEPS: tuple[
     Callable[[HomeAssistant, ConfigEntry, RoomMigrationPlan], None], ...
 ] = (
@@ -561,6 +626,7 @@ ROOM_MIGRATION_STEPS: tuple[
 @callback
 def async_migrate_2_0_to_3_0(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Replace legacy handles with rooms; every step resumes safely after a restart."""
+    async_complete_version_2_removals(hass, entry)
     plan = room_migration_plan(entry)
     for step in ROOM_MIGRATION_STEPS:
         step(hass, entry, plan)
