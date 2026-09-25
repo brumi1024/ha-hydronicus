@@ -91,8 +91,12 @@ describe("C10 double loading", () => {
     for (const tag of CARD_TAGS) {
       const entries = (window.customCards ?? []).filter((card) => card.type === tag);
       expect(entries, tag).toHaveLength(1);
-      expect(entries[0]).toMatchObject({ preview: true, version: "0.0.0-test" });
+      expect(entries[0]).toMatchObject({ version: "0.0.0-test" });
     }
+    // The card picker sizes a row to its tallest preview, so only the Room card previews.
+    const preview = (tag: string) => window.customCards?.find((card) => card.type === tag)?.preview;
+    expect(preview("hydronicus-plant-card")).toBe(false);
+    expect(preview("hydronicus-room-card")).toBe(true);
     expect(window.customCards?.find((card) => card.type === "hydronicus-room-card")?.name).toBe("Hydronicus Room");
   });
 });

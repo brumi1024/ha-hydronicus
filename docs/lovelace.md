@@ -30,6 +30,7 @@ The integration still serves that URL without long-lived caching, and the card i
 ## Add one card
 
 Open a dashboard in edit mode, add a card, and pick **Hydronicus Plant** from the card picker.
+The picker shows the Plant card's description rather than a preview, because a whole Plant is taller than the picker's rows.
 The picker prefills the first Plant you can read.
 The visual editor lists the Plants you can read by name and stores the Plant UUID and an optional density preference.
 The equivalent YAML is:

@@ -42,16 +42,22 @@ void bootRegistry.whenDefined("home-assistant").then(() => {
   register(window.customElements);
 });
 
+// The card picker lays its previews out in rows as tall as the tallest
+// preview and centres the others, so a whole Plant would stretch its row
+// and push a Room preview beside it out of view. The Plant card is listed
+// by its description; the Room card is small enough to preview.
 const CARDS: ReadonlyArray<Record<string, unknown>> = [
   {
     type: CARD_TAG,
     name: "Hydronicus Plant",
     description: "Topology-driven Hydronicus Plant status and controls.",
+    preview: false,
   },
   {
     type: ROOM_CARD_TAG,
     name: "Hydronicus Room",
     description: "One Room of a Hydronicus Plant, with its thermostat and controls.",
+    preview: true,
   },
 ];
 
@@ -61,7 +67,6 @@ for (const card of CARDS) {
   window.customCards.push({
     ...card,
     version: HYDRONICUS_FRONTEND_VERSION,
-    preview: true,
     documentationURL: "https://github.com/brumi1024/ha-hydronicus/blob/main/docs/lovelace.md",
   });
 }
