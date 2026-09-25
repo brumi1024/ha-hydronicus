@@ -601,6 +601,64 @@ def _cooling_snapshot(
     )
 
 
+def _multi_space_cooling_plant(
+    *,
+    temperature_sensors: tuple[TemperatureSensorMetadata, ...],
+    humidity_sensors: tuple[TemperatureSensorMetadata, ...],
+    aggregation: TemperatureAggregation = TemperatureAggregation.MEAN,
+) -> object:
+    """Build one cooling zone that spans several physical spaces."""
+    return compile_topology(
+        PlantConfiguration(
+            id="multi-space-cooling-plant",
+            zones=(
+                Zone(
+                    "suite",
+                    "Suite",
+                    24.0,
+                    temperature_sensor_metadata=temperature_sensors,
+                    humidity_sensor_metadata=humidity_sensors,
+                    aggregation=aggregation,
+                    cooling_start_delta=0.5,
+                    cooling_stop_delta=0.2,
+                ),
+            ),
+            valves=(Valve("valve", "Cooling valve", "switch.cooling_valve", 0),),
+            pumps=(Pump("pump", "Cooling pump", "switch.cooling_pump", 0),),
+            circuits=(
+                Circuit(
+                    "cooling",
+                    "Cooling",
+                    ("valve",),
+                    "pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="temperature.supply",
+                    condensation_margin=2.0,
+                ),
+            ),
+            routes=(DeliveryRoute("route", "suite", "cooling"),),
+        )
+    )
+
+
+def _multi_space_snapshot(
+    temperatures: dict[str, float],
+    humidities: dict[str, float],
+    *,
+    supply: float,
+) -> PlantSnapshot:
+    """Observe every space of the multi-space zone at the evaluation time."""
+    return PlantSnapshot(
+        temperatures={
+            entity_id: NumericObservation(value, NOW) for entity_id, value in temperatures.items()
+        },
+        humidities={
+            entity_id: NumericObservation(value, NOW) for entity_id, value in humidities.items()
+        },
+        supply_temperatures={"temperature.supply": NumericObservation(supply, NOW)},
+    )
+
+
 def _mixed_mode_plant(*, shared_valve: bool, shared_pump: bool, source: bool = False):
     """Build heating and cooling routes with selected shared equipment."""
     return compile_topology(
@@ -737,6 +795,8 @@ def test_dew_point_and_condensation_margin_are_deterministic() -> None:
     assert dew_point == pytest.approx(13.8516, abs=0.001)
     assert condensation_margin(18.0, dew_point) == pytest.approx(4.1484, abs=0.001)
     assert dew_point_celsius(25.0, 0.0) is None
+    # A positive subnormal humidity underflows to zero before the logarithm.
+    assert dew_point_celsius(25.0, 5e-324) is None
 
 
 @pytest.mark.parametrize("temperature", [-243.12, -243.13, -300.0, -1e308])
@@ -876,6 +936,165 @@ def test_invalid_humidity_and_surface_reference_are_fail_closed() -> None:
     assert "outside" in invalid.diagnostics.cooling_zone_reasons["living"]
     assert "surface" in stale_surface.diagnostics.cooling_zone_reasons["living"]
     assert stale_surface.next_runtime.cooling_zone_demands["living"] is False
+
+
+def test_humid_space_blocks_cooling_that_the_mean_humidity_would_permit() -> None:
+    """A humid bathroom sets the dew point of a zone it shares with a dry bedroom."""
+    plant = _multi_space_cooling_plant(
+        temperature_sensors=_metadata("temperature.bathroom", "temperature.bedroom"),
+        humidity_sensors=_metadata("humidity.bathroom", "humidity.bedroom"),
+    )
+    supply = 20.5
+    # The 65 % mean would leave the supply outside the 2.0 °C condensation margin.
+    mean_margin = condensation_margin(supply, dew_point_celsius(25.0, 65.0))
+    assert mean_margin is not None and mean_margin > 2.0
+
+    result = evaluate(
+        plant,
+        _multi_space_snapshot(
+            {"temperature.bathroom": 25.0, "temperature.bedroom": 25.0},
+            {"humidity.bathroom": 80.0, "humidity.bedroom": 50.0},
+            supply=supply,
+        ),
+        RuntimeState(),
+        NOW,
+    )
+    decision = result.diagnostics.cooling_zone_decisions["suite"]
+
+    assert decision.humidity_aggregation is not None
+    assert decision.humidity_aggregation.value == 80.0
+    assert decision.dew_point_temperature == 25.0
+    assert decision.dew_point == pytest.approx(dew_point_celsius(25.0, 80.0))
+    assert decision.condensation_margin is not None and decision.condensation_margin < 0
+    assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert result.next_runtime.cooling_zone_demands["suite"] is False
+    assert result.control_plan.cooling_valve_consumers == {}
+    assert result.control_plan.cooling_pump_consumers == {}
+    assert "worst-case dew point" in result.diagnostics.cooling_zone_reasons["suite"]
+
+
+@pytest.mark.parametrize(
+    "aggregation",
+    [
+        TemperatureAggregation.MEAN,
+        TemperatureAggregation.MEDIAN,
+        TemperatureAggregation.MINIMUM,
+        TemperatureAggregation.DESIGNATED_REFERENCE,
+    ],
+)
+def test_warmest_space_sets_the_dew_point_under_every_zone_policy(
+    aggregation: TemperatureAggregation,
+) -> None:
+    """A policy that reads below the warmest space keeps serving demand, not the dew point."""
+    plant = _multi_space_cooling_plant(
+        temperature_sensors=(
+            TemperatureSensorMetadata(
+                "temperature.bedroom",
+                designated_reference=aggregation is TemperatureAggregation.DESIGNATED_REFERENCE,
+            ),
+            TemperatureSensorMetadata("temperature.hall"),
+            TemperatureSensorMetadata("temperature.sunroom"),
+        ),
+        humidity_sensors=_metadata("humidity.suite"),
+        aggregation=aggregation,
+    )
+    supply = 20.0
+    result = evaluate(
+        plant,
+        _multi_space_snapshot(
+            {
+                "temperature.bedroom": 24.0,
+                "temperature.hall": 25.0,
+                "temperature.sunroom": 28.0,
+            },
+            {"humidity.suite": 60.0},
+            supply=supply,
+        ),
+        RuntimeState(),
+        NOW,
+    )
+    decision = result.diagnostics.cooling_zone_decisions["suite"]
+
+    assert decision.aggregation is not None and decision.aggregation.value is not None
+    assert decision.aggregation.value < 28.0
+    policy_margin = condensation_margin(supply, dew_point_celsius(decision.aggregation.value, 60.0))
+    assert policy_margin is not None and policy_margin > 2.0
+    assert decision.dew_point_temperature == 28.0
+    assert decision.dew_point == pytest.approx(dew_point_celsius(28.0, 60.0))
+    assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert result.next_runtime.cooling_zone_demands["suite"] is False
+    assert any(interlock.status is InterlockStatus.BLOCKED for interlock in decision.interlocks)
+
+
+def test_worst_case_dew_point_follows_observation_health_rules() -> None:
+    """Only usable readings set the worst case, and a required unusable one blocks."""
+    stale = NOW - timedelta(seconds=1801)
+
+    def _evaluate(*, bathroom_required: bool):
+        plant = _multi_space_cooling_plant(
+            temperature_sensors=_metadata("temperature.bedroom"),
+            humidity_sensors=(
+                TemperatureSensorMetadata("humidity.bathroom", required=bathroom_required),
+                TemperatureSensorMetadata("humidity.bedroom"),
+            ),
+        )
+        snapshot = PlantSnapshot(
+            temperatures={"temperature.bedroom": NumericObservation(25.0, NOW)},
+            humidities={
+                "humidity.bathroom": NumericObservation(95.0, stale),
+                "humidity.bedroom": NumericObservation(50.0, NOW),
+            },
+            supply_temperatures={"temperature.supply": NumericObservation(18.0, NOW)},
+        )
+        return evaluate(plant, snapshot, RuntimeState(), NOW)
+
+    optional = _evaluate(bathroom_required=False)
+    optional_decision = optional.diagnostics.cooling_zone_decisions["suite"]
+    required = _evaluate(bathroom_required=True)
+    required_decision = required.diagnostics.cooling_zone_decisions["suite"]
+
+    # A stale optional reading is excluded rather than treated as the worst case.
+    assert optional_decision.humidity_aggregation is not None
+    assert optional_decision.humidity_aggregation.excluded_optional_sensor_ids == (
+        "humidity.bathroom",
+    )
+    assert optional_decision.dew_point == pytest.approx(dew_point_celsius(25.0, 50.0))
+    assert optional.next_runtime.cooling_zone_demands["suite"] is True
+    assert "humidity.bathroom (stale)" in optional.diagnostics.cooling_zone_reasons["suite"]
+    # A stale required reading blocks even though the remaining space looks safe.
+    assert required_decision.dew_point is None
+    assert required_decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert required.next_runtime.cooling_zone_demands["suite"] is False
+    assert "humidity.bathroom (stale)" in required.diagnostics.cooling_zone_reasons["suite"]
+
+
+def test_unusable_designated_reference_explains_the_cooling_block() -> None:
+    """A blocked zone temperature is the reported reason, not the healthy humidity."""
+    plant = _multi_space_cooling_plant(
+        temperature_sensors=(
+            TemperatureSensorMetadata(
+                "temperature.reference", required=False, designated_reference=True
+            ),
+            TemperatureSensorMetadata("temperature.backup"),
+        ),
+        humidity_sensors=_metadata("humidity.suite"),
+        aggregation=TemperatureAggregation.DESIGNATED_REFERENCE,
+    )
+    result = evaluate(
+        plant,
+        _multi_space_snapshot(
+            {"temperature.backup": 25.0},
+            {"humidity.suite": 50.0},
+            supply=18.0,
+        ),
+        RuntimeState(),
+        NOW,
+    )
+    decision = result.diagnostics.cooling_zone_decisions["suite"]
+
+    assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert result.next_runtime.cooling_zone_demands["suite"] is False
+    assert "designated reference" in result.diagnostics.cooling_zone_reasons["suite"]
 
 
 def test_cooling_virtual_pump_sequence_is_reported_without_execution() -> None:

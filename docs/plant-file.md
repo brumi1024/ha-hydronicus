@@ -167,7 +167,7 @@ A zone is the space one thermostat controls, with its thermostat, its areas, its
 | `thermostat` | The zone's thermostat. Defaults to a Hydronicus thermostat with default settings. |
 | `areas` | A list of Home Assistant areas the zone covers, each an area ID or an area mapping. See [Areas](#areas). |
 | `temperature_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas. A Hydronicus thermostat needs a temperature sensor or an area. |
-| `humidity_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas, used for the dew point when cooling. |
+| `humidity_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas; cooling uses the highest usable reading for the dew point. |
 | `temperature_aggregation` | `mean`, `median`, `minimum`, `maximum`, `designated_reference`, or `weighted_mean`. Defaults to `mean`. |
 | `valves` | Slug to private valve of the zone. |
 | `loops` | Slug to private loop of the zone. |
@@ -198,7 +198,7 @@ A sensor is either an entity ID or a mapping of the stored sensor fields:
 | `entity_id` | Required. |
 | `required` | A required sensor that is stale or unavailable blocks the zone. Defaults to `true`. |
 | `designated_reference` | Used alone by `designated_reference` aggregation. Exactly one sensor or area must set it for that policy. |
-| `weight` | Relative weight in `weighted_mean` aggregation. |
+| `weight` | Relative weight in `weighted_mean` temperature aggregation, ignored for humidity sensors. |
 | `calibration_offset` | Added to every reading before aggregation. |
 | `max_age_seconds` | A reading older than this is stale. |
 

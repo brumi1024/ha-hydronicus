@@ -469,7 +469,7 @@ class ZoneCoolingBlockedReasonSensor(_HydronicSensor):
 
 
 class ZoneDewPointSensor(_HydronicSensor):
-    """Expose the calculated zone dew point used by cooling safety."""
+    """Expose the worst-case zone dew point used by cooling safety."""
 
     _attr_translation_key = "zone_cooling_dew_point"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
@@ -768,6 +768,13 @@ def _cooling_diagnostic_attributes(runtime: HydronicRuntime, zone_id: str) -> di
         "cooling_demand": decision.demand,
         "cooling_decision_status": getattr(decision.status, "value", decision.status),
         "dew_point": decision.dew_point,
+        # The highest usable readings that the worst-case dew point combines.
+        "dew_point_temperature": decision.dew_point_temperature,
+        "dew_point_humidity": (
+            decision.humidity_aggregation.value
+            if decision.humidity_aggregation is not None
+            else None
+        ),
         "condensation_margin": decision.condensation_margin,
         "humidity_usable_sensor_ids": (
             list(decision.humidity_aggregation.usable_sensor_ids)

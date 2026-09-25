@@ -218,6 +218,7 @@ Missing, unavailable, unknown, malformed, contradictory, or unsupported actions 
 The external target and current temperature attributes do not reconstruct demand.
 
 For cooling, verify that the zone humidity observations and loop supply or surface safety observations are configured, fresh, and valid.
+If cooling blocks while the zone looks dry, compare the `dew_point_temperature` and `dew_point_humidity` attributes of the zone **Cooling dew point** sensor with each zone sensor, including the sensors of its areas, because the warmest and the most humid sensors set the dew point.
 
 Hydronicus never calls the external climate entity.
 

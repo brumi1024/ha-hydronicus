@@ -43,7 +43,12 @@ async def _set_zone_mode(hass, entry, zone_id: str, mode: ThermostatHvacMode) ->
     await hass.async_block_till_done()
 
 
-def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
+def _cooling_entry(
+    *,
+    dry_run: bool = True,
+    temperature_sensors: tuple[str, ...] = ("sensor.living_temperature",),
+    humidity_sensors: tuple[str, ...] = ("sensor.living_humidity",),
+) -> MockConfigEntry:
     """Return one persisted, cooling-enabled synthetic plant."""
     data = {
         CONF_NAME: "Hydronic plant",
@@ -60,8 +65,12 @@ def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
                         "cooling_start_delta": 0.5,
                         "cooling_stop_delta": 0.2,
                     },
-                    "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
-                    "humidity_sensor_metadata": [{"entity_id": "sensor.living_humidity"}],
+                    "temperature_sensor_metadata": [
+                        {"entity_id": entity_id} for entity_id in temperature_sensors
+                    ],
+                    "humidity_sensor_metadata": [
+                        {"entity_id": entity_id} for entity_id in humidity_sensors
+                    ],
                 }
             ],
             "valves": [
@@ -248,6 +257,42 @@ async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
+
+
+async def test_humid_space_of_a_room_blocks_cooling_and_reports_its_dew_point(hass) -> None:
+    """A room spanning a bathroom and a bedroom is protected at its worst-case dew point."""
+    hass.states.async_set("sensor.bathroom_temperature", "25.0")
+    hass.states.async_set("sensor.bedroom_temperature", "26.0")
+    hass.states.async_set("sensor.bathroom_humidity", "80.0")
+    hass.states.async_set("sensor.bedroom_humidity", "50.0")
+    # 21 °C supply water clears the 2 °C margin against the 25.5 °C and 65 % averages.
+    hass.states.async_set("sensor.cooling_supply", "21.0")
+    entry = _cooling_entry(
+        temperature_sensors=("sensor.bathroom_temperature", "sensor.bedroom_temperature"),
+        humidity_sensors=("sensor.bathroom_humidity", "sensor.bedroom_humidity"),
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
+
+    dew_point = hass.states.get("sensor.living_cooling_dew_point")
+    assert float(dew_point.state) == pytest.approx(22.28, abs=0.01)
+    assert dew_point.attributes["dew_point_temperature"] == 26.0
+    assert dew_point.attributes["dew_point_humidity"] == 80.0
+    assert hass.states.get("climate.living").attributes["current_humidity"] == 80.0
+    assert hass.states.get("binary_sensor.living_cooling_demand").state == "off"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
+    assert "worst-case dew point" in hass.states.get("sensor.living_cooling_blocked_reason").state
+
+    hass.states.async_set("sensor.bathroom_humidity", "50.0")
+    await hass.async_block_till_done()
+
+    assert float(hass.states.get("sensor.living_cooling_dew_point").state) == pytest.approx(
+        14.77, abs=0.01
+    )
+    assert hass.states.get("binary_sensor.living_cooling_demand").state == "on"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "off"
 
 
 async def test_presentation_offers_the_climate_entity_cooling_modes(hass) -> None:
