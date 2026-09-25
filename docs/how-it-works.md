@@ -135,6 +135,7 @@ Zone demand
 The codebase contains a generic Home Assistant executor for switch and valve service calls.
 It is tested with synthetic and intercepted services.
 While Dry run is enabled, the executor records the complete plan as proposed operations and dispatches no service calls.
+The proposed valve and pump states then carry over from one evaluation to the next, because the untouched entities never report them, so a proposed operation appears once, when the plan changes.
 
 When Dry run is off, Hydronicus executes heating valves, pumps, and an explicitly configured direct source-demand output.
 Turning it off requires one confirmation of the displayed output set.
