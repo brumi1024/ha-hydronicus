@@ -3,16 +3,21 @@
 Output faults, missing bindings, unconfirmed outputs, and zone area problems
 are Repairs, not entities (contract K7). The runtime computes the current set
 after every evaluation and ``async_sync_issues`` creates the new ones and
-deletes the resolved ones. None of them has a fix flow yet; the guided flows
-that fix them arrive with the Plant settings and zone flows.
+deletes the resolved ones.
+
+The kinds in ``FIXABLE`` have a fix flow in ``repairs``, which their issue data
+leads to: the Plant's entry, and for a zone's problem its subentry. The others
+are fixed outside Hydronicus, at the device or in the area settings.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -20,6 +25,7 @@ from homeassistant.helpers import issue_registry as ir
 from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
 from .core.model import OutputRole, Plant
+from .core.plant_file import describe_path, export_plant
 
 
 class IssueKind(StrEnum):
@@ -34,6 +40,22 @@ class IssueKind(StrEnum):
     ZONE_WITHOUT_TEMPERATURE_SOURCE = "zone_without_temperature_source"
     ZONE_AREA_SELF_FEED = "zone_area_self_feed"
 
+
+# Kinds with a fix flow; hassfest wants their translations to carry the fix flow
+# instead of a description.
+FIXABLE = frozenset(
+    {
+        IssueKind.INVALID_PLANT,
+        IssueKind.OUTPUTS_AWAITING_CONFIRMATION,
+        IssueKind.MISSING_BINDING,
+        IssueKind.ZONE_AREA_MISSING,
+        IssueKind.ZONE_WITHOUT_TEMPERATURE_SOURCE,
+    }
+)
+# The issue data a fix flow reads.
+DATA_KIND = "kind"
+DATA_ENTRY_ID = "entry_id"
+DATA_ZONE = "zone"
 
 _WARNINGS = frozenset(
     {
@@ -56,6 +78,8 @@ class Issue:
     kind: IssueKind
     key: str
     placeholders: Mapping[str, str] = field(default_factory=dict)
+    # The zone whose reconfigure flow fixes it, if any.
+    zone: str | None = None
 
     def issue_id(self, entry_id: str) -> str:
         digest = hashlib.sha256(f"{self.kind}|{self.key}".encode()).hexdigest()[:16]
@@ -76,11 +100,18 @@ def async_sync_issues(hass: HomeAssistant, entry_id: str, issues: Iterable[Issue
         if domain == DOMAIN and issue_id.startswith(prefix) and issue_id not in current:
             ir.async_delete_issue(hass, DOMAIN, issue_id)
     for issue_id, issue in current.items():
+        data: dict[str, str | int | float | None] = {
+            DATA_KIND: issue.kind.value,
+            DATA_ENTRY_ID: entry_id,
+        }
+        if issue.zone is not None:
+            data[DATA_ZONE] = issue.zone
         ir.async_create_issue(
             hass,
             DOMAIN,
             issue_id,
-            is_fixable=False,
+            data=data,
+            is_fixable=issue.kind in FIXABLE,
             is_persistent=False,
             severity=ir.IssueSeverity.WARNING
             if issue.kind in _WARNINGS
@@ -118,10 +149,17 @@ def outputs_awaiting_confirmation(plant: Plant, entity_ids: Iterable[str]) -> Is
 
 
 def missing_binding(plant: Plant, entity_id: str, path: str) -> Issue:
+    """A bound entity that does not exist; a zone's binding is fixed in that zone."""
+    keys = path.split(".")
     return Issue(
         IssueKind.MISSING_BINDING,
         entity_id,
-        {"plant": plant.name, "entity_id": entity_id, "path": path},
+        {
+            "plant": plant.name,
+            "entity_id": entity_id,
+            "path": describe_path(_document(plant), path),
+        },
+        zone=keys[1] if keys[0] == "zones" and len(keys) > 1 else None,
     )
 
 
@@ -131,6 +169,12 @@ def missing_area_sensor(plant: Plant, area: str, entity_id: str) -> Issue:
         f"{area}|{entity_id}",
         {"plant": plant.name, "area": area, "entity_id": entity_id},
     )
+
+
+@functools.lru_cache(maxsize=8)
+def _document(plant: Plant) -> dict[str, Any]:
+    """The plant file of a Plant, which names the objects a path passes through."""
+    return export_plant(plant)
 
 
 def zone_area_issue(plant: Plant, problem: ZoneAreaProblem, areas: AreaResolution) -> Issue:
@@ -151,4 +195,5 @@ def zone_area_issue(plant: Plant, problem: ZoneAreaProblem, areas: AreaResolutio
             else "",
             "entity_ids": ", ".join(problem.entity_ids),
         },
+        zone=problem.zone,
     )

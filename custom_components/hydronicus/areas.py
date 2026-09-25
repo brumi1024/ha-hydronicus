@@ -143,12 +143,6 @@ def resolve_area_sensors(hass: HomeAssistant, area_ids: Iterable[str]) -> AreaRe
     )
 
 
-def names_temperature_sensor(hass: HomeAssistant, area_ids: Iterable[str]) -> bool:
-    """Return whether any of the areas names a temperature sensor a zone can follow."""
-    resolution = resolve_area_sensors(hass, area_ids)
-    return any(sensors.temperature for sensors in resolution.area_sensors.values())
-
-
 def area_names(hass: HomeAssistant) -> list[tuple[str, str]]:
     """Return the ID and name of every Home Assistant area, by name."""
     areas = sorted(ar.async_get(hass).async_list_areas(), key=lambda area: area.name.casefold())
@@ -291,26 +285,20 @@ def zone_area_problems(plant: Plant, resolution: AreaResolution) -> tuple[ZoneAr
 
 @dataclass(frozen=True, slots=True)
 class AreaReviewWarning:
-    """One area warning a review lists, and whether saving needs a confirmation."""
+    """One area warning a review lists; a warning never blocks saving."""
 
     code: str
     area_id: str
     zones: tuple[str, ...]
     message: str
-    needs_confirmation: bool
-
-    @property
-    def key(self) -> tuple[str, str, tuple[str, ...]]:
-        """Identify the warning across two versions of a Plant."""
-        return (self.code, self.area_id, self.zones)
 
 
 def area_review_warnings(hass: HomeAssistant, plant: Plant) -> tuple[AreaReviewWarning, ...]:
     """Return the area warnings of a Plant, for a review before saving it.
 
-    An area that does not exist, and an area without a humidity sensor in a zone
-    that cools, need a confirmation. An area without a temperature sensor, and
-    an area that several zones cover, do not.
+    They name an area that does not exist, an area without a temperature
+    sensor, an area without a humidity sensor in a zone that cools, and an area
+    that several zones cover.
     """
     resolution = resolve_area_sensors(hass, covered_area_ids(plant))
     missing = set(resolution.missing_area_ids)
@@ -331,7 +319,6 @@ def area_review_warnings(hass: HomeAssistant, plant: Plant) -> tuple[AreaReviewW
                         "Home Assistant, so it adds no reading until the area exists. Home "
                         "Assistant makes a new area's ID from its name, so an area named "
                         f"{resolution.recreate_name(area_id)} gets this ID.",
-                        needs_confirmation=True,
                     )
                 )
                 continue
@@ -343,7 +330,6 @@ def area_review_warnings(hass: HomeAssistant, plant: Plant) -> tuple[AreaReviewW
                         (zone.slug,),
                         f"Area {name} of zone {zone.title} has no temperature sensor in its "
                         "area settings, so it adds no temperature reading.",
-                        needs_confirmation=False,
                     )
                 )
             if zone.cools and sensors.humidity is None:
@@ -355,7 +341,6 @@ def area_review_warnings(hass: HomeAssistant, plant: Plant) -> tuple[AreaReviewW
                         f"Area {name} of zone {zone.title} has no humidity sensor in its area "
                         "settings, although a loop of the zone cools, so cooling cannot "
                         "watch that area for condensation.",
-                        needs_confirmation=True,
                     )
                 )
     for area_id, zones in covering.items():
@@ -368,17 +353,6 @@ def area_review_warnings(hass: HomeAssistant, plant: Plant) -> tuple[AreaReviewW
                     tuple(sorted(zones)),
                     f"Area {resolution.name(area_id)} is covered by zones {listed(names)}, "
                     "so its sensors count in each of them.",
-                    needs_confirmation=False,
                 )
             )
     return tuple(warnings)
-
-
-def area_warnings_to_confirm(
-    warnings: Iterable[AreaReviewWarning], before: Iterable[AreaReviewWarning] = ()
-) -> tuple[AreaReviewWarning, ...]:
-    """Return the warnings that need a confirmation and that the Plant did not have before."""
-    known = {warning.key for warning in before}
-    return tuple(
-        warning for warning in warnings if warning.needs_confirmation and warning.key not in known
-    )

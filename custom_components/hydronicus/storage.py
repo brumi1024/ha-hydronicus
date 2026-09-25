@@ -14,9 +14,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from types import MappingProxyType
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry, ConfigSubentryData
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigSubentry,
+    ConfigSubentryData,
+)
+from homeassistant.core import HomeAssistant, callback
 
 from .const import OPTION_ARMED_OUTPUTS, OPTION_CONTROL, SUBENTRY_TYPE_ZONE
 from .core.model import LoopRef, Plant
@@ -47,6 +54,18 @@ def zone_subentry_ids(entry: ConfigEntry) -> dict[str, str]:
     }
 
 
+def stored_document(entry: ConfigEntry) -> dict[str, Any]:
+    """Return the plant file a config entry stores, valid or not, as plain data to edit."""
+    document = deepcopy(dict(entry.data))
+    zones = {
+        slug: {key: deepcopy(value) for key, value in data.items() if key != _SLUG}
+        for slug, data in zone_data(entry).items()
+    }
+    if zones:
+        document["zones"] = zones
+    return document
+
+
 def plant_from_entry(entry: ConfigEntry) -> Plant:
     """Return the validated Plant a config entry stores; raise ``PlantFileError`` otherwise."""
     return from_storage(entry.data, zone_data(entry))
@@ -65,6 +84,51 @@ def new_entry(plant: Plant) -> tuple[dict[str, Any], list[ConfigSubentryData]]:
         for slug, zone in zones.items()
     ]
     return data, subentries
+
+
+@callback
+def async_store_plant(hass: HomeAssistant, entry: ConfigEntry, plant: Plant) -> None:
+    """Store a Plant over an entry: its zone subentries by slug, and its data.
+
+    New and changed zones are stored first, then the data, then removed zones
+    go, so every state in between keeps the references it holds and the update
+    listener never prunes one. The listener reloads a loaded Plant once.
+    """
+    data, zones = to_storage(plant)
+    subentries = {
+        subentry.unique_id: subentry
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_TYPE_ZONE
+    }
+    for slug, zone in zones.items():
+        title = plant.zone(slug).title
+        if (subentry := subentries.get(slug)) is None:
+            hass.config_entries.async_add_subentry(
+                entry,
+                ConfigSubentry(
+                    data=MappingProxyType(zone),
+                    subentry_type=SUBENTRY_TYPE_ZONE,
+                    title=title,
+                    unique_id=slug,
+                ),
+            )
+        else:
+            hass.config_entries.async_update_subentry(entry, subentry, data=zone, title=title)
+    hass.config_entries.async_update_entry(entry, data=data, title=plant.name)
+    for slug, subentry in subentries.items():
+        if slug not in zones:
+            hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+    async_reload_if_failed(hass, entry)
+
+
+@callback
+def async_reload_if_failed(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Set up again a Plant that failed to set up, after its configuration changed.
+
+    A loaded Plant reloads from its update listener; one that failed has none.
+    """
+    if entry.state in (ConfigEntryState.SETUP_ERROR, ConfigEntryState.SETUP_RETRY):
+        hass.config_entries.async_schedule_reload(entry.entry_id)
 
 
 def new_options() -> dict[str, Any]:

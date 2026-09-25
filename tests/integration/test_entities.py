@@ -156,7 +156,7 @@ async def test_a_missing_output_blocks_its_loop_and_raises_a_repair(
     assert issue.translation_placeholders == {
         "plant": "Flat",
         "entity_id": "switch.study_valve",
-        "path": "zones.study.loops.ceiling.valves.0",
+        "path": "Zone Study, loop Ceiling, valve 1",
     }
     status = hass.states.get("sensor.flat_status")
     assert status.state == "degraded"

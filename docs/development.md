@@ -67,7 +67,10 @@ Until the runtime, flows, and platforms move to the new model, they run on the v
 `custom_components/hydronicus/zone_area.py` puts a newly created zone climate entity in the one area its zone covers, after the entities have registered, and never assigns the zone device an area.
 `custom_components/hydronicus/areas.py` owns every area registry read: it resolves the sensors that covered areas name, drops sensors Hydronicus provides, and reports missing areas for the runtime, the reviews, diagnostics, and repairs.
 `custom_components/hydronicus/core/legacy/configuration.py` merges those resolved sensors after a zone's explicit sensors, while structural rules count an area as a sensor, so an area change never makes a stored graph invalid.
-`custom_components/hydronicus/config_flow.py` composes the flow step modules in `custom_components/hydronicus/flows/`.
+`custom_components/hydronicus/config_flow.py` exposes the flows in `custom_components/hydronicus/flows/`: guided setup, import, and entry reconfigure in `plant.py`, the zone subentry flow in `zone.py`, and Plant settings in `settings.py`.
+Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a plant file problem onto the form field its path belongs to, or onto the form's base with the path in words from `describe_path`.
+`storage.async_store_plant` stores a Plant over an entry, creating, updating, and removing zone subentries by slug in an order that never lets the update listener prune a reference, and the listener reloads a loaded Plant once however many parts change.
+`custom_components/hydronicus/repairs.py` holds the fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`.
 `custom_components/hydronicus/core/legacy/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
 `custom_components/hydronicus/core/legacy/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.
 Its public evaluation result, diagnostics, deadlines, and command order are the contract; private phase helper structure is not.

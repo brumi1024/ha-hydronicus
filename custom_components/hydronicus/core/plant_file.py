@@ -57,6 +57,7 @@ from .model import (
     Valve,
     Zone,
     ZoneArea,
+    title_from_slug,
 )
 
 PLANT_FILE_FORMAT: Final = 2
@@ -771,6 +772,104 @@ def _bind_loop(loop: Loop, bind: Callable[[str | None, str], None]) -> None:
         bind(valve.entity, f"{path}.valves.{index}")
         bind(valve.readiness, f"{path}.valves.{index}.readiness")
     bind(loop.surface_temperature, f"{path}.surface_temperature")
+
+
+# Paths in words
+
+_TOP_WORDS: Final = {
+    "": "The plant file",
+    "hydronicus": "Plant file format",
+    "id": "Plant ID",
+    "name": "Plant name",
+    "mode_dwell": "Mode dwell",
+    "source": "Source",
+    "pumps": "Pumps",
+    "loops": "Plant loops",
+    "zones": "Zones",
+}
+_KEY_WORDS: Final = {
+    "request": "request switch",
+    "mode": "mode select",
+    "heat": "heat option",
+    "cool": "cool option",
+    "post_run": "post-run",
+    "min_on": "minimum on time",
+    "min_off": "minimum off time",
+    "driven_by": "driven by",
+    "min_flow": "minimum flow",
+    "min_flow_loops": "min-flow loops",
+    "supply_temperature": "supply temperature sensor",
+    "surface_temperature": "surface temperature sensor",
+    "opening_time": "opening time",
+    "readiness": "readiness sensor",
+    "runs": "runs with",
+    "with_zones": "zones",
+    "temperature": "temperature sensors",
+    "humidity": "humidity sensors",
+    "max_age": "maximum age",
+}
+# A list key and the word for one of its items, which the path numbers from 1.
+_ITEM_WORDS: Final = {
+    "min_flow_loops": "min-flow loop",
+    "valves": "valve",
+    "with_zones": "zone",
+    "areas": "area",
+    "temperature": "temperature sensor",
+    "humidity": "humidity sensor",
+}
+_OBJECT_WORDS: Final = {"pumps": "Pump", "loops": "Plant loop", "zones": "Zone"}
+
+
+def describe_path(document: Mapping[str, Any], path: str) -> str:
+    """Return a plant file path in words, naming each object by its name.
+
+    ``zones.living_area.loops.floor.pump`` reads ``Zone Living area, loop Floor,
+    pump``, so a form can show where a problem is without the file's keys.
+    """
+    keys = path.split(".") if path else []
+    if len(keys) <= 1:
+        key = keys[0] if keys else ""
+        return _TOP_WORDS.get(key, _words(key))
+    parts: list[str] = []
+    rest = keys
+    if keys[0] in _OBJECT_WORDS:
+        objects = document.get(keys[0])
+        item = _named_item(objects, keys[1])
+        parts.append(f"{_OBJECT_WORDS[keys[0]]} {_item_title(item, keys[1])}")
+        rest = keys[2:]
+        if keys[0] == "zones" and len(rest) >= 2 and rest[0] == "loops":
+            loop = _named_item(item.get("loops") if isinstance(item, Mapping) else None, rest[1])
+            parts.append(f"loop {_item_title(loop, rest[1])}")
+            rest = rest[2:]
+    else:
+        parts.append(_TOP_WORDS.get(keys[0], _words(keys[0])))
+        rest = keys[1:]
+    index = 0
+    while index < len(rest):
+        key = rest[index]
+        following = rest[index + 1] if index + 1 < len(rest) else None
+        if key in _ITEM_WORDS and following is not None and following.isdigit():
+            parts.append(f"{_ITEM_WORDS[key]} {int(following) + 1}")
+            index += 2
+            continue
+        parts.append(_KEY_WORDS.get(key, _words(key)))
+        index += 1
+    return ", ".join(parts)
+
+
+def _named_item(objects: object, slug: str) -> Mapping[str, Any] | None:
+    if isinstance(objects, Mapping) and isinstance(item := objects.get(slug), Mapping):
+        return item
+    return None
+
+
+def _item_title(item: Mapping[str, Any] | None, slug: str) -> str:
+    name = item.get("name") if item is not None else None
+    return name if isinstance(name, str) and name.strip() else title_from_slug(slug)
+
+
+def _words(key: str) -> str:
+    return key.replace("_", " ")
 
 
 # Writing

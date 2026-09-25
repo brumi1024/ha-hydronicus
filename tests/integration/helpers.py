@@ -191,16 +191,66 @@ def set_zone_temperature(hass: HomeAssistant, zone: str, value: float) -> None:
         set_temperature(hass, f"sensor.{area_id}_temperature", value)
 
 
+async def async_submit(manager: Any, result: Mapping[str, Any], data: Any = None) -> Any:
+    """Submit a flow's form, with nothing when ``data`` is None."""
+    assert result["type"] is FlowResultType.FORM, result
+    return await manager.async_configure(result["flow_id"], {} if data is None else data)
+
+
+async def async_choose(manager: Any, result: Mapping[str, Any], option: str) -> Any:
+    """Choose an option of a flow's menu."""
+    assert result["type"] is FlowResultType.MENU, result
+    assert option in result["menu_options"], (option, result["menu_options"])
+    return await manager.async_configure(result["flow_id"], {"next_step_id": option})
+
+
+def suggested(result: Mapping[str, Any], field: str) -> Any:
+    """Return what a form shows in a field: its suggested value, or its default."""
+    for key in result["data_schema"].schema:
+        if str(key) != field:
+            continue
+        description = getattr(key, "description", None)
+        if isinstance(description, Mapping) and "suggested_value" in description:
+            return description["suggested_value"]
+        default = getattr(key, "default", None)
+        return default() if callable(default) else None
+    raise AssertionError(f"{field} is not a field of {result.get('step_id')}")
+
+
+def fields(result: Mapping[str, Any]) -> set[str]:
+    """Return the fields a form shows."""
+    return {str(key) for key in result["data_schema"].schema}
+
+
 async def async_import(hass: HomeAssistant, text: str) -> ConfigEntry:
     """Create a Plant through the config flow from plant file text and wait for it."""
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    assert result["type"] is FlowResultType.FORM
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"plant_file": text})
+    flow = hass.config_entries.flow
+    result = await flow.async_init(DOMAIN, context={"source": "user"})
+    result = await async_choose(flow, result, "import_plant")
+    result = await async_submit(flow, result, {"plant_file": text})
+    assert result.get("step_id") == "review", result.get("errors")
+    result = await async_submit(flow, result)
     assert result["type"] is FlowResultType.CREATE_ENTRY, result.get("errors")
     await hass.async_block_till_done()
     entry = result["result"]
     assert isinstance(entry, ConfigEntry)
     return entry
+
+
+def zone_subentry_id(entry: ConfigEntry, slug: str) -> str:
+    """Return the ID of a zone's subentry."""
+    for subentry in entry.subentries.values():
+        if subentry.unique_id == slug:
+            return subentry.subentry_id
+    raise AssertionError(f"no zone {slug}")
+
+
+def stored(entry: ConfigEntry) -> tuple[dict[str, Any], dict[str, tuple[str, dict[str, Any]]]]:
+    """Return a Plant as stored: its entry data and each zone's title and data by slug."""
+    return dict(entry.data), {
+        str(subentry.unique_id): (subentry.title, dict(subentry.data))
+        for subentry in entry.subentries.values()
+    }
 
 
 async def async_set_options(

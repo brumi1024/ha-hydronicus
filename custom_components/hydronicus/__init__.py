@@ -25,12 +25,12 @@ from .const import (
     PLATFORMS,
     STORE_VERSION,
 )
-from .core.plant_file import PlantFileError
+from .core.plant_file import PlantFileError, describe_path
 from .entity import async_remove_unprovided_entities
 from .issues import async_delete_issues, async_sync_issues, invalid_plant
 from .runtime import PlantRuntime, store_key
 from .services import async_setup_services
-from .storage import plant_from_entry, pruned_entry_data, pruned_options
+from .storage import plant_from_entry, pruned_entry_data, pruned_options, stored_document
 from .zone_area import async_place_new_zone_climates, zones_without_climate
 
 type HydronicusConfigEntry = ConfigEntry[PlantRuntime]
@@ -88,15 +88,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     """Set up a Plant: read it, restore its state, add its entities, and start it."""
     if (pruned := pruned_entry_data(entry)) is not None:
         hass.config_entries.async_update_entry(entry, data=pruned)
+    # What the Plant is read from, taken before anything awaits.
+    fingerprint = configuration_fingerprint(entry)
     try:
         plant = plant_from_entry(entry)
     except PlantFileError as error:
         # Observe only: without a valid Plant nothing is commanded until it is fixed.
-        async_sync_issues(hass, entry.entry_id, [invalid_plant(entry.title, str(error))])
+        problem = f"{describe_path(stored_document(entry), error.path)}: {error.message}"
+        async_sync_issues(hass, entry.entry_id, [invalid_plant(entry.title, problem)])
         raise ConfigEntryError(
             translation_domain=DOMAIN,
             translation_key="invalid_plant",
-            translation_placeholders={"plant": entry.title, "error": str(error)},
+            translation_placeholders={"plant": entry.title, "error": problem},
         ) from error
     if (options := pruned_options(entry, plant)) is not None:
         hass.config_entries.async_update_entry(entry, options=options)
@@ -123,7 +126,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     except Exception:
         await runtime.async_stop()
         raise
-    runtime.fingerprint = configuration_fingerprint(entry)
+    runtime.fingerprint = fingerprint
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     runtime.async_start()
     return True
@@ -136,10 +139,16 @@ async def _async_update_listener(hass: HomeAssistant, entry: HydronicusConfigEnt
         hass.config_entries.async_update_entry(entry, data=pruned)
         return
     runtime: PlantRuntime | None = getattr(entry, "runtime_data", None)
-    if runtime is not None and runtime.fingerprint == configuration_fingerprint(entry):
-        # Only the options changed: arming or Control equipment.
-        runtime.request_evaluation()
-        return
+    if runtime is not None:
+        if runtime.fingerprint == configuration_fingerprint(entry):
+            # Only the options changed: arming or Control equipment.
+            runtime.request_evaluation()
+            return
+        if runtime.reloading:
+            # A flow that changes the data and several subentries at once calls this
+            # for each change; the one reload reads them all.
+            return
+        runtime.reloading = True
     await hass.config_entries.async_reload(entry.entry_id)
 
 

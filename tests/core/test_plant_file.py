@@ -30,6 +30,7 @@ from hydronicus_core.model import (
 from hydronicus_core.plant_file import (
     PLANT_FILE_FORMAT,
     PlantFileError,
+    describe_path,
     dump_yaml,
     entity_paths,
     export_plant,
@@ -934,3 +935,50 @@ def test_a_source_without_a_mode_select_binds_only_its_request() -> None:
         "switch.office_valve_b": OutputRole.VALVE,
     }
     assert "source.mode.entity" not in entity_paths(plant).values()
+
+
+# Paths in words
+
+
+@pytest.mark.parametrize(
+    ("path", "words"),
+    [
+        ("", "The plant file"),
+        ("name", "Plant name"),
+        ("mode_dwell", "Mode dwell"),
+        ("hydronicus", "Plant file format"),
+        ("source.mode.cool", "Source, mode select, cool option"),
+        ("source.request", "Source, request switch"),
+        ("pumps.heat_pump.min_flow_loops.0", "Pump Heat pump, min-flow loop 1"),
+        ("pumps.heat_pump.supply_temperature", "Pump Heat pump, supply temperature sensor"),
+        ("loops.towel_dryer.runs.with_zones.1", "Plant loop Towel dryer, runs with, zone 2"),
+        ("zones.living_area.loops.floor.pump", "Zone Living area, loop Floor, pump"),
+        ("zones.living_area.loops.floor.valves.0", "Zone Living area, loop Floor, valve 1"),
+        (
+            "zones.living_area.loops.floor.valves.0.readiness",
+            "Zone Living area, loop Floor, valve 1, readiness sensor",
+        ),
+        ("zones.basement.areas.1", "Zone Basement, area 2"),
+        ("zones.basement.temperature.0", "Zone Basement, temperature sensor 1"),
+        ("zones.basement.humidity", "Zone Basement, humidity sensors"),
+        (
+            "zones.basement.thermostat.digital.presets.eco",
+            "Zone Basement, thermostat, digital, presets, eco",
+        ),
+        ("zones.nowhere.odd_key", "Zone Nowhere, odd key"),
+        ("pumps", "Pumps"),
+    ],
+)
+def test_a_path_reads_in_words_with_the_names_of_its_objects(path: str, words: str) -> None:
+    document = load_yaml(REFERENCE_PLANT.read_text(encoding="utf-8"))
+    document["zones"]["basement"]["name"] = "Basement"
+    document["pumps"]["heat_pump"]["name"] = "Heat pump"
+
+    assert describe_path(document, path) == words
+
+
+def test_a_path_names_an_object_by_its_name() -> None:
+    document = {"pumps": {"p1": {"name": "Main circulator"}}, "zones": "not a mapping"}
+
+    assert describe_path(document, "pumps.p1.switch") == "Pump Main circulator, switch"
+    assert describe_path(document, "zones.study") == "Zone Study"

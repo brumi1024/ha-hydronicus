@@ -1,4 +1,4 @@
-"""The minimal config flow: a Plant from a pasted plant file, format 2."""
+"""Import a Plant from a pasted plant file, format 2."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from custom_components.hydronicus.const import DOMAIN
 from tests.integration.helpers import (
     REFERENCE_PLANT,
     Actuators,
+    async_choose,
     async_import,
+    async_submit,
     reference_world,
 )
 
@@ -27,9 +29,11 @@ zones:
 
 
 async def _submit(hass: HomeAssistant, text: str) -> dict:
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    assert result["type"] is FlowResultType.FORM and result["step_id"] == "user"
-    return await hass.config_entries.flow.async_configure(result["flow_id"], {"plant_file": text})
+    flow = hass.config_entries.flow
+    result = await flow.async_init(DOMAIN, context={"source": "user"})
+    result = await async_choose(flow, result, "import_plant")
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == "import_plant"
+    return await async_submit(flow, result, {"plant_file": text})
 
 
 async def test_an_invalid_plant_file_is_shown_with_its_path(hass: HomeAssistant) -> None:
@@ -37,9 +41,8 @@ async def test_an_invalid_plant_file_is_shown_with_its_path(hass: HomeAssistant)
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_plant_file"}
-    assert result["description_placeholders"]["error"].startswith(
-        "zones.study.loops.radiator.pump: There is no pump pumps."
-    )
+    assert result["description_placeholders"]["where"] == "Zone Study, loop Radiator, pump"
+    assert result["description_placeholders"]["problem"] == "There is no pump pumps."
     assert "pumps}" in result["data_schema"]({})["plant_file"], "the text is kept to fix"
 
 
@@ -47,7 +50,8 @@ async def test_yaml_that_does_not_parse_is_refused(hass: HomeAssistant) -> None:
     result = await _submit(hass, "hydronicus: [2")
 
     assert result["errors"] == {"base": "invalid_plant_file"}
-    assert "not valid YAML" in result["description_placeholders"]["error"]
+    assert result["description_placeholders"]["where"] == "The plant file"
+    assert "not valid YAML" in result["description_placeholders"]["problem"]
 
 
 async def test_a_hydronicus_entity_is_refused(hass: HomeAssistant) -> None:
@@ -59,8 +63,9 @@ async def test_a_hydronicus_entity_is_refused(hass: HomeAssistant) -> None:
     )
 
     assert result["errors"] == {"base": "own_entity"}
-    assert result["description_placeholders"]["error"] == (
-        "zones.study.temperature.0: sensor.living_area_combined_temperature"
+    assert result["description_placeholders"]["where"] == "Zone Study, temperature sensor 1"
+    assert result["description_placeholders"]["entity_id"] == (
+        "sensor.living_area_combined_temperature"
     )
 
 
@@ -73,9 +78,9 @@ async def test_an_output_of_another_plant_is_refused(hass: HomeAssistant) -> Non
     )
 
     assert result["errors"] == {"base": "output_bound_elsewhere"}
-    assert result["description_placeholders"]["error"] == (
-        "pumps.pump.switch: switch.home_underfloor_heating_pump (Home)"
-    )
+    assert result["description_placeholders"]["where"] == "Pump Pump, switch"
+    assert result["description_placeholders"]["entity_id"] == "switch.home_underfloor_heating_pump"
+    assert result["description_placeholders"]["other_plant"] == "Home"
 
 
 async def test_the_same_plant_cannot_be_imported_twice(hass: HomeAssistant) -> None:

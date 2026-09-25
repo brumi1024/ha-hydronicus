@@ -9,7 +9,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
-from custom_components.hydronicus.areas import area_review_warnings, area_warnings_to_confirm
+from custom_components.hydronicus.areas import area_review_warnings
 from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.core.plant_file import read_plant_file
 from custom_components.hydronicus.issues import IssueKind
@@ -181,4 +181,3 @@ async def test_the_area_review_warns_about_missing_areas_and_shared_areas(
         ("area_without_temperature_sensor", "study"),
         ("area_in_several_zones", "study"),
     }
-    assert [w.code for w in area_warnings_to_confirm(warnings)] == ["area_missing"]

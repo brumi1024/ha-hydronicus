@@ -177,10 +177,15 @@ class PlantRuntime:
         self.missing: dict[str, str] = {}
         self.proposals: deque[Proposal] = deque(maxlen=_PROPOSALS_KEPT)
         self.issues: tuple[Issue, ...] = ()
+        # The first evaluation always syncs, which clears Repairs of an earlier setup,
+        # such as an invalid Plant that a reconfigure has fixed.
+        self._issues_synced = False
         # The unique IDs each platform provided in this setup, by entity domain.
         self.provided: dict[str, frozenset[str]] = {}
         # The configuration this runtime was built from; a change reloads the Plant.
         self.fingerprint: str = ""
+        # Whether a changed configuration has already asked for a reload.
+        self.reloading = False
         # The device registry ID of the Plant device, which zone and source devices are under.
         self.plant_device_id = ""
         self._outputs = plant.outputs()
@@ -619,8 +624,8 @@ class PlantRuntime:
             for problem in zone_area_problems(plant, self.areas)
         )
         current = tuple(issues)
-        if current != self.issues:
-            self.issues = current
+        if current != self.issues or not self._issues_synced:
+            self.issues, self._issues_synced = current, True
             async_sync_issues(self.hass, self.entry.entry_id, current)
 
     # What the entities show

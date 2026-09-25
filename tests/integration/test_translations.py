@@ -16,6 +16,7 @@ from custom_components.hydronicus.areas import (
 )
 from custom_components.hydronicus.core.plant_file import read_plant_file
 from custom_components.hydronicus.issues import (
+    FIXABLE,
     Issue,
     IssueKind,
     invalid_plant,
@@ -81,7 +82,12 @@ def _issues() -> list[Issue]:
 @pytest.mark.parametrize("issue", _issues(), ids=lambda issue: issue.kind.value)
 def test_every_issue_has_a_translation_with_the_placeholders_it_gets(issue: Issue) -> None:
     translation: dict[str, Any] = STRINGS["issues"][issue.kind.value]
-    used = placeholders(translation["title"]) | placeholders(translation["description"])
+    texts = [translation["title"], translation.get("description", "")]
+    for step in translation.get("fix_flow", {}).get("step", {}).values():
+        texts.extend((step["title"], step.get("description", "")))
+        texts.extend(step.get("data_description", {}).values())
+    texts.extend(translation.get("fix_flow", {}).get("abort", {}).values())
+    used = set().union(*(placeholders(text) for text in texts))
     assert used <= set(issue.placeholders)
 
 
@@ -89,15 +95,78 @@ def test_every_issue_kind_is_translated() -> None:
     assert set(STRINGS["issues"]) == {kind.value for kind in IssueKind}
 
 
-def test_the_config_flow_errors_and_the_exceptions_are_translated() -> None:
-    assert set(STRINGS["config"]["error"]) == {
+def test_a_fixable_issue_has_a_fix_flow_and_an_informational_one_a_description() -> None:
+    """Hassfest refuses an issue translation with both a description and a fix flow."""
+    for kind in IssueKind:
+        translation = STRINGS["issues"][kind.value]
+        if kind in FIXABLE:
+            assert set(translation) == {"title", "fix_flow"}, kind
+        else:
+            assert set(translation) == {"title", "description"}, kind
+
+
+def test_the_zone_subentry_names_its_type_and_its_flows() -> None:
+    zone = STRINGS["config_subentries"]["zone"]
+    assert zone["entry_type"] == "Zone"
+    assert set(zone["initiate_flow"]) == {"user", "reconfigure"}
+
+
+def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
+    config_errors = set(STRINGS["config"]["error"])
+    zone_errors = set(STRINGS["config_subentries"]["zone"]["error"])
+    assert {
+        "name_required",
+        "mode_needs_request",
+        "option_not_offered",
+        "pump_required",
+        "pump_in_use",
+        "zones_required",
+        "min_flow_loops_required",
+        "zone_name_required",
+        "areas_required",
+        "invalid_value",
+        "invalid_plant",
         "invalid_plant_file",
+        "different_plant",
         "own_entity",
         "output_bound_elsewhere",
-    }
+    } == config_errors
+    assert {
+        "zone_name_required",
+        "pump_required",
+        "invalid_value",
+        "invalid_plant",
+        "own_entity",
+        "output_bound_elsewhere",
+    } == zone_errors
     assert set(STRINGS["exceptions"]) == {
         "invalid_plant",
         "plant_not_found",
         "invalid_target_temperature",
     }
     assert set(STRINGS["services"]) == {"export_plant"}
+
+
+def test_every_form_field_has_a_label() -> None:
+    """Each step that shows fields labels them, sections included."""
+    flows = [
+        STRINGS["config"]["step"],
+        STRINGS["config_subentries"]["zone"]["step"],
+        STRINGS["options"]["step"],
+    ]
+    flows.extend(
+        issue["fix_flow"]["step"] for issue in STRINGS["issues"].values() if "fix_flow" in issue
+    )
+    for steps in flows:
+        for step_id, step in steps.items():
+            assert "title" in step, step_id
+            for field in step.get("data_description", {}):
+                assert field in step.get("data", {}), (step_id, field)
+            for name, section in step.get("sections", {}).items():
+                assert "name" in section, (step_id, name)
+                for field in section.get("data_description", {}):
+                    assert field in section["data"], (step_id, name, field)
+
+
+def test_no_translation_uses_an_em_dash() -> None:
+    assert "\u2014" not in (COMPONENT / "strings.json").read_text(encoding="utf-8")
