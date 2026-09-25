@@ -581,7 +581,8 @@ def _build_summary_and_warnings(
     """Build deterministic topology presentation after validation succeeds.
 
     Every text is shown to users, so it uses the UI terms zone and loop and
-    names objects in configuration order; warning ids stay sorted.
+    names objects in configuration order; warning ids stay sorted. Shared
+    equipment is a warning, so the summary does not repeat it.
     """
     valves = index.valves
     pumps = index.pumps
@@ -621,7 +622,6 @@ def _build_summary_and_warnings(
         loop_names = ", ".join(
             circuit.name for circuit in configuration.circuits if valve_id in circuit.valve_ids
         )
-        summary.append(f"Valve {valve.name} is shared by loops {loop_names}.")
         affected_zones = tuple(
             sorted(
                 {route.zone_id for route in enabled_routes if route.circuit_id in shared_circuits}
@@ -652,7 +652,6 @@ def _build_summary_and_warnings(
         loop_names = ", ".join(
             circuit.name for circuit in configuration.circuits if pump_id == circuit.pump_id
         )
-        summary.append(f"Pump {pump.name} is shared by loops {loop_names}.")
         affected_zones = tuple(
             sorted(
                 {route.zone_id for route in enabled_routes if route.circuit_id in shared_circuits}

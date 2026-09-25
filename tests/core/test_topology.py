@@ -106,9 +106,8 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
         "Ceiling loop opens Shared valve, then starts Shared pump.",
         "Living room is heated by Floor loop and Ceiling loop.",
         "Office is heated by Floor loop.",
-        "Valve Shared valve is shared by loops Floor loop, Ceiling loop.",
-        "Pump Shared pump is shared by loops Floor loop, Ceiling loop.",
     )
+    # Shared equipment is a warning only, so the summary does not repeat it.
     # Warnings name the loops in configuration order, like the summary, and keep ids sorted.
     assert [(warning.circuit_ids, warning.message) for warning in compiled.warnings] == [
         (
