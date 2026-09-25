@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -420,6 +422,16 @@ async def test_the_zone_form_asks_for_a_name_the_areas_cannot_give(hass, home, a
     result = await _configure(hass, await _start_zone(hass, entry), user_input)
 
     assert result["errors"] == {CONF_NAME: "zone_name_required"}
+
+
+def test_the_zone_name_error_names_its_field() -> None:
+    """Home Assistant shows a field error above its field, which for the first field looks
+    like an error of the whole form, so the message names the field it belongs to."""
+    strings = json.loads(
+        (Path(__file__).parents[2] / "custom_components/hydronicus/strings.json").read_text()
+    )
+    for errors in (strings["config"]["error"], strings["config_subentries"]["zone"]["error"]):
+        assert errors["zone_name_required"].startswith("Enter a Zone name.")
 
 
 @pytest.mark.parametrize(

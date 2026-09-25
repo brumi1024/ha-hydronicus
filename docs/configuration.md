@@ -55,6 +55,7 @@ Guided setup takes one menu, one Plant form, a zoning menu, one form per zone, a
 4. In **Add a zone**, describe one zone:
    - **Zone name** names the zone's thermostat and entities.
      Left empty, it takes the name of the one chosen area, or of the floor that every chosen area is on.
+     When the areas give no name, the form says `Enter a Zone name.` just above the field, where Home Assistant shows every field's error.
    - **Areas** lists every Home Assistant area with a checkbox; the checked areas are the ones the zone covers, and the zone follows the temperature and humidity sensors that each area names in its area settings.
    - **Extra temperature sensors** are sensors outside the areas, such as a floor probe, and are combined with the areas into the zone temperature.
      A zone that Hydronicus controls needs a temperature reading from an area or an extra sensor.

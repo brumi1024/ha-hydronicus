@@ -135,7 +135,7 @@
     "error": {
       "name_required": "A name is required.",
       "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
-      "zone_name_required": "Enter a name. An empty name takes the name of the one chosen area, or of the floor that every chosen area is on.",
+      "zone_name_required": "Enter a Zone name. It can stay empty only when the chosen areas give one: a single area, or areas that are all on one floor.",
       "no_temperature_source": "A zone that Hydronicus controls needs a temperature reading. Choose an area that names a temperature sensor in its area settings, or add an extra temperature sensor.",
       "areas_required": "Choose at least one area.",
       "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
@@ -416,7 +416,7 @@
       },
       "error": {
         "name_required": "A name is required.",
-        "zone_name_required": "Enter a name. An empty name takes the name of the one chosen area, or of the floor that every chosen area is on.",
+        "zone_name_required": "Enter a Zone name. It can stay empty only when the chosen areas give one: a single area, or areas that are all on one floor.",
         "no_temperature_source": "A zone that Hydronicus controls needs a temperature reading. Choose an area that names a temperature sensor in its area settings, or add an extra temperature sensor.",
         "delivery_required": "Choose valves for the zone's own loop, or at least one shared loop.",
         "pump_required": "Choose the pump for this loop.",
