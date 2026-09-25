@@ -9,15 +9,15 @@ export function retryText(delayMs: number): string {
 
 /** A whole-card message, such as a setup prompt or a terminal stream state. */
 export function renderState(eyebrow: string, title: string, message: string, role: "status" | "alert", detail?: string): TemplateResult {
-  return html`<ha-card class="state-card" data-visual=${role === "alert" ? "attention" : "idle"}>
-    <div class="plant-heading"><span class="plant-mark" aria-hidden="true"></span><div><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div></div>
-    <p class=${role === "alert" ? "notice error" : "notice"} role=${role} dir="auto">${message}</p>
+  return html`<ha-card part="card" class="state-card" data-visual=${role === "alert" ? "attention" : "idle"}>
+    <div class="plant-heading"><span class="plant-mark" part="mark" aria-hidden="true"></span><div><p class="eyebrow" part="eyebrow">${eyebrow}</p><h2 part="title">${title}</h2></div></div>
+    <p class=${role === "alert" ? "notice error" : "notice"} part="notice" role=${role} dir="auto">${message}</p>
     ${detail ? html`<p class="meta" dir="auto">${detail}</p>` : nothing}
   </ha-card>`;
 }
 
 export function renderLoading(reconnecting: boolean): TemplateResult {
-  return html`<ha-card class="loading-card" role="status" aria-busy="true">
+  return html`<ha-card part="card" class="loading-card" role="status" aria-busy="true">
     <div class="loading-head"><span class="loading-mark" aria-hidden="true"></span><div><div class="skeleton"></div><div class="skeleton short"></div></div></div>
     <div class="loading-panel"></div>
     <p class="muted">${reconnecting ? "Reconnecting to Home Assistant…" : "Loading Plant snapshot…"}</p>
@@ -55,15 +55,15 @@ export function renderUnservedPlant(eyebrow: string, state: PlantState): Templat
 /** The notice above a snapshot that may be out of date. */
 export function renderStreamNotice(stream: StreamStatus): TemplateResult | typeof nothing {
   if (stream.kind === "reconnecting") {
-    return html`<p class="notice" role="status" dir="auto">Reconnecting to Home Assistant… The values below may be out of date.</p>`;
+    return html`<p class="notice" part="notice" role="status" dir="auto">Reconnecting to Home Assistant… The values below may be out of date.</p>`;
   }
   if (stream.kind === "retrying") {
-    return html`<p class="notice" role="status" dir="auto">${stream.message} ${retryText(stream.delayMs)} The values below may be out of date.</p>`;
+    return html`<p class="notice" part="notice" role="status" dir="auto">${stream.message} ${retryText(stream.delayMs)} The values below may be out of date.</p>`;
   }
   return nothing;
 }
 
 export function renderActionError(message: string | null, dismiss: () => void): TemplateResult | typeof nothing {
   if (!message) return nothing;
-  return html`<div class="action-error" role="alert"><span dir="auto">${message}</span><button type="button" @click=${dismiss}>Dismiss</button></div>`;
+  return html`<div class="action-error" part="notice" role="alert"><span dir="auto">${message}</span><button type="button" part="control" @click=${dismiss}>Dismiss</button></div>`;
 }

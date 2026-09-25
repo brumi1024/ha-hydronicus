@@ -111,7 +111,7 @@ export class HydronicusPlantCard extends HydronicusCardElement {
     // Notices about the stream and a failed action follow the header, or
     // lead the card when the header is not shown.
     const notices = html`${renderStreamNotice(state.status)}${renderActionError(this._actionError, this.dismissActionError)}`;
-    return html`<ha-card class=${config.density ?? "comfortable"} data-visual=${plantVisualState(snapshot)}>
+    return html`<ha-card part="card" class=${config.density ?? "comfortable"} data-visual=${plantVisualState(snapshot)}>
       ${sections.includes("header") ? nothing : notices}
       ${sections.map((section) => this._renderSection(section, context, snapshot, notices))}
     </ha-card>`;
@@ -142,7 +142,7 @@ export class HydronicusPlantCard extends HydronicusCardElement {
     const disabled = !snapshot.controls.safe_shutdown;
     // In Dry run nothing executes, so the action stays available but quiet.
     const quiet = snapshot.plant.execution_boundary.dry_run;
-    return html`<button type="button" class=${`shutdown${quiet ? " quiet" : ""}${this._holdingShutdown ? " is-holding" : ""}`} ?disabled=${disabled} aria-describedby="shutdown-hint"
+    return html`<button type="button" part="control" class=${`shutdown${quiet ? " quiet" : ""}${this._holdingShutdown ? " is-holding" : ""}`} ?disabled=${disabled} aria-describedby="shutdown-hint"
         @pointerdown=${this._pointerHoldStart} @pointerup=${this._clearHold} @pointerleave=${this._clearHold} @pointercancel=${this._clearHold} @lostpointercapture=${this._clearHold}
         @keydown=${this._keyHoldStart} @keyup=${this._keyHoldEnd} @blur=${this._clearHold} @contextmenu=${this._preventContextMenu}>
         <span class="button-label">Safe shutdown</span>

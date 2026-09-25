@@ -73,7 +73,7 @@ export class HydronicusRoomCard extends HydronicusCardElement {
       // looks the same as one that was removed.
       return renderState(EYEBROW, "Room not found", "This Room is not in the Plant, or you do not have access to it. Choose another Room in the card editor.", "alert");
     }
-    return html`<ha-card class="room-card ${config.density ?? "comfortable"}" data-visual=${roomVisualState(zone)}>
+    return html`<ha-card part="card" class="room-card ${config.density ?? "comfortable"}" data-visual=${roomVisualState(zone)}>
       ${renderStreamNotice(state.status)}
       ${renderActionError(this._actionError, this.dismissActionError)}
       ${renderRoom(this.renderContext, zone, { headingLevel: 2 })}
