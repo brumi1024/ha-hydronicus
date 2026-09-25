@@ -6,7 +6,6 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-import pytest
 from homeassistant import config_entries
 from homeassistant.components.repairs import DOMAIN as REPAIRS_DOMAIN
 from homeassistant.data_entry_flow import FlowResultType
@@ -303,33 +302,113 @@ async def _setup_with_unresolved_subentry_valve(hass) -> tuple[MockConfigEntry, 
     return entry, subentry_id, issue_id
 
 
-@pytest.mark.parametrize(
-    ("shared_valve_a", "missing", "object_id"),
-    [
-        pytest.param(False, "switch.zone_a_pump", PUMP_A, id="pump"),
-        pytest.param(True, MISSING_VALVE, VALVE_A, id="shared_valve"),
-    ],
-)
-async def test_plant_equipment_binding_repairs_are_not_fixable(
-    hass, shared_valve_a: bool, missing: str, object_id: str
-) -> None:
-    """Pumps and shared valves belong to the Plant, which has no room flow to open."""
+async def test_shared_equipment_binding_repairs_point_to_the_plant_file(hass) -> None:
+    """A shared valve is Plant equipment that only the plant file edits."""
     _set_healthy_parent_states(hass)
-    hass.states.async_remove(missing)
-    entry = _entry(shared_valve_a=shared_valve_a)
+    hass.states.async_remove(MISSING_VALVE)
+    entry = _entry(shared_valve_a=True)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert entry.runtime_data.subentry_id_for(object_id) is None
+    assert entry.runtime_data.subentry_id_for(VALVE_A) is None
     repairs = _issues(hass)
     assert {issue.translation_key for issue in repairs.values()} == {"missing_actuator_binding"}
     for issue in repairs.values():
         assert issue.is_fixable is False
         assert issue.data is not None
-        assert issue.data["object_id"] == object_id
+        assert issue.data["object_id"] == VALVE_A
         assert "subentry_id" not in issue.data
+        assert "entry_id" not in issue.data
+
+
+def test_plant_equipment_repair_texts_explain_the_plant_file() -> None:
+    """Non-fixable texts send users to the plant file instead of a dead end."""
+    strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
+    issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
+    for key in (
+        "missing_sensor_binding",
+        "missing_feedback_binding",
+        "missing_actuator_binding",
+        "missing_thermostat_binding",
+    ):
+        description = issues[key]["description"]
+        assert "created together with" not in description, key
+        assert "Edit plant file" in description, key
+
+
+async def _setup_with_unresolved_pump(hass) -> tuple[MockConfigEntry, str]:
+    """Set up a Plant whose Zone A pump entity is missing."""
+    _set_healthy_parent_states(hass)
+    hass.states.async_remove("switch.zone_a_pump")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    repairs = _issues(hass)
+    assert len(repairs) == 1
+    issue_id, issue = next(iter(repairs.items()))
+    assert issue.translation_key == "missing_actuator_binding_plant_settings"
+    assert issue.is_fixable is True
+    assert issue.data == {
+        "object_id": PUMP_A,
+        "binding_key": "actuator",
+        "binding_category": "actuator",
+        "entry_id": entry.entry_id,
+    }
+    return entry, issue_id
+
+
+async def test_pump_binding_repair_opens_plant_settings(hass, hass_client) -> None:
+    """A pump is Plant equipment, so its fix flow hands off to Plant settings."""
+    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    entry, issue_id = await _setup_with_unresolved_pump(hass)
+    client = await hass_client()
+
+    response = await client.post(
+        "/api/repairs/issues/fix", json={"handler": DOMAIN, "issue_id": issue_id}
+    )
+    assert response.status == 200
+    result = await response.json()
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"]["object_name"] == "Zone A pump"
+
+    response = await client.post(f"/api/repairs/issues/fix/{result['flow_id']}", json={})
+    assert response.status == 200
+    result = await response.json()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_subentry"
+    flow_type, next_flow_id = result["next_flow"]
+    assert flow_type == "config_flow"
+
+    config_flow = hass.config_entries.flow.async_get(next_flow_id)
+    assert config_flow["handler"] == DOMAIN
+    assert config_flow["context"]["source"] == config_entries.SOURCE_RECONFIGURE
+    assert config_flow["context"]["entry_id"] == entry.entry_id
+    assert config_flow["step_id"] == "reconfigure"
+    # Handing off does not claim the repair is fixed while the binding is still missing.
+    assert issue_id in _issues(hass)
+
+
+async def test_pump_fix_flow_aborts_when_the_plant_is_gone(hass) -> None:
+    """A fix flow opened before its Plant was removed aborts without a hand-off."""
+    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    entry, issue_id = await _setup_with_unresolved_pump(hass)
+    manager = hass.data[REPAIRS_DOMAIN]["flow_manager"]
+    result = await manager.async_init(DOMAIN, data={"issue_id": issue_id})
+    assert result["step_id"] == "confirm"
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    result = await manager.async_configure(result["flow_id"], {})
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "subentry_not_found"
+    assert "next_flow" not in result
+    assert hass.config_entries.flow.async_progress() == []
 
 
 async def test_room_binding_repair_opens_the_room_reconfigure_flow(
@@ -448,7 +527,7 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
         "binding_label": "valve readiness feedback",
     }
     binding_keys = [key for key in issues if key.startswith("missing_")]
-    assert len(binding_keys) == 8
+    assert len(binding_keys) == 10
     for key in binding_keys:
         issue = issues[key]
         titles = [issue["title"]]

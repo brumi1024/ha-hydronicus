@@ -33,6 +33,7 @@ from .output_ownership import (
     live_output_conflict,
 )
 from .runtime import HydronicRuntime
+from .services import async_setup_services
 from .websocket import (
     async_setup as async_setup_websocket,
 )
@@ -66,7 +67,8 @@ def _ensure_plant_device(hass: HomeAssistant, entry: ConfigEntry, runtime: Hydro
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, object]) -> bool:
-    """Register the read-only Plant presentation WebSocket commands."""
+    """Register the actions and the read-only Plant presentation WebSocket commands."""
+    async_setup_services(hass)
     await async_register_frontend(hass)
     return bool(await async_setup_websocket(hass, config))
 

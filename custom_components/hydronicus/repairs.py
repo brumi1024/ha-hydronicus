@@ -1,4 +1,10 @@
-"""Home Assistant Repairs for unresolved topology bindings."""
+"""Home Assistant Repairs for unresolved topology bindings.
+
+A binding of a room-owned object or a source with a handle opens that room or
+source, and a pump binding opens Plant settings. Other Plant equipment (shared
+valves and loops, Plant-owned sources, and the source selector) is edited only
+through the plant file, so its repair explains that instead of offering a fix.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +36,11 @@ _TRANSLATION_KEYS = {
     BindingCategory.THERMOSTAT: "missing_thermostat_binding",
 }
 _FIXABLE_SUFFIX = "_fixable"
+_PLANT_SETTINGS_SUFFIX = "_plant_settings"
 _SUBENTRY_OBJECT_TYPES = frozenset({"zone", "valve", "circuit", "source"})
+# Plant equipment that Plant settings edit directly. Shared valves and loops,
+# Plant-owned sources, and the source selector are edited through the plant file.
+_PLANT_SETTINGS_OBJECT_TYPES = frozenset({"pump"})
 
 
 def _plant_issue_prefix(plant_id: str) -> str:
@@ -91,16 +101,22 @@ def async_sync_repairs(
         }
         translation_key = _TRANSLATION_KEYS[binding.category]
         subentry_id = _owning_subentry_id(entry, binding) if entry is not None else None
+        fixable = False
         if entry is not None and subentry_id is not None:
             data[ISSUE_DATA_ENTRY_ID] = entry.entry_id
             data[ISSUE_DATA_SUBENTRY_ID] = subentry_id
             translation_key += _FIXABLE_SUFFIX
+            fixable = True
+        elif entry is not None and binding.object_type in _PLANT_SETTINGS_OBJECT_TYPES:
+            data[ISSUE_DATA_ENTRY_ID] = entry.entry_id
+            translation_key += _PLANT_SETTINGS_SUFFIX
+            fixable = True
         ir.async_create_issue(
             hass,
             DOMAIN,
             _issue_id(plant_id, binding),
             data=data,
-            is_fixable=subentry_id is not None,
+            is_fixable=fixable,
             is_persistent=False,
             severity=ir.IssueSeverity.ERROR,
             translation_key=translation_key,
@@ -154,14 +170,59 @@ class SubentryReconfigureRepairFlow(RepairsFlow):
         )
 
 
+class PlantSettingsRepairFlow(RepairsFlow):
+    """Explain an unresolved Plant equipment binding, then open Plant settings.
+
+    It shares its abort reasons with the room and source hand-off, so every
+    fixable issue translates both flows: ``reconfigure_subentry`` reports the
+    hand-off, and ``subentry_not_found`` a Plant that no longer exists.
+    """
+
+    def __init__(self, entry_id: str) -> None:
+        """Remember which Plant owns the unresolved binding."""
+        self._entry_id = entry_id
+
+    async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
+        """Start with the confirmation step."""
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(
+        self, user_input: dict[str, str] | None = None
+    ) -> RepairsFlowResult:
+        """Hand off to the Plant settings flow once the user confirms."""
+        issue = ir.async_get(self.hass).async_get_issue(DOMAIN, self.issue_id)
+        placeholders = issue.translation_placeholders if issue is not None else None
+        if user_input is None:
+            return self.async_show_form(
+                step_id="confirm",
+                data_schema=vol.Schema({}),
+                description_placeholders=placeholders,
+            )
+
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            return self.async_abort(reason="subentry_not_found")
+        result = await self.hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+        )
+        # Abort rather than create an entry: the issue stays until the binding
+        # actually resolves, and the runtime removes it on its next synchronization.
+        return self.async_abort(
+            reason="reconfigure_subentry",
+            description_placeholders=placeholders,
+            next_flow=(FlowType.CONFIG_FLOW, result["flow_id"]),
+        )
+
+
 async def async_create_fix_flow(
     hass: HomeAssistant,
     issue_id: str,
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
-    """Create the fix flow for a subentry-owned unresolved binding."""
+    """Create the fix flow of a room, source, or Plant settings binding."""
     data = data or {}
-    return SubentryReconfigureRepairFlow(
-        str(data.get(ISSUE_DATA_ENTRY_ID, "")),
-        str(data.get(ISSUE_DATA_SUBENTRY_ID, "")),
-    )
+    entry_id = str(data.get(ISSUE_DATA_ENTRY_ID, ""))
+    if ISSUE_DATA_SUBENTRY_ID not in data:
+        return PlantSettingsRepairFlow(entry_id)
+    return SubentryReconfigureRepairFlow(entry_id, str(data[ISSUE_DATA_SUBENTRY_ID]))

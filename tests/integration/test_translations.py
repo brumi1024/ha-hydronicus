@@ -16,10 +16,12 @@ from __future__ import annotations
 import ast
 import json
 from collections.abc import Iterator, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
@@ -37,6 +39,7 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
 )
+from tests.integration.plant_fixtures import plant_entry
 
 COMPONENT_DIR = Path(__file__).parents[2] / "custom_components" / DOMAIN
 STRINGS_PATH = COMPONENT_DIR / "strings.json"
@@ -630,6 +633,12 @@ class _FormAudit:
                 )
             for error in (result.get("errors") or {}).values():
                 self._need(f"{self.flow_prefix}.error.{error}")
+        elif result["type"] == FlowResultType.MENU:
+            step = f"{self.flow_prefix}.step.{result['step_id']}"
+            self.steps.add(result["step_id"])
+            self._need(f"{step}.title")
+            for option in result["menu_options"]:
+                self._need(f"{step}.menu_options.{option}")
         elif result["type"] == FlowResultType.ABORT:
             self._need(f"{self.flow_prefix}.abort.{result['reason']}")
         return result
@@ -782,29 +791,92 @@ async def test_initial_flow_steps_are_fully_translated(hass) -> None:
 
 
 async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
-    """The Dry run reconfigure path renders translated forms, errors, and aborts."""
+    """Every Plant settings menu, form, error, and abort renders translated."""
     audit = _FormAudit("config")
-    entry = _plant_entry()
+    flow = hass.config_entries.flow
+    entry = plant_entry(dict(_plant_entry().data))
     entry.add_to_hass(hass)
 
-    result = audit.check(await entry.start_reconfigure_flow(hass))
-    result = audit.check(
-        await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_DRY_RUN: False})
-    )
-    result = audit.check(await hass.config_entries.flow.async_configure(result["flow_id"], {}))
+    async def menu(option: str) -> Mapping[str, Any]:
+        result = audit.check(await entry.start_reconfigure_flow(hass))
+        return audit.check(await flow.async_configure(result["flow_id"], {"next_step_id": option}))
+
+    async def submit(result: Mapping[str, Any], user_input: Mapping[str, Any]) -> Mapping[str, Any]:
+        return audit.check(await flow.async_configure(result["flow_id"], dict(user_input)))
+
+    result = await menu("dry_run")
+    result = await submit(result, {CONF_DRY_RUN: False})
+    result = await submit(result, {})
     assert result["errors"] == {"base": "dry_run_confirmation_required"}
-    result = audit.check(
-        await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True}
-        )
-    )
+    result = await submit(result, {CONF_DRY_RUN_CONFIRMATION: True})
     assert result["errors"] == {"base": "dry_run_runtime_unavailable"}
-    result = audit.check(
-        await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_DRY_RUN: True})
-    )
+    result = await submit(result, {CONF_DRY_RUN: True})
     assert result["reason"] == "reconfigure_successful"
 
-    assert audit.steps == {"reconfigure", "dry_run_confirmation"}
+    pump = {CONF_NAME: "Spare pump", "entity_id": "switch.spare_pump", "overrun_seconds": 0.0}
+    result = await menu("add_pump")
+    result = await submit(result, {**pump, CONF_NAME: " "})
+    assert result["errors"] == {CONF_NAME: "name_required"}
+    result = await submit(result, {**pump, "entity_id": "switch.floor_valve"})
+    assert result["errors"] == {"entity_id": "actuator_entity_in_use"}
+    result = await submit(result, pump)
+    assert result["reason"] == "reconfigure_successful"
+
+    result = await menu("edit_pump")
+    result = await submit(result, {"pump": PUMP_ID})
+    result = await submit(
+        result,
+        {
+            CONF_NAME: "Floor pump",
+            "entity_id": "switch.floor_pump",
+            "overrun_seconds": 120.0,
+            "remove_pump": True,
+        },
+    )
+    assert result["errors"] == {"remove_pump": "equipment_in_use"}
+
+    result = await menu("export_plant")
+    assert result["reason"] == "plant_exported"
+    document = yaml.safe_load(
+        result["description_placeholders"]["document"].removeprefix("```yaml\n").removesuffix("```")
+    )
+
+    own_entity = er.async_get(hass).async_get_or_create(
+        "sensor", DOMAIN, "translation_own_sensor", suggested_object_id="translation_own"
+    )
+    result = await menu("edit_plant")
+    result = await submit(result, {"document": {}})
+    assert result["errors"] == {"base": "invalid_document"}
+    result = await submit(
+        result, {"document": {**document, "id": "00000000-0000-4000-8000-0000000000ff"}}
+    )
+    assert result["errors"] == {"base": "plant_id_mismatch"}
+    owned = deepcopy(document)
+    owned["pumps"]["floor_pump"]["power_feedback_entity"] = own_entity.entity_id
+    result = await submit(result, {"document": owned})
+    assert result["errors"] == {"base": "document_own_entity"}
+    result = await submit(result, {"document": document})
+    assert result["reason"] == "no_changes"
+
+    renamed = deepcopy(document)
+    renamed["name"] = "Renamed plant"
+    result = await menu("edit_plant")
+    result = await submit(result, {"document": renamed})
+    assert result["step_id"] == "edit_plant_review"
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await submit(result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+
+    assert audit.steps == {
+        "reconfigure",
+        "dry_run",
+        "dry_run_confirmation",
+        "pump",
+        "edit_pump",
+        "edit_plant",
+        "edit_plant_review",
+    }
     assert audit.missing == []
 
 

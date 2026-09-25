@@ -871,8 +871,13 @@ async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> Non
     runtime = entry.runtime_data
 
     result = await entry.start_reconfigure_flow(hass)
-    assert result["type"] == "form"
+    assert result["type"] == "menu"
     assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "dry_run"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN: False}
     )

@@ -63,8 +63,13 @@ async def test_reconfigure_cannot_disable_dry_run_without_loaded_runtime(hass) -
     entry.add_to_hass(hass)
 
     result = await entry.start_reconfigure_flow(hass)
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] == FlowResultType.MENU
     assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "dry_run"
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN: False}
@@ -76,7 +81,7 @@ async def test_reconfigure_cannot_disable_dry_run_without_loaded_runtime(hass) -
         result["flow_id"], user_input={CONF_DRY_RUN_CONFIRMATION: True}
     )
     assert result["type"] == FlowResultType.FORM
-    assert result["step_id"] == "reconfigure"
+    assert result["step_id"] == "dry_run"
     assert result["errors"] == {"base": "dry_run_runtime_unavailable"}
     assert entry.data[CONF_DRY_RUN] is True
 
@@ -95,6 +100,9 @@ async def test_reconfigure_can_enable_dry_run_without_loaded_runtime(hass) -> No
     entry.add_to_hass(hass)
 
     result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN: True}
     )

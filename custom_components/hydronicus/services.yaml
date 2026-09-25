@@ -1,0 +1,7 @@
+export_plant:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus

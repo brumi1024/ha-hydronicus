@@ -214,6 +214,9 @@ async def test_reconfigure_confirmation_shows_the_output_conflict(hass: HomeAssi
 
     result = await second.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
+    result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_DRY_RUN: False}
     )
     result = await hass.config_entries.flow.async_configure(
@@ -587,6 +590,9 @@ async def test_reconfigure_shows_a_held_plant_in_dry_run(hass: HomeAssistant) ->
     )
 
     result = await second.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
     (dry_run_key,) = [key for key in result["data_schema"].schema if key == CONF_DRY_RUN]
     assert dry_run_key.default() is True
     result = await hass.config_entries.flow.async_configure(

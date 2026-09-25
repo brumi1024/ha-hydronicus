@@ -204,5 +204,10 @@
         "default": "mdi:information-outline"
       }
     }
+  },
+  "services": {
+    "export_plant": {
+      "service": "mdi:file-export-outline"
+    }
   }
 }

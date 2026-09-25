@@ -14,7 +14,25 @@
         }
       },
       "reconfigure": {
-        "title": "Configure Hydronicus",
+        "title": "Plant settings",
+        "description": "Choose what to change in this Plant. Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.",
+        "menu_options": {
+          "dry_run": "Dry run",
+          "add_pump": "Add a pump",
+          "edit_pump": "Edit or remove a pump",
+          "export_plant": "Show the plant file",
+          "edit_plant": "Edit plant file"
+        },
+        "menu_option_descriptions": {
+          "dry_run": "Turn Dry run on, or leave it after confirming the heating outputs.",
+          "add_pump": "Add a circulation pump that loops can use.",
+          "edit_pump": "Change a pump's entity, overrun, or feedback, or remove an unused pump.",
+          "export_plant": "Show this Plant as a plant file to back it up or rebuild it elsewhere.",
+          "edit_plant": "Edit the whole Plant as a plant file, including shared loops, shared valves, and sources."
+        }
+      },
+      "dry_run": {
+        "title": "Dry run",
         "description": "Dry run calculates the real heating plan without service calls. Turn it off only after reviewing the configured heating outputs.",
         "data": {
           "dry_run": "Dry run"
@@ -31,6 +49,74 @@
         },
         "data_description": {
           "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
+        }
+      },
+      "edit_pump": {
+        "title": "Edit a pump",
+        "description": "Choose the pump to change or remove.",
+        "data": {
+          "pump": "Pump"
+        },
+        "data_description": {
+          "pump": "The Plant pump to edit."
+        }
+      },
+      "pump": {
+        "title": "Pump",
+        "description": "A pump is Plant equipment that any loop can use. Saving returns the Plant to Dry run.",
+        "data": {
+          "name": "Pump name",
+          "entity_id": "Pump entity",
+          "overrun_seconds": "Pump overrun",
+          "remove_pump": "Remove this pump"
+        },
+        "data_description": {
+          "name": "Shown in the loop forms and in the plant file.",
+          "entity_id": "The switch that runs this circulation pump.",
+          "overrun_seconds": "How long the pump keeps running after the last valve closes.",
+          "remove_pump": "Remove the pump from the Plant. Only a pump that no loop uses can be removed."
+        },
+        "sections": {
+          "feedback": {
+            "name": "Feedback",
+            "description": "Optional entities that confirm what the pump is doing.",
+            "data": {
+              "power_feedback_entity": "Pump power feedback",
+              "power_feedback_max_age_seconds": "Pump power feedback maximum age",
+              "flow_feedback_entity": "Pump flow feedback",
+              "flow_feedback_max_age_seconds": "Pump flow feedback maximum age",
+              "fault_feedback_entity": "Pump fault feedback",
+              "fault_feedback_max_age_seconds": "Pump fault feedback maximum age"
+            },
+            "data_description": {
+              "power_feedback_entity": "Optional sensor that reports the pump power draw.",
+              "power_feedback_max_age_seconds": "Power feedback older than this is treated as stale.",
+              "flow_feedback_entity": "Optional sensor that reports the measured flow.",
+              "flow_feedback_max_age_seconds": "Flow feedback older than this is treated as stale.",
+              "fault_feedback_entity": "Optional binary sensor or sensor that reports a pump fault.",
+              "fault_feedback_max_age_seconds": "Fault feedback older than this is treated as stale."
+            }
+          }
+        }
+      },
+      "edit_plant": {
+        "title": "Edit plant file",
+        "description": "Edit the whole Plant as a plant file. An object that keeps its id keeps its entities, and a new object without an id gets one from its slug. The next step lists the changes before anything is saved.",
+        "data": {
+          "document": "Plant file"
+        },
+        "data_description": {
+          "document": "The plant file in YAML, starting with the current Plant."
+        }
+      },
+      "edit_plant_review": {
+        "title": "Review plant file changes",
+        "description": "Changes:\n{changes}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nApplying the plant file returns the Plant to Dry run.",
+        "data": {
+          "confirm": "I understand these warnings"
+        },
+        "data_description": {
+          "confirm": "Required to apply a plant file that has the warnings listed above."
         }
       },
       "zone": {
@@ -213,12 +299,21 @@
       "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in the zone this circuit serves. Turn cooling off, or restart setup and add a humidity sensor to the zone.",
       "designated_reference_count": "Mark exactly one temperature sensor as the designated reference. Designated reference aggregation needs one, and more than one is never allowed.",
       "outputs_changed": "The outputs changed since this form was shown. Review the updated list and confirm again.",
-      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live plant. Turn on Dry run for {other_plant}, or bind different entities in this plant, then try again."
+      "output_conflict": "{other_plant} is out of Dry run and controls {entities}. One actuator entity belongs to one live plant. Turn on Dry run for {other_plant}, or bind different entities in this plant, then try again.",
+      "confirm_required": "Confirm that you understand these warnings before saving.",
+      "actuator_entity_in_use": "This entity already controls another valve or pump. Choose a different entity.",
+      "equipment_in_use": "This pump is still used by {users}. Move those loops to another pump before removing it.",
+      "invalid_pump": "The pump cannot be saved: {error}",
+      "invalid_document": "The plant file is not valid at {path}: {error}",
+      "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the plant back into itself.",
+      "plant_id_mismatch": "This plant file belongs to another Plant. Remove its top-level id, or set it to this Plant's id, to apply it here."
     },
     "abort": {
       "already_configured": "This plant is already configured.",
       "already_in_progress": "A setup flow for this plant is already in progress.",
-      "reconfigure_successful": "The plant configuration was updated."
+      "reconfigure_successful": "The plant configuration was updated.",
+      "plant_exported": "This is the plant file of the Plant. Copy it to back up the Plant or to rebuild it with the same entity IDs on another Home Assistant instance.\n\n{document}",
+      "no_changes": "The plant file matches the current Plant, so nothing was changed."
     }
   },
   "config_subentries": {
@@ -719,7 +814,7 @@
   "issues": {
     "missing_sensor_binding": {
       "title": "Missing sensor for {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. This {object_type} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the sensor: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_sensor_binding_fixable": {
       "title": "Missing sensor for {object_name}",
@@ -738,7 +833,7 @@
     },
     "missing_feedback_binding": {
       "title": "Missing feedback for {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the feedback entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. This {object_type} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the feedback entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_feedback_binding_fixable": {
       "title": "Missing feedback for {object_name}",
@@ -755,9 +850,24 @@
         }
       }
     },
+    "missing_feedback_binding_plant_settings": {
+      "title": "Missing feedback for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing feedback for {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Select Submit to open the Plant settings, choose Edit or remove a pump, pick {object_name}, choose the current feedback entity, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The Plant settings are open. The repair clears after a valid feedback entity is saved for {object_type} {object_name}.",
+          "subentry_not_found": "The Plant that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
+    },
     "missing_actuator_binding": {
       "title": "Missing actuator for {object_name}",
-      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the actuator: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. This {object_type} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the actuator: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_actuator_binding_fixable": {
       "title": "Missing actuator for {object_name}",
@@ -774,9 +884,24 @@
         }
       }
     },
+    "missing_actuator_binding_plant_settings": {
+      "title": "Missing actuator for {object_name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Missing actuator for {object_name}",
+            "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Select Submit to open the Plant settings, choose Edit or remove a pump, pick {object_name}, choose the current actuator, and save. Restoring the original entity also works; the repair clears automatically as soon as the binding resolves."
+          }
+        },
+        "abort": {
+          "reconfigure_subentry": "The Plant settings are open. The repair clears after a valid actuator is saved for {object_type} {object_name}.",
+          "subentry_not_found": "The Plant that owned this binding no longer exists. If a binding is still unresolved, a new repair appears."
+        }
+      }
+    },
     "missing_thermostat_binding": {
       "title": "Missing thermostat for {object_name}",
-      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. This {object_type} was created together with the Hydronicus plant, so its bindings cannot be edited on their own. Restore the climate entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
+      "description": "The configured external climate thermostat for {object_type} {object_name} is missing or renamed, so the Zone demand is held fail-closed. This {object_type} is Plant equipment that only the plant file edits: open the Plant settings, choose Edit plant file, change the binding, and apply the file. Alternatively, restore the climate entity: re-enable or reconnect the device or integration that provides it, or give its replacement the original entity ID in the entity settings. The repair clears automatically as soon as the entity is available again."
     },
     "missing_thermostat_binding_fixable": {
       "title": "Missing thermostat for {object_name}",
@@ -831,6 +956,21 @@
     },
     "output_conflict": {
       "message": "Plant {plant} cannot leave Dry run because live plant {other_plant} already controls {entities}. One actuator entity belongs to one live plant."
+    },
+    "plant_not_found": {
+      "message": "Config entry {config_entry_id} is not a Hydronicus Plant. Choose a Hydronicus Plant to export."
+    }
+  },
+  "services": {
+    "export_plant": {
+      "name": "Export plant",
+      "description": "Returns the plant file of a Hydronicus Plant. Importing it rebuilds the Plant with the same entity IDs.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant to export."
+        }
+      }
     }
   }
 }
