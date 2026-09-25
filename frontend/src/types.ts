@@ -35,6 +35,10 @@ export interface ZoneSnapshot {
     current_temperature: number | null;
     preset: string | null;
     preset_modes: string[];
+    /** The thermostat's HVAC mode, such as "off" or "heat"; null when unknown. */
+    hvac_mode: string | null;
+    /** The HVAC modes a Hydronicus thermostat offers; empty for an external one. */
+    hvac_modes: string[];
     control_entity_id: string | null;
     explanation: string;
   };

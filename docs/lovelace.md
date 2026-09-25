@@ -40,7 +40,7 @@ density: comfortable
 
 Replace the example UUID with the UUID of the configured Plant.
 Existing cards with `plant: <uuid>` keep working unchanged.
-The editor does not hardcode Zones, Circuits, valves, pumps, sources, or household entity IDs.
+The editor does not hardcode Rooms, Loops, valves, pumps, sources, or household entity IDs.
 
 ## Card contract
 
@@ -58,30 +58,37 @@ A Plant that no longer exists and a Plant the user may not read are terminal sta
 When the backend revokes access to a stream, it sends an `unauthorized` status event before it ends the stream.
 When a Plant is deleted, its streams end with a `plant_not_found` status event.
 
-The header shows the Plant name, operational status, requested mode, active mode, execution boundary, active source, and recommended source.
-The Zones section shows thermostat ownership, current and target temperatures when available, presets for Hydronicus thermostats, demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
-The delivery path section renders the ordered Zone to Circuit to Valve to Pump to Source route.
-The actuator section shows shared ownership and the active Circuit consumer set using configured object IDs and names.
+The card says Room and Loop where the snapshot and the core code say Zone and Circuit.
+The header shows the Plant name, operational status, requested mode, and execution boundary.
+It adds the active mode only when an explicit requested mode is not active yet, for example during a changeover.
+It shows the active and recommended source only when the Plant has sources.
+The Rooms section shows thermostat ownership, the HVAC mode, current and target temperatures when available, presets for Hydronicus thermostats, heating or cooling demand, sensor qualification, cooling diagnostics, blocked reasons, and coupling notices.
+A Room whose thermostat is off shows Off instead of an idle phase.
+The Hydraulic Flow section renders the ordered Room to Loop to Valve to Pump to Source route.
+The Equipment section shows each valve and pump with the Loops that currently use it.
 The alert and explanation sections surface stable priority-ordered diagnostics and controller reasoning.
 The operation section distinguishes proposed, executed, suppressed, failed, and timed-out outcomes.
 
 The presentation schema is version 2.
+Each thermostat in the snapshot carries its `hvac_mode`, and a Hydronicus thermostat also carries `hvac_modes`, the modes its climate entity supports.
 Every temperature in the snapshot is in degrees Celsius.
 The card shows temperatures in the unit system of the Home Assistant instance, and formats numbers with the number format from the user's profile.
 Target changes are sent in that unit system, which Home Assistant converts for the climate entity.
 The plus and minus buttons step by 0.5 °C, or by 1 °F under US customary units.
 
-Hydronicus thermostat Zones receive a permission-filtered Hydronicus climate entity and expose target and preset controls.
+Hydronicus thermostat Rooms receive a permission-filtered Hydronicus climate entity and expose HVAC mode, target, and preset controls.
+The HVAC mode control offers exactly the modes of the Room's climate entity: Off and Heat, plus Cool and Heat/Cool when the Room reaches a cooling-enabled Loop.
+It calls `climate.set_hvac_mode` on that climate entity.
 
-External thermostat Zones are explicitly read-only.
+External thermostat Rooms are explicitly read-only.
 
-The card displays their diagnostic target and current temperature values when available, but never renders target or preset controls for them.
+The card displays their HVAC mode and diagnostic target and current temperature values when available, but never renders HVAC mode, target, or preset controls for them.
 
 The card never calls the external climate entity.
 
-The backend uses each Zone's Hydronicus-owned demand entity for visibility filtering.
+The backend uses each Room's Hydronicus-owned demand entity for visibility filtering.
 
-A user without read access to that entity receives none of the Zone's name, observations, demand, routes, alerts, or explanations.
+A user without read access to that entity receives none of the Room's name, observations, demand, routes, alerts, or explanations.
 Source summaries and source-selection operations remain Plant-wide because sources serve the shared hydraulic system.
 Any user allowed to discover the Plant can see that source state, while configured physical source entity IDs remain redacted.
 The Plant mode control calls only the Hydronicus-owned mode select entity.
@@ -91,11 +98,14 @@ Configured physical entity IDs do not cross the presentation boundary and are ne
 The configured external thermostat entity ID is also redacted from the presentation stream.
 
 Selecting the Plant name opens the more-info dialog of the Hydronicus mode select entity.
-Selecting a Hydronicus thermostat Zone name opens the more-info dialog of its Hydronicus climate entity.
+Selecting a Hydronicus thermostat Room name opens the more-info dialog of its Hydronicus climate entity.
 
 When an action such as a mode or target change fails, the card keeps showing the Plant, returns the control to its real value, and shows the error inline until you dismiss it or the next action succeeds.
 
-The card displays the active Dry run or mixed execution boundary prominently.
+The card displays the execution boundary prominently.
+The badge reads Dry run while nothing executes, Mixed while heating and cooling may execute but source selection stays shadow-only, and Live when every output may execute.
+Cooling outputs follow the Plant's Dry run setting like heating outputs, so the card treats a cooling demand like a heating demand and does not describe cooling as shadow-only.
+While Dry run is on, the safe shutdown button stays available with a quieter style.
 It does not provide a Dry run toggle.
 The existing Plant configuration and its safety gates remain the authority for whether actuator operations are proposed or executed.
 
@@ -108,8 +118,8 @@ It stores only the values it uses, so state changes of unrelated entities do not
 ## Layout and accessibility
 
 In the Sections view the card spans the full section width by default, at least six columns, and its height follows its content, so it never overlaps the cards below it.
-In the masonry view the card reports a height estimate based on its Zones, paths, actuators, alerts, and operations.
-The card uses a responsive Zone grid, horizontally scrollable hydraulic paths, and controls that collapse for narrow layouts.
+In the masonry view the card reports a height estimate based on its Rooms, paths, equipment, alerts, and operations.
+The card uses a responsive Room grid, horizontally scrollable hydraulic paths, and controls that collapse for narrow layouts.
 The `comfortable` and `compact` density values provide a readable default and a denser dashboard option.
 The card renders inside `ha-card` and uses Home Assistant theme variables, so it follows light, dark, and custom themes.
 Heating and cooling colors follow the theme's climate state colors.
@@ -145,6 +155,6 @@ Keep enough contrast between the card surface and text to preserve readability i
 ## Synthetic staging checks
 
 Use the repository's disposable or synthetic Home Assistant staging workflow before connecting a Plant to real equipment.
-Confirm that two Plants remain isolated, permission-filtered users see only their allowed Zones and Hydronicus-owned controls, and reload or unload produces a clean subscription state.
+Confirm that two Plants remain isolated, permission-filtered users see only their allowed Rooms and Hydronicus-owned controls, and reload or unload produces a clean subscription state.
 Keep the Plant in Dry run while validating presentation, routing, alerts, and proposed operation outcomes.
 Do not interpret a passing card render or a Dry run snapshot as proof of hydraulic, electrical, or equipment safety.

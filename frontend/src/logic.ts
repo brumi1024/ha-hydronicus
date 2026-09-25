@@ -96,6 +96,16 @@ export function actionForPreset(zone: ZoneSnapshot, preset: string): ActionCall 
   };
 }
 
+export function actionForHvacMode(zone: ZoneSnapshot, hvacMode: string): ActionCall | null {
+  if (zone.thermostat.kind !== "hydronicus" || !zone.thermostat.control_entity_id) return null;
+  if (!zoneHvacModes(zone).includes(hvacMode)) return null;
+  return {
+    domain: "climate",
+    service: "set_hvac_mode",
+    data: { entity_id: zone.thermostat.control_entity_id, hvac_mode: hvacMode },
+  };
+}
+
 export function actionForMode(snapshot: PlantSnapshot, mode: string): ActionCall | null {
   if (!snapshot.controls.requested_mode) return null;
   return {
@@ -137,7 +147,75 @@ export type TranslatedState = "select.requested_mode" | "sensor.operating_mode" 
  */
 export function stateLabel(localize: ((key: string) => string) | undefined, entity: TranslatedState, state: string): string {
   const [platform, key] = entity.split(".");
-  return localize?.(`component.hydronicus.entity.${platform}.${key}.state.${state}`) || phaseLabel(state);
+  return localize?.(`component.hydronicus.entity.${platform}.${key}.state.${state}`) || sentenceLabel(state);
+}
+
+/** A raw value with its first letter capitalized, such as "Dry run". */
+export function sentenceLabel(value: string): string {
+  const label = phaseLabel(value);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+const HVAC_MODE_LABELS: Record<string, string> = {
+  off: "Off",
+  heat: "Heat",
+  cool: "Cool",
+  heat_cool: "Heat/Cool",
+  auto: "Auto",
+};
+
+/**
+ * The label Home Assistant shows for a climate HVAC mode, or an English
+ * fallback when no translation is available.
+ */
+export function hvacModeLabel(localize: ((key: string) => string) | undefined, mode: string): string {
+  return localize?.(`component.climate.entity_component._.state.${mode}`) || HVAC_MODE_LABELS[mode] || sentenceLabel(mode);
+}
+
+/**
+ * The HVAC modes the card offers for a Room: exactly the modes its
+ * Hydronicus climate entity supports, and none for an external thermostat.
+ */
+export function zoneHvacModes(zone: ZoneSnapshot): string[] {
+  if (zone.thermostat.kind !== "hydronicus") return [];
+  return [...new Set(zone.thermostat.hvac_modes ?? [])];
+}
+
+/** The short badge label for the execution boundary. */
+export function boundaryLabel(boundary: PlantSnapshot["plant"]["execution_boundary"]): string {
+  if (boundary.dry_run || boundary.mode === "dry_run") return "Dry run";
+  // "mixed" with nothing forced to shadow means every output may execute.
+  if (boundary.mode === "mixed" && !boundary.forced_shadow.length) return "Live";
+  return sentenceLabel(boundary.mode);
+}
+
+/** The CSS class for the execution boundary badge. */
+export function boundaryClass(boundary: PlantSnapshot["plant"]["execution_boundary"]): string {
+  if (boundary.dry_run || boundary.mode === "dry_run") return "dry-run";
+  if (boundary.mode === "mixed" && !boundary.forced_shadow.length) return "live";
+  return boundary.mode.replaceAll("_", "-");
+}
+
+/**
+ * The header's source summary, or null when the Plant has no sources and
+ * nothing to report.
+ */
+export function sourceSummary(snapshot: Pick<PlantSnapshot, "plant" | "sources">): string | null {
+  const { active_name: active, recommended_name: recommended } = snapshot.plant.source;
+  if (!snapshot.sources.length && !active && !recommended) return null;
+  const parts = [active ?? "None active"];
+  if (recommended && recommended !== active) parts.push(`recommended ${recommended}`);
+  return parts.join(" · ");
+}
+
+const NODE_KIND_LABELS: Record<string, string> = {
+  zone: "Room",
+  circuit: "Loop",
+};
+
+/** The user-facing name of a delivery path node kind. */
+export function nodeKindLabel(kind: string): string {
+  return NODE_KIND_LABELS[kind] ?? sentenceLabel(kind);
 }
 
 /** The presets a Zone offers besides "none"; empty when it has none. */

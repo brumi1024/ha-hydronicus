@@ -31,6 +31,7 @@ from .core.model import (
     ThermostatHvacMode,
     ZoneRuntime,
 )
+from .core.topology import thermostat_hvac_modes
 from .entity_device import topology_device_info
 from .runtime import HydronicRuntime
 
@@ -69,16 +70,9 @@ class ZoneClimate(ClimateEntity, RestoreEntity):
         # No name or translation key: the thermostat is the Zone device's main
         # feature and takes the device name, as before.
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
-        if any(
-            route.zone_id == zone_id and runtime.plant.circuits[route.circuit_id].cooling_enabled
-            for route in runtime.plant.routes
-        ):
-            self._attr_hvac_modes = [
-                HVACMode.OFF,
-                HVACMode.HEAT,
-                HVACMode.COOL,
-                HVACMode.HEAT_COOL,
-            ]
+        self._attr_hvac_modes = [
+            HVACMode(mode.value) for mode in thermostat_hvac_modes(runtime.plant, zone_id)
+        ]
         if self._configured_preset_modes:
             self._attr_supported_features = _BASE_FEATURES | ClimateEntityFeature.PRESET_MODE
         self._has_humidity_sensors = bool(runtime.plant.zones[zone_id].humidity_sensors)
