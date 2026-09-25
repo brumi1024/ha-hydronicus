@@ -1,7 +1,11 @@
-import type { Density, HomeAssistantConnection, PlantCardConfig, PlantSection, PlantSummary } from "./types";
+import { plantStore } from "./store";
+import type { Density, HomeAssistantConnection, PlantCardConfig, PlantSection, PlantSummary, RoomCardConfig, ZoneSnapshot } from "./types";
 
 export const CARD_TAG = "hydronicus-plant-card";
 export const CARD_TYPE = `custom:${CARD_TAG}` as const;
+export const ROOM_CARD_TAG = "hydronicus-room-card";
+export const ROOM_CARD_TYPE = `custom:${ROOM_CARD_TAG}` as const;
+export const ROOM_EDITOR_TAG = "hydronicus-room-card-editor";
 export const LIST_PLANTS = "hydronicus/list_plants";
 const DENSITIES: readonly Density[] = ["comfortable", "compact"];
 
@@ -79,6 +83,21 @@ export function shownSections(config: Pick<PlantCardConfig, "sections"> | undefi
 }
 
 /**
+ * Validate Room card YAML. `room` is the Room's id in the Plant snapshot;
+ * like `plant`, an empty string is the stub state before one is chosen.
+ */
+export function validateRoomConfig(config: unknown): RoomCardConfig {
+  const card = "Hydronicus Room card";
+  const candidate = configRecord(config, card, ROOM_CARD_TYPE);
+  const room = candidate.room ?? "";
+  if (typeof room !== "string") {
+    throw new Error(`${card} requires one Room id in \`room\`.`);
+  }
+  const density = validDensity(candidate.density, card);
+  return { type: ROOM_CARD_TYPE, plant: (candidate.plant as string).trim(), room: room.trim(), density };
+}
+
+/**
  * The Plants the current user can read, shared by every card on the page.
  * The built-in form editor has no `hass`, so this cache is its only source.
  */
@@ -138,14 +157,25 @@ export async function stubConfig(hass: { connection?: HomeAssistantConnection } 
   return { plant: plants[0]?.id ?? "", density: "comfortable" };
 }
 
+/** The first readable Plant and its first visible Room, for the card picker. */
+export async function roomStubConfig(hass: { connection?: HomeAssistantConnection } | undefined): Promise<Omit<RoomCardConfig, "type">> {
+  const connection = hass?.connection;
+  const plants = connection ? await plantDirectory.load(connection) : plantDirectory.known;
+  const plant = plants[0]?.id ?? "";
+  const snapshot = connection && plant ? await plantStore.snapshot(connection, plant) : null;
+  return { plant, room: snapshot?.zones[0]?.id ?? "", density: "comfortable" };
+}
+
 const LABELS: Record<string, string> = {
   plant: "Hydronicus Plant",
+  room: "Room",
   density: "Density",
   sections: "Sections",
 };
 
 const HELPERS: Record<string, string> = {
   plant: "The Plant this card shows. Only Plants you can read are listed; one that is not listed shows its UUID.",
+  room: "The Room this card shows. Only Rooms you can read are listed; one that is not listed shows its id.",
   density: "Compact uses less spacing for dense dashboards.",
   sections: "The parts of the Plant to show, in this order. Leave empty to show every section.",
 };
@@ -207,4 +237,16 @@ export async function configForm(): Promise<ConfigForm> {
       validateConfig(config);
     },
   };
+}
+
+/**
+ * The Room card editor form: the Plant, then a Room of that Plant by name.
+ * `rooms` are the visible Rooms of the chosen Plant's snapshot.
+ */
+export function roomConfigSchema(plants: PlantSummary[], rooms: readonly Pick<ZoneSnapshot, "id" | "name">[]): Array<Record<string, unknown>> {
+  return [
+    { name: "plant", required: true, selector: namedSelector(plants) },
+    { name: "room", required: true, selector: namedSelector(rooms) },
+    DENSITY_FIELD,
+  ];
 }

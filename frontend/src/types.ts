@@ -12,6 +12,15 @@ export interface PlantCardConfig {
   sections?: PlantSection[];
 }
 
+export interface RoomCardConfig {
+  type: "custom:hydronicus-room-card";
+  /** The Plant UUID; an empty string means the card still needs a Plant. */
+  plant: string;
+  /** The Room's id in the Plant snapshot; an empty string means none is chosen yet. */
+  room: string;
+  density?: Density;
+}
+
 export interface PlantSummary {
   id: string;
   name: string;

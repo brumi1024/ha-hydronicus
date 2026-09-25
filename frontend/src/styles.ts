@@ -252,6 +252,12 @@ export const cardStyles = css`
   .operation[data-result="failed"] .operation-marker, .operation[data-result="timed_out"] .operation-marker { background: var(--hydronicus-danger); }
   .operation-copy { min-inline-size: 0; }
   .empty-state { padding: 0.8rem; border: 1px dashed var(--hydronicus-border); border-radius: var(--hydronicus-radius); text-align: center; }
+  /* A Room card is the Room tile itself: the card frame replaces the tile's. */
+  ha-card.room-card { padding: 0; }
+  ha-card.room-card > .zone { border-color: transparent; border-radius: inherit; }
+  ha-card.room-card.compact > .zone { padding: 0.55rem; }
+  ha-card.room-card > .notice, ha-card.room-card > .action-error { margin-block-start: 0.72rem; margin-inline: 0.72rem; }
+  h2.zone-title { font-size: var(--ha-font-size-m, 0.9rem); }
   .state-card { display: grid; gap: 0.6rem; }
   .loading-card { min-block-size: 12rem; }
   .loading-head { display: flex; align-items: center; gap: 0.65rem; }

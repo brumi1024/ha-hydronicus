@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const TAG = "hydronicus-plant-card";
+const TAGS = ["hydronicus-plant-card", "hydronicus-room-card", "hydronicus-room-card-editor"];
+const CARD_TAGS = ["hydronicus-plant-card", "hydronicus-room-card"];
 const nativeRegistry = window.customElements;
 
 /**
@@ -48,31 +49,50 @@ afterEach(() => {
 });
 
 describe("C10 registration on Home Assistant's element registry", () => {
-  it("defines the card on a registry that replaces customElements after the bundle ran", async () => {
+  it("defines every element on a registry that replaces customElements after the bundle ran", async () => {
     vi.resetModules();
     await import("../src/index");
-    expect(nativeRegistry.get(TAG)).toBeDefined();
+    for (const tag of TAGS) expect(nativeRegistry.get(tag), tag).toBeDefined();
 
     // Home Assistant's app bundle evaluates after the card: it installs the
     // polyfill registry, then defines its root element through it.
     const scoped = new ScopedRegistry();
     install(scoped);
-    expect(scoped.get(TAG)).toBeUndefined();
+    for (const tag of TAGS) expect(scoped.get(tag), tag).toBeUndefined();
     scoped.define("home-assistant", class extends HTMLElement {});
 
-    await vi.waitFor(() => expect(scoped.get(TAG)).toBeDefined());
+    await vi.waitFor(() => {
+      for (const tag of TAGS) expect(scoped.get(tag), tag).toBeDefined();
+    });
   });
 
-  it("defines the card once when the polyfill registry is already active", async () => {
+  it("defines every element once when the polyfill registry is already active", async () => {
     const scoped = new ScopedRegistry();
     install(scoped);
     vi.resetModules();
     await import("../src/index");
-    expect(scoped.get(TAG)).toBeDefined();
+    for (const tag of TAGS) expect(scoped.get(tag), tag).toBeDefined();
 
     const defineSpy = vi.spyOn(scoped, "define");
     scoped.define("home-assistant", class extends HTMLElement {});
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(defineSpy.mock.calls.filter(([tag]) => tag === TAG)).toHaveLength(0);
+    expect(defineSpy.mock.calls.filter(([tag]) => TAGS.includes(tag))).toHaveLength(0);
+  });
+});
+
+describe("C10 double loading", () => {
+  it("registers each element and card picker entry once when the bundle is evaluated twice", async () => {
+    vi.resetModules();
+    await import("../src/index");
+    vi.resetModules();
+    await expect(import("../src/index")).resolves.toBeDefined();
+
+    for (const tag of TAGS) expect(nativeRegistry.get(tag), tag).toBeDefined();
+    for (const tag of CARD_TAGS) {
+      const entries = (window.customCards ?? []).filter((card) => card.type === tag);
+      expect(entries, tag).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ preview: true, version: "0.0.0-test" });
+    }
+    expect(window.customCards?.find((card) => card.type === "hydronicus-room-card")?.name).toBe("Hydronicus Room");
   });
 });

@@ -70,6 +70,14 @@ export function plantVisualState(
   return "idle";
 }
 
+/** A Room card's presentation state, from its own demand and blocking. */
+export function roomVisualState(zone: Pick<ZoneSnapshot, "blocked" | "demand" | "cooling">): PlantVisualState {
+  if (zone.blocked) return "attention";
+  if (zone.cooling.demand) return "cooling";
+  if (zone.demand) return "heating";
+  return "idle";
+}
+
 export function isFlowingState(state: string): boolean {
   return FLOWING_STATES.has(state.toLowerCase());
 }
