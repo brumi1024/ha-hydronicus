@@ -21,6 +21,8 @@ export interface Alert {
   severity: "critical" | "error" | "warning" | "info";
   priority: number;
   scope: string;
+  /** The Plant, room, loop, or equipment name; absent from older integration versions. */
+  name?: string;
   message: string;
 }
 
@@ -35,6 +37,10 @@ export interface ZoneSnapshot {
     current_temperature: number | null;
     preset: string | null;
     preset_modes: string[];
+    /** The thermostat's HVAC mode, such as "off" or "heat"; null when unknown. */
+    hvac_mode: string | null;
+    /** The HVAC modes a Hydronicus thermostat offers; empty for an external one. */
+    hvac_modes: string[];
     control_entity_id: string | null;
     explanation: string;
   };
@@ -133,7 +139,7 @@ export interface PlantSnapshot {
   }>;
   sources: Array<Record<string, unknown>>;
   alerts: Alert[];
-  explanations: Array<{ order: number; scope: string; code: string; message: string }>;
+  explanations: Array<{ order: number; scope: string; name?: string; code: string; message: string }>;
   execution: {
     boundary: Record<string, unknown>;
     operations: {

@@ -487,7 +487,6 @@ class ActuatorExecutor:
         *,
         force_dry_run: bool = False,
         force_dry_run_actuator_ids: frozenset[str] = frozenset(),
-        force_dry_run_start_actuator_ids: frozenset[str] = frozenset(),
         force_dispatch: bool = False,
         stop_on_failure: bool = False,
         unavailable_actuator_ids: frozenset[str] = frozenset(),
@@ -516,15 +515,7 @@ class ActuatorExecutor:
             }:
                 suppressed.append(operation)
                 continue
-            if (
-                force_dry_run
-                or command.actuator_id in force_dry_run_actuator_ids
-                or (
-                    command.actuator_id in force_dry_run_start_actuator_ids
-                    and command.action in {ActuatorAction.OPEN, ActuatorAction.TURN_ON}
-                )
-                or self.dry_run
-            ):
+            if force_dry_run or command.actuator_id in force_dry_run_actuator_ids or self.dry_run:
                 proposed.append(operation)
                 continue
             try:

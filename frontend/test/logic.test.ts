@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { actionForMode, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, isFlowingState, parseSnapshot, plantVisualState, prioritizedAlerts } from "../src/logic";
+import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneHvacModes } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
   id: "zone-1", name: "Living room",
   thermostat: {
     kind: "hydronicus", state: "available", control_entity_id: "climate.hydronic_living_room",
-    current_temperature: 20, target_temperature: 21, preset: "comfort", preset_modes: ["comfort", "eco"],
-    explanation: "Hydronicus owns this Zone's digital thermostat.",
+    current_temperature: 20, target_temperature: 21, preset: "comfort", preset_modes: ["comfort", "eco"], hvac_mode: "heat", hvac_modes: ["off", "heat"],
+    explanation: "Hydronicus owns this Room's thermostat.",
   },
   demand: true, phase: "heating", blocked: false, blocked_reason: null,
   sensor_status: { usable: 1, optional_excluded: 0, required_blocking: 0 },
@@ -93,7 +93,9 @@ describe("Hydronicus presentation logic", () => {
         target_temperature: null,
         preset: null,
         preset_modes: [],
-        explanation: "External thermostat owns this Zone.",
+        hvac_mode: "heat",
+        hvac_modes: [],
+        explanation: "External thermostat owns this Room.",
       },
     };
 
@@ -113,6 +115,8 @@ describe("Hydronicus presentation logic", () => {
         target_temperature: null,
         preset: null,
         preset_modes: [],
+        hvac_mode: "heat",
+        hvac_modes: [],
         explanation: "External thermostat blocked: HVAC action is missing or unsupported.",
       },
       blocked: true,
@@ -123,5 +127,68 @@ describe("Hydronicus presentation logic", () => {
     expect(blocked.thermostat.current_temperature).toBeNull();
     expect(blocked.thermostat.target_temperature).toBeNull();
     expect(blocked.blocked_reason).toContain("blocked");
+  });
+});
+
+describe("Room HVAC modes", () => {
+  const coolingZone: ZoneSnapshot = { ...zone, thermostat: { ...zone.thermostat, hvac_mode: "off", hvac_modes: ["off", "heat", "cool", "heat_cool"] } };
+
+  it("offers exactly the modes the Room's climate entity supports", () => {
+    expect(zoneHvacModes(zone)).toEqual(["off", "heat"]);
+    expect(zoneHvacModes(coolingZone)).toEqual(["off", "heat", "cool", "heat_cool"]);
+  });
+
+  it("sets the HVAC mode on the Hydronicus climate entity", () => {
+    expect(actionForHvacMode(coolingZone, "cool")).toEqual({ domain: "climate", service: "set_hvac_mode", data: { entity_id: "climate.hydronic_living_room", hvac_mode: "cool" } });
+    // A mode the entity does not support would be rejected, so none is sent.
+    expect(actionForHvacMode(zone, "cool")).toBeNull();
+  });
+
+  it("never writes to an external thermostat", () => {
+    const external: ZoneSnapshot = { ...zone, thermostat: { ...zone.thermostat, kind: "external_climate", control_entity_id: null, hvac_modes: ["off", "heat"] } };
+    expect(zoneHvacModes(external)).toEqual([]);
+    expect(actionForHvacMode(external, "heat")).toBeNull();
+  });
+
+  it("labels modes with Home Assistant's climate translations or readable fallbacks", () => {
+    expect(hvacModeLabel(undefined, "heat_cool")).toBe("Heat/Cool");
+    expect(hvacModeLabel(undefined, "off")).toBe("Off");
+    const localize = (key: string) => (key === "component.climate.entity_component._.state.heat" ? "Heizen" : "");
+    expect(hvacModeLabel(localize, "heat")).toBe("Heizen");
+  });
+});
+
+describe("Header summaries", () => {
+  const boundary = snapshot.plant.execution_boundary;
+
+  it("labels each execution boundary in sentence case", () => {
+    expect(boundaryLabel(boundary)).toBe("Dry run");
+    expect(boundaryLabel({ ...boundary, mode: "mixed", dry_run: false, forced_shadow: ["source_selection"] })).toBe("Mixed");
+    expect(boundaryLabel({ ...boundary, mode: "mixed", dry_run: false, forced_shadow: [] })).toBe("Live");
+  });
+
+  it("omits the source summary for a Plant without sources", () => {
+    expect(sourceSummary(snapshot)).toBeNull();
+    const withSource = { ...snapshot, sources: [{ id: "boiler" }], plant: { ...snapshot.plant, source: { active_id: "boiler", active_name: "Boiler", recommended_id: "boiler", recommended_name: "Boiler" } } };
+    expect(sourceSummary(withSource)).toBe("Boiler");
+    const idle = { ...withSource, plant: { ...withSource.plant, source: { active_id: null, active_name: null, recommended_id: "boiler", recommended_name: "Boiler" } } };
+    expect(sourceSummary(idle)).toBe("None active · recommended Boiler");
+  });
+
+  it("names path nodes with the Room and Loop vocabulary", () => {
+    expect(["zone", "circuit", "valve", "pump", "source"].map(nodeKindLabel)).toEqual(["Room", "Loop", "Valve", "Pump", "Source"]);
+  });
+});
+
+describe("Alert titles", () => {
+  it("names the room or equipment and uses a readable label", () => {
+    expect(alertTitle({ code: "zone_sensor_blocked", scope: "zone-1", name: "Living" })).toBe("Living · Sensor blocked");
+    expect(alertTitle({ code: "actuator_mismatch", scope: "valve-1", name: "Living loop valve" })).toBe("Living loop valve · Equipment mismatch");
+  });
+
+  it("leaves the Plant name out of Plant alerts and falls back without a name", () => {
+    expect(alertTitle({ code: "binding_unavailable", scope: "plant", name: "Hydronic plant" })).toBe("Entity unavailable");
+    expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Room blocked");
+    expect(alertTitle({ code: "something_new", scope: "plant" })).toBe("Something new");
   });
 });

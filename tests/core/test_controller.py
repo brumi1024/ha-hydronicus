@@ -697,7 +697,6 @@ def test_shared_equipment_conflict_blocks_cooling_with_structured_explanations(
     assert result.next_runtime.cooling_zone_demands["cooling-zone"] is False
     assert result.control_plan.cooling_valve_consumers == {}
     assert result.control_plan.cooling_pump_consumers == {}
-    assert result.control_plan.cooling_actuator_ids == frozenset()
     assert result.control_plan.mode_conflicts == conflicts
     assert result.diagnostics.cooling_zone_decisions["cooling-zone"].status is (
         ZoneDecisionStatus.SENSOR_BLOCKED
@@ -729,7 +728,6 @@ def test_independent_hydraulic_paths_keep_cooling_route_eligible() -> None:
         "cooling-valve": frozenset({"cooling-circuit"})
     }
     assert result.control_plan.cooling_pump_consumers == {}
-    assert result.control_plan.cooling_actuator_ids == frozenset({"cooling-valve"})
 
 
 def test_dew_point_and_condensation_margin_are_deterministic() -> None:
@@ -1145,9 +1143,9 @@ def test_one_zone_requests_every_enabled_delivery_route() -> None:
         "ceiling-pump": frozenset({"ceiling"}),
     }
     assert opening.diagnostics.circuit_reasons["floor"] == (
-        "Waiting for valve readiness after eligible delivery route living-floor "
-        "requested this circuit."
+        "Waiting for the valves to open for Living."
     )
+    assert ready.diagnostics.circuit_reasons["floor"] == "Ready: the valves are open for Living."
 
 
 def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
@@ -1377,7 +1375,6 @@ def test_heat_to_cool_changeover_releases_source_and_waits_for_safe_idle() -> No
     assert [(command.actuator_id, command.action) for command in cooling.control_plan.commands] == [
         ("valve", "open")
     ]
-    assert cooling.control_plan.cooling_actuator_ids == frozenset({"valve", "pump"})
 
 
 @pytest.mark.parametrize(

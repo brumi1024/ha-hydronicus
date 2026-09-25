@@ -59,8 +59,8 @@ def test_compile_topology_produces_summary() -> None:
 
     assert compiled.id == "plant-1"
     assert compiled.logic_summary == (
-        "Loop Floor loop opens valve Floor valve before requesting pump Floor pump.",
-        "Room Living room can request loop Floor loop.",
+        "Floor loop opens Floor valve, then starts Floor pump.",
+        "Living room is heated by Floor loop.",
     )
 
 
@@ -102,10 +102,10 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
     compiled = compile_topology(plant)
 
     assert compiled.logic_summary == (
-        "Loop Floor loop opens valve Shared valve before requesting pump Shared pump.",
-        "Loop Ceiling loop opens valve Shared valve before requesting pump Shared pump.",
-        "Room Living room can request loops Floor loop, Ceiling loop.",
-        "Room Office can request loop Floor loop.",
+        "Floor loop opens Shared valve, then starts Shared pump.",
+        "Ceiling loop opens Shared valve, then starts Shared pump.",
+        "Living room is heated by Floor loop and Ceiling loop.",
+        "Office is heated by Floor loop.",
         "Valve Shared valve is shared by loops Floor loop, Ceiling loop.",
         "Pump Shared pump is shared by loops Floor loop, Ceiling loop.",
     )
@@ -272,7 +272,7 @@ def test_compile_topology_rejects_orphans() -> None:
         routes=tuple(),
     )
 
-    with pytest.raises(TopologyValidationError, match="orphaned zones"):
+    with pytest.raises(TopologyValidationError, match="Rooms without an enabled route to a loop"):
         compile_topology(plant)
 
 
@@ -399,7 +399,7 @@ def test_unrouted_circuit_and_its_equipment_are_unused() -> None:
     }
     assert [route.id for route in compiled.routes] == ["route-1"]
     assert (
-        "Loop Spare loop opens valves Spare valve, Floor valve before requesting pump Spare pump."
+        "Spare loop opens Spare valve and Floor valve, then starts Spare pump."
         in compiled.logic_summary
     )
     loop_warning = next(w for w in compiled.warnings if w.equipment_id == "circuit-3")
@@ -419,7 +419,9 @@ def test_zone_without_enabled_route_is_still_rejected() -> None:
         routes=(DeliveryRoute("route-1", "zone-1", "circuit-1", enabled=False),),
     )
 
-    with pytest.raises(TopologyValidationError, match="orphaned zones: zone-1.$"):
+    with pytest.raises(
+        TopologyValidationError, match="Rooms without an enabled route to a loop: zone-1.$"
+    ):
         compile_topology(plant)
 
 
@@ -517,9 +519,7 @@ def test_compile_topology_rejects_circuit_without_valves() -> None:
         routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
     )
 
-    with pytest.raises(
-        TopologyValidationError, match="Circuit circuit-1 requires at least one valve"
-    ):
+    with pytest.raises(TopologyValidationError, match="Loop circuit-1 requires at least one valve"):
         compile_topology(plant)
 
 
@@ -546,7 +546,7 @@ def test_compile_topology_rejects_non_finite_zone_target(
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 target temperature must be finite",
+        match="Room zone-1 target temperature must be finite",
     ):
         compile_topology(plant)
 
@@ -574,7 +574,7 @@ def test_compile_topology_rejects_out_of_range_zone_target(
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 target temperature must be between 5 and 35",
+        match="Room zone-1 target temperature must be between 5 and 35",
     ):
         compile_topology(plant)
 
@@ -599,7 +599,7 @@ def test_compile_topology_rejects_duplicate_zone_temperature_sensors() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 temperature sensors must not contain duplicates",
+        match="Room zone-1 temperature sensors must not contain duplicates",
     ):
         compile_topology(plant)
 
@@ -617,7 +617,7 @@ def test_compile_topology_rejects_zone_without_temperature_sensors() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 requires at least one temperature sensor",
+        match="Room zone-1 requires at least one temperature sensor",
     ):
         compile_topology(plant)
 
@@ -644,7 +644,7 @@ def test_compile_topology_rejects_blank_temperature_sensor_id() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 temperature sensors must be non-empty entity ids",
+        match="Room zone-1 temperature sensors must be non-empty entity ids",
     ):
         compile_topology(plant)
 
@@ -767,7 +767,7 @@ def test_compile_topology_rejects_unknown_temperature_aggregation() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 temperature aggregation must be a supported policy",
+        match="Room zone-1 temperature aggregation must be a supported policy",
     ):
         compile_topology(plant)
 
@@ -791,7 +791,7 @@ def test_compile_topology_rejects_invalid_temperature_sensor_weights() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Zone zone-1 temperature sensor weights must be positive and finite",
+        match="Room zone-1 temperature sensor weights must be positive and finite",
     ):
         compile_topology(plant)
 
@@ -924,7 +924,7 @@ def test_compile_topology_rejects_blank_bindings_and_unknown_routes() -> None:
         ),
         routes=(DeliveryRoute("route", "missing", "circuit"),),
     )
-    with pytest.raises(TopologyValidationError, match="unknown zone missing"):
+    with pytest.raises(TopologyValidationError, match="unknown room missing"):
         compile_topology(unknown_zone)
 
     unknown_circuit = _metadata_plant(
@@ -938,7 +938,7 @@ def test_compile_topology_rejects_blank_bindings_and_unknown_routes() -> None:
         ),
         routes=(DeliveryRoute("route", "zone", "missing"),),
     )
-    with pytest.raises(TopologyValidationError, match="unknown circuit missing"):
+    with pytest.raises(TopologyValidationError, match="unknown loop missing"):
         compile_topology(unknown_circuit)
 
 
@@ -1020,6 +1020,50 @@ def test_compile_topology_accepts_cooling_references_and_metadata() -> None:
     compiled = compile_topology(plant)
 
     assert compiled.circuits["circuit"].cooling_enabled is True
+    assert "Zone is heated and cooled by Circuit." in compiled.logic_summary
+
+
+def test_compile_topology_names_the_cooling_loops_of_a_room() -> None:
+    """A room served by heating-only and cooling loops says which loops also cool it."""
+    zone = Zone(
+        "zone",
+        "Living",
+        22.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.temperature"),),
+        humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+    )
+    plant = PlantConfiguration(
+        id="mixed",
+        zones=(zone,),
+        valves=(
+            Valve("floor-valve", "Floor valve", "switch.floor_valve"),
+            Valve("ceiling-valve", "Ceiling valve", "switch.ceiling_valve"),
+        ),
+        pumps=(Pump("pump", "Circulation pump", "switch.pump"),),
+        circuits=(
+            Circuit("floor", "Floor loop", ("floor-valve",), "pump"),
+            Circuit(
+                "ceiling",
+                "Ceiling loop",
+                ("ceiling-valve",),
+                "pump",
+                cooling_enabled=True,
+                supply_temperature_sensor="sensor.supply",
+            ),
+        ),
+        routes=(
+            DeliveryRoute("floor-route", "zone", "floor"),
+            DeliveryRoute("ceiling-route", "zone", "ceiling"),
+        ),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert compiled.logic_summary[:3] == (
+        "Floor loop opens Floor valve, then starts Circulation pump.",
+        "Ceiling loop opens Ceiling valve, then starts Circulation pump.",
+        "Living is heated by Floor loop and Ceiling loop, and cooled by Ceiling loop.",
+    )
 
 
 def test_compile_topology_warns_for_shared_pumps_and_sources() -> None:
@@ -1212,7 +1256,7 @@ def test_cooling_observation_errors_name_the_circuit_zone_and_observation() -> N
     assert (humidity.value.circuit_id, humidity.value.zone_id) == ("circuit", "zone")
     assert humidity.value.observation == "humidity"
     assert isinstance(humidity.value, TopologyValidationError)
-    assert "requires humidity observations for zone zone" in str(humidity.value)
+    assert "requires humidity observations for room zone" in str(humidity.value)
 
     no_temperature = Zone(
         "zone",

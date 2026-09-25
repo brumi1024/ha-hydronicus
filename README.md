@@ -23,7 +23,7 @@ HACS-installed evidence from the exact committed candidate remains pending.
 | Capability | Current candidate | `v0.1.0` release target |
 | --- | --- | --- |
 | Heating valves and pumps | Proposed in Dry run; controlled when off | Same behavior |
-| Cooling and condensation protection | Starts remain Dry run | Starts remain Dry run |
+| Cooling valves and pumps, with condensation protection | Proposed in Dry run; controlled when off | Same behavior |
 | Source recommendation | Visible in both modes; selection remains Dry run | Same behavior |
 | Direct source demand | Proposed in Dry run; controlled when off after a valid pump path | Same behavior |
 
@@ -48,7 +48,7 @@ The current implementation includes:
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
 - Cooling condensation diagnostics and Dry run source recommendations.
 - Explicit, idempotent switch and native-valve executor operations behind the Plant Dry run control.
-- Dry run climate, demand, aggregate-temperature, blocked-state, actuator-request, topology-preview, and explanation entities.
+- Dry run climate, heating demand, temperature, blocked-state, actuator-request, topology-preview, and explanation entities, with cooling and source entities only where the Plant has them.
 - Structured non-fatal warnings when shared valves or pumps limit independent control, and for unused Plant equipment.
 
 Home Assistant Repairs for unresolved bindings, redacted downloadable diagnostics, startup reconciliation, and bounded command-failure handling are implemented.
@@ -125,17 +125,17 @@ To use guided setup:
 Guided setup names each room's loop after the room, such as `Bedroom loop`, and its valve after the loop, such as `Bedroom loop valve`.
 The plant file uses the same names, which is why both paths create the same entity IDs.
 
-The review lists the two rooms and the compiled topology, such as `Room Bedroom can request loop Bedroom loop.`
+The review lists the two rooms and how they connect, such as `Bedroom is heated by Bedroom loop.`
 It also lists one warning, `Pump Circulation pump is shared by loops Living room loop, Bedroom loop; ...`, because separate room thermostats cannot control loops on one pump independently.
 That is expected for a manifold, so turn on **I understand these warnings** and submit.
 The new Plant starts in Dry run.
 
 ### Exercise the simulation
 
-1. Set `climate.trial_plant_bedroom` to heat, because a fresh Hydronicus thermostat starts off with a 21 °C target.
+1. Set `climate.bedroom` to heat, because a fresh Hydronicus thermostat starts off with a 21 °C target.
 2. Lower `input_number.hydronicus_trial_bedroom_temperature` to 18 °C.
-3. Check that `binary_sensor.trial_plant_bedroom_demand` and `binary_sensor.trial_plant_bedroom_loop_valve_requested` turn on, while the Living room entities stay off.
-4. After the valve's 30 second default opening time, check that `binary_sensor.trial_plant_circulation_pump_requested` turns on.
+3. Check that `binary_sensor.bedroom_heating_demand` and `binary_sensor.bedroom_loop_valve_requested` turn on, while the Living room entities stay off.
+4. After the valve's 30 second default opening time, check that `binary_sensor.circulation_pump_requested` turns on.
 5. Raise the bedroom temperature to 22 °C.
    Demand ends, the virtual pump follows its 120 second default overrun, and then the virtual valve closes.
 
@@ -210,7 +210,7 @@ Do not use the integration to bypass a hardware interlock or to decide whether e
 
 The software calculates heating, cooling, and source decisions while every new Plant starts in Dry run.
 Cooling interlocks, dew-point checks, source selection, and the internal actuator executor are implemented and tested.
-The Dry run setting controls heating valves, pumps, and configured direct source demand, while cooling starts and source selectors remain Dry run only.
+The Dry run setting controls valves and pumps in heating and cooling, and configured direct source demand, while source selectors remain Dry run only.
 These are not production safety controls or authorization to operate physical equipment.
 
 Read [safety limits](docs/safety.md) before using any real sensor data.

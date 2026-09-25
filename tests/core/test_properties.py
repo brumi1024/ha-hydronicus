@@ -468,7 +468,6 @@ def test_generated_shared_equipment_conflicts_never_share_mode_consumers(
     assert result.next_runtime.cooling_zone_demands["cooling"] is False
     assert result.control_plan.cooling_valve_consumers == {}
     assert result.control_plan.cooling_pump_consumers == {}
-    assert result.control_plan.cooling_actuator_ids == frozenset()
 
 
 def _demand_snapshot(
@@ -539,7 +538,6 @@ def test_unused_equipment_is_never_requested(
             for equipment_id, circuit_ids in consumers.items():
                 assert not (equipment_id in unused and circuit_ids)
                 assert unused.isdisjoint(circuit_ids)
-        # cooling_actuator_ids only forces start commands into shadow, so it requests nothing.
         unused_commands = [c for c in plan.commands if c.actuator_id in unused]
         assert all(
             command.action in {ActuatorAction.CLOSE, ActuatorAction.TURN_OFF}

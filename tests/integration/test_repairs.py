@@ -386,15 +386,33 @@ async def test_pump_binding_repair_opens_plant_settings(hass, hass_client) -> No
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_subentry"
     flow_type, next_flow_id = result["next_flow"]
-    assert flow_type == "config_flow"
+    assert flow_type == "options_flow"
 
-    config_flow = hass.config_entries.flow.async_get(next_flow_id)
-    assert config_flow["handler"] == DOMAIN
-    assert config_flow["context"]["source"] == config_entries.SOURCE_RECONFIGURE
-    assert config_flow["context"]["entry_id"] == entry.entry_id
-    assert config_flow["step_id"] == "reconfigure"
+    # Plant settings are the Plant entry's options flow.
+    options_flow = hass.config_entries.options.async_get(next_flow_id)
+    assert options_flow["handler"] == entry.entry_id
+    assert options_flow["step_id"] == "init"
     # Handing off does not claim the repair is fixed while the binding is still missing.
     assert issue_id in _issues(hass)
+
+    # The handed-off flow fixes the binding: bind the pump to an existing switch.
+    hass.states.async_set("switch.zone_a_replacement_pump", "off")
+    options = hass.config_entries.options
+    result = await options.async_configure(next_flow_id, {"next_step_id": "edit_pump"})
+    result = await options.async_configure(next_flow_id, {"pump": PUMP_A})
+    assert result["step_id"] == "pump"
+    result = await options.async_configure(
+        next_flow_id,
+        {
+            CONF_NAME: "Zone A pump",
+            "entity_id": "switch.zone_a_replacement_pump",
+            "overrun_seconds": 0.0,
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "settings_saved"
+    assert issue_id not in _issues(hass)
 
 
 async def test_pump_fix_flow_aborts_when_the_plant_is_gone(hass) -> None:
@@ -413,6 +431,7 @@ async def test_pump_fix_flow_aborts_when_the_plant_is_gone(hass) -> None:
     assert result["reason"] == "subentry_not_found"
     assert "next_flow" not in result
     assert hass.config_entries.flow.async_progress() == []
+    assert hass.config_entries.options.async_progress() == []
 
 
 async def test_room_binding_repair_opens_the_room_reconfigure_flow(

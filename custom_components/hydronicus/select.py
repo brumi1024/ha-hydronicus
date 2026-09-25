@@ -11,6 +11,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import HydronicConfigEntry
 from .core.model import PlantMode
 from .entity_device import plant_device_info
+from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime
 
 # The runtime serializes mode requests under its own operation lock.
@@ -57,4 +58,6 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add the one plant-level requested-mode selector."""
-    async_add_entities([PlantModeSelect(entry)])
+    async_add_plant_entities(
+        entry.runtime_data, "select", async_add_entities, [PlantModeSelect(entry)]
+    )

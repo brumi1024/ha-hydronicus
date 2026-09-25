@@ -78,8 +78,8 @@ async def test_action_and_dialog_return_the_same_plant_file(hass) -> None:
 
     response = await _export(hass, entry.entry_id)
 
-    result = await entry.start_reconfigure_flow(hass)
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "export_plant"}
     )
     shown = result["description_placeholders"]["document"]

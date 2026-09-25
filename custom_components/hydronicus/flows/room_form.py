@@ -134,6 +134,31 @@ def _suggested(key: str, defaults: Mapping[str, Any], *, required: bool = False)
     return marker(key, description={"suggested_value": value})
 
 
+def _room_cooling_fields() -> dict[Any, Any]:
+    """Return the Cooling section of a new room: its humidity and its loop's cooling."""
+    return {
+        vol.Optional(CONF_COOLING_ENABLED, default=False): selector.BooleanSelector(),
+        vol.Optional(CONF_HUMIDITY_SENSORS): sensor_selector(
+            SensorDeviceClass.HUMIDITY, multiple=True
+        ),
+        vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR): sensor_selector(
+            SensorDeviceClass.TEMPERATURE
+        ),
+        vol.Optional(CONF_SURFACE_TEMPERATURE_SENSOR): sensor_selector(
+            SensorDeviceClass.TEMPERATURE
+        ),
+        vol.Optional(
+            CONF_CONDENSATION_MARGIN, default=DEFAULT_CONDENSATION_MARGIN
+        ): temperature_delta_selector(),
+    }
+
+
+def _cooling_input(user_input: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the submitted Cooling section of a new room, or an empty mapping."""
+    section_input = user_input.get(SECTION_COOLING)
+    return section_input if isinstance(section_input, Mapping) else {}
+
+
 def room_form_schema(
     *,
     pumps: Sequence[selector.SelectOptionDict],
@@ -145,7 +170,9 @@ def room_form_schema(
 
     ``defaults`` holds form values, as ``room_form_defaults`` returns them. The
     pump is asked for only when the Plant has two or more pumps, and shared
-    loops only when the Plant has any.
+    loops only when the Plant has any. A form that creates the room's private
+    loop from its valves also has a collapsed Cooling section, because cooling
+    applies to that loop.
     """
     defaults = defaults or {}
     schema: dict[Any, Any] = {
@@ -165,6 +192,8 @@ def room_form_schema(
         schema[_suggested(CONF_SHARED_LOOPS, defaults)] = topology_select(
             list(shared_loops), multiple=True
         )
+    if include_valves:
+        schema[vol.Optional(SECTION_COOLING)] = collapsed_section(_room_cooling_fields())
     return vol.Schema(schema)
 
 
@@ -228,6 +257,25 @@ def room_form_errors(
         errors["base"] = "delivery_required"
     elif user_input.get(CONF_VALVES) and _pump_id(user_input, plant) is None:
         errors[CONF_PUMP if len(plant.configuration.pumps) >= 2 else "base"] = "pump_required"
+    # Cooling from the room form applies to the room's own loop, so it needs Loop
+    # valves: a shared loop is Plant equipment that only the plant file edits. The
+    # other checks mirror what the graph requires of a cooling loop, made here so
+    # that each error names what fixes it. Fields inside the collapsed section are
+    # reported on the form.
+    cooling = _cooling_input(user_input)
+    cooling_on = bool(cooling.get(CONF_COOLING_ENABLED))
+    if cooling_on and not user_input.get(CONF_TEMPERATURE_SENSORS):
+        errors.setdefault(CONF_TEMPERATURE_SENSORS, "temperature_required_for_cooling")
+    if cooling_on and "base" not in errors:
+        if not user_input.get(CONF_VALVES):
+            errors["base"] = "cooling_requires_room_loop"
+        elif not (
+            cooling.get(CONF_SUPPLY_TEMPERATURE_SENSOR)
+            or cooling.get(CONF_SURFACE_TEMPERATURE_SENSOR)
+        ):
+            errors["base"] = "cooling_reference_required"
+        elif not cooling.get(CONF_HUMIDITY_SENSORS):
+            errors["base"] = "humidity_required_for_cooling"
     errors.update(own_entity_errors(hass, user_input))
     if external and is_hydronicus_owned(hass, str(external)):
         errors["base"] = "thermostat_loop"
@@ -243,13 +291,16 @@ def room_draft_from_form(
     loops and valves, its thermostat settings unless the thermostat kind changes,
     and the route ids and route flags of the shared loops it keeps. ``valves``
     creates the room's first private loop, so it is ignored for a room that
-    already has one.
+    already has one. The Cooling section of a new room gives the room its
+    humidity sensors and the private loop its cooling settings.
     """
     name = str(user_input[CONF_NAME]).strip()
     sensors = [str(entity_id) for entity_id in user_input.get(CONF_TEMPERATURE_SENSORS) or ()]
     external = user_input.get(CONF_EXTERNAL_CLIMATE_ENTITY) or None
+    cooling = _cooling_input(user_input)
     if existing is None:
-        zone = _new_zone(str(uuid4()), name, sensors, external)
+        humidity = [str(entity_id) for entity_id in cooling.get(CONF_HUMIDITY_SENSORS) or ()]
+        zone = _new_zone(str(uuid4()), name, sensors, external, humidity)
         circuits: list[dict[str, Any]] = []
         valves: list[dict[str, Any]] = []
         kept_routes: list[dict[str, Any]] = []
@@ -277,7 +328,7 @@ def room_draft_from_form(
         if pump_id is None:
             raise ValueError("A room loop needs a pump.")
         circuit, loop_valves = new_private_loop(
-            f"{name} loop", valve_entities, pump_id=pump_id, taken_names=()
+            f"{name} loop", valve_entities, pump_id=pump_id, taken_names=(), cooling=cooling
         )
         circuits.append(circuit)
         valves.extend(loop_valves)
@@ -300,8 +351,13 @@ def new_private_loop(
     pump_id: str,
     taken_names: Collection[str],
     opening_time: float = DEFAULT_VALVE_OPENING_TIME,
+    cooling: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Return a new loop record and one new valve record per entity."""
+    """Return a new loop record and one new valve record per entity.
+
+    ``cooling`` holds the room form's Cooling section; without it the loop only heats.
+    """
+    cooling = cooling or {}
     loop_id = str(uuid4())
     valves = new_valves(name, valve_entities, taken_names=taken_names, opening_time=opening_time)
     circuit = {
@@ -309,10 +365,12 @@ def new_private_loop(
         CONF_NAME: name,
         CONF_VALVE_IDS: [valve["id"] for valve in valves],
         CONF_PUMP_ID: pump_id,
-        CONF_COOLING_ENABLED: False,
-        CONF_SUPPLY_TEMPERATURE_SENSOR: None,
-        CONF_SURFACE_TEMPERATURE_SENSOR: None,
-        CONF_CONDENSATION_MARGIN: DEFAULT_CONDENSATION_MARGIN,
+        CONF_COOLING_ENABLED: bool(cooling.get(CONF_COOLING_ENABLED, False)),
+        CONF_SUPPLY_TEMPERATURE_SENSOR: cooling.get(CONF_SUPPLY_TEMPERATURE_SENSOR) or None,
+        CONF_SURFACE_TEMPERATURE_SENSOR: cooling.get(CONF_SURFACE_TEMPERATURE_SENSOR) or None,
+        CONF_CONDENSATION_MARGIN: cooling.get(
+            CONF_CONDENSATION_MARGIN, DEFAULT_CONDENSATION_MARGIN
+        ),
         CONF_SUPPLY_TEMPERATURE_MAX_AGE: DEFAULT_REFERENCE_MAX_AGE,
         CONF_SURFACE_TEMPERATURE_MAX_AGE: DEFAULT_REFERENCE_MAX_AGE,
     }
@@ -391,13 +449,18 @@ def default_sensor_metadata(entity_id: str) -> dict[str, Any]:
 
 
 def _new_zone(
-    zone_id: str, name: str, sensors: Sequence[str], external: str | None
+    zone_id: str,
+    name: str,
+    sensors: Sequence[str],
+    external: str | None,
+    humidity_sensors: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Return a new zone record with default thermostat settings."""
     zone = zone_data(
         {
             CONF_NAME: name,
             CONF_TEMPERATURE_SENSORS: list(sensors),
+            CONF_HUMIDITY_SENSORS: list(humidity_sensors),
             CONF_CIRCUIT_IDS: [],
             CONF_THERMOSTAT_KIND: (
                 THERMOSTAT_KIND_EXTERNAL_CLIMATE if external else THERMOSTAT_KIND_HYDRONICUS

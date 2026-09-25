@@ -21,8 +21,10 @@ from custom_components.hydronicus.const import (
     CONF_DRY_RUN_CONFIRMATION,
     CONF_NAME,
     CONF_PLANT_ID,
+    DEFAULT_CONDENSATION_MARGIN,
     DOMAIN,
 )
+from custom_components.hydronicus.flows.plant import PlantSettingsOptionsFlow
 from custom_components.hydronicus.plant_file import plant_file
 from tests.core.test_plant_document import NEGATIVE_FIXTURES
 from tests.integration.flow_forms import form_fields, form_value
@@ -166,7 +168,7 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
     assert result["step_id"] == "review"
     placeholders = result["description_placeholders"]
     assert placeholders["rooms"] == "- Living room\n- Bedroom\n- Office"
-    assert "Room Bedroom can request loop Bedroom loop." in placeholders["logic"]
+    assert "Bedroom is heated by Bedroom loop." in placeholders["logic"]
     # Three rooms on one pump carry the shared pump warning, which needs confirming.
     assert "shared by loops" in placeholders["warnings"]
     result = await _submit(hass, result, {"confirm": True})
@@ -214,7 +216,7 @@ async def test_guided_setup_creates_a_three_room_manifold_in_six_screens(hass) -
     runtime = entry.runtime_data
     assert runtime.dry_run is True
     assert runtime.subentry_id_for(pump["id"]) is None
-    assert hass.states.get("climate.manifold_bedroom") is not None
+    assert hass.states.get("climate.bedroom") is not None
 
 
 async def test_guided_setup_without_warnings_needs_no_confirmation(hass) -> None:
@@ -252,11 +254,122 @@ async def test_guided_forms_ask_only_for_what_setup_needs(hass) -> None:
         "temperature_sensors",
         "external_climate_entity",
         "valves",
+        "cooling",
+        "cooling.cooling_enabled",
+        "cooling.humidity_sensors",
+        "cooling.supply_temperature_sensor",
+        "cooling.surface_temperature_sensor",
+        "cooling.condensation_margin",
         "add_another",
     }
     assert fields["temperature_sensors"]["selector"]["entity"]["device_class"] == ["temperature"]
     assert fields["valves"]["selector"]["entity"]["domain"] == ["switch", "valve"]
     assert form_value(result, "add_another") is False
+    # Cooling is optional and collapsed, and starts off.
+    assert fields["cooling"]["expanded"] is False
+    assert form_value(result, "cooling.cooling_enabled") is False
+    assert fields["cooling.humidity_sensors"]["selector"]["entity"]["device_class"] == ["humidity"]
+    assert fields["cooling.humidity_sensors"]["selector"]["entity"]["multiple"] is True
+    # The margin has the default and bounds of the loop form's Cooling section.
+    margin = fields["cooling.condensation_margin"]
+    assert margin["default"] == DEFAULT_CONDENSATION_MARGIN
+    assert margin["selector"]["number"]["min"] == 0
+    assert margin["selector"]["number"]["unit_of_measurement"] == "°C"
+
+
+async def test_guided_room_form_lists_rooms_only_once_one_exists(hass) -> None:
+    """The first room form lists no rooms; later ones list the rooms added so far."""
+    result = await _first_room(hass)
+    assert result["description_placeholders"]["rooms"] == ""
+
+    name, sensor, valve = ROOMS[0]
+    result = await _submit(hass, result, _room(name, sensor, valve, add_another=True))
+
+    assert result["step_id"] == "room"
+    assert result["description_placeholders"]["rooms"] == ("\n\nRooms added so far:\n- Living room")
+
+
+COOLING_ROOM = {
+    CONF_NAME: "Living room",
+    "temperature_sensors": ["sensor.living_temperature"],
+    "valves": ["switch.living_valve"],
+    "cooling": {
+        "cooling_enabled": True,
+        "humidity_sensors": ["sensor.living_humidity"],
+        "surface_temperature_sensor": "sensor.living_floor_temperature",
+        "condensation_margin": 3.0,
+    },
+}
+
+
+async def test_guided_setup_creates_a_cooling_room(hass) -> None:
+    """The room form's Cooling section cools the private loop and stores the humidity sensors."""
+    result = await _first_room(hass)
+    result = await _submit(hass, result, COOLING_ROOM)
+
+    assert result["step_id"] == "review"
+    assert (
+        "Living room is heated and cooled by Living room loop."
+        in (result["description_placeholders"]["logic"])
+    )
+    result = await _submit(hass, result, {"confirm": True} if form_fields(result) else {})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    topology = result["result"].data["topology"]
+    (zone,) = topology["zones"]
+    (circuit,) = topology["circuits"]
+    assert [sensor["entity_id"] for sensor in zone["humidity_sensor_metadata"]] == [
+        "sensor.living_humidity"
+    ]
+    assert circuit["cooling_enabled"] is True
+    assert circuit["surface_temperature_sensor"] == "sensor.living_floor_temperature"
+    assert circuit["supply_temperature_sensor"] is None
+    assert circuit["condensation_margin"] == 3.0
+
+
+async def test_guided_room_without_cooling_keeps_a_heating_only_loop(hass) -> None:
+    """Leaving the section closed stores the loop with cooling off and the default margin."""
+    result = await _first_room(hass)
+    name, sensor, valve = ROOMS[0]
+    result = await _submit(hass, result, _room(name, sensor, valve))
+    result = await _submit(hass, result, {"confirm": True} if form_fields(result) else {})
+
+    topology = result["result"].data["topology"]
+    (zone,) = topology["zones"]
+    (circuit,) = topology["circuits"]
+    assert zone["humidity_sensor_metadata"] == []
+    assert circuit["cooling_enabled"] is False
+    assert circuit["condensation_margin"] == DEFAULT_CONDENSATION_MARGIN
+
+
+@pytest.mark.parametrize(
+    ("change", "errors"),
+    [
+        pytest.param(
+            {"cooling": {"cooling_enabled": True, "humidity_sensors": ["sensor.h"]}},
+            {"base": "cooling_reference_required"},
+            id="no condensation reference",
+        ),
+        pytest.param(
+            {"cooling": {"cooling_enabled": True, "supply_temperature_sensor": "sensor.supply"}},
+            {"base": "humidity_required_for_cooling"},
+            id="no humidity sensors",
+        ),
+        pytest.param(
+            {"temperature_sensors": [], "external_climate_entity": "climate.living"},
+            {"temperature_sensors": "temperature_required_for_cooling"},
+            id="no temperature sensors",
+        ),
+    ],
+)
+async def test_guided_cooling_room_is_validated(hass, change, errors) -> None:
+    """A cooling room needs a condensation reference, humidity, and temperature sensors."""
+    result = await _first_room(hass)
+    result = await _submit(hass, result, {**COOLING_ROOM, **change})
+
+    assert result["step_id"] == "room"
+    assert result["errors"] == errors
+    # The rejected form keeps what the user entered in the section.
+    assert form_value(result, "cooling.cooling_enabled") is True
 
 
 async def test_guided_plant_form_rejects_a_blank_name_and_keeps_the_input(hass) -> None:
@@ -408,7 +521,7 @@ async def test_import_creates_the_plant_with_room_and_source_subentries(hass) ->
     placeholders = result["description_placeholders"]
     assert placeholders["name"] == "Sources"
     assert placeholders["rooms"] == "- Living room"
-    assert "Room Living room can request loop Living loop." in placeholders["logic"]
+    assert "Living room is heated by Living loop." in placeholders["logic"]
     result = await _submit(
         hass, result, {"confirm": True} if "confirm" in form_fields(result) else {}
     )
@@ -625,7 +738,7 @@ async def test_imported_cooling_plant_persists_and_reloads(hass) -> None:
 # --------------------------------------------------------------------------
 
 
-async def test_reconfigure_cannot_disable_dry_run_without_loaded_runtime(hass) -> None:
+async def test_plant_settings_cannot_disable_dry_run_without_loaded_runtime(hass) -> None:
     """Leaving Dry run requires a live runtime to own activation safety."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -638,22 +751,22 @@ async def test_reconfigure_cannot_disable_dry_run_without_loaded_runtime(hass) -
     )
     entry.add_to_hass(hass)
 
-    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == FlowResultType.MENU
-    assert result["step_id"] == "reconfigure"
-    result = await hass.config_entries.flow.async_configure(
+    assert result["step_id"] == "init"
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "dry_run"}
     )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "dry_run"
 
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN: False}
     )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "dry_run_confirmation"
 
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN_CONFIRMATION: True}
     )
     assert result["type"] == FlowResultType.FORM
@@ -662,7 +775,7 @@ async def test_reconfigure_cannot_disable_dry_run_without_loaded_runtime(hass) -
     assert entry.data[CONF_DRY_RUN] is True
 
 
-async def test_reconfigure_can_enable_dry_run_without_loaded_runtime(hass) -> None:
+async def test_plant_settings_can_enable_dry_run_without_loaded_runtime(hass) -> None:
     """Re-enabling Dry run is a safe persisted fallback when runtime is unloaded."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -675,24 +788,25 @@ async def test_reconfigure_can_enable_dry_run_without_loaded_runtime(hass) -> No
     )
     entry.add_to_hass(hass)
 
-    result = await entry.start_reconfigure_flow(hass)
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "dry_run"}
     )
-    result = await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={CONF_DRY_RUN: True}
     )
 
     assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
+    assert result["reason"] == "settings_saved"
     assert entry.data[CONF_DRY_RUN] is True
 
 
 def test_parent_flow_steps_return_config_flow_results() -> None:
-    """Parent flow steps use the specific ConfigFlowResult type, not FlowResult."""
+    """Parent and Plant settings steps use the specific ConfigFlowResult type, not FlowResult."""
     steps = [
-        getattr(HydronicClimateConfigFlow, name)
-        for name in dir(HydronicClimateConfigFlow)
+        getattr(flow, name)
+        for flow in (HydronicClimateConfigFlow, PlantSettingsOptionsFlow)
+        for name in dir(flow)
         if name.startswith("async_step_") and name not in {"async_step_ignore"}
     ]
     own = [step for step in steps if step.__module__.startswith("custom_components.hydronicus.")]

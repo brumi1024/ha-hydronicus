@@ -12,9 +12,9 @@ Hydronicus never reads it from `configuration.yaml`, and the Plant you import is
 | Task | Where |
 | --- | --- |
 | Create a Plant from a file | **Settings > Devices & services > Add integration > Hydronicus > Import a plant file**. |
-| See the file of an existing Plant | The Plant entry's **Reconfigure** menu, then **Show the plant file**. |
+| See the file of an existing Plant | **Configure** on the Plant entry, then **Show the plant file**. |
 | Get the file from an automation or script | The `hydronicus.export_plant` action, which returns `{"document": ...}`. |
-| Change the whole Plant, including shared equipment | The Plant entry's **Reconfigure** menu, then **Edit plant file**. |
+| Change the whole Plant, including shared equipment | **Configure** on the Plant entry, then **Edit plant file**. |
 
 The **Plant file** field is a YAML editor.
 Paste the file there, either as the YAML text or as the parsed object that the editor shows.
@@ -24,7 +24,7 @@ The `hydronicus.export_plant` action is available only to administrators.
 Run it from **Settings > Tools > Actions** with the Plant selected; Home Assistant shows the response of this response-only action automatically.
 
 Import and edit both show a review before anything is saved.
-The review lists the rooms or the changes, the compiled topology, and the warnings.
+The review lists the rooms or the changes, how the Plant connects, and the warnings.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before saving.
 When you edit an existing Plant, only the warnings the edit introduces need that confirmation, because the Plant's earlier warnings were confirmed when they appeared.
 A Plant created from a file always starts in Dry run, and applying an edited file returns the Plant to Dry run.
@@ -105,7 +105,7 @@ A pump is either an entity ID, or a mapping of the stored pump fields:
 | Field | Value |
 | --- | --- |
 | `entity_id` | Required. The switch that runs the pump. |
-| `overrun_seconds` | How long the pump keeps running after the last valve closes. Defaults to 120. |
+| `overrun_seconds` | How long the pump keeps running after heating demand ends, before the valves close. Cooling stops the pump without overrun. Defaults to 120. |
 | `power_feedback_entity`, `flow_feedback_entity`, `fault_feedback_entity` | Optional feedback entities. |
 | `power_feedback_max_age_seconds`, `flow_feedback_max_age_seconds`, `fault_feedback_max_age_seconds` | Feedback older than this is stale. |
 

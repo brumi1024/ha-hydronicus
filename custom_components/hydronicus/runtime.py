@@ -19,6 +19,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util.unit_conversion import TemperatureConverter
 
@@ -110,6 +111,8 @@ class HydronicRuntime:
     ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(room_objects={}))
     diagnostics_include_actuator_details: bool = False
     plant_device_id: str | None = None
+    # Entity platform domain -> unique IDs that platform provided in this setup.
+    provided_entities: dict[str, frozenset[str]] = field(default_factory=dict)
     configuration_fingerprint: str = ""
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
@@ -971,12 +974,12 @@ class HydronicRuntime:
     def _actuator_states(self, hass: HomeAssistant) -> dict[str, str | None]:
         """Read configured actuator states without deriving desired state."""
         states = {
-            binding.entity_id: getattr(hass.states.get(binding.entity_id), "state", None)
+            binding.entity_id: getattr(_bound_state(hass, binding.entity_id), "state", None)
             for binding in self.executor.bindings.values()
         }
         states.update(
             {
-                entity_id: getattr(hass.states.get(entity_id), "state", None)
+                entity_id: getattr(_bound_state(hass, entity_id), "state", None)
                 for entity_id in self.executor.readiness_bindings.values()
             }
         )
@@ -988,7 +991,7 @@ class HydronicRuntime:
         resolved_entity_ids = {
             binding.entity_id
             for binding in bindings
-            if _entity_reference_is_resolved(hass.states.get(binding.entity_id))
+            if _entity_reference_is_resolved(_bound_state(hass, binding.entity_id))
         }
         self.unresolved_bindings = unresolved_entity_bindings(self.plant, resolved_entity_ids)
         self.unavailable_entity_ids = frozenset(
@@ -1443,13 +1446,13 @@ class HydronicRuntime:
         hass: HomeAssistant, entity_id: str, plausible: PlausibleRange
     ) -> NumericObservation:
         """Read one temperature observation in Celsius with its Home Assistant timestamp."""
-        return _numeric_observation(hass.states.get(entity_id), celsius_from_unit, plausible)
+        return _numeric_observation(_bound_state(hass, entity_id), celsius_from_unit, plausible)
 
     @staticmethod
     def _humidity_observation(hass: HomeAssistant, entity_id: str) -> NumericObservation:
         """Read one relative humidity observation in percent with its timestamp."""
         return _numeric_observation(
-            hass.states.get(entity_id), relative_humidity_from_unit, RELATIVE_HUMIDITY_RANGE
+            _bound_state(hass, entity_id), relative_humidity_from_unit, RELATIVE_HUMIDITY_RANGE
         )
 
     @staticmethod
@@ -1460,7 +1463,7 @@ class HydronicRuntime:
         """Read one configured feedback entity without coercing its meaning."""
         if entity_id is None:
             return None
-        state = hass.states.get(entity_id)
+        state = _bound_state(hass, entity_id)
         if state is None:
             return FeedbackObservation(None, None)
         raw_state = getattr(state, "state", None)
@@ -1488,17 +1491,17 @@ class HydronicRuntime:
                 )
             if source.availability_entity_id is not None:
                 source_availability[source.id] = _state_is_available(
-                    hass.states.get(source.availability_entity_id)
+                    _bound_state(hass, source.availability_entity_id)
                 )
             if source.demand_entity_id is not None:
-                state = hass.states.get(source.demand_entity_id)
+                state = _bound_state(hass, source.demand_entity_id)
                 if state is not None:
                     source_demand_states[source.id] = _state_is_on(state)
         if (
             self.plant.source_selector is not None
             and self.plant.source_selector.entity_id is not None
         ):
-            state = hass.states.get(self.plant.source_selector.entity_id)
+            state = _bound_state(hass, self.plant.source_selector.entity_id)
             source_selector_states[self.plant.source_selector.id] = (
                 getattr(state, "state", None) if state is not None else None
             )
@@ -1546,7 +1549,7 @@ class HydronicRuntime:
                 )
             else:
                 thermostat_states[zone_id] = _external_climate_state(
-                    hass.states.get(zone.thermostat.entity_id),
+                    _bound_state(hass, zone.thermostat.entity_id),
                     hass.config.units.temperature_unit,
                 )
         return PlantSnapshot(
@@ -1591,7 +1594,6 @@ class HydronicRuntime:
                 self._unavailable_actuator_ids()
                 | self._actuator_ids_blocked_by_failed_valve_starts()
             ),
-            force_dry_run_start_actuator_ids=result.control_plan.cooling_actuator_ids,
             force_dry_run_actuator_ids=(
                 frozenset({self.plant.source_selector.id})
                 if self.plant.source_selector is not None
@@ -1869,6 +1871,19 @@ def _stored_requested_mode(entry: Any) -> PlantMode:
 
 
 _PRESET_MODES = {"comfort", "eco", "away"}
+
+
+def _bound_state(hass: HomeAssistant, entity_id: str) -> State | None:
+    """Return the state of a bound entity, or None for an entity of this integration.
+
+    A Plant never reads a Hydronicus entity as an observation or actuator. Entity IDs
+    follow room names, so a room's Temperature can take the ID of a room sensor that
+    did not exist yet, and reading it would feed the Plant's output back into itself.
+    """
+    registry_entry = er.async_get(hass).async_get(entity_id)
+    if registry_entry is not None and registry_entry.platform == DOMAIN:
+        return None
+    return hass.states.get(entity_id)
 
 
 def _entity_reference_is_resolved(state: Any) -> bool:

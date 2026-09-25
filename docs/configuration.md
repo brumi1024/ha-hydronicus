@@ -44,18 +44,25 @@ Guided setup takes one menu, one Plant form, one form per room, and a review.
 
 1. Choose **Guided setup**.
 2. In **Name the Plant**, enter the **Plant name** and choose the **Pump entity** that the loops of every room share.
-   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after the last valve closes.
+   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after heating demand ends, before the valves close.
+   Cooling stops the pump without overrun.
 3. In **Add a room**, describe one room:
    - **Room name** names the room's thermostat and entities.
    - **Temperature sensors** are combined into the room temperature.
    - **Existing climate thermostat** is optional; when set, that climate entity owns the room's demand, and the temperature sensors become optional.
    - **Loop valves** are the switches or valves of the room's own loop.
      Hydronicus creates the loop, names it after the room, such as `Bedroom loop`, and names its valves after the loop, such as `Bedroom loop valve`.
+   - **Cooling** is an optional, collapsed section that lets the room's own loop cool too.
+     Turn on **Cool this room**, choose the room's **Humidity sensors**, and choose a **Supply temperature sensor** or a **Surface temperature sensor**, or both, as the loop's condensation reference.
+     **Condensation margin** defaults to 2.0 °C, as in the loop form.
+     Cooling also needs the room's **Temperature sensors**, even when an existing climate thermostat owns the room.
    - **Add another room** shows the form again for the next room.
      Leave it off after the last room.
-4. **Review the Plant** lists the rooms, the compiled topology, and the warnings.
+   From the second room on, the form lists the rooms added so far.
+4. **Review the Plant** lists the rooms, how they connect, and the warnings.
 
-The compiled topology shows one line per loop and one per room, such as `Loop Bedroom loop opens valve Bedroom loop valve before requesting pump Circulation pump.` and `Room Bedroom can request loop Bedroom loop.`
+Under How it connects, the review shows one line per loop and one per room, such as `Bedroom loop opens Bedroom loop valve, then starts Circulation pump.` and `Bedroom is heated by Bedroom loop.`
+A room whose loop cools reads `Bedroom is heated and cooled by Bedroom loop.`
 When the rooms share the pump, the review warns that the shared pump limits independent control.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before the Plant is created.
 Later room, loop, and plant file edits ask only about warnings that the edit introduces.
@@ -68,7 +75,7 @@ Guided setup names the pump `Circulation pump`; rename it, add more pumps, or ch
 1. Choose **Import a plant file**.
 2. Paste the file into **Plant file** and submit.
    An empty editor, or YAML that the editor cannot read, is reported at the top level, and the editor marks the line with the YAML problem.
-3. **Review the imported Plant** lists the Plant name, the rooms, the compiled topology, and the warnings.
+3. **Review the imported Plant** lists the Plant name, the rooms, how they connect, and the warnings.
    Confirm a warning other than unused equipment with **I understand these warnings**, and submit.
 
 The Plant is created in Dry run, with one room entry per room and one source entry per source.
@@ -86,6 +93,9 @@ The **Add a room** form has the same fields as in guided setup, plus two that ap
 - **Shared loops** appears when the Plant has shared loops, which are Plant loops that also deliver heat to this room.
 
 A room needs **Loop valves** or at least one of the **Shared loops**.
+The **Cooling** section applies to the room's own loop, so turning on **Cool this room** needs **Loop valves**.
+A room served only by shared loops is refused with a message to choose Loop valves or leave cooling off, because a shared loop is Plant equipment that only the plant file edits.
+To make an existing room cool, use **Sensor aggregation and humidity** for its humidity sensors and the **Cooling** section of its loop.
 Saving a room returns the Plant to Dry run.
 
 ### Thermostat owner
@@ -131,7 +141,7 @@ An unusable optional sensor is excluded and reported, but the room still blocks 
 - **Mean** calculates the arithmetic mean.
 - **Median** selects the middle value after sorting the readings.
 - **Heating-oriented minimum** uses the lowest reading.
-- **Cooling-oriented maximum** supports cooling shadow evaluation, but physical cooling starts are not supported or authorized in this release.
+- **Cooling-oriented maximum** uses the highest reading, which suits rooms that cool.
 - **Designated reference** uses the one sensor marked as the reference.
 - **Weighted mean** applies the positive weights set in the sensor metadata.
 
@@ -146,7 +156,7 @@ Changing the target or preset reevaluates demand immediately without bypassing a
 
 ## Loops and valves
 
-A room's first loop comes from **Loop valves** on the room form.
+A room's first loop comes from **Loop valves** on the room form, and the form's **Cooling** section can make that loop cool.
 **Add a loop** and **Edit or remove a loop** open **Configure a loop**:
 
 - **Loop name** names the loop.
@@ -164,7 +174,7 @@ Every chosen valve must open before the pump may run.
 
 ## Plant settings
 
-Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a menu that names the Plant, with these options:
+Select **Configure** on the Plant entry to open **Plant settings**, a menu that names the Plant, with these options:
 
 - **Dry run** turns Dry run on, or leaves it after confirming the exact heating outputs.
 - **Add a pump** adds a pump with its **Pump name**, **Pump entity**, **Pump overrun**, and optional **Feedback** entities.
@@ -175,7 +185,8 @@ Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a men
   **Review plant file changes** lists what the file adds, removes, renames, moves, and changes before anything is saved.
 
 Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.
-Leaving Dry run requires **I understand these heating outputs may be controlled** for the exact output list shown.
+Leaving Dry run requires **I understand these outputs may be controlled** for the exact output list shown.
+A repair for a missing pump entity opens the same **Plant settings** menu.
 
 The `hydronicus.export_plant` action returns the same plant file as **Show the plant file**.
 
@@ -199,17 +210,23 @@ Direct source demand can execute only outside Dry run and after a valid pump pat
 ## Observe the result
 
 After setup, Hydronicus exposes entities associated with the Plant.
-Entity IDs come from the Plant name and the object names, so the trial Plant has entities such as `climate.trial_plant_bedroom` and `binary_sensor.trial_plant_bedroom_loop_valve_requested`.
+Each room, valve, pump, and source is a device named after the object alone, under the Plant device that carries the Plant name.
+Entity IDs come from those device names, so the trial Plant has entities such as `climate.bedroom`, `binary_sensor.bedroom_heating_demand`, and `binary_sensor.bedroom_loop_valve_requested`, while Plant-wide entities such as `select.trial_plant_requested_mode` keep the Plant name.
+The room's combined temperature is `sensor.bedroom_combined_temperature`, so it does not take the entity ID of a room sensor such as `sensor.bedroom_temperature`.
+If an entity ID is already taken, Home Assistant adds a suffix such as `_2`.
 
 The useful states for a first simulation are:
 
 - The room climate entity, which reports the aggregate current temperature and target.
-- The room demand binary sensor, which reports the calculated virtual heat demand.
-- The aggregate-temperature sensor, which identifies usable and excluded observations in its attributes.
-- The blocked binary sensor and blocked-reason sensor, which expose fail-closed sensor decisions without parsing prose.
+- The room **Heating demand** binary sensor, which reports the calculated virtual heat demand.
+- The room **Combined temperature** sensor, which reports the aggregate the controller uses and identifies usable and excluded observations in its attributes.
 - The valve requested and pump requested binary sensors, which report virtual requests.
-- The topology preview sensor, which reports room and loop counts, such as `2 rooms, 2 loops`, and exposes compiled logic and structured warnings as separate attributes.
-- The room explanation sensor, which reports why demand is requested, idle, or blocked.
+
+Explanations and reasons are diagnostic entities, listed under **Diagnostic** on the device page:
+
+- The room **Blocked** binary sensor and **Blocked reason** sensor, which expose fail-closed sensor decisions without parsing prose.
+- The room **Explanation** sensor, which reports why demand is requested, idle, or blocked.
+- The **Topology preview** sensor, which reports room and loop counts, such as `2 rooms, 2 loops`, and exposes compiled logic and structured warnings as separate attributes.
 
 Change the synthetic temperature below the target and wait for the configured virtual valve opening time.
 The virtual sequence is:
@@ -224,8 +241,11 @@ The pump enters virtual overrun before it becomes idle, and the valve closes aft
 No physical service call is dispatched while Dry run remains enabled.
 
 Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
-Cooling starts and source-selector operations remain Dry run only.
-When Dry run is off, heating valves, pumps, and a configured direct source-demand output can execute after the required confirmation and pump-path checks.
+A room has cooling entities only when it routes to a loop with cooling turned on, which is also when its thermostat offers cool modes.
+The Plant has source entities, such as **Recommended source** and **Source changeover**, only when it has at least one source.
+When a change removes an object's reason for an entity, such as turning off a loop's cooling, the reload removes that entity from Home Assistant.
+Source-selector operations remain Dry run only.
+When Dry run is off, valves and pumps in heating and cooling, and a configured direct source-demand output, can execute after the required confirmation and pump-path checks.
 
 Every relationship is stored by a generated identifier rather than by a display name.
 Renaming an object keeps its relationships, so always open the topology preview after a change rather than relying on names.

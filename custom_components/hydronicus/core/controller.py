@@ -356,7 +356,7 @@ def _zone_demand(
 ) -> tuple[bool, str]:
     """Apply heating hysteresis to one zone without timing side effects."""
     if temperature is None:
-        return False, "Blocked: the zone has no usable aggregate temperature."
+        return False, "Blocked: the room has no usable aggregate temperature."
     if temperature <= target - start_delta:
         return True, f"Heating requested: {temperature:.1f} is below {target - start_delta:.1f}."
     if temperature >= target + stop_delta:
@@ -376,7 +376,7 @@ def _cooling_zone_demand(
 ) -> tuple[bool, str]:
     """Apply explicit cooling hysteresis to one zone."""
     if temperature is None:
-        return False, "Blocked: the zone has no usable aggregate temperature for cooling."
+        return False, "Blocked: the room has no usable aggregate temperature for cooling."
     if temperature >= target + start_delta:
         return True, f"Cooling requested: {temperature:.1f} is above {target + start_delta:.1f}."
     if temperature <= target - stop_delta:
@@ -462,7 +462,7 @@ def resolve_mode_conflicts(
                 cooling_zone_ids=_zone_ids(cooling_routes, set(cooling)),
                 message=(
                     f"Cooling blocked by shared valve {valve.name} ({valve_id}): "
-                    f"heating circuits {', '.join(heating)} and cooling circuits "
+                    f"heating loops {', '.join(heating)} and cooling loops "
                     f"{', '.join(cooling)} cannot be requested simultaneously."
                 ),
             )
@@ -497,7 +497,7 @@ def resolve_mode_conflicts(
                 cooling_zone_ids=_zone_ids(cooling_routes, set(cooling)),
                 message=(
                     f"Cooling blocked by shared pump {pump.name} ({pump_id}): "
-                    f"heating circuits {', '.join(heating)} and cooling circuits "
+                    f"heating loops {', '.join(heating)} and cooling loops "
                     f"{', '.join(cooling)} cannot be requested simultaneously."
                 ),
             )
@@ -546,7 +546,7 @@ def _cooling_interlocks(
     if not routes:
         return (
             False,
-            "Cooling idle: no cooling-enabled circuit serves this zone.",
+            "Cooling idle: no cooling-enabled loop serves this room.",
             (),
             None,
             None,
@@ -617,12 +617,14 @@ def _cooling_interlocks(
             margins.append(margin)
             if margin <= circuit.condensation_margin:
                 circuit_blocked = True
+                position = f"{margin:.1f} °C above" if margin >= 0 else f"{-margin:.1f} °C below"
                 interlocks.append(
                     SafetyInterlockResult(
                         f"cooling:{route.circuit_id}:{reference_name}",
                         InterlockStatus.BLOCKED,
-                        f"Cooling is blocked before the condensation margin is crossed: "
-                        f"{margin:.2f} °C is at or below {circuit.condensation_margin:.2f} °C.",
+                        f"Cooling is blocked to prevent condensation: the {reference_name} "
+                        f"temperature is {position} the dew point, inside the "
+                        f"{circuit.condensation_margin:.1f} °C condensation margin.",
                     )
                 )
             else:
@@ -929,9 +931,9 @@ def _source_demand_permit(
 ) -> tuple[bool, str]:
     """Require one ready, demand-carrying circuit with a running pump."""
     if plant_mode is not PlantMode.HEATING:
-        return False, "Heat-pump demand is blocked because the plant is not heating."
+        return False, "Source demand is blocked because the plant is not heating."
     if not ready_circuits:
-        return False, "Heat-pump demand is blocked until a delivery circuit is ready."
+        return False, "Source demand is blocked until a delivery loop is ready."
     running_paths: list[str] = []
     waiting_paths: list[str] = []
     for circuit_id in sorted(ready_circuits):
@@ -942,14 +944,17 @@ def _source_demand_permit(
             and pump.state is PumpState.RUNNING
             and circuit_id in pump_consumers.get(circuit.pump_id, frozenset())
         ):
-            running_paths.append(circuit_id)
+            running_paths.append(circuit.name)
         else:
-            waiting_paths.append(circuit_id)
+            waiting_paths.append(circuit.name)
     if running_paths:
-        return True, f"Heat-pump demand permitted by running ready circuit {running_paths[0]}."
+        return (
+            True,
+            f"Source demand permitted: loop {running_paths[0]} is ready and its pump is running.",
+        )
     return (
         False,
-        "Heat-pump demand is blocked until a ready circuit has a running pump path"
+        "Source demand is blocked until a ready loop has a running pump"
         + (f" (waiting for {', '.join(waiting_paths)})." if waiting_paths else "."),
     )
 
@@ -1845,7 +1850,7 @@ def _feedback_diagnostics(
                 expected=expected,
                 feedback_kind="position",
                 stale_feedback=("position",),
-                reason=f"Valve position feedback is {reason}; dependent circuits fail closed.",
+                reason=f"Valve position feedback is {reason}; dependent loops fail closed.",
             )
             continue
         assert observation is not None
@@ -2184,8 +2189,8 @@ def _evaluate_heating_zones(
             else AggregationResult(
                 value=None,
                 explanation=(
-                    "External thermostat current_temperature is diagnostic only; "
-                    "configure a Zone temperature observation for cooling safety."
+                    "The external thermostat temperature is diagnostic only; "
+                    "add a room temperature sensor for cooling safety."
                 ),
             )
         )
@@ -2215,7 +2220,9 @@ def _evaluate_heating_zones(
             next_zone_runtime = ZoneRuntime(False, transition_at)
             status = ZoneDecisionStatus.SATISFIED
             deadline = None
-            reason = f"Hydronicus thermostat is {thermostat_state.hvac_mode.value}; heating is off."
+            mode = thermostat_state.hvac_mode
+            setting = "off" if mode is ThermostatHvacMode.OFF else f"set to {mode.value}"
+            reason = f"Thermostat is {setting}; heating is off."
         elif aggregation.blocking_required_sensor_ids or aggregation.value is None:
             # Sensor safety takes precedence over any comfort timing hold.
             demand = False
@@ -2282,7 +2289,7 @@ def _prevent_zone_dual_demand(heating: _HeatingEvaluation, cooling: _CoolingEval
     for zone_id in sorted(heating.zone_demands):
         if not heating.zone_demands.get(zone_id) or not cooling.zone_demands.get(zone_id):
             continue
-        reason = "Cooling blocked: this Zone already has an active heating demand."
+        reason = "Cooling blocked: this room already has an active heating demand."
         prior = cooling.zone_decisions[zone_id]
         cooling.zone_demands[zone_id] = False
         cooling.zone_reasons[zone_id] = reason
@@ -2448,7 +2455,7 @@ def _filter_degraded_routes(
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
-                f"Blocked: every delivery route for zone {zone.name} uses an unresolved "
+                f"Blocked: every delivery route for room {zone.name} uses an unresolved "
                 "actuator or feedback binding."
             )
             prior = heating.zone_decisions[zone_id]
@@ -2480,7 +2487,7 @@ def _filter_degraded_routes(
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
-                f"Blocked: every cooling delivery route for zone {zone.name} uses an "
+                f"Blocked: every cooling delivery route for room {zone.name} uses an "
                 "unresolved actuator or feedback binding."
             )
             prior = cooling.zone_decisions[zone_id]
@@ -2757,17 +2764,18 @@ def _coordinate_mode_routing(
 
 
 def _index_requested_routes(
+    plant: CompiledPlant,
     heating_routes: tuple[DeliveryRoute, ...],
     cooling_routes: tuple[DeliveryRoute, ...],
 ) -> tuple[set[str], dict[str, list[str]]]:
-    """Index final route demand by circuit in stable route order."""
+    """Index the rooms requesting each circuit, once each, in stable route order."""
     requested_circuits = {route.circuit_id for route in (*heating_routes, *cooling_routes)}
-    route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
-    for route in heating_routes:
-        route_ids_by_circuit[route.circuit_id].append(route.id)
-    for route in cooling_routes:
-        route_ids_by_circuit[route.circuit_id].append(route.id)
-    return requested_circuits, route_ids_by_circuit
+    room_names_by_circuit: dict[str, list[str]] = defaultdict(list)
+    for route in (*heating_routes, *cooling_routes):
+        name = plant.zones[route.zone_id].name
+        if name not in room_names_by_circuit[route.circuit_id]:
+            room_names_by_circuit[route.circuit_id].append(name)
+    return requested_circuits, room_names_by_circuit
 
 
 @dataclass(frozen=True, slots=True)
@@ -2902,7 +2910,7 @@ def _coordinate_source(
             and (active or source_id in direct_source_demand_ids)
         )
         if source.demand_entity_id is None:
-            reason = "No heat-pump demand output is configured for this source."
+            reason = "No demand output is configured for this source."
         elif not eligible:
             reason = f"Blocked: {eligibility_reason}."
         elif not recommended:
@@ -2964,13 +2972,16 @@ def _plan_valves(
             consumers[valve_id].add(circuit_id)
 
     cooling_consumers: dict[str, set[str]] = defaultdict(set)
+    cooling_rooms: dict[str, list[str]] = defaultdict(list)
     for route in cooling_routes:
         circuit = plant.circuits[route.circuit_id]
-        cooling.circuit_reasons[circuit.id] = (
-            f"Cooling route {route.id} requested circuit {circuit.name}."
-        )
+        room_name = plant.zones[route.zone_id].name
+        if room_name not in cooling_rooms[circuit.id]:
+            cooling_rooms[circuit.id].append(room_name)
         for valve_id in circuit.valve_ids:
             cooling_consumers[valve_id].add(circuit.id)
+    for circuit_id, room_names in cooling_rooms.items():
+        cooling.circuit_reasons[circuit_id] = f"Cooling requested by {', '.join(room_names)}."
 
     feedback_expected = {
         valve_id: "open" if consumers.get(valve_id) else "closed" for valve_id in plant.valves
@@ -3011,7 +3022,7 @@ def _plan_valves(
             if valve.position_entity_id is not None and observed_open:
                 current = ValveRuntime(ValveState.OPEN, now, True)
                 actuator_reasons[valve.id] = (
-                    "Position feedback confirms the valve is open for active circuit consumers."
+                    "Position feedback confirms the valve is open for active loops."
                 )
             elif previous.state is ValveState.CLOSED:
                 current = ValveRuntime(ValveState.OPENING, now, False)
@@ -3019,10 +3030,10 @@ def _plan_valves(
                     ActuatorCommand(
                         valve.id,
                         ActuatorAction.OPEN,
-                        "A requesting circuit needs this valve.",
+                        "A requesting loop needs this valve.",
                     )
                 )
-                actuator_reasons[valve.id] = "Opening for active circuit consumers."
+                actuator_reasons[valve.id] = "Opening for active loops."
             elif previous.state is ValveState.OPENING and (
                 previous.is_ready
                 or _elapsed(now, previous.changed_at)
@@ -3050,7 +3061,7 @@ def _plan_valves(
                 )
             else:
                 current = previous
-                actuator_reasons[valve.id] = "Held open for active circuit consumers."
+                actuator_reasons[valve.id] = "Held open for active loops."
         else:
             current = previous
             actuator_reasons[valve.id] = "Idle because its consumer set is empty."
@@ -3085,7 +3096,6 @@ class _PumpPlan:
     feedback_diagnostics: dict[str, ActuatorDiagnostic]
     blocked_circuit_ids: set[str]
     ready_circuit_ids: set[str]
-    cooling_actuator_ids: set[str]
     pumps: dict[str, PumpRuntime]
     commands: tuple[ActuatorCommand, ...]
     actuator_reasons: dict[str, str]
@@ -3097,7 +3107,6 @@ def _plan_pumps(
     runtime: RuntimeState,
     now: datetime,
     *,
-    target_mode: PlantMode,
     requested_circuits: set[str],
     cooling_routes: tuple[DeliveryRoute, ...],
     valve_plan: _ValvePlan,
@@ -3145,31 +3154,6 @@ def _plan_pumps(
     for circuit_id in sorted(ready_cooling_circuits):
         cooling_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
 
-    cooling_actuator_ids = {
-        valve_id
-        for route in cooling_routes
-        for valve_id in plant.circuits[route.circuit_id].valve_ids
-    }
-    cooling_actuator_ids.update(
-        plant.circuits[circuit_id].pump_id for circuit_id in ready_cooling_circuits
-    )
-    if (
-        target_mode is PlantMode.COOLING
-        or runtime.plant_mode is PlantMode.COOLING
-        or runtime.changeover_target_mode is PlantMode.COOLING
-    ):
-        cooling_circuit_ids = {
-            circuit.id for circuit in plant.circuits.values() if circuit.cooling_enabled
-        }
-        cooling_actuator_ids.update(
-            valve_id
-            for circuit_id in cooling_circuit_ids
-            for valve_id in plant.circuits[circuit_id].valve_ids
-        )
-        cooling_actuator_ids.update(
-            plant.circuits[circuit_id].pump_id for circuit_id in cooling_circuit_ids
-        )
-
     pumps: dict[str, PumpRuntime] = {}
     commands: list[ActuatorCommand] = []
     actuator_reasons = dict(valve_plan.actuator_reasons)
@@ -3194,13 +3178,13 @@ def _plan_pumps(
                     ActuatorCommand(
                         pump.id,
                         ActuatorAction.TURN_ON,
-                        "A ready circuit needs this pump.",
+                        "A ready loop needs this pump.",
                     )
                 )
-                actuator_reasons[pump.id] = "Running for ready circuit consumers."
+                actuator_reasons[pump.id] = "Running for ready loops."
             else:
                 current = previous
-                actuator_reasons[pump.id] = "Running for ready circuit consumers."
+                actuator_reasons[pump.id] = "Running for ready loops."
         elif previous.state is PumpState.STARTING:
             current = PumpRuntime(PumpState.OFF, now)
             commands.append(
@@ -3211,15 +3195,27 @@ def _plan_pumps(
                 )
             )
             actuator_reasons[pump.id] = "Stopping an unconfirmed pump start."
+        elif previous.state is PumpState.RUNNING and runtime.plant_mode is PlantMode.COOLING:
+            # Overrun only dissipates residual heat. Chilled water keeps nothing to
+            # dissipate, and circulating it after a condensation block is the hazard.
+            current = PumpRuntime(PumpState.OFF, now)
+            commands.append(
+                ActuatorCommand(
+                    pump.id,
+                    ActuatorAction.TURN_OFF,
+                    "Stop immediately after cooling released; cooling has no overrun.",
+                )
+            )
+            actuator_reasons[pump.id] = "Stopped without overrun because the plant was cooling."
         elif previous.state is PumpState.RUNNING:
             current = PumpRuntime(PumpState.OVERRUN, now)
-            actuator_reasons[pump.id] = "Overrunning after the final ready circuit released demand."
+            actuator_reasons[pump.id] = "Overrunning after the final ready loop released demand."
         elif previous.state is PumpState.OVERRUN and _elapsed(
             now,
             previous.changed_at,
         ) < timedelta(seconds=pump.overrun_seconds):
             current = previous
-            actuator_reasons[pump.id] = "Overrun is still protecting the hydraulic circuit."
+            actuator_reasons[pump.id] = "Overrun is still protecting the loop."
         elif previous.state is PumpState.OVERRUN:
             current = PumpRuntime(PumpState.OFF, now)
             commands.append(
@@ -3229,10 +3225,10 @@ def _plan_pumps(
                     "Pump overrun has completed.",
                 )
             )
-            actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
+            actuator_reasons[pump.id] = "Idle because no ready loop requires this pump."
         else:
             current = previous
-            actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
+            actuator_reasons[pump.id] = "Idle because no ready loop requires this pump."
         pumps[pump.id] = current
 
     return _PumpPlan(
@@ -3241,7 +3237,6 @@ def _plan_pumps(
         feedback_diagnostics=feedback_diagnostics,
         blocked_circuit_ids=blocked_circuits,
         ready_circuit_ids=ready_circuits,
-        cooling_actuator_ids=cooling_actuator_ids,
         pumps=pumps,
         commands=tuple(commands),
         actuator_reasons=actuator_reasons,
@@ -3260,7 +3255,7 @@ def _assemble_evaluation(
     mode_conflicts: tuple[ModeConflict, ...],
     mode_routing: _ModeRouting,
     requested_circuits: set[str],
-    route_ids_by_circuit: Mapping[str, list[str]],
+    room_names_by_circuit: Mapping[str, list[str]],
     valve_plan: _ValvePlan,
     pump_plan: _PumpPlan,
 ) -> Evaluation:
@@ -3355,15 +3350,15 @@ def _assemble_evaluation(
                 valve_id in valve_plan.blocked_valves
                 for valve_id in plant.circuits[circuit_id].valve_ids
             )
-            else "Ready: eligible delivery route "
-            + ", ".join(route_ids_by_circuit[circuit_id])
-            + " has valve-ready demand."
+            else "Ready: the valves are open for "
+            + ", ".join(room_names_by_circuit[circuit_id])
+            + "."
             if circuit_id in pump_plan.ready_circuit_ids
-            else "Waiting for valve readiness after eligible delivery route "
-            + ", ".join(route_ids_by_circuit[circuit_id])
-            + " requested this circuit."
+            else "Waiting for the valves to open for "
+            + ", ".join(room_names_by_circuit[circuit_id])
+            + "."
             if circuit_id in requested_circuits
-            else "Idle: no eligible delivery route currently requests this circuit."
+            else "Idle: no room currently requests this loop."
         )
         for circuit_id in sorted(plant.circuits)
     }
@@ -3430,7 +3425,6 @@ def _assemble_evaluation(
             cooling_pump_consumers={
                 key: frozenset(value) for key, value in sorted(pump_plan.cooling_consumers.items())
             },
-            cooling_actuator_ids=frozenset(sorted(pump_plan.cooling_actuator_ids)),
             mode_conflicts=mode_conflicts,
             interlocks=cooling.interlocks,
             source_selection=source.selection,
@@ -3499,7 +3493,8 @@ def evaluate(
         cooling,
         conflict_arbitration.mode_conflicts,
     )
-    requested_circuits, route_ids_by_circuit = _index_requested_routes(
+    requested_circuits, room_names_by_circuit = _index_requested_routes(
+        plant,
         mode_routing.heating_routes,
         mode_routing.cooling_routes,
     )
@@ -3517,7 +3512,6 @@ def evaluate(
         snapshot,
         runtime,
         now,
-        target_mode=mode_routing.target_mode,
         requested_circuits=requested_circuits,
         cooling_routes=mode_routing.cooling_routes,
         valve_plan=valve_plan,
@@ -3533,7 +3527,7 @@ def evaluate(
         mode_conflicts=conflict_arbitration.mode_conflicts,
         mode_routing=mode_routing,
         requested_circuits=requested_circuits,
-        route_ids_by_circuit=route_ids_by_circuit,
+        room_names_by_circuit=room_names_by_circuit,
         valve_plan=valve_plan,
         pump_plan=pump_plan,
     )

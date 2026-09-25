@@ -119,10 +119,10 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     assert result["step_id"] == "import_review"
     placeholders = result["description_placeholders"]
     assert placeholders["name"] == "Trial plant"
-    assert "- Room Bedroom can request loop Bedroom loop." in placeholders["logic"]
+    assert "- Bedroom is heated by Bedroom loop." in placeholders["logic"]
     assert (
-        "- Loop Bedroom loop opens valve Bedroom loop valve before requesting pump "
-        "Circulation pump." in placeholders["logic"]
+        "- Bedroom loop opens Bedroom loop valve, then starts Circulation pump."
+        in placeholders["logic"]
     )
     # The README tells the user to expect this one warning and to confirm it.
     # The loops are listed in file order, so the text is the same on every import.
@@ -150,7 +150,7 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     await hass.services.async_call(
         "climate",
         "set_hvac_mode",
-        {"entity_id": "climate.trial_plant_bedroom", "hvac_mode": "heat"},
+        {"entity_id": "climate.bedroom", "hvac_mode": "heat"},
         blocking=True,
     )
     await hass.services.async_call(
@@ -161,12 +161,12 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
     )
     await hass.async_block_till_done()
 
-    assert state("binary_sensor.trial_plant_bedroom_demand") == "on"
-    assert state("binary_sensor.trial_plant_living_room_demand") == "off"
-    assert state("binary_sensor.trial_plant_bedroom_loop_valve_requested") == "on"
-    assert state("binary_sensor.trial_plant_living_room_loop_valve_requested") == "off"
+    assert state("binary_sensor.bedroom_heating_demand") == "on"
+    assert state("binary_sensor.living_room_heating_demand") == "off"
+    assert state("binary_sensor.bedroom_loop_valve_requested") == "on"
+    assert state("binary_sensor.living_room_loop_valve_requested") == "off"
     # The pump waits for the valve's 30 second default opening time.
-    assert state("binary_sensor.trial_plant_circulation_pump_requested") == "off"
+    assert state("binary_sensor.circulation_pump_requested") == "off"
 
     assert entry.runtime_data.dry_run is True
     assert calls == []

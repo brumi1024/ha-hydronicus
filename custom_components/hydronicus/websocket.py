@@ -429,13 +429,6 @@ def _filter_snapshot_for_user(
         if actuator["id"] in visible_actuator_ids
     ]
     execution = dict(snapshot["execution"])
-    boundary = dict(execution["boundary"])
-    boundary["forced_shadow_actuators"] = [
-        actuator_id
-        for actuator_id in boundary["forced_shadow_actuators"]
-        if actuator_id in visible_actuator_ids
-    ]
-    execution["boundary"] = boundary
     execution["operations"] = {
         result: [
             operation

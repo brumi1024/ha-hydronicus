@@ -20,9 +20,11 @@ from .core.model import (
     ModeChangeoverPhase,
     PumpState,
     SafeShutdownPhase,
+    ThermostatHvacMode,
     ZoneDecision,
     ZoneDecisionStatus,
 )
+from .core.topology import thermostat_hvac_modes
 
 PRESENTATION_SCHEMA_VERSION = 2
 
@@ -132,9 +134,7 @@ def build_plant_summary(runtime: Any) -> dict[str, object]:
     recommended_source = (
         runtime.plant.sources.get(recommended_source_id) if recommended_source_id else None
     )
-    forced_shadow = ["cooling", "source_selection"]
-    if runtime.plant.source_selector is None:
-        forced_shadow.remove("source_selection")
+    forced_shadow = ["source_selection"] if runtime.plant.source_selector is not None else []
     return {
         "id": runtime.plant_id,
         "name": runtime.name,
@@ -176,11 +176,9 @@ def _boundary_message(runtime: Any, forced_shadow: list[str]) -> str:
         return "Dry run - operations are proposed and no actuator calls are sent."
     if forced_shadow:
         return (
-            "Mixed control - heating may execute; "
-            + ", ".join(forced_shadow)
-            + " remain shadow-only."
+            "Mixed control - heating and cooling may execute; source selection remains shadow-only."
         )
-    return "Heating control enabled - review each operation boundary before use."
+    return "Control enabled - heating and cooling outputs may execute."
 
 
 def _zone_snapshots(
@@ -210,17 +208,23 @@ def _zone_snapshots(
             )
             preset = runtime.zone_preset_modes.get(zone_id, "none")
             preset_modes = sorted(zone.thermostat.preset_targets)
+            hvac_mode: str | None = runtime.zone_hvac_modes.get(
+                zone_id, ThermostatHvacMode.OFF
+            ).value
+            hvac_modes = [mode.value for mode in thermostat_hvac_modes(runtime.plant, zone_id)]
             thermostat_available = thermostat_state is not None
-            ownership = "Hydronicus owns this Zone's digital thermostat."
+            ownership = "Hydronicus owns this room's digital thermostat."
         else:
             target = external_state.target_temperature
             preset = None
             preset_modes = []
+            hvac_mode = external_state.hvac_mode.value if external_state.hvac_mode else None
+            hvac_modes = []
             external_decision = (
                 cooling if external_state.hvac_action is ExternalHvacAction.COOLING else heating
             )
             thermostat_available = external_state.available and external_state.hvac_mode_valid
-            ownership = "External thermostat owns this Zone. " + (
+            ownership = "An external thermostat controls this room. " + (
                 external_decision.explanation if external_decision else external_state.explanation
             )
         blocked = (
@@ -246,6 +250,8 @@ def _zone_snapshots(
                     ),
                     "preset": preset,
                     "preset_modes": preset_modes,
+                    "hvac_mode": hvac_mode,
+                    "hvac_modes": hvac_modes,
                     "control_entity_id": zone_entity_ids.get(zone_id) if internal else None,
                     "explanation": ownership,
                 },
@@ -604,6 +610,7 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
             "severity": severity,
             "priority": _SEVERITY_ORDER[severity],
             "scope": scope,
+            "name": _scope_name(runtime, scope),
             "message": message,
         }
 
@@ -678,6 +685,7 @@ def _explanation_steps(runtime: Any, evaluation: Any) -> list[dict[str, object]]
             {
                 "order": 0,
                 "scope": "plant",
+                "name": str(runtime.name),
                 "code": "initializing",
                 "message": "The controller has not evaluated the Plant yet.",
             }
@@ -689,7 +697,15 @@ def _explanation_steps(runtime: Any, evaluation: Any) -> list[dict[str, object]]
     def add(scope: str, code: str, message: str) -> None:
         nonlocal order
         if message:
-            steps.append({"order": order, "scope": scope, "code": code, "message": message})
+            steps.append(
+                {
+                    "order": order,
+                    "scope": scope,
+                    "name": _scope_name(runtime, scope),
+                    "code": code,
+                    "message": message,
+                }
+            )
             order += 1
 
     add("plant", "mode", diagnostics.mode_explanation)
@@ -710,7 +726,7 @@ def _execution_snapshot(runtime: Any, evaluation: Any) -> dict[str, object]:
     report = runtime.last_execution
     if report is None:
         return {
-            "boundary": _execution_boundary(runtime, evaluation),
+            "boundary": _execution_boundary(runtime),
             "operations": {
                 "proposed": [],
                 "executed": [],
@@ -734,17 +750,13 @@ def _execution_snapshot(runtime: Any, evaluation: Any) -> dict[str, object]:
             if failure.kind.value == "timeout"
         ],
     }
-    return {"boundary": _execution_boundary(runtime, evaluation), "operations": operations}
+    return {"boundary": _execution_boundary(runtime), "operations": operations}
 
 
-def _execution_boundary(runtime: Any, evaluation: Any) -> dict[str, object]:
+def _execution_boundary(runtime: Any) -> dict[str, object]:
     return {
         "dry_run": runtime.dry_run,
-        "cooling_shadow": True,
         "source_selection_shadow": bool(runtime.plant.source_selector),
-        "forced_shadow_actuators": sorted(
-            evaluation.control_plan.cooling_actuator_ids if evaluation else ()
-        ),
     }
 
 
@@ -777,6 +789,18 @@ def _safe_shutdown_snapshot(runtime: Any) -> dict[str, object]:
         "phase": _value(phase),
         "message": "Safe shutdown delegates ordered release and stop sequencing to Hydronicus.",
     }
+
+
+def _scope_name(runtime: Any, scope: str) -> str:
+    """Name the Plant, room, loop, or equipment an alert or explanation is about."""
+    plant = runtime.plant
+    if scope == "plant":
+        return str(runtime.name)
+    if scope in plant.zones:
+        return str(plant.zones[scope].name)
+    if scope in plant.circuits:
+        return str(plant.circuits[scope].name)
+    return _actuator_name(runtime, scope) or scope
 
 
 def _actuator_name(runtime: Any, actuator_id: str) -> str | None:

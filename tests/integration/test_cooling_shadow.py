@@ -1,4 +1,4 @@
-"""Integration coverage for the cooling shadow tracer and its diagnostics."""
+"""Integration coverage for cooling execution, the cooling tracer, and its diagnostics."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from custom_components.hydronicus.const import (
     DOMAIN,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.entry_configuration import authorize_outputs
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -43,59 +45,58 @@ async def _set_zone_mode(hass, entry, zone_id: str, mode: ThermostatHvacMode) ->
 
 def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
     """Return one persisted, cooling-enabled synthetic plant."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
-            CONF_NAME: "Hydronic plant",
-            CONF_PLANT_ID: PLANT_ID,
-            CONF_DRY_RUN: dry_run,
-            "topology": {
-                "zones": [
-                    {
-                        "id": ZONE_ID,
-                        "name": "Living",
-                        "thermostat": {
-                            "kind": "hydronicus",
-                            "initial_target_temperature": 24.0,
-                            "cooling_start_delta": 0.5,
-                            "cooling_stop_delta": 0.2,
-                        },
-                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
-                        "humidity_sensor_metadata": [{"entity_id": "sensor.living_humidity"}],
-                    }
-                ],
-                "valves": [
-                    {
-                        "id": VALVE_ID,
-                        "name": "Cooling valve",
-                        "entity_id": "switch.cooling_valve",
-                        "opening_time_seconds": 0.0,
-                    }
-                ],
-                "pumps": [
-                    {
-                        "id": PUMP_ID,
-                        "name": "Cooling pump",
-                        "entity_id": "switch.cooling_pump",
-                        "overrun_seconds": 120.0,
-                    }
-                ],
-                "circuits": [
-                    {
-                        "id": CIRCUIT_ID,
-                        "name": "Cooling circuit",
-                        "valve_ids": [VALVE_ID],
-                        "pump_id": PUMP_ID,
-                        CONF_COOLING_ENABLED: True,
-                        CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply",
-                        CONF_CONDENSATION_MARGIN: 2.0,
-                    }
-                ],
-                "routes": [{"id": ROUTE_ID, "zone_id": ZONE_ID, "circuit_id": CIRCUIT_ID}],
-            },
+    data = {
+        CONF_NAME: "Hydronic plant",
+        CONF_PLANT_ID: PLANT_ID,
+        CONF_DRY_RUN: dry_run,
+        "topology": {
+            "zones": [
+                {
+                    "id": ZONE_ID,
+                    "name": "Living",
+                    "thermostat": {
+                        "kind": "hydronicus",
+                        "initial_target_temperature": 24.0,
+                        "cooling_start_delta": 0.5,
+                        "cooling_stop_delta": 0.2,
+                    },
+                    "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
+                    "humidity_sensor_metadata": [{"entity_id": "sensor.living_humidity"}],
+                }
+            ],
+            "valves": [
+                {
+                    "id": VALVE_ID,
+                    "name": "Cooling valve",
+                    "entity_id": "switch.cooling_valve",
+                    "opening_time_seconds": 0.0,
+                }
+            ],
+            "pumps": [
+                {
+                    "id": PUMP_ID,
+                    "name": "Cooling pump",
+                    "entity_id": "switch.cooling_pump",
+                    "overrun_seconds": 120.0,
+                }
+            ],
+            "circuits": [
+                {
+                    "id": CIRCUIT_ID,
+                    "name": "Cooling circuit",
+                    "valve_ids": [VALVE_ID],
+                    "pump_id": PUMP_ID,
+                    CONF_COOLING_ENABLED: True,
+                    CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply",
+                    CONF_CONDENSATION_MARGIN: 2.0,
+                }
+            ],
+            "routes": [{"id": ROUTE_ID, "zone_id": ZONE_ID, "circuit_id": CIRCUIT_ID}],
         },
-    )
+    }
+    if not dry_run:
+        data = authorize_outputs(data)
+    return plant_entry(data, title="Hydronic plant")
 
 
 def _shared_mode_entry() -> MockConfigEntry:
@@ -176,8 +177,8 @@ def _shared_mode_entry() -> MockConfigEntry:
     )
 
 
-async def test_cooling_remains_proposed_when_heating_execution_is_enabled(hass) -> None:
-    """Cooling commands never reach Home Assistant while active heating control is enabled."""
+async def test_cooling_executes_outside_dry_run_and_stops_on_condensation_risk(hass) -> None:
+    """Authorized cooling opens the valve and starts the pump, and condensation risk closes it."""
     calls: list[tuple[str, str, str]] = []
 
     async def record(call) -> None:
@@ -197,13 +198,23 @@ async def test_cooling_remains_proposed_when_heating_execution_is_enabled(hass) 
     await hass.async_block_till_done()
     await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
 
-    assert calls == []
+    assert calls == [
+        ("switch", "turn_on", "switch.cooling_valve"),
+        ("switch", "turn_on", "switch.cooling_pump"),
+    ]
     assert entry.runtime_data.last_execution is not None
-    proposed_ids = {
-        operation.actuator_id for operation in entry.runtime_data.last_execution.proposed
-    }
-    assert proposed_ids
-    assert proposed_ids <= {VALVE_ID, PUMP_ID}
+    assert entry.runtime_data.last_execution.proposed == ()
+
+    hass.states.async_set("switch.cooling_valve", "on")
+    hass.states.async_set("switch.cooling_pump", "on")
+    hass.states.async_set("sensor.cooling_supply", "15.0")
+    await hass.async_block_till_done()
+
+    assert calls[2:] == [
+        ("switch", "turn_off", "switch.cooling_pump"),
+        ("switch", "turn_off", "switch.cooling_valve"),
+    ]
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
 
 
 async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
@@ -217,29 +228,45 @@ async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
     await hass.async_block_till_done()
     await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
 
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_demand").state == "on"
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "off"
+    assert hass.states.get("binary_sensor.living_cooling_demand").state == "on"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "off"
+    assert float(hass.states.get("sensor.living_cooling_dew_point").state) == pytest.approx(
+        13.8516, abs=0.001
+    )
     assert float(
-        hass.states.get("sensor.hydronic_plant_living_cooling_dew_point").state
-    ) == pytest.approx(13.8516, abs=0.001)
-    assert float(
-        hass.states.get("sensor.hydronic_plant_living_cooling_condensation_margin").state
+        hass.states.get("sensor.living_cooling_condensation_margin").state
     ) == pytest.approx(4.1484, abs=0.001)
-    assert hass.states.get("sensor.hydronic_plant_living_cooling_blocked_reason").state == "none"
+    assert hass.states.get("sensor.living_cooling_blocked_reason").state == "none"
     assert entry.runtime_data.evaluation.control_plan.commands
 
     hass.states.async_set("sensor.cooling_supply", "15.0")
     await hass.async_block_till_done()
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_demand").state == "off"
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
-    assert (
-        "condensation margin"
-        in hass.states.get("sensor.hydronic_plant_living_cooling_blocked_reason").state
-    )
+    assert hass.states.get("binary_sensor.living_cooling_demand").state == "off"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
+    assert "condensation margin" in hass.states.get("sensor.living_cooling_blocked_reason").state
 
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
-    assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
+    assert hass.states.get("binary_sensor.living_cooling_blocked").state == "on"
+
+
+async def test_presentation_offers_the_climate_entity_cooling_modes(hass) -> None:
+    """A cooling-capable Room offers the same HVAC modes as its climate entity."""
+    hass.states.async_set("sensor.living_temperature", "25.0")
+    hass.states.async_set("sensor.living_humidity", "50.0")
+    hass.states.async_set("sensor.cooling_supply", "18.0")
+    entry = _cooling_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _set_zone_mode(hass, entry, ZONE_ID, ThermostatHvacMode.COOL)
+
+    thermostat = entry.runtime_data.presentation_snapshot(hass)["zones"][0]["thermostat"]
+    (climate,) = hass.states.async_all("climate")
+
+    assert thermostat["hvac_mode"] == "cool"
+    assert thermostat["hvac_modes"] == ["off", "heat", "cool", "heat_cool"]
+    assert thermostat["hvac_modes"] == [str(mode) for mode in climate.attributes["hvac_modes"]]
 
 
 async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
@@ -271,7 +298,7 @@ async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
     assert calls == []
     assert entry.runtime_data.evaluation.diagnostics.mode_conflicts
     assert entry.runtime_data.runtime_state.cooling_zone_demands[COOLING_ZONE_ID] is False
-    reason = hass.states.get("sensor.shared_mode_plant_cooling_zone_cooling_blocked_reason")
+    reason = hass.states.get("sensor.cooling_zone_cooling_blocked_reason")
     assert reason is not None
     assert "shared" in reason.state
     preview = hass.states.get("sensor.shared_mode_plant_topology_preview")
@@ -336,10 +363,7 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
         "safely idle"
         in hass.states.get("sensor.shared_mode_plant_mode_changeover_explanation").state
     )
-    assert (
-        hass.states.get("binary_sensor.shared_mode_plant_cooling_zone_cooling_demand").state
-        == "off"
-    )
+    assert hass.states.get("binary_sensor.cooling_zone_cooling_demand").state == "off"
     assert calls == []
 
 

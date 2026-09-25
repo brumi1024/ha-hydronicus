@@ -120,7 +120,9 @@ async def test_list_and_subscribe_are_permission_filtered_and_reconnect_on_reloa
 
     class _Permissions:
         def check_entity(self, entity_id: str, _permission: str) -> bool:
-            return entity_id.endswith("zone_a_demand") or entity_id.endswith("safe_shutdown")
+            return entity_id.endswith("zone_a_heating_demand") or entity_id.endswith(
+                "safe_shutdown"
+            )
 
     filtered_connection = _Connection(_User(_Permissions()))
     await ws_subscribe_plant.__wrapped__(  # type: ignore[attr-defined]
@@ -184,15 +186,11 @@ async def test_permission_filter_hides_zone_equipment_but_keeps_plant_source_sta
 
     class _Permissions:
         def check_entity(self, entity_id: str, _permission: str) -> bool:
-            return entity_id.endswith("zone_a_demand")
+            return entity_id.endswith("zone_a_heating_demand")
 
     snapshot = runtime.presentation_snapshot(hass)
     hidden_actuator_id = "00000000-0000-4000-8000-000000000199"
     snapshot["actuators"].append({"id": hidden_actuator_id, "active_consumers": []})
-    snapshot["execution"]["boundary"]["forced_shadow_actuators"] = [
-        VALVE_ID,
-        hidden_actuator_id,
-    ]
     snapshot["execution"]["operations"]["proposed"] = [
         {"actuator_id": VALVE_ID},
         {"actuator_id": hidden_actuator_id},
@@ -204,7 +202,6 @@ async def test_permission_filter_hides_zone_equipment_but_keeps_plant_source_sta
 
     filtered = _filter_snapshot_for_user(snapshot, entities, allowed)
 
-    assert filtered["execution"]["boundary"]["forced_shadow_actuators"] == [VALVE_ID]
     assert [
         operation["actuator_id"] for operation in filtered["execution"]["operations"]["proposed"]
     ] == [VALVE_ID, "source:plant"]
@@ -318,7 +315,7 @@ async def test_pending_subscription_requires_a_readable_plant_entity(hass) -> No
 
     class _ZoneA:
         def check_entity(self, entity_id: str, _permission: str) -> bool:
-            return entity_id.endswith("zone_a_demand")
+            return entity_id.endswith("zone_a_heating_demand")
 
     with pytest.raises(Unauthorized):
         await _subscribe(hass, _Connection(_User(_DenyAll())))
