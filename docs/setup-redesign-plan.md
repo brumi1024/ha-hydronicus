@@ -155,6 +155,7 @@ Module `custom_components/hydronicus/core/topology.py`, changed by the lead in W
 - A zone that no enabled route leaves is still an error.
 - A Plant with no zones compiles.
 - The controller never requests unused equipment, and with Dry run off an unused valve or pump receives exactly the commands an idle used one receives.
+- `ControlPlan.cooling_actuator_ids` may still list unused cooling equipment; it only forces start commands into shadow, so it requests nothing.
 
 ### K3 Stored data version 3
 
@@ -548,6 +549,7 @@ Tasks:
 2. Add fixtures for a single room, a three-room manifold with one pump, two pumps, a shared loop with a shared valve used by two rooms, a room with two private loops sharing a private valve, an external thermostat, a cooling loop with humidity sensors, sources with a source selector, and every shorthand form.
 3. Add one negative fixture per error class: unknown key, invalid slug, duplicate slug, unknown reference, another room's private valve, a Plant loop using a private valve, a compile failure, a missing format version, and each typed core error that K5 maps to a path.
 4. Add property tests over `tests/core/strategies.py` with `derive_ownership`: export then import reproduces topology and ownership, and import then export of a canonical file is the identity.
+   `stored_plants()` draws config entry data with stored topology records, `plant_configurations()` draws the decoded configurations, and names repeat and carry characters a slug must replace.
 
 W2 is done when every K5 rule is pinned by a test, every negative fixture asserts its error path, each property test runs at least 200 examples, and `make verify` passes with core coverage of at least 90 percent.
 
