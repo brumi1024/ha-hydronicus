@@ -358,8 +358,9 @@ Sharing equipment between loops happens inside one Plant, never across Plants.
 A valve, pump, or source-demand entity that two Plants bind can be commanded by only one of them at a time, because two live Plants would switch it against each other and either one's Safe shutdown could stop equipment the other needs.
 A Plant counts as live when it is loaded and not in Dry run.
 Plants in Dry run may bind the same entities, for example to compare a draft configuration with the live one.
-When you choose a valve, pump, or source-demand entity that another Plant already binds, the setup, import, zone, source, pump, and plant file reviews list it as a warning that names the other Plant.
+When you choose a valve, pump, or source-demand entity that another Plant already binds, the setup, import, zone, source, pump, and plant file reviews list it as a warning that names every other Plant that binds it.
 You confirm it with **I understand these warnings** before saving.
+Like the other warnings, sharing is confirmed when a change introduces it, so a later edit that leaves it unchanged does not ask again.
 Turning Dry run off is refused while another live Plant controls one of the same entities, and the error names that Plant and the shared entities.
 If two Plants that are both set to run outside Dry run share an entity, the first one to finish claiming its outputs during setup runs live.
 The other one is held in Dry run before it sends any command, and a repair explains the conflict.

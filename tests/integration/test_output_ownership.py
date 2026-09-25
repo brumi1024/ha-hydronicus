@@ -729,6 +729,28 @@ async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
     assert result["type"] == "create_entry"
     assert len(second.subentries) == handles + 1
 
+    # Editing the source again does not ask about the sharing already confirmed.
+    subentry_id = next(
+        subentry.subentry_id
+        for subentry in second.subentries.values()
+        if subentry.subentry_type == SUBENTRY_TYPE_SOURCE
+    )
+    result = await second.start_subentry_reconfigure_flow(hass, subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Main boiler",
+            CONF_SOURCE_TYPE: "external",
+            CONF_SOURCE_PRIORITY: 1,
+            CONF_SOURCE_DEMAND_ENTITY: SHARED_SOURCE,
+            CONF_SOURCE_MINIMUM_TEMPERATURE: 0.0,
+            CONF_SOURCE_MAXIMUM_AGE: 300.0,
+            CONF_SOURCE_HYSTERESIS: 0.5,
+        },
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+
 
 async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     hass: HomeAssistant,
@@ -771,3 +793,40 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
 
     assert result["type"] == "create_entry"
     assert result["data"][CONF_DRY_RUN] is True
+
+
+async def test_the_review_names_every_plant_that_binds_a_shared_output(hass: HomeAssistant) -> None:
+    """An output that several Plants bind names each of them, not only the first."""
+    _record_switch_calls(hass)
+    await _set_up_one_by_one(
+        hass,
+        _plant_data(1, sensor="sensor.cold_zone", live=False),
+        _plant_data(3, sensor="sensor.warm_zone", valve="switch.other_valve", live=False),
+    )
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "guided"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"name": "Second plant", CONF_PUMP_ENTITY: SHARED_PUMP}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "zoning_grouped"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Study",
+            CONF_TEMPERATURE_SENSORS: ["sensor.warm_zone"],
+            "valves": ["switch.unshared_valve"],
+        },
+    )
+
+    assert result["step_id"] == "review"
+    (line,) = [
+        line
+        for line in result["description_placeholders"]["warnings"].splitlines()
+        if SHARED_PUMP in line
+    ]
+    assert "Plant 1 and Plant 3" in line

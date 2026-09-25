@@ -33,6 +33,7 @@ from ..core.configuration import (
     BufferTemperatureRequiredError,
 )
 from ..entry_configuration import (
+    data_with_source,
     subentry_draft,
 )
 from .common import (
@@ -43,9 +44,10 @@ from .common import (
     name_selector,
     number,
     optional_entity,
-    other_plant_sharing_warnings,
     own_entity_errors,
     sensor_selector,
+    shared_outputs,
+    sharing_to_confirm,
     temperature_delta_selector,
     warning_text,
     whole_number_selector,
@@ -153,13 +155,11 @@ class SourceSubentryFlowHandler(
     _subentry_type = SUBENTRY_TYPE_SOURCE
 
     def _review_text(self, entry: config_entries.ConfigEntry, data: Mapping[str, Any]) -> str:
-        """Name the other Plant that already binds this source demand switch, if any."""
-        return warning_text(
-            None,
-            other_plant_sharing_warnings(
-                self.hass, entry.entry_id, (data[CONF_SOURCE_DEMAND_ENTITY],)
-            ),
-        )
+        """List the outputs other Plants bind when the source newly shares one, else nothing."""
+        sharing = shared_outputs(self.hass, entry.entry_id, data_with_source(entry.data, data))
+        if not sharing_to_confirm(sharing, shared_outputs(self.hass, entry.entry_id, entry.data)):
+            return ""
+        return warning_text(None, [shared.message for shared in sharing])
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

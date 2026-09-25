@@ -18,7 +18,7 @@ use that one definition:
   held Plant whose conflict is gone, and that shares no output with a Plant
   already chosen to resume, resumes through a reload of its entry, which is the
   normal authorized startup path. Every other held Plant stays held.
-- Flows warn when a chosen output is already bound by another Plant.
+- Flows warn when a change binds an output that another Plant already binds.
 
 The first Plant to reach its claim wins. That is deterministic for a given
 startup, but a delayed or retrying earlier entry can lose to a later one.
@@ -110,13 +110,22 @@ def live_output_conflict(
 
 
 @callback
-def bound_by_other_plant(
-    hass: HomeAssistant, entry_id: str | None, entity_id: Any
-) -> OutputConflict | None:
-    """Return another Plant, live or in Dry run, that already binds ``entity_id``."""
-    if not isinstance(entity_id, str) or not entity_id:
-        return None
-    return _first_conflict(_other_entries(hass, entry_id), frozenset({entity_id}))
+def plants_binding_outputs(
+    hass: HomeAssistant, entry_id: str | None, data: Mapping[str, Any]
+) -> dict[str, tuple[str, ...]]:
+    """Return each output of ``data`` that other Plants bind, with every such Plant's name.
+
+    The outputs are in entity ID order and the Plants in the order they were added.
+    """
+    others = [
+        (other.title, _stored_exclusive_outputs(other.data))
+        for other in _other_entries(hass, entry_id)
+    ]
+    binding: dict[str, tuple[str, ...]] = {}
+    for entity_id in sorted(_stored_exclusive_outputs(data)):
+        if plants := tuple(title for title, outputs in others if entity_id in outputs):
+            binding[entity_id] = plants
+    return binding
 
 
 def _issue_id(entry_id: str) -> str:

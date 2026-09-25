@@ -385,7 +385,7 @@ async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None
         OTHER_PLANT_OUTPUT,
     ]
 
-    # The shared output is confirmed on every edit, not only when it first appears.
+    # The shared output is confirmed when it first appears, not again on every edit.
     spare_id = entry.data["topology"]["pumps"][1]["id"]
     result = await _open(hass, entry, "edit_pump")
     result = await _submit(hass, result, {"pump": spare_id})
@@ -394,8 +394,7 @@ async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None
         result,
         {"name": "Reserve pump", "entity_id": OTHER_PLANT_OUTPUT, "overrun_seconds": 0.0},
     )
-    assert result["step_id"] == "pump_review"
-    result = await _submit(hass, result, {"confirm": True})
+    assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "settings_saved"
     assert entry.data["topology"]["pumps"][1]["name"] == "Reserve pump"
 
@@ -448,6 +447,21 @@ async def test_a_pump_change_without_new_warnings_saves_directly(hass) -> None:
     assert entry.data["topology"]["pumps"][0]["name"] == "Main pump"
 
 
+async def test_a_plant_file_edit_does_not_review_sharing_the_plant_already_had(hass) -> None:
+    """A plant file edit asks to confirm only sharing it introduces."""
+    _other_plant_binding_an_output(hass)
+    entry = await _loaded_manifold(hass)
+    # The other Plant binds the manifold pump too, so the Plant already shares it.
+    document = _export(entry)
+    document["zones"]["living_room"]["name"] = "Lounge"
+
+    result = await _edit(hass, entry, document)
+
+    assert result["step_id"] == "edit_plant_review"
+    assert "confirm" not in _schema_keys(result)
+    assert "Plant 1" in result["description_placeholders"]["warnings"]
+
+
 async def test_editing_a_pump_removed_meanwhile_is_an_invalid_pump(hass) -> None:
     """A pump another flow removed is not brought back by an open pump form."""
     entry = await _loaded_manifold(hass)
@@ -477,9 +491,10 @@ async def test_a_pump_review_confirmed_after_the_pump_was_removed_returns_to_the
     """A save-time graph error on the review is reported on the pump form."""
     _other_plant_binding_an_output(hass)
     entry = await _loaded_manifold(hass)
-    spare_id = await _stored_spare_pump(hass, entry, OTHER_PLANT_OUTPUT)
+    spare_id = await _stored_spare_pump(hass, entry)
     result = await _open(hass, entry, "edit_pump")
     result = await _submit(hass, result, {"pump": spare_id})
+    # Moving the pump onto another Plant's output introduces sharing, which is reviewed.
     result = await _submit(
         hass,
         result,

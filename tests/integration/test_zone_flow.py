@@ -557,6 +557,26 @@ async def test_a_valve_bound_by_another_plant_is_a_reviewed_warning(hass) -> Non
     ]
 
 
+async def test_sharing_confirmed_once_is_not_reviewed_on_later_edits(hass) -> None:
+    """Only sharing an edit introduces needs a confirmation, not sharing the Plant already had."""
+    _other_plant_binding_living_valve(hass)
+    entry = await _setup(hass, _pump_only_entry(title="Plant 2"))
+    result = await _configure(hass, await _start_zone(hass, entry), LIVING_INPUT)
+    assert result["step_id"] == "review"
+    await _configure(hass, result, {"confirm": True})
+    zone_id = _zone_id(entry, "Living room")
+
+    for name in ("Lounge", "Sitting room"):
+        result = await _menu(hass, entry, zone_id, "zone")
+        result = await _configure(hass, result, {**frontend_submission(result), "name": name})
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+    result = await _menu(hass, entry, zone_id, "thermostat")
+    result = await _configure(hass, result, frontend_submission(result))
+    assert result["type"] == FlowResultType.ABORT
+    assert zone_subentry(entry, zone_id).title == "Sitting room"
+
+
 async def test_moving_a_loop_valve_onto_another_plants_output_is_reviewed(hass) -> None:
     """The reconfigure twin: a loop edit that binds another Plant's valve is reviewed."""
     _other_plant_binding_living_valve(hass)

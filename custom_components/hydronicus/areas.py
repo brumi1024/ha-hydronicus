@@ -36,7 +36,7 @@ from .const import (
     CONF_ZONES,
 )
 from .core.model import AreaSensors, CompiledPlant, HydronicusThermostatConfig
-from .flows.common import is_hydronicus_owned
+from .flows.common import is_hydronicus_owned, listed
 
 # The name each covered area last had, so a removed area is still named in a
 # message. Home Assistant forgets a removed area, and this memory lasts until
@@ -361,11 +361,6 @@ def _cooled_zone_ids(data: Mapping[str, Any]) -> set[str]:
         and route.get("enabled", True) is True
         and route.get("circuit_id") in cooling
     }
-
-
-def listed(names: Sequence[str]) -> str:
-    """Join names the way a sentence lists them, such as ``A, B and C``."""
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
 def area_review_warnings(

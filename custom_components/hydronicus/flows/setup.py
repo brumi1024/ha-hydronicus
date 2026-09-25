@@ -43,7 +43,6 @@ from ..entry_configuration import (
     canonical_id,
     data_with_zone,
     effective_plant_from_data,
-    exclusive_output_entity_ids,
     new_plant_data,
     subentries_for,
     topology_copy,
@@ -53,9 +52,9 @@ from .common import (
     ConfigFlowBase,
     collapsed_section,
     name_selector,
-    other_plant_sharing_warnings,
     own_entity_errors,
     seconds_selector,
+    shared_outputs,
     warning_review_schema,
     warning_text,
     warnings_to_confirm,
@@ -181,9 +180,7 @@ class SetupSteps(ConfigFlowBase):
         another Plant already binds, needs an explicit confirmation.
         """
         compiled = effective_plant_from_data(self._data).compiled
-        sharing = other_plant_sharing_warnings(
-            self.hass, None, sorted(exclusive_output_entity_ids(self._data))
-        )
+        sharing = shared_outputs(self.hass, None, self._data)
         areas = area_review_warnings(self.hass, self._data)
         blocking = (
             bool(sharing)
@@ -204,7 +201,11 @@ class SetupSteps(ConfigFlowBase):
                 "zones": _zone_lines(self._data),
                 "logic": _logic_lines(compiled),
                 "warnings": warning_text(
-                    compiled, (*(warning.message for warning in areas), *sharing)
+                    compiled,
+                    (
+                        *(warning.message for warning in areas),
+                        *(shared.message for shared in sharing),
+                    ),
                 )
                 or "- None",
             },

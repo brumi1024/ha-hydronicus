@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import voluptuous as vol
@@ -54,7 +55,7 @@ from ..entry_configuration import (
     data_with_source,
     effective_plant_from_data,
 )
-from ..output_ownership import bound_by_other_plant
+from ..output_ownership import plants_binding_outputs
 
 if TYPE_CHECKING:
     ConfigFlowBase = config_entries.ConfigFlow
@@ -198,26 +199,55 @@ class OwnEntityPickerMixin:
         return super().async_show_form(data_schema=data_schema, **kwargs)  # type: ignore[misc]
 
 
-def other_plant_sharing_warnings(
-    hass: HomeAssistant, entry_id: str | None, entity_ids: Iterable[Any]
-) -> tuple[str, ...]:
-    """Describe chosen outputs that another Plant already binds, for a review step.
+def listed(names: Sequence[str]) -> str:
+    """Join names the way a sentence lists them, such as ``A, B and C``."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+@dataclass(frozen=True, slots=True)
+class SharedOutput:
+    """An output of a Plant that other Plants bind too, and the names of those Plants."""
+
+    entity_id: str
+    plants: tuple[str, ...]
+
+    @property
+    def message(self) -> str:
+        """Describe the sharing for a review step."""
+        return (
+            f"{self.entity_id} is already bound by {listed(self.plants)}. Only one Plant "
+            "that binds it can be out of Dry run at a time: while one is live, the others "
+            "cannot leave Dry run, and one stored out of Dry run is held in Dry run until "
+            "the conflict is gone."
+        )
+
+
+def shared_outputs(
+    hass: HomeAssistant, entry_id: str | None, data: Mapping[str, Any]
+) -> tuple[SharedOutput, ...]:
+    """Return the outputs of Plant ``data`` that other Plants already bind, for a review step.
 
     Sharing is allowed, because Dry run Plants may share entities with a live
     Plant, for example to compare a draft configuration. The review lets users
     learn about sharing before it matters. The runtime guard that keeps one live
     Plant per output is authoritative.
     """
-    warnings = []
-    for entity_id in dict.fromkeys(entity_ids):
-        if conflict := bound_by_other_plant(hass, entry_id, entity_id):
-            warnings.append(
-                f"{entity_id} is already bound by {conflict.other_plant}. Only one of the "
-                "two plants can be out of Dry run at a time: while one is live, the other "
-                "cannot leave Dry run, and if it is stored out of Dry run it is held in "
-                "Dry run until the conflict is gone."
-            )
-    return tuple(warnings)
+    return tuple(
+        SharedOutput(entity_id, plants)
+        for entity_id, plants in plants_binding_outputs(hass, entry_id, data).items()
+    )
+
+
+def sharing_to_confirm(
+    sharing: Iterable[SharedOutput], before: Iterable[SharedOutput] = ()
+) -> tuple[SharedOutput, ...]:
+    """Return the sharing a save must confirm: what the Plant did not share before the change.
+
+    Sharing the Plant already had was confirmed when it appeared, or existed
+    before this edit, so editing a zone does not ask about it again.
+    """
+    known = set(before)
+    return tuple(shared for shared in sharing if shared not in known)
 
 
 def flatten_sections(user_input: Mapping[str, Any]) -> dict[str, Any]:

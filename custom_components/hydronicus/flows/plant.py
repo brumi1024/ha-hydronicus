@@ -72,10 +72,11 @@ from .common import (
     max_age_selector,
     name_selector,
     optional_entity,
-    other_plant_sharing_warnings,
     own_entity_errors,
     seconds_selector,
     sensor_selector,
+    shared_outputs,
+    sharing_to_confirm,
     topology_select,
     warning_review_schema,
     warning_text,
@@ -570,22 +571,19 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
     def _pump_warnings(self, entry: config_entries.ConfigEntry, proposed: Mapping[str, Any]) -> str:
         """Describe what the pump change needs confirmed, or return an empty string.
 
-        That is a compiler warning the change introduces (Decision 11), or a pump
-        entity another Plant already binds, which is confirmed on every save.
+        That is a compiler warning the change introduces (Decision 11), or an
+        output the change newly shares with another Plant.
         """
         compiled = effective_plant_from_data(proposed).compiled
-        _pump_id, record = self._pump_edit
-        sharing = (
-            other_plant_sharing_warnings(self.hass, entry.entry_id, (record[CONF_ENTITY_ID],))
-            if record is not None
-            else ()
-        )
+        sharing = shared_outputs(self.hass, entry.entry_id, proposed)
         try:
             before: CompiledPlant | None = effective_plant(entry).compiled
         except GRAPH_EDIT_ERRORS:
             before = None
-        if sharing or warnings_to_confirm(compiled, before):
-            return warning_text(compiled, sharing)
+        if sharing_to_confirm(
+            sharing, shared_outputs(self.hass, entry.entry_id, entry.data)
+        ) or warnings_to_confirm(compiled, before):
+            return warning_text(compiled, [shared.message for shared in sharing])
         return ""
 
     async def _async_save_pump(self, entry: config_entries.ConfigEntry) -> bool:
@@ -752,11 +750,7 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
         """Show the changes against the current Plant, and remember which Plant was shown."""
         data = data_with_plant(entry.data, self._imported)
         compiled: CompiledPlant = self._imported.compiled
-        sharing = other_plant_sharing_warnings(
-            self.hass,
-            entry.entry_id,
-            (output["entity_id"] for output in output_authorization(data)["outputs"]),
-        )
+        sharing = shared_outputs(self.hass, entry.entry_id, data)
         try:
             before: CompiledPlant | None = effective_plant(entry).compiled
         except GRAPH_EDIT_ERRORS:
@@ -764,7 +758,7 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
             before = None
         areas = area_review_warnings(self.hass, data)
         self._review_blocking = (
-            bool(sharing)
+            bool(sharing_to_confirm(sharing, shared_outputs(self.hass, entry.entry_id, entry.data)))
             or bool(warnings_to_confirm(compiled, before))
             or bool(area_warnings_to_confirm(areas, area_review_warnings(self.hass, entry.data)))
         )
@@ -778,7 +772,11 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
                 "changes": _plant_changes(entry.data, data),
                 "logic": "\n".join(f"- {line}" for line in compiled.logic_summary) or "- None",
                 "warnings": warning_text(
-                    compiled, (*(warning.message for warning in areas), *sharing)
+                    compiled,
+                    (
+                        *(warning.message for warning in areas),
+                        *(shared.message for shared in sharing),
+                    ),
                 )
                 or "- None",
             },

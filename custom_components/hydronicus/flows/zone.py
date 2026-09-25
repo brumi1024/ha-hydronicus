@@ -82,9 +82,10 @@ from .common import (
     collapsed_section,
     flatten_sections,
     name_selector,
-    other_plant_sharing_warnings,
     own_entity_errors,
     seconds_selector,
+    shared_outputs,
+    sharing_to_confirm,
     topology_select,
     warning_review_schema,
     warning_text,
@@ -210,37 +211,34 @@ class ZoneSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         self._draft = draft
         return {}, {}
 
-    def _sharing(self) -> tuple[str, ...]:
-        """Describe zone valves that another Plant already binds."""
-        return other_plant_sharing_warnings(
-            self.hass,
-            self._get_entry().entry_id,
-            (valve.get(CONF_ENTITY_ID) for valve in self._draft.valves),
-        )
-
     async def _async_save(
         self, origin: Callable[[], Awaitable[config_entries.SubentryFlowResult]]
     ) -> config_entries.SubentryFlowResult | None:
         """Review warnings first, or save now; ``None`` means Dry run is still pending.
 
         A warning this change introduces, including an area warning that needs a
-        confirmation, or an output shared with another Plant, needs an explicit
-        confirmation. ``origin`` submits the form that drafted the zone again,
-        which reports why a Plant changed meanwhile rejects it.
+        confirmation, or an output newly shared with another Plant, needs an
+        explicit confirmation. A warning the Plant already had does not. ``origin``
+        submits the form that drafted the zone again, which reports why a Plant
+        changed meanwhile rejects it.
         """
         self._origin = origin
         entry = self._get_entry()
         compiled = effective_plant_from_data(self._proposed).compiled
-        sharing = self._sharing()
+        sharing = shared_outputs(self.hass, entry.entry_id, self._proposed)
         before = effective_plant(entry).compiled
         areas = area_review_warnings(self.hass, self._proposed)
         if (
-            sharing
+            sharing_to_confirm(sharing, shared_outputs(self.hass, entry.entry_id, entry.data))
             or warnings_to_confirm(compiled, before)
             or area_warnings_to_confirm(areas, area_review_warnings(self.hass, entry.data))
         ):
             self._review_warnings = warning_text(
-                compiled, (*(warning.message for warning in areas), *sharing)
+                compiled,
+                (
+                    *(warning.message for warning in areas),
+                    *(shared.message for shared in sharing),
+                ),
             )
             return self._review_form()
         return await self._async_persist()
