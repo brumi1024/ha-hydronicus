@@ -66,11 +66,11 @@ def validate_ownership(configuration: PlantConfiguration, ownership: PlantOwners
     for object_id, zone_id in room_objects.items():
         if object_id not in circuit_ids | valve_ids:
             raise OwnershipError(
-                f"Only circuits and valves can belong to a room, not {object_id}.", (object_id,)
+                f"Only loops and valves can belong to a room, not {object_id}.", (object_id,)
             )
         if zone_id not in zone_ids:
             raise OwnershipError(
-                f"Private object {object_id} belongs to {zone_id}, which is not a zone.",
+                f"Private object {object_id} belongs to {zone_id}, which is not a room.",
                 (object_id, zone_id),
             )
 
@@ -83,13 +83,13 @@ def validate_ownership(configuration: PlantConfiguration, ownership: PlantOwners
             # R3: a Plant circuit uses only Plant valves.
             if circuit_owner is None:
                 raise OwnershipError(
-                    f"Plant circuit {circuit.id} uses valve {valve_id}, which is private to "
+                    f"Plant loop {circuit.id} uses valve {valve_id}, which is private to "
                     f"room {valve_owner}.",
                     (circuit.id, valve_id),
                 )
             # R4: a room circuit uses only its own room's valves or Plant valves.
             raise OwnershipError(
-                f"Circuit {circuit.id} of room {circuit_owner} uses valve {valve_id}, which is "
+                f"Loop {circuit.id} of room {circuit_owner} uses valve {valve_id}, which is "
                 f"private to room {valve_owner}.",
                 (circuit.id, valve_id),
             )
@@ -99,7 +99,7 @@ def validate_ownership(configuration: PlantConfiguration, ownership: PlantOwners
         circuit_owner = room_objects.get(route.circuit_id)
         if circuit_owner is not None and circuit_owner != route.zone_id:
             raise OwnershipError(
-                f"Route {route.id} from zone {route.zone_id} targets circuit {route.circuit_id}, "
+                f"Route {route.id} from room {route.zone_id} targets loop {route.circuit_id}, "
                 f"which is private to room {circuit_owner}.",
                 (route.id, route.circuit_id),
             )
@@ -112,8 +112,7 @@ def validate_ownership(configuration: PlantConfiguration, ownership: PlantOwners
             for route in configuration.routes
         ):
             raise OwnershipError(
-                f"Circuit {circuit.id} is private to room {circuit_owner} but has no route "
-                "from it.",
+                f"Loop {circuit.id} is private to room {circuit_owner} but has no route from it.",
                 (circuit.id,),
             )
     for valve_id in sorted(valve_ids):
@@ -123,7 +122,7 @@ def validate_ownership(configuration: PlantConfiguration, ownership: PlantOwners
             for circuit in configuration.circuits
         ):
             raise OwnershipError(
-                f"Valve {valve_id} is private to room {valve_owner} but no circuit of that room "
+                f"Valve {valve_id} is private to room {valve_owner} but no loop of that room "
                 "uses it.",
                 (valve_id,),
             )
@@ -155,7 +154,7 @@ def room_closure(
 ) -> RoomClosure:
     """Return the objects removed together with one room."""
     if not any(zone.id == zone_id for zone in configuration.zones):
-        raise OwnershipError(f"Zone {zone_id} is not part of the Plant.", (zone_id,))
+        raise OwnershipError(f"Room {zone_id} is not part of the Plant.", (zone_id,))
     private_ids = {
         object_id for object_id, owner in ownership.room_objects.items() if owner == zone_id
     }

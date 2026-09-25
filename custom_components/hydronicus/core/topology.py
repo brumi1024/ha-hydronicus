@@ -44,7 +44,7 @@ class CoolingReferenceError(TopologyValidationError):
     def __init__(self, circuit_id: str) -> None:
         self.circuit_id = circuit_id
         super().__init__(
-            f"Cooling circuit {circuit_id} requires a supply or surface temperature reference."
+            f"Cooling loop {circuit_id} requires a supply or surface temperature reference."
         )
 
 
@@ -58,7 +58,7 @@ class CoolingObservationError(TopologyValidationError):
         self.zone_id = zone_id
         self.observation = observation
         super().__init__(
-            f"Cooling circuit {circuit_id} requires {observation} observations for zone {zone_id}."
+            f"Cooling loop {circuit_id} requires {observation} observations for room {zone_id}."
         )
 
 
@@ -121,25 +121,25 @@ def _validate_zone(zone: Zone) -> None:
     zone_id = zone.id
     if not isinstance(zone.aggregation, TemperatureAggregation):
         raise TopologyValidationError(
-            f"Zone {zone_id} temperature aggregation must be a supported policy."
+            f"Room {zone_id} temperature aggregation must be a supported policy."
         )
     if isinstance(zone.thermostat, HydronicusThermostatConfig):
         if not isinstance(zone.target_temperature, (int, float)) or not isfinite(
             float(zone.target_temperature)
         ):
-            raise TopologyValidationError(f"Zone {zone_id} target temperature must be finite.")
+            raise TopologyValidationError(f"Room {zone_id} target temperature must be finite.")
         if (
             not MIN_ZONE_TARGET_TEMPERATURE
             <= float(zone.target_temperature)
             <= (MAX_ZONE_TARGET_TEMPERATURE)
         ):
             raise TopologyValidationError(
-                f"Zone {zone_id} target temperature must be between "
+                f"Room {zone_id} target temperature must be between "
                 f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
             )
         if not zone.temperature_sensors:
             raise TopologyValidationError(
-                f"Zone {zone_id} requires at least one temperature sensor."
+                f"Room {zone_id} requires at least one temperature sensor."
             )
     elif isinstance(zone.thermostat, ExternalClimateThermostatConfig):
         if not (
@@ -147,29 +147,29 @@ def _validate_zone(zone: Zone) -> None:
             and zone.thermostat.entity_id.removeprefix("climate.").strip()
         ):
             raise TopologyValidationError(
-                f"Zone {zone_id} external thermostat must belong to the climate domain."
+                f"Room {zone_id} external thermostat must belong to the climate domain."
             )
     else:
-        raise TopologyValidationError(f"Zone {zone_id} thermostat kind must be supported.")
+        raise TopologyValidationError(f"Room {zone_id} thermostat kind must be supported.")
     if not _finite_non_negative(zone.heating_start_delta) or not _finite_non_negative(
         zone.heating_stop_delta
     ):
         raise TopologyValidationError(
-            f"Zone {zone_id} heating hysteresis deltas must be finite and non-negative."
+            f"Room {zone_id} heating hysteresis deltas must be finite and non-negative."
         )
     if not _finite_non_negative(zone.cooling_start_delta) or not _finite_non_negative(
         zone.cooling_stop_delta
     ):
         raise TopologyValidationError(
-            f"Zone {zone_id} cooling hysteresis deltas must be finite and non-negative."
+            f"Room {zone_id} cooling hysteresis deltas must be finite and non-negative."
         )
     if not _finite_non_negative(zone.minimum_active_duration_seconds):
         raise TopologyValidationError(
-            f"Zone {zone_id} minimum active duration must be finite and non-negative."
+            f"Room {zone_id} minimum active duration must be finite and non-negative."
         )
     if not _finite_non_negative(zone.minimum_idle_duration_seconds):
         raise TopologyValidationError(
-            f"Zone {zone_id} minimum idle duration must be finite and non-negative."
+            f"Room {zone_id} minimum idle duration must be finite and non-negative."
         )
 
     metadata = tuple(zone.sensor_metadata)
@@ -177,68 +177,68 @@ def _validate_zone(zone: Zone) -> None:
         isinstance(sensor.entity_id, str) and sensor.entity_id.strip() for sensor in metadata
     ):
         raise TopologyValidationError(
-            f"Zone {zone_id} temperature sensors must be non-empty entity ids."
+            f"Room {zone_id} temperature sensors must be non-empty entity ids."
         )
     sensor_ids = tuple(sensor.entity_id for sensor in metadata)
     if duplicates := _duplicates(sensor_ids):
         raise TopologyValidationError(
-            f"Zone {zone_id} temperature sensors must not contain duplicates: "
+            f"Room {zone_id} temperature sensors must not contain duplicates: "
             + ", ".join(sorted(duplicates))
             + "."
         )
     for sensor in metadata:
         if not isinstance(sensor.required, bool):
             raise TopologyValidationError(
-                f"Zone {zone_id} sensor {sensor.entity_id} required status must be boolean."
+                f"Room {zone_id} sensor {sensor.entity_id} required status must be boolean."
             )
         if not _finite_positive(sensor.weight):
             raise TopologyValidationError(
-                f"Zone {zone_id} temperature sensor weights must be positive and finite."
+                f"Room {zone_id} temperature sensor weights must be positive and finite."
             )
         if not isinstance(sensor.calibration_offset, (int, float)) or not isfinite(
             float(sensor.calibration_offset)
         ):
             raise TopologyValidationError(
-                f"Zone {zone_id} sensor {sensor.entity_id} calibration offset must be finite."
+                f"Room {zone_id} sensor {sensor.entity_id} calibration offset must be finite."
             )
         if not _finite_positive(sensor.max_age_seconds):
             raise TopologyValidationError(
-                f"Zone {zone_id} sensor {sensor.entity_id} maximum age must be positive and finite."
+                f"Room {zone_id} sensor {sensor.entity_id} maximum age must be positive and finite."
             )
         if not isinstance(sensor.designated_reference, bool):
             raise TopologyValidationError(
-                f"Zone {zone_id} sensor {sensor.entity_id} reference status must be boolean."
+                f"Room {zone_id} sensor {sensor.entity_id} reference status must be boolean."
             )
 
     humidity_metadata = tuple(zone.humidity_sensor_metadata)
     humidity_ids = tuple(sensor.entity_id for sensor in humidity_metadata)
     if duplicates := _duplicates(humidity_ids):
         raise TopologyValidationError(
-            f"Zone {zone_id} humidity sensors must not contain duplicates: "
+            f"Room {zone_id} humidity sensors must not contain duplicates: "
             + ", ".join(sorted(duplicates))
             + "."
         )
     for sensor in humidity_metadata:
         if not isinstance(sensor.entity_id, str) or not sensor.entity_id.strip():
             raise TopologyValidationError(
-                f"Zone {zone_id} humidity sensors must be non-empty entity ids."
+                f"Room {zone_id} humidity sensors must be non-empty entity ids."
             )
         if not isinstance(sensor.required, bool):
             raise TopologyValidationError(
-                f"Zone {zone_id} humidity sensor {sensor.entity_id} required status "
+                f"Room {zone_id} humidity sensor {sensor.entity_id} required status "
                 "must be boolean."
             )
         if not _finite_positive(sensor.weight):
             raise TopologyValidationError(
-                f"Zone {zone_id} humidity sensor weights must be positive and finite."
+                f"Room {zone_id} humidity sensor weights must be positive and finite."
             )
         if not isfinite(float(sensor.calibration_offset)):
             raise TopologyValidationError(
-                f"Zone {zone_id} humidity sensor {sensor.entity_id} calibration must be finite."
+                f"Room {zone_id} humidity sensor {sensor.entity_id} calibration must be finite."
             )
         if not _finite_positive(sensor.max_age_seconds):
             raise TopologyValidationError(
-                f"Zone {zone_id} humidity sensor {sensor.entity_id} maximum age must be positive."
+                f"Room {zone_id} humidity sensor {sensor.entity_id} maximum age must be positive."
             )
 
     reference_ids = tuple(
@@ -246,25 +246,25 @@ def _validate_zone(zone: Zone) -> None:
     )
     if len(reference_ids) > 1:
         raise TopologyValidationError(
-            f"Zone {zone_id} has multiple designated reference sensors: "
+            f"Room {zone_id} has multiple designated reference sensors: "
             + ", ".join(reference_ids)
             + "."
         )
     if zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE and len(reference_ids) != 1:
         raise TopologyValidationError(
-            f"Zone {zone_id} designated reference aggregation requires exactly one "
+            f"Room {zone_id} designated reference aggregation requires exactly one "
             "designated reference sensor."
         )
 
     allowed_presets = {"comfort", "eco", "away"}
     for preset, target in zone.preset_targets.items():
         if preset not in allowed_presets:
-            raise TopologyValidationError(f"Zone {zone_id} has unsupported preset target {preset}.")
+            raise TopologyValidationError(f"Room {zone_id} has unsupported preset target {preset}.")
         if not isinstance(target, (int, float)) or not isfinite(float(target)):
-            raise TopologyValidationError(f"Zone {zone_id} preset target {preset} must be finite.")
+            raise TopologyValidationError(f"Room {zone_id} preset target {preset} must be finite.")
         if not MIN_ZONE_TARGET_TEMPERATURE <= float(target) <= MAX_ZONE_TARGET_TEMPERATURE:
             raise TopologyValidationError(
-                f"Zone {zone_id} preset target {preset} must be between "
+                f"Room {zone_id} preset target {preset} must be between "
                 f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
             )
 
@@ -346,10 +346,10 @@ def _validate_source_selector(selector: SourceSelectionActuator) -> None:
 def _index_topology(configuration: PlantConfiguration) -> _TopologyIndex:
     """Validate stable object identities and return deterministic lookup maps."""
     collections = (
-        ("zone", configuration.zones),
+        ("room", configuration.zones),
         ("valve", configuration.valves),
         ("pump", configuration.pumps),
-        ("circuit", configuration.circuits),
+        ("loop", configuration.circuits),
         ("source", configuration.sources),
     )
     for object_name, objects in collections:
@@ -432,9 +432,9 @@ def _validate_relationships(
 
     for circuit in configuration.circuits:
         if not circuit.valve_ids:
-            raise TopologyValidationError(f"Circuit {circuit.id} requires at least one valve.")
+            raise TopologyValidationError(f"Loop {circuit.id} requires at least one valve.")
         if not isinstance(circuit.cooling_enabled, bool):
-            raise TopologyValidationError(f"Circuit {circuit.id} cooling enabled must be boolean.")
+            raise TopologyValidationError(f"Loop {circuit.id} cooling enabled must be boolean.")
         if circuit.cooling_enabled and not (
             circuit.supply_temperature_sensor or circuit.surface_temperature_sensor
         ):
@@ -445,29 +445,29 @@ def _validate_relationships(
         ):
             if reference is not None and (not isinstance(reference, str) or not reference.strip()):
                 raise TopologyValidationError(
-                    f"Circuit {circuit.id} {reference_name} temperature reference must be "
+                    f"Loop {circuit.id} {reference_name} temperature reference must be "
                     "a non-empty entity id."
                 )
         if not _finite_non_negative(circuit.condensation_margin):
             raise TopologyValidationError(
-                f"Circuit {circuit.id} condensation margin must be finite and non-negative."
+                f"Loop {circuit.id} condensation margin must be finite and non-negative."
             )
         if not _finite_positive(circuit.supply_temperature_max_age_seconds):
             raise TopologyValidationError(
-                f"Circuit {circuit.id} supply reference maximum age must be positive and finite."
+                f"Loop {circuit.id} supply reference maximum age must be positive and finite."
             )
         if not _finite_positive(circuit.surface_temperature_max_age_seconds):
             raise TopologyValidationError(
-                f"Circuit {circuit.id} surface reference maximum age must be positive and finite."
+                f"Loop {circuit.id} surface reference maximum age must be positive and finite."
             )
         unknown_valves = sorted(set(circuit.valve_ids) - set(valves))
         if unknown_valves:
             raise TopologyValidationError(
-                f"Circuit {circuit.id} references unknown valves: {', '.join(unknown_valves)}."
+                f"Loop {circuit.id} references unknown valves: {', '.join(unknown_valves)}."
             )
         if circuit.pump_id not in pumps:
             raise TopologyValidationError(
-                f"Circuit {circuit.id} references unknown pump {circuit.pump_id}."
+                f"Loop {circuit.id} references unknown pump {circuit.pump_id}."
             )
 
     referenced_zones: set[str] = set()
@@ -476,11 +476,11 @@ def _validate_relationships(
             raise TopologyValidationError(f"Route {route.id} enabled must be boolean.")
         if route.zone_id not in zones:
             raise TopologyValidationError(
-                f"Route {route.id} references unknown zone {route.zone_id}."
+                f"Route {route.id} references unknown room {route.zone_id}."
             )
         if route.circuit_id not in circuits:
             raise TopologyValidationError(
-                f"Route {route.id} references unknown circuit {route.circuit_id}."
+                f"Route {route.id} references unknown loop {route.circuit_id}."
             )
         if not route.enabled:
             continue
@@ -503,7 +503,9 @@ def _validate_relationships(
     # A zone must be able to request heat. Equipment that no enabled route
     # reaches is valid and reported as unused_equipment instead.
     if orphaned_zones := sorted(set(zones) - referenced_zones):
-        raise TopologyValidationError(f"orphaned zones: {', '.join(orphaned_zones)}.")
+        raise TopologyValidationError(
+            f"Rooms without an enabled route to a loop: {', '.join(orphaned_zones)}."
+        )
 
     return tuple(
         sorted(

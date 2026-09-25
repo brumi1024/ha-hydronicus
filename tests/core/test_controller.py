@@ -1144,7 +1144,7 @@ def test_one_zone_requests_every_enabled_delivery_route() -> None:
     }
     assert opening.diagnostics.circuit_reasons["floor"] == (
         "Waiting for valve readiness after eligible delivery route living-floor "
-        "requested this circuit."
+        "requested this loop."
     )
 
 

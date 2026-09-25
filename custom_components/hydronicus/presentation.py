@@ -207,7 +207,7 @@ def _zone_snapshots(
             preset = runtime.zone_preset_modes.get(zone_id, "none")
             preset_modes = sorted(zone.thermostat.preset_targets)
             thermostat_available = thermostat_state is not None
-            ownership = "Hydronicus owns this Zone's digital thermostat."
+            ownership = "Hydronicus owns this room's digital thermostat."
         else:
             target = external_state.target_temperature
             preset = None
@@ -216,7 +216,7 @@ def _zone_snapshots(
                 cooling if external_state.hvac_action is ExternalHvacAction.COOLING else heating
             )
             thermostat_available = external_state.available and external_state.hvac_mode_valid
-            ownership = "External thermostat owns this Zone. " + (
+            ownership = "An external thermostat controls this room. " + (
                 external_decision.explanation if external_decision else external_state.explanation
             )
         blocked = (

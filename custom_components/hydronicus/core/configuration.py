@@ -406,7 +406,7 @@ def _thermostat_from_mapping(
     """Decode one canonical discriminated thermostat union."""
     raw = mapping.get("thermostat")
     if not isinstance(raw, Mapping):
-        raise StoredTopologyError("Stored Zone thermostat must be an object.")
+        raise StoredTopologyError("Stored room thermostat must be an object.")
     kind = raw.get("kind")
     if kind == "hydronicus":
         allowed = {
@@ -467,7 +467,7 @@ def _thermostat_from_mapping(
                 "Stored external thermostat entity_id must belong to the climate domain."
             )
         return ExternalClimateThermostatConfig(entity_id)
-    raise StoredTopologyError("Stored Zone thermostat kind must be supported.")
+    raise StoredTopologyError("Stored room thermostat kind must be supported.")
 
 
 def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float, float, float]:
@@ -526,7 +526,7 @@ def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
             "eco",
             "away",
         },
-        "zone thermostat",
+        "room thermostat",
     )
     thermostat = _thermostat_from_mapping(item)
     metadata = _sensor_metadata_from_mapping(
@@ -628,7 +628,7 @@ def _circuit_from_mapping(item: Mapping[str, Any]) -> Circuit:
     _reject_unsupported_fields(
         item,
         {"valve_id", "valve_opening_time_seconds", "pump_overrun_seconds"},
-        "circuit",
+        "loop",
     )
     return Circuit(
         id=_id(item, "id", require_uuid=True),
