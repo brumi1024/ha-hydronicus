@@ -182,6 +182,8 @@ source subentry   unchanged
 Migration from 2.0 to 3.0 runs in `async_migrate_entry` in this order.
 Every step is idempotent, so a restart at any point resumes to the same result.
 
+0. While migration has not started (no `room` subentry and no `legacy:` unique ID), remove every object whose version 2 handle was deleted while the entry was unloaded, with version 2 removal semantics, and write that version 2.0 data durably.
+   A version 2 Plant with circuits always has zones, so this condition cannot misread a Plant that stopped between steps 6 and 7.
 1. Compute the plan from the topology alone: `derive_ownership`, one room per zone, and the target owner of every object.
 2. Give every legacy `zone`, `circuit`, and `actuator` subentry the unique ID `legacy:<object id>`, which frees the object IDs for room handles.
 3. Add a `room` subentry for every zone that has none.
