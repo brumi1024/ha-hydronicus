@@ -14,7 +14,7 @@ Investigated on 2026-09-25 against Home Assistant 2026.9 and Hydronicus v0.1.0 (
 - Other installations range from one zone for the whole home to one zone per room.
 - The UI calls one thermostat's space a Room, so a zone that covers a kitchen, a dining room, and a hall reads as a Room that contains rooms.
 - Core code, the Lovelace card, and the WebSocket snapshot already say Zone.
-- A config subentry cannot change its type: removing a subentry removes its devices and entities (`EntityRegistry.async_clear_config_subentry`), so the stored subentry type `room` stays.
+- The maintainer decided on 2026-09-25 that no backward compatibility is required at this stage, so stored names, the plant file, and the card change without aliases or migration.
 - `DeviceInfo.suggested_area` still assigns an area to a newly created device.
 - Reload and unload are command-free lifecycle boundaries, and `_async_reload_entry` skips a reload when `runtime_configuration_fingerprint` is unchanged.
 
@@ -24,26 +24,25 @@ Investigated on 2026-09-25 against Home Assistant 2026.9 and Hydronicus v0.1.0 (
 - A zone follows the temperature and humidity sensors that its areas name in Home Assistant, so a sensor is chosen once, in the area settings.
 - Guided setup asks how the home is zoned and fills in zones from areas.
 - The zone card shows each area's reading when a zone covers two or more areas.
-- Existing Plants keep working unchanged, with every entity ID, device, and history.
+- Entries from earlier development versions are refused with a clear message and set up again.
 
 ## Terminology
 
 | UI term | Core term | Meaning |
 | --- | --- | --- |
 | Plant | Plant | One config entry and its complete graph. |
-| Zone | Zone | The space one thermostat controls, with its areas, sensors, Delivery Routes, and private loops and valves; one `room` subentry. |
+| Zone | Zone | The space one thermostat controls, with its areas, sensors, Delivery Routes, and private loops and valves; one `zone` subentry. |
 | Area | none | A Home Assistant area, usually one physical room, that a zone covers. |
 | Loop | Circuit | A water path through one or more valves and one pump. |
 | Plant equipment | Pump, Valve, Circuit, Source, source selector | Owned by the Plant. |
 
-Core code keeps the names Zone and Circuit, and adapter code renames Room to Zone.
-The stored subentry type stays `room`, and only its constant name changes.
+Core code keeps the names Zone and Circuit, and adapter code, stored names, and the card rename Room to Zone.
 
 ## Decisions
 
 These are settled; implement them rather than revisiting them.
 
-1. **Zone replaces Room** in every user-facing string, the documentation, the plant file, the card, and adapter code.
+1. **Zone replaces Room** in every user-facing string, the documentation, the plant file, the card, adapter code, and stored names, including the subentry type `zone` and the key `zone_objects`.
    Loop stays, and the card's remaining Circuit wording becomes Loop.
 2. **A zone covers areas.** A zone stores zero or more area IDs, each at most once.
    An area may be covered by several zones, which the review reports as a warning that never needs confirmation.
@@ -64,12 +63,10 @@ These are settled; implement them rather than revisiting them.
    A zone that covers several areas leaves its device unassigned, because a device has one area.
 10. **Guided setup asks "How is your home zoned?"** with three answers: one zone for the whole home, one zone per area, or group areas into zones.
     Every answer still ends in the zone form, where valves are chosen.
-11. **Plant file format 2.** `zones` replaces `rooms` and a zone accepts `areas`.
-    Format 1 files still import, with `rooms` read as `zones`, and export always writes format 2.
+11. **Plant file.** `zones` replaces `rooms` and a zone accepts `areas`, and the format number stays 1 because no earlier file needs to import.
     A covered area that does not exist is a review warning that needs confirmation, like an entity that does not exist yet, so a file can move between instances.
-12. **Card names.** `hydronicus-zone-card` with a `zone` option is the card, and `hydronicus-room-card` with `room` keeps working as a hidden alias so v0.1.0 dashboards do not break.
-13. **Config entry version 3.1.** No data migration is needed, because a zone without `areas` covers no areas.
-    A Plant that uses areas cannot roll back to v0.1.0, and the rollback documentation says so.
+12. **Card names.** `hydronicus-zone-card` with a `zone` option is the card, the Plant card section is `zones`, and the parts are `zone` and `zone-title`, with no aliases.
+13. **Config entry version 4.0.** An older entry is not migrated: setup logs that it came from an earlier development version and must be set up again, and the legacy migration code is deleted.
 14. **The dew point is out of scope.** The worst-case dew point change runs on its own branch, and this plan neither changes nor depends on the dew point math.
 
 ## Invariants
@@ -77,7 +74,7 @@ These are settled; implement them rather than revisiting them.
 - Dry run issues zero actuator service calls.
 - Reload, unload, removal, and Home Assistant stop remain command-free lifecycle boundaries.
 - A change to an area, or to an entity an area names, never makes a Plant fail to load.
-- Every existing entity unique ID, entity ID, entity registry customization, and device identifier survives.
+- Entity unique IDs and device identifiers keep their current scheme, so a Plant set up again from its plant file gets the same entity IDs.
 - Round-trip: importing an exported plant file reproduces the Plant exactly.
 - `custom_components/hydronicus/core/` stays free of Home Assistant imports, keeps at least 90 percent coverage, and passes mypy.
 - `make verify` is the gate.
@@ -108,7 +105,7 @@ areas: [{area_id: str, required?: bool = false, weight?: float = 1.0,
 - A Hydronicus thermostat needs a non-empty `temperature_sensor_metadata` or a non-empty `areas`.
 - At most one sensor or area sets `designated_reference`, and `designated_reference` aggregation needs exactly one.
 - Cooling-enabled loops need, in every zone they serve, a temperature source and a humidity source, where an area counts as both.
-- `CONFIG_ENTRY_MINOR_VERSION` becomes 1, and migration from 3.0 only bumps the minor version.
+- The version is 4.0 from P1, so `areas` needs no version change.
 
 ### K2 Core resolution
 
@@ -153,10 +150,10 @@ A new module `custom_components/hydronicus/areas.py` owns every area registry re
 - `zone_area_self_feed`: an area names a sensor Hydronicus provides; the repair names the area and tells the user to choose another sensor in the area settings.
 - Each repair clears itself when the resolution no longer shows the problem.
 
-### K5 Plant file format 2
+### K5 Plant file
 
 ```yaml
-hydronicus: 2
+hydronicus: 1
 name: Home
 pumps:
   pump: switch.manifold_pump
@@ -176,8 +173,7 @@ zones:
 ```
 
 - An item of `areas` is an area ID or a mapping of `area` and the [K1](#k1-stored-zone) settings.
-- `hydronicus: 1` accepts `rooms` in place of `zones` and no `areas`; `hydronicus: 2` accepts `zones` only.
-- Export writes `hydronicus: 2`, and writes an area as its bare ID when every setting is the default.
+- Export writes an area as its bare ID when every setting is the default.
 - Error paths say `zones.<slug>...`, and export slugs use the `zone_` prefix where they used `room_`.
 - The review warns, needing confirmation, for an area that does not exist and for an area without a humidity sensor in a zone a cooling loop serves; it warns, without confirmation, for an area without a temperature sensor and for an area covered by several zones.
 
@@ -197,16 +193,16 @@ zones:
 
 - `ZoneSnapshot` gains `areas: {id, name, temperature, humidity, temperature_entity_id, humidity_entity_id}[]` in the zone's area order, with `null` where an area names no sensor or its reading is unusable.
 - The zone card shows one compact line per area when a zone covers two or more areas.
-- The card editor offers zones and writes `zone`, and reads `room` from older configurations.
+- The card editor offers zones and writes `zone`.
 - New `--hydronicus-*` tokens or parts are added to `docs/lovelace.md`, and the report lists them so the ha-config adapter can map them.
 
 ## Phases
 
 ### P1 Rename
 
-Rename Room to Zone across `strings.json`, flows, adapter code, docs, tests, README, CONTEXT.md, the plant file (format 2 with format 1 import), the device model name, and the card with its alias.
+Rename Room to Zone across `strings.json`, flows, adapter code, stored names, docs, tests, README, CONTEXT.md, the plant file, the device model name, and the card, and move the config entry to version 4.0 without migration.
 Commit: `refactor: call the thermostat unit a Zone`.
-Done when no user-facing text calls the thermostat unit a Room, format 1 plant files still import, v0.1.0 card configurations still render, and `make verify` passes.
+Done when no user-facing text or stored name calls the thermostat unit a Room, an older entry is refused with a clear log message, and `make verify` passes.
 
 ### P2 Areas in the model
 
