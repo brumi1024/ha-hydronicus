@@ -9,7 +9,7 @@ loops:
   shared_loop:
     valves: [shared_valve, switch.shared_extra]
     pump: main_pump
-rooms:
+zones:
   living_room:
     thermostat: climate.living
     temperature_sensors: [sensor.living_temperature]

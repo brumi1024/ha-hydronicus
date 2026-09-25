@@ -184,6 +184,30 @@ class TemperatureSensorMetadata:
     calibration_offset: float = 0.0
     max_age_seconds: float = 1800.0
     designated_reference: bool = False
+    # The Home Assistant area this record was resolved from, or None for an explicit sensor.
+    area_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneArea:
+    """One Home Assistant area a zone covers, with the settings of its temperature sensor.
+
+    The area's humidity sensor is always required, with the area's maximum age.
+    """
+
+    area_id: str
+    required: bool = False
+    weight: float = 1.0
+    designated_reference: bool = False
+    max_age_seconds: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
+class AreaSensors:
+    """The sensors that Home Assistant currently names for one area."""
+
+    temperature_entity_id: str | None = None
+    humidity_entity_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +284,8 @@ class Zone:
     temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
     aggregation: TemperatureAggregation
     humidity_sensor_metadata: tuple[TemperatureSensorMetadata, ...]
+    # The declared areas; the sensor metadata above already holds their resolved records.
+    areas: tuple[ZoneArea, ...]
 
     def __init__(
         self,
@@ -278,6 +304,7 @@ class Zone:
         cooling_stop_delta: float = 0.1,
         *,
         thermostat: ThermostatConfig | None = None,
+        areas: tuple[ZoneArea, ...] = (),
     ) -> None:
         """Create a Zone, accepting the former constructor as a test compatibility seam."""
         if thermostat is None:
@@ -297,6 +324,7 @@ class Zone:
         object.__setattr__(self, "temperature_sensor_metadata", temperature_sensor_metadata)
         object.__setattr__(self, "aggregation", aggregation)
         object.__setattr__(self, "humidity_sensor_metadata", humidity_sensor_metadata)
+        object.__setattr__(self, "areas", areas)
 
     @property
     def target_temperature(self) -> float:
@@ -623,6 +651,8 @@ class EntityBinding:
     zone_ids: tuple[str, ...] = ()
     actuator_id: str | None = None
     required: bool = True
+    # The Home Assistant area whose sensor this binding follows, if any.
+    area_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -658,7 +688,7 @@ class CompiledPlant:
     def zone_can_cool(self, zone_id: str) -> bool:
         """Return whether an enabled Delivery Route leads the Zone to a cooling Circuit.
 
-        This is the one notion of a room that can cool: its thermostat offers
+        This is the one notion of a zone that can cool: its thermostat offers
         cool modes and its cooling entities exist exactly when this holds.
         """
         return any(

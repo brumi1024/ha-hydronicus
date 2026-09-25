@@ -10,7 +10,7 @@ loops:
   hall_loop:
     valves: [hall_valve]
     pump: pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     shared_loops: [hall_loop]

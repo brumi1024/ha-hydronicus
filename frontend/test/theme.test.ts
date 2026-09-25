@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import "../src/index";
 import { cardStyles } from "../src/styles";
-import { makeHass, makeSnapshot, PLANT_ID, settle, type FakeConnection } from "./fixtures";
+import { makeAreaZone, makeHass, makeSnapshot, PLANT_ID, settle, type FakeConnection } from "./fixtures";
 
 /** The theme token contract shared with themes that map it. */
 const CONTRACT_TOKENS = [
@@ -107,6 +107,7 @@ type CardElement = HTMLElement & { hass?: unknown; setConfig(config: Record<stri
 
 function richSnapshot() {
   return makeSnapshot({
+    zones: [makeAreaZone()],
     alerts: [{ code: "stale", severity: "warning", priority: 1, scope: "plant", message: "Sensor is stale." }],
     delivery_paths: [{ id: "p", zone_id: "zone-1", circuit_id: "c", status: "active", problem: null, coupled: false, nodes: [{ kind: "zone", id: "zone-1", name: "Living room", state: "active" }, { kind: "circuit", id: "c", name: "Floor loop", state: "active" }] }],
     actuators: [{ id: "a", name: "Pump", kind: "pump", state: "active", requested: null, observed: "on", ready: true, blocked: false, mismatch: false, reason: null, active_consumers: [{ id: "c", name: "Floor loop" }] }],
@@ -153,20 +154,21 @@ describe("theme parts", () => {
     expect(sorted(parts(shadow(card)))).toEqual(sorted(documentedNames("### Parts")));
   });
 
-  it("gives the Room card's tile the same parts as the Room in the Plant card", async () => {
+  it("gives the Zone card's tile the same parts as the Zone in the Plant card", async () => {
     const plant = await mount("hydronicus-plant-card", {});
-    const room = await mount("hydronicus-room-card", { room: "zone-1" });
+    const zone = await mount("hydronicus-zone-card", { zone: "zone-1" });
     const inPlant = shadow(plant).querySelector("article.zone");
-    const tile = shadow(room).querySelector("article.zone");
-    if (!inPlant || !tile) throw new Error("A Room tile is missing.");
+    const tile = shadow(zone).querySelector("article.zone");
+    if (!inPlant || !tile) throw new Error("A Zone tile is missing.");
     expect(parts(tile)).toEqual(parts(inPlant));
-    expect(parts(tile)).toContain("room-title");
-    expect(shadow(room).querySelector("ha-card")?.getAttribute("part")).toBe("card");
+    expect(tile.getAttribute("part")).toBe("zone");
+    expect(tile.querySelector(".zone-title")?.getAttribute("part")).toBe("zone-title");
+    expect(shadow(zone).querySelector("ha-card")?.getAttribute("part")).toBe("card");
   });
 
   it("marks the frame of state cards as the card part", async () => {
-    const card = document.createElement("hydronicus-room-card") as CardElement;
-    card.setConfig({ type: "custom:hydronicus-room-card", plant: PLANT_ID });
+    const card = document.createElement("hydronicus-zone-card") as CardElement;
+    card.setConfig({ type: "custom:hydronicus-zone-card", plant: PLANT_ID });
     document.body.append(card);
     await settle(card);
     expect(sorted(parts(shadow(card)))).toEqual(["card", "eyebrow", "mark", "notice", "title"]);

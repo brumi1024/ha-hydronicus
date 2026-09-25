@@ -17,6 +17,7 @@ import yaml
 from homeassistant.const import EVENT_CALL_SERVICE
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import area_registry as ar
 from homeassistant.setup import async_setup_component
 
 from custom_components.hydronicus.const import DOMAIN
@@ -81,13 +82,13 @@ async def test_trial_package_provides_the_documented_entities(hass) -> None:
     await async_setup_trial_package(hass)
     state = state_of(hass)
 
-    for room in ("living_room", "bedroom"):
-        temperature = hass.states.get(f"sensor.hydronicus_trial_{room}_temperature")
+    for zone in ("living_room", "bedroom"):
+        temperature = hass.states.get(f"sensor.hydronicus_trial_{zone}_temperature")
         assert temperature is not None
         assert temperature.state == "21.0"
         assert temperature.attributes["device_class"] == "temperature"
         assert temperature.attributes["unit_of_measurement"] == "°C"
-        assert state(f"switch.hydronicus_trial_{room}_valve") == "off"
+        assert state(f"switch.hydronicus_trial_{zone}_valve") == "off"
     assert state("switch.hydronicus_trial_pump") == "off"
 
     bound = {
@@ -124,11 +125,13 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
         "- Bedroom loop opens Bedroom loop valve, then starts Circulation pump."
         in placeholders["logic"]
     )
+    # The shared pump is listed under Warnings only, not repeated under How it connects.
+    assert "is shared by" not in placeholders["logic"]
     # The README tells the user to expect this one warning and to confirm it.
     # The loops are listed in file order, so the text is the same on every import.
     assert placeholders["warnings"] == (
         "- Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate "
-        "room thermostats cannot independently control heating and cooling through the same pump."
+        "zone thermostats cannot independently control heating and cooling through the same pump."
     )
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
     assert result["errors"] == {"base": "confirm_required"}
@@ -145,7 +148,7 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
         "Bedroom",
         "Living room",
     ]
-    assert state("sensor.trial_plant_topology_preview") == "2 rooms, 2 loops"
+    assert state("sensor.trial_plant_topology_preview") == "2 zones, 2 loops"
 
     await hass.services.async_call(
         "climate",
@@ -177,3 +180,58 @@ async def test_trial_plant_file_imports_and_heats_in_dry_run(hass) -> None:
         "switch.hydronicus_trial_pump",
     ):
         assert state(entity_id) == "off"
+
+
+async def test_trial_areas_plant_file_follows_the_areas_with_the_same_entity_ids(hass) -> None:
+    """plant-areas.yaml builds the same Plant from the README's two areas."""
+    await async_setup_trial_package(hass)
+    areas = ar.async_get(hass)
+    for name, zone in (("Living room", "living_room"), ("Bedroom", "bedroom")):
+        areas.async_create(
+            name, temperature_entity_id=f"sensor.hydronicus_trial_{zone}_temperature"
+        )
+    calls = record_actuator_calls(hass)
+    state = state_of(hass)
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "import_plant"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"document": trial_file("plant-areas.yaml")}
+    )
+    assert result["step_id"] == "import_review"
+    # The same one warning as plant.yaml: the areas exist and name their sensors.
+    assert result["description_placeholders"]["warnings"] == (
+        "- Pump Circulation pump is shared by loops Living room loop, Bedroom loop; separate "
+        "zone thermostats cannot independently control heating and cooling through the same pump."
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    combined = hass.states.get("sensor.bedroom_combined_temperature")
+    assert combined is not None
+    assert combined.attributes["usable_sensor_ids"] == [
+        "sensor.hydronicus_trial_bedroom_temperature"
+    ]
+    await hass.services.async_call(
+        "climate",
+        "set_hvac_mode",
+        {"entity_id": "climate.bedroom", "hvac_mode": "heat"},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        "input_number",
+        "set_value",
+        {"entity_id": "input_number.hydronicus_trial_bedroom_temperature", "value": 18},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert state("binary_sensor.bedroom_heating_demand") == "on"
+    assert state("binary_sensor.living_room_heating_demand") == "off"
+    assert calls == []
+    assert_helpers_untouched(hass)

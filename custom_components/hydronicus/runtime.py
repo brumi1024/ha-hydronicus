@@ -23,6 +23,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util.unit_conversion import TemperatureConverter
 
+from .areas import AreaResolution, ZoneAreaProblem, zone_area_problems
 from .const import (
     ACTUATOR_COMMAND_TIMEOUT_SECONDS,
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
@@ -57,6 +58,7 @@ from .core.model import (
     ActuatorDiagnostic,
     ActuatorFeedback,
     AggregationResult,
+    AreaSensors,
     CompiledPlant,
     Evaluation,
     ExternalClimateThermostatConfig,
@@ -74,6 +76,7 @@ from .core.model import (
     RuntimeState,
     SafeShutdownPhase,
     SourceRecommendation,
+    TemperatureSensorMetadata,
     ThermostatHvacMode,
     ValveRuntime,
     ValveState,
@@ -93,27 +96,39 @@ from .output_ownership import (
     live_output_conflict,
 )
 from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
-from .repairs import async_sync_repairs
+from .repairs import async_sync_area_repairs, async_sync_repairs
 
 _LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, repr=False)
 class HydronicRuntime:
-    """Runtime data retained for one configured plant."""
+    """Runtime data retained for one configured plant.
+
+    The repr names the Plant only. Home Assistant formats a listener's bound
+    method into its job name, and the runtime holds the removal partials of Home
+    Assistant's shared listener tables, so a generated repr would expand every
+    other Plant's runtime through them and grow without bound.
+    """
 
     plant_id: str
     name: str
     dry_run: bool
     plant: CompiledPlant
-    # Zone, room-owned circuit and valve, and source ids -> owning config subentry id.
+    # Zone, zone-owned circuit and valve, and source ids -> owning config subentry id.
     object_subentry_ids: Mapping[str, str] = field(default_factory=dict)
-    ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(room_objects={}))
+    ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(zone_objects={}))
     diagnostics_include_actuator_details: bool = False
     plant_device_id: str | None = None
     # Entity platform domain -> unique IDs that platform provided in this setup.
     provided_entities: dict[str, frozenset[str]] = field(default_factory=dict)
     configuration_fingerprint: str = ""
+    # What the covered areas named when this runtime was built; a change reloads the Plant.
+    area_resolution: AreaResolution = field(default_factory=AreaResolution)
+    # Zone and route ids in their stored order, which is the order they were set up.
+    # The compiled Plant indexes them by id, so the presentation lists them by this.
+    zone_order: tuple[str, ...] = ()
+    route_order: tuple[str, ...] = ()
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
@@ -151,6 +166,10 @@ class HydronicRuntime:
     _last_publication_signature: str | None = None
     executor: ActuatorExecutor = field(init=False)
 
+    def __repr__(self) -> str:
+        """Name the Plant without expanding its state or listeners."""
+        return f"<HydronicRuntime {self.plant_id} {self.name!r}>"
+
     def __post_init__(self) -> None:
         """Create an executor whose state starts unknown until observed."""
         self._operation_lock = asyncio.Lock()
@@ -161,14 +180,20 @@ class HydronicRuntime:
 
     @classmethod
     def from_entry(
-        cls, entry: Any, *, output_hold: OutputConflict | None = None
+        cls,
+        entry: Any,
+        *,
+        output_hold: OutputConflict | None = None,
+        area_resolution: AreaResolution | None = None,
     ) -> HydronicRuntime:
         """Construct safe runtime data from a config entry.
 
         A runtime built with ``output_hold`` is in Dry run from construction,
         whatever the stored setting says, so it can never send a command.
+        Zones follow the sensors that ``area_resolution`` resolves for their areas.
         """
-        effective = effective_plant(entry)
+        areas = area_resolution if area_resolution is not None else AreaResolution()
+        effective = effective_plant(entry, area_sensors=areas.area_sensors)
         plant = effective.compiled
         return cls(
             plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
@@ -181,7 +206,10 @@ class HydronicRuntime:
             diagnostics_include_actuator_details=bool(
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
             ),
-            configuration_fingerprint=runtime_configuration_fingerprint(entry),
+            configuration_fingerprint=runtime_configuration_fingerprint(entry, areas.fingerprint()),
+            area_resolution=areas,
+            zone_order=tuple(zone.id for zone in effective.configuration.zones),
+            route_order=tuple(route.id for route in effective.configuration.routes),
             runtime_state=RuntimeState(
                 requested_mode=_stored_requested_mode(entry),
             ),
@@ -391,6 +419,14 @@ class HydronicRuntime:
             self._remove_stop_listener()
             self._remove_stop_listener = None
         self._hass = hass
+        # The resolution is fixed for this runtime; a change reloads the Plant.
+        async_sync_area_repairs(
+            hass,
+            self.plant_id,
+            self.area_problems,
+            plant_name=self.name,
+            areas=self.area_resolution,
+        )
         self.executor.observe_entities(self._actuator_states(hass))
         self._reconcile_actuator_runtime()
         self._remove_state_listener = async_track_state_change_event(
@@ -415,6 +451,9 @@ class HydronicRuntime:
         self._initializing = False
         if self._hass is not None:
             async_sync_repairs(self._hass, self.plant_id, (), plant_name=self.name)
+            async_sync_area_repairs(
+                self._hass, self.plant_id, (), plant_name=self.name, areas=self.area_resolution
+            )
         async with self._operation_lock:
             if self._remove_state_listener is not None:
                 with suppress(ValueError):
@@ -571,6 +610,72 @@ class HydronicRuntime:
             return None
         aggregation = self.zone_aggregation(zone_id)
         return aggregation.value if aggregation is not None else None
+
+    @property
+    def area_problems(self) -> tuple[ZoneAreaProblem, ...]:
+        """Return the area problems that the area repairs of this Plant report."""
+        return zone_area_problems(self.plant, self.area_resolution)
+
+    def zone_area_sensors(self, zone_id: str) -> list[dict[str, str | None]]:
+        """Return the sensors each area of a zone resolves to, in the zone's area order."""
+        zone = self.plant.zones.get(zone_id)
+        if zone is None:
+            return []
+        resolved = self.area_resolution.area_sensors
+        return [
+            {
+                "area_id": area.area_id,
+                "temperature_entity_id": (
+                    resolved[area.area_id].temperature_entity_id
+                    if area.area_id in resolved
+                    else None
+                ),
+                "humidity_entity_id": (
+                    resolved[area.area_id].humidity_entity_id if area.area_id in resolved else None
+                ),
+            }
+            for area in zone.areas
+        ]
+
+    def zone_areas(self, zone_id: str) -> list[dict[str, object]]:
+        """Return each area of a zone with its sensors and readings, in the zone's area order.
+
+        A reading is the value the controller used in its last evaluation, so a
+        sensor it judged unusable, such as a stale or unavailable one, reads None.
+        An area that no longer exists is marked ``missing`` and keeps its last name.
+        """
+        zone = self.plant.zones.get(zone_id)
+        if zone is None:
+            return []
+        heating = self.zone_decision(zone_id)
+        cooling = self.cooling_zone_decision(zone_id)
+        snapshot = self.snapshot
+        missing = set(self.area_resolution.missing_area_ids)
+        result: list[dict[str, object]] = []
+        for area in zone.areas:
+            sensors = self.area_resolution.area_sensors.get(area.area_id, AreaSensors())
+            result.append(
+                {
+                    "id": area.area_id,
+                    "name": self.area_resolution.name(area.area_id),
+                    "missing": area.area_id in missing,
+                    "temperature": _used_reading(
+                        sensors.temperature_entity_id,
+                        heating.aggregation if heating is not None else None,
+                        zone.temperature_sensor_metadata,
+                        snapshot.temperatures if snapshot is not None else {},
+                    ),
+                    "humidity": _used_reading(
+                        sensors.humidity_entity_id,
+                        cooling.humidity_aggregation if cooling is not None else None,
+                        zone.humidity_sensor_metadata,
+                        snapshot.humidities if snapshot is not None else {},
+                    ),
+                    "temperature_entity_id": sensors.temperature_entity_id,
+                    "humidity_entity_id": sensors.humidity_entity_id,
+                }
+            )
+        return result
 
     def zone_aggregation(self, zone_id: str) -> AggregationResult | None:
         """Return the structured aggregate for a zone from the last evaluation."""
@@ -1049,9 +1154,14 @@ class HydronicRuntime:
                     valves[actuator_id] = current
                 else:
                     valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
-            elif self.dry_run and current is not None and current.state is ValveState.OPENING:
+            elif (
+                self.dry_run
+                and current is not None
+                and current.state in {ValveState.OPENING, ValveState.OPEN}
+            ):
                 # Shadow execution does not change the physical entity.  Keep
-                # the virtual opening transition stable across identical reads.
+                # the proposed opening and open valve stable across identical
+                # reads, or the proposal would restart on every refresh.
                 valves[actuator_id] = current
             elif readiness is False or observed is ActuatorObservedState.OFF:
                 valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
@@ -1093,6 +1203,14 @@ class HydronicRuntime:
                         PumpState.RUNNING,
                         current.changed_at if current is not None else now,
                     )
+            elif (
+                self.dry_run
+                and current is not None
+                and current.state in {PumpState.RUNNING, PumpState.OVERRUN}
+            ):
+                # Shadow execution never starts the physical pump, so an idle
+                # entity must not undo the proposed run or overrun.
+                pumps[actuator_id] = current
             elif retained is ActuatorObservedState.ON and current is not None:
                 if current.state is PumpState.STARTING:
                     pumps[actuator_id] = current
@@ -1105,9 +1223,7 @@ class HydronicRuntime:
                 )
             elif current is not None and current.state is PumpState.RUNNING:
                 pumps[actuator_id] = PumpRuntime(
-                    PumpState.RUNNING
-                    if self.dry_run
-                    else PumpState.STARTING
+                    PumpState.STARTING
                     if any(state.demand for state in self.runtime_state.zone_runtime.values())
                     else PumpState.OVERRUN,
                     current.changed_at or now,
@@ -1645,6 +1761,9 @@ class HydronicRuntime:
                 self.last_reconciliation_status,
                 self.last_reconciliation_changed_actuator_count,
                 self._evaluation_publication_signature(),
+                # Area readings the zone's own value does not reveal, such as a
+                # sensor that is not the minimum of a minimum aggregation.
+                tuple((zone_id, self.zone_areas(zone_id)) for zone_id in sorted(self.plant.zones)),
                 tuple(sorted(self.executor.failure_states.items())),
                 self._execution_publication_signature(),
                 tuple(sorted(self.executor.reconciliations.items()))
@@ -1862,6 +1981,24 @@ class HydronicRuntime:
         )
 
 
+def _used_reading(
+    entity_id: str | None,
+    aggregation: AggregationResult | None,
+    metadata: tuple[TemperatureSensorMetadata, ...],
+    observations: Mapping[str, NumericObservation],
+) -> float | None:
+    """Return a sensor's calibrated reading when the aggregation judged it usable."""
+    if entity_id is None or aggregation is None or entity_id not in aggregation.usable_sensor_ids:
+        return None
+    observation = observations.get(entity_id)
+    if observation is None or observation.value is None:
+        return None
+    offset = next(
+        (sensor.calibration_offset for sensor in metadata if sensor.entity_id == entity_id), 0.0
+    )
+    return observation.value + offset
+
+
 def _stored_requested_mode(entry: Any) -> PlantMode:
     """Decode the operator mode conservatively across old config entries."""
     raw_mode = entry.data.get(CONF_REQUESTED_MODE, PlantMode.AUTO.value)
@@ -1878,7 +2015,7 @@ def _bound_state(hass: HomeAssistant, entity_id: str) -> State | None:
     """Return the state of a bound entity, or None for an entity of this integration.
 
     A Plant never reads a Hydronicus entity as an observation or actuator. Entity IDs
-    follow room names, so a room's Temperature can take the ID of a room sensor that
+    follow zone names, so a zone's Temperature can take the ID of a room sensor that
     did not exist yet, and reading it would feed the Plant's output back into itself.
     """
     registry_entry = er.async_get(hass).async_get(entity_id)

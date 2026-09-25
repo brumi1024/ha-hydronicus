@@ -1,30 +1,26 @@
 # Install, update, and rollback
 
-Hydronicus uses config-entry version 3.0 as its canonical persisted contract.
-Version 2.0 Plants, and version 1.1 Plants through version 2.0 in the same step, are migrated automatically before runtime setup.
+Hydronicus uses config-entry version 4.0 as its canonical persisted contract.
 
-## The version 3 migration
+## Plants from earlier development versions
 
-Version 3 replaces the Zone, Circuit, and Actuator entries under a Plant with one Room entry per room.
-The migration:
+Plants created by an earlier development version, with config-entry version 1.1, 2.0, or 3.0, are not migrated.
+Home Assistant shows such a Plant as failed to set up, and the Home Assistant log says that it was created by an earlier development version and must be set up again.
 
-- gives every Zone its own Room entry, with the Zone's name;
-- makes a Circuit private to a room when only that room routes to it, and a valve private to a room when only that room's private Circuits use it;
-- keeps pumps, sources, the source selector, and every other Circuit and valve as Plant equipment, which becomes shared loops and shared valves;
-- moves the entities and devices of every object to its new owner, so every entity ID, entity customization, device, and history entry stays the same;
-- drops objects whose entries were deleted while Hydronicus was not loaded, the way deleting them would have;
-- removes the old Zone, Circuit, and Actuator entries, which by then own no entities or devices;
-- invalidates the confirmed heating outputs and returns the Plant to Dry run.
+To keep a Plant's objects and entity IDs, export its [plant file](plant-file.md) with **Show the plant file** in the Plant settings before you update.
+After the update:
 
-Source entries stay as they are.
-Each step can be repeated, so a restart during the migration resumes to the same result.
+1. Remove the Plant under **Settings > Devices & services > Hydronicus**.
+2. Rename the top-level `rooms` key of the exported plant file to `zones`.
+3. Optionally, give each zone an `areas` list of the Home Assistant areas it covers, as described in [the plant file reference](plant-file.md#areas).
+   A zone then follows the sensors those areas name, in addition to the sensors the file lists.
+4. Add the Hydronicus integration again, choose **Import a plant file**, and paste the file.
 
-The migration is one way.
-A release before version 3 cannot load a migrated Plant, and there is no downgrade migration.
-Rolling back means restoring the Home Assistant backup taken before the upgrade, which also restores the Plant as it was.
-Changes made after the upgrade are lost by that restore, so export each Plant's [plant file](plant-file.md) first if you want to keep a record of them.
-
-After the migration, rooms, their private loops and valves, pumps, and Dry run are edited in the UI, and shared loops, shared valves, and the source selector through the plant file.
+The imported Plant keeps the object IDs of the file, and therefore the unique IDs of its entities.
+Review its entity IDs afterwards, because entity settings you changed on the removed Plant belonged to that Plant.
+Areas can also be added later in each zone's edit menu.
+Without an exported plant file, set the Plant up again with guided setup.
+Every Plant starts in Dry run, so review its outputs before you leave Dry run again.
 
 ## Fresh HACS installation
 
@@ -55,23 +51,22 @@ Use HACS to install the selected released version and restart Home Assistant whe
 After the restart:
 
 1. Confirm the Hydronicus version.
-2. Confirm that every Plant loads and shows one Room entry per room, and no Zone, Circuit, or Actuator entries.
-3. Open each room's edit menu and confirm that its loops and valves are the ones you expect.
-4. Review the topology preview, the devices, and the entity IDs, which the migration keeps.
-5. Confirm the Plant returned to Dry run after migration or any topology edit.
-6. Use **Show the plant file** in the Plant settings to keep a copy of each migrated Plant.
+2. Confirm that every Plant loads and shows one Zone entry per zone.
+3. Open each zone's edit menu and confirm that its loops and valves are the ones you expect.
+4. Review the topology preview, the devices, and the entity IDs.
+5. Confirm the Plant returned to Dry run after any topology edit.
+6. Use **Show the plant file** in the Plant settings to keep a copy of each Plant.
 7. Review the exact output list before authorizing active heating again.
 8. Exercise the smallest safe scenario before relying on active heating.
 
 Release-specific compatibility instructions belong in the release that introduces them.
-The current schema migrates the concrete version 1.1 and 2.0 predecessors only.
 
 ## Rolling back a development checkout
 
 Keep the Plant in Dry run.
 Stop the isolated Home Assistant test instance before replacing integration files.
-If the older checkout understands config-entry version 3.0, restore `custom_components/hydronicus` from the recorded commit or a clean backup.
-If the older checkout predates version 3.0, restore the complete Home Assistant backup created before migration, because the migration is one way.
+If the older checkout understands config-entry version 4.0, restore `custom_components/hydronicus` from the recorded commit or a clean backup.
+If the older checkout predates version 4.0, it cannot load a Plant set up by this version, so restore the complete Home Assistant backup taken before the update.
 Start Home Assistant and verify the config entry, object devices, topology preview, and Dry run behavior.
 
 If the configuration is no longer trustworthy, restore the complete Home Assistant backup rather than editing `.storage` by hand.
@@ -84,8 +79,8 @@ Reload, unload, removal, and Home Assistant stop do not issue implicit equipment
 This avoids beginning a timed hydraulic shutdown that the lifecycle operation may not remain alive to complete.
 When active equipment is observed or conservatively retained, Hydronicus logs an explicit warning and relies on independent hardware safeguards.
 This boundary is not a substitute for using Safe shutdown or enabling Dry run before planned maintenance.
-Deleting a room or source entry is handled differently because it changes the graph rather than merely stopping the integration.
-Hydronicus waits for the old graph to reach Dry run before removing the room or source from parent storage.
+Deleting a zone or source entry is handled differently because it changes the graph rather than merely stopping the integration.
+Hydronicus waits for the old graph to reach Dry run before removing the zone or source from parent storage.
 If that transition fails, Hydronicus retains the old parent graph and logs the incomplete deletion instead of claiming a safe topology change.
 
 ## If rollback is incomplete

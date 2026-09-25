@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import voluptuous as vol
@@ -54,7 +55,7 @@ from ..entry_configuration import (
     data_with_source,
     effective_plant_from_data,
 )
-from ..output_ownership import bound_by_other_plant
+from ..output_ownership import plants_binding_outputs
 
 if TYPE_CHECKING:
     ConfigFlowBase = config_entries.ConfigFlow
@@ -198,26 +199,62 @@ class OwnEntityPickerMixin:
         return super().async_show_form(data_schema=data_schema, **kwargs)  # type: ignore[misc]
 
 
-def other_plant_sharing_warnings(
-    hass: HomeAssistant, entry_id: str | None, entity_ids: Iterable[Any]
-) -> tuple[str, ...]:
-    """Describe chosen outputs that another Plant already binds, for a review step.
+def listed(names: Sequence[str]) -> str:
+    """Join names the way a sentence lists them, such as ``A, B and C``."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+@dataclass(frozen=True, slots=True)
+class SharedOutput:
+    """An output of a Plant that other Plants bind too, and the names of those Plants."""
+
+    entity_id: str
+    plants: tuple[str, ...]
+
+
+def sharing_messages(sharing: Iterable[SharedOutput]) -> tuple[str, ...]:
+    """Describe shared outputs for a review step, one sentence per set of other Plants."""
+    by_plants: dict[tuple[str, ...], list[str]] = {}
+    for shared in sharing:
+        by_plants.setdefault(shared.plants, []).append(shared.entity_id)
+    messages = []
+    for plants, entity_ids in by_plants.items():
+        several = len(entity_ids) > 1
+        messages.append(
+            f"{listed(entity_ids)} {'are' if several else 'is'} already bound by "
+            f"{listed(plants)}. Only one Plant that binds {'them' if several else 'it'} can "
+            "be out of Dry run at a time: while one is live, the others cannot leave Dry "
+            "run, and one stored out of Dry run is held in Dry run until the conflict is gone."
+        )
+    return tuple(messages)
+
+
+def shared_outputs(
+    hass: HomeAssistant, entry_id: str | None, data: Mapping[str, Any]
+) -> tuple[SharedOutput, ...]:
+    """Return the outputs of Plant ``data`` that other Plants already bind, for a review step.
 
     Sharing is allowed, because Dry run Plants may share entities with a live
     Plant, for example to compare a draft configuration. The review lets users
     learn about sharing before it matters. The runtime guard that keeps one live
     Plant per output is authoritative.
     """
-    warnings = []
-    for entity_id in dict.fromkeys(entity_ids):
-        if conflict := bound_by_other_plant(hass, entry_id, entity_id):
-            warnings.append(
-                f"{entity_id} is already bound by {conflict.other_plant}. Only one of the "
-                "two plants can be out of Dry run at a time: while one is live, the other "
-                "cannot leave Dry run, and if it is stored out of Dry run it is held in "
-                "Dry run until the conflict is gone."
-            )
-    return tuple(warnings)
+    return tuple(
+        SharedOutput(entity_id, plants)
+        for entity_id, plants in plants_binding_outputs(hass, entry_id, data).items()
+    )
+
+
+def sharing_to_confirm(
+    sharing: Iterable[SharedOutput], before: Iterable[SharedOutput] = ()
+) -> tuple[SharedOutput, ...]:
+    """Return the sharing a save must confirm: what the Plant did not share before the change.
+
+    Sharing the Plant already had was confirmed when it appeared, or existed
+    before this edit, so editing a zone does not ask about it again.
+    """
+    known = set(before)
+    return tuple(shared for shared in sharing if shared not in known)
 
 
 def flatten_sections(user_input: Mapping[str, Any]) -> dict[str, Any]:
@@ -321,10 +358,36 @@ def with_submitted_values(
     schema: vol.Schema,
     user_input: Mapping[str, Any] | None,
 ) -> vol.Schema:
-    """Re-show a rejected form with the values the user just submitted."""
+    """Re-show a rejected form with the values the user just submitted.
+
+    The frontend leaves out an optional field the user cleared, and Home
+    Assistant keeps a field's own suggested value when the submission has none,
+    so a cleared field that the form prefilled is shown empty here instead of
+    showing the prefilled value again.
+    """
     if user_input is None:
         return schema
-    return flow.add_suggested_values_to_schema(schema, user_input)
+    return flow.add_suggested_values_to_schema(_without_cleared(schema, user_input), user_input)
+
+
+def _without_cleared(schema: vol.Schema, user_input: Mapping[str, Any]) -> vol.Schema:
+    """Drop the suggested value of every optional field that ``user_input`` leaves out."""
+    fields: dict[Any, Any] = {}
+    for key, value in schema.schema.items():
+        name = str(key)
+        if isinstance(value, section):
+            nested = user_input.get(name)
+            if isinstance(nested, Mapping):
+                value = section(_without_cleared(value.schema, nested), value.options)
+        elif (
+            isinstance(key, vol.Optional)
+            and name not in user_input
+            and isinstance(key.description, Mapping)
+            and "suggested_value" in key.description
+        ):
+            key = vol.Optional(key.schema, default=key.default, description=None)
+        fields[key] = value
+    return vol.Schema(fields, required=schema.required, extra=schema.extra)
 
 
 def subentry_handle(draft: Mapping[str, Any]) -> dict[str, str]:
@@ -411,7 +474,7 @@ def warnings_to_confirm(compiled: CompiledPlant, before: CompiledPlant | None) -
     """Return the warnings a save must confirm: the ones this change introduces.
 
     A warning names its code and equipment. One the Plant already had before the
-    change was confirmed when it appeared, so editing a room of a manifold does
+    change was confirmed when it appeared, so editing a zone of a manifold does
     not ask about the shared pump again. Without a previous Plant, every warning
     other than unused equipment is new.
     """

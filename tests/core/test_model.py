@@ -56,7 +56,7 @@ def test_valve_readiness_is_explicit_and_immutable() -> None:
 
 
 def test_a_zone_can_cool_only_through_an_enabled_route_to_a_cooling_circuit() -> None:
-    """Cool modes and cooling entities share one notion of a room that can cool."""
+    """Cool modes and cooling entities share one notion of a zone that can cool."""
     plant = CompiledPlant(
         id="plant",
         zones={},

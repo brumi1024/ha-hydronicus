@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -36,8 +37,8 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
     DOMAIN,
-    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
+    SUBENTRY_TYPE_ZONE,
 )
 from tests.integration.plant_fixtures import plant_data, plant_entry
 
@@ -540,11 +541,11 @@ def test_static_discovery_sees_the_flow_contract() -> None:
         "options.abort.settings_saved",
         "options.error.dry_run_confirmation_required",
         "config.error.thermostat_loop",
-        # Returned by the room basics helper for its Cooling section.
-        "config.error.cooling_requires_room_loop",
-        "config_subentries.room.error.cooling_requires_room_loop",
+        # Returned by the zone basics helper for its Cooling section.
+        "config.error.cooling_requires_zone_loop",
+        "config_subentries.zone.error.cooling_requires_zone_loop",
         "config.error.name_required",
-        # Returned inside an (errors, placeholders) tuple by the room basics helper.
+        # Returned inside an (errors, placeholders) tuple by the zone basics helper.
         "config.error.delivery_required",
         "config.error.invalid_document",
         "selector.temperature_aggregation",
@@ -553,34 +554,51 @@ def test_static_discovery_sees_the_flow_contract() -> None:
     assert "config_subentries.source.error.dry_run_shutdown_in_progress" in paths
     assert "config_subentries.source.abort.reconfigure_successful" in paths
     assert {
-        "config_subentries.room.abort.no_pumps",
-        "config_subentries.room.error.delivery_required",
-        # Returned inside an (errors, placeholders) tuple by a room helper.
-        "config_subentries.room.error.actuator_entity_in_use",
+        "config_subentries.zone.abort.no_pumps",
+        "config_subentries.zone.error.delivery_required",
+        # Returned inside an (errors, placeholders) tuple by a zone helper.
+        "config_subentries.zone.error.actuator_entity_in_use",
     } <= paths
-    assert found.form_steps["config_subentries.room"] == {
+    assert found.form_steps["config_subentries.zone"] == {
         "user",
         "review",
         "reconfigure",
-        "room",
+        "zone",
         "thermostat",
         "sensors",
         "sensor_metadata",
+        "area_metadata",
         "sensor_policy",
         "edit_loop",
         "loop",
         "valve_details",
     }
     assert found.form_steps["config_subentries.source"] == {"user", "reconfigure", "review"}
-    assert {"user", "guided", "room", "review", "import_plant", "import_review"} <= (
-        found.form_steps["config"]
-    )
+    assert {
+        "user",
+        "guided",
+        "zoning_per_area",
+        "zone",
+        "review",
+        "import_plant",
+        "import_review",
+    } <= (found.form_steps["config"])
 
 
 def test_every_section_entry_is_a_nonempty_string() -> None:
     """strings.json holds only non-empty strings, so no key renders blank."""
     empty = [key for key, value in _flatten(_strings()).items() if not value or not value.strip()]
     assert empty == []
+
+
+def test_every_issue_has_either_a_description_or_a_fix_flow() -> None:
+    """hassfest rejects an issue translation that carries both, or neither."""
+    mixed = sorted(
+        key
+        for key, issue in _strings()["issues"].items()
+        if ("description" in issue) == ("fix_flow" in issue)
+    )
+    assert mixed == []
 
 
 # --------------------------------------------------------------------------
@@ -649,10 +667,8 @@ class _FormAudit:
 
 def _plant_entry(*, dry_run: bool = True) -> MockConfigEntry:
     """Two circuits share one pump, so every topology change carries a warning."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: dry_run,
@@ -662,7 +678,7 @@ def _plant_entry(*, dry_run: bool = True) -> MockConfigEntry:
                         "id": ZONE_ID,
                         "name": "Living room",
                         "thermostat": {"kind": "hydronicus", "initial_target_temperature": 21.0},
-                        "temperature_sensor_metadata": [{"entity_id": "sensor.missing_room"}],
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.missing_zone"}],
                     }
                 ],
                 "valves": [
@@ -709,6 +725,8 @@ def _plant_entry(*, dry_run: bool = True) -> MockConfigEntry:
                 ],
             },
         },
+        title="Hydronic plant",
+        source_handles=False,
     )
 
 
@@ -725,23 +743,36 @@ async def test_setup_flow_steps_are_fully_translated(hass) -> None:
         return audit.check(await flow.async_configure(result["flow_id"], dict(user_input)))
 
     plant = {CONF_NAME: "Plant", "pump_entity": "switch.pump"}
+    hass.states.async_set("sensor.den_temperature", "20.0", {"device_class": "temperature"})
+    ar.async_get(hass).async_create("Den", temperature_entity_id="sensor.den_temperature")
+    for answer in ("zoning_whole_home", "zoning_per_area"):
+        result = await start("guided")
+        result = await submit(result, plant)
+        result = await submit(result, {"next_step_id": answer})
+        if answer == "zoning_per_area":
+            result = await submit(result, {"areas": []})
+            assert result["errors"] == {"areas": "areas_required"}
+            result = await submit(result, {"areas": ["den"]})
+        assert result["step_id"] == "zone"
+        flow.async_abort(result["flow_id"])
     result = await start("guided")
     result = await submit(result, {**plant, CONF_NAME: " "})
     assert result["errors"] == {CONF_NAME: "name_required"}
     result = await submit(result, plant)
-    result = await submit(result, {CONF_NAME: "Living room", "valves": ["switch.pump"]})
-    assert result["errors"] == {"temperature_sensors": "temperature_sensors_required"}
-    room = {CONF_NAME: "Living room", "temperature_sensors": ["sensor.room"]}
-    result = await submit(result, room)
+    result = await submit(result, {"next_step_id": "zoning_grouped"})
+    result = await submit(result, {CONF_NAME: " ", "valves": ["switch.pump"]})
+    assert result["errors"] == {CONF_NAME: "zone_name_required", "areas": "no_temperature_source"}
+    zone = {CONF_NAME: "Living room", "temperature_sensors": ["sensor.zone"]}
+    result = await submit(result, zone)
     assert result["errors"] == {"base": "delivery_required"}
-    result = await submit(result, {**room, "valves": ["switch.pump"]})
+    result = await submit(result, {**zone, "valves": ["switch.pump"]})
     assert result["errors"] == {"valves": "actuator_entity_in_use"}
-    result = await submit(result, {**room, "valves": ["switch.living"], "add_another": True})
+    result = await submit(result, {**zone, "valves": ["switch.living"], "add_another": True})
     result = await submit(
         result,
         {CONF_NAME: "Bedroom", "temperature_sensors": ["sensor.bed"], "valves": ["switch.bed"]},
     )
-    # Two rooms on one pump carry a warning, so the review asks for confirmation.
+    # Two zones on one pump carry a warning, so the review asks for confirmation.
     result = await submit(result, {"confirm": False})
     assert result["errors"] == {"base": "confirm_required"}
     result = await flow.async_configure(result["flow_id"], {"confirm": True})
@@ -762,7 +793,7 @@ async def test_setup_flow_steps_are_fully_translated(hass) -> None:
         if registry_entry.platform == DOMAIN and registry_entry.domain == "sensor"
     )
     owning = deepcopy(document)
-    owning["rooms"]["living_room"]["temperature_sensors"] = [own_entity]
+    owning["zones"]["living_room"]["temperature_sensors"] = [own_entity]
     result = await submit(result, {"document": owning})
     assert result["errors"] == {"base": "document_own_entity"}
     result = await submit(result, {"document": document})
@@ -781,7 +812,16 @@ async def test_setup_flow_steps_are_fully_translated(hass) -> None:
     result = await submit(result, {"document": {**document, "id": imported.data[CONF_PLANT_ID]}})
     assert result["reason"] == "already_configured"
 
-    assert audit.steps == {"user", "guided", "room", "review", "import_plant", "import_review"}
+    assert audit.steps == {
+        "user",
+        "guided",
+        "zoning",
+        "zoning_per_area",
+        "zone",
+        "review",
+        "import_plant",
+        "import_review",
+    }
     assert audit.missing == []
 
 
@@ -884,8 +924,8 @@ async def test_plant_settings_steps_are_fully_translated(hass) -> None:
     loops = [*renamed.get("loops", {}).values()]
     loops += [
         loop
-        for room in renamed.get("rooms", {}).values()
-        for loop in room.get("loops", {}).values()
+        for zone in renamed.get("zones", {}).values()
+        for loop in zone.get("loops", {}).values()
     ]
     for loop in loops:
         loop["valves"].append("newly_shared_valve")
@@ -944,45 +984,67 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
 
-    room = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ROOM}")
-    for option, steps in {
-        "room": [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_room"]}],
-        "thermostat": [{}],
-        "sensors": [
-            {"temperature_aggregation": "mean", "configure_sensor_metadata": True},
-            {"sensor_entity": "sensor.missing_room"},
-            {"temperature_aggregation": "mean"},
-        ],
-        "edit_loop": [
-            {"loop": FLOOR_CIRCUIT_ID},
-            {
-                CONF_NAME: "Floor loop",
-                "valves": ["switch.floor_valve"],
-                "pump": PUMP_ID,
-                "configure_valve_feedback": True,
-            },
-            {},
-        ],
-    }.items():
+    zone = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ZONE}")
+    hass.states.async_set("sensor.den_temperature", "20.0", {"device_class": "temperature"})
+    ar.async_get(hass).async_create("Den", temperature_entity_id="sensor.den_temperature")
+    for option, steps in [
+        ("zone", [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_zone"]}]),
+        ("thermostat", [{}]),
+        (
+            "sensors",
+            [
+                {"temperature_aggregation": "mean", "configure_sensor_metadata": True},
+                {"sensor_entity": "sensor.missing_zone"},
+                {"temperature_aggregation": "mean"},
+            ],
+        ),
+        # An area has a settings form of its own after the explicit sensors.
+        (
+            "sensors",
+            [
+                {
+                    "areas": ["den"],
+                    "temperature_aggregation": "mean",
+                    "configure_sensor_metadata": True,
+                },
+                {"sensor_entity": "sensor.missing_zone"},
+                {},
+                {"temperature_aggregation": "mean"},
+            ],
+        ),
+        (
+            "edit_loop",
+            [
+                {"loop": FLOOR_CIRCUIT_ID},
+                {
+                    CONF_NAME: "Floor loop",
+                    "valves": ["switch.floor_valve"],
+                    "pump": PUMP_ID,
+                    "configure_valve_feedback": True,
+                },
+                {},
+            ],
+        ),
+    ]:
         result = await _reconfigure(
             hass,
             entry,
-            SUBENTRY_TYPE_ROOM,
-            room,
+            SUBENTRY_TYPE_ZONE,
+            zone,
             [{"next_step_id": option}, *steps],
         )
         # The warnings already existed, so a save is reviewed only when it adds one.
         if result["type"] == FlowResultType.FORM and result["step_id"] == "review":
-            result = room.check(
+            result = zone.check(
                 await hass.config_entries.subentries.async_configure(
                     result["flow_id"], {"confirm": True}
                 )
             )
         assert result["reason"] == "reconfigure_successful"
-    menu = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
-    room.check(menu)
+    menu = await _reconfigure(hass, entry, SUBENTRY_TYPE_ZONE, zone, [])
+    zone.check(menu)
     hass.config_entries.subentries.async_abort(menu["flow_id"])
-    # Another Plant already binds the Bedroom valve, so adding the room is reviewed.
+    # Another Plant already binds the Bedroom valve, so adding the zone is reviewed.
     plant_entry(
         plant_data(
             {
@@ -1006,8 +1068,8 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     result = await _subentry_flow(
         hass,
         entry,
-        SUBENTRY_TYPE_ROOM,
-        room,
+        SUBENTRY_TYPE_ZONE,
+        zone,
         [{**bedroom, CONF_NAME: " "}, bedroom, {"confirm": False}, {"confirm": True}],
     )
     assert result["type"] == FlowResultType.CREATE_ENTRY
@@ -1021,21 +1083,22 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     result = await _reconfigure(hass, entry, SUBENTRY_TYPE_SOURCE, source, [boiler])
     assert result["reason"] == "reconfigure_successful"
 
-    assert room.steps == {
+    assert zone.steps == {
         "user",
         "review",
         "reconfigure",
-        "room",
+        "zone",
         "thermostat",
         "sensors",
         "sensor_metadata",
+        "area_metadata",
         "sensor_policy",
         "edit_loop",
         "loop",
         "valve_details",
     }
     assert source.steps == {"user", "reconfigure"}
-    assert [*room.missing, *source.missing] == []
+    assert [*zone.missing, *source.missing] == []
 
 
 async def test_runtime_entities_and_issues_are_translated(hass) -> None:

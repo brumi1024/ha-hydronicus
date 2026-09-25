@@ -11,12 +11,13 @@ Re-enabling Dry run performs an ordered safe shutdown before further commands ar
 ## The model
 
 A Plant contains the complete coordinated installation.
-The UI speaks of rooms and loops, and the controller underneath uses the terms in brackets.
+The UI speaks of zones and loops, and the controller underneath uses the terms in brackets.
 
-- A room (Comfort Zone) represents an identity, its observations, and its topology relationships.
-- A room thermostat owns target state and demand semantics for exactly one room.
+- A zone is the space one thermostat controls, with an identity, its observations, and its topology relationships.
+- An area is a Home Assistant area, usually one room; a zone covers zero or more areas, and an area may be covered by several zones.
+- A zone thermostat owns target state and demand semantics for exactly one zone.
 - A loop (Hydraulic Circuit) represents one hydraulic delivery path through one or more valves and one pump.
-- A Delivery Route connects a room to a loop.
+- A Delivery Route connects a zone to a loop.
 - A valve controls part of a loop's path.
 - A pump circulates water for one or more loops.
 - A source represents equipment or stored heat that could supply the Plant.
@@ -26,25 +27,50 @@ This allows objects to be renamed without changing their logical relationships.
 
 ## Ownership
 
-Every object belongs either to the Plant or to exactly one room.
+Every object belongs either to the Plant or to exactly one zone.
 
-- A room owns itself, its Delivery Routes, and its private loops and valves.
-- Plant equipment belongs to the Plant: every pump, every source, the source selector, and the shared valves and shared loops that several rooms can use.
-- A private loop uses valves of its own room and shared valves.
+- A zone owns itself, its Delivery Routes, and its private loops and valves.
+- Plant equipment belongs to the Plant: every pump, every source, the source selector, and the shared valves and shared loops that several zones can use.
+- A private loop uses valves of its own zone and shared valves.
 - A shared loop uses only shared valves.
-- A room routes only to its own loops and to shared loops.
+- A zone routes only to its own loops and to shared loops.
 
-References therefore point only from a room toward the Plant.
-This makes ownership deletion-closed: removing a room removes exactly the room, its routes, and its private loops and valves, and always leaves a valid Plant.
-Home Assistant lets a user delete a room entry at any time, and this rule is why that is always safe for the graph.
+References therefore point only from a zone toward the Plant.
+This makes ownership deletion-closed: removing a zone removes exactly the zone, its routes, and its private loops and valves, and always leaves a valid Plant.
+Home Assistant lets a user delete a zone entry at any time, and this rule is why that is always safe for the graph.
 
 Plant equipment that no enabled route reaches is accepted as unused equipment.
 It is reported as a warning and never requested.
-A room that no enabled route leaves is still an error, because it could never receive heat.
+A zone that no enabled route leaves is still an error, because it could never receive heat.
 
-Each room is a Home Assistant config subentry, so its devices and entities are grouped under it and removed with it.
-Rooms, their private loops and valves, pumps, and Dry run are edited in the UI.
+Each zone is a Home Assistant config subentry, so its devices and entities are grouped under it and removed with it.
+Zones, their private loops and valves, pumps, and Dry run are edited in the UI.
 Shared loops, shared valves, and the source selector are edited through the [plant file](plant-file.md), which describes the whole Plant as YAML for import, export, and editing.
+
+## Areas and observations
+
+A zone's temperature and humidity observations come from two places: the extra sensors chosen for the zone, and the sensors that its areas name in their Home Assistant area settings.
+Home Assistant defines those area sensors as the ones that represent the area, which is the reading a thermostat needs, so a sensor is chosen once, in the area settings, and replacing a dead sensor takes one edit.
+
+When a Plant loads, the adapter resolves every covered area to the sensors it names and hands them to the controller as ordinary observations, after the zone's extra sensors.
+The controller aggregates them exactly like extra sensors and does not know which came from an area.
+An area temperature is optional by default and an area humidity is always required, as described in [Areas](configuration.md#areas).
+
+```text
+area settings in Home Assistant -> resolved area sensors --+
+                                                           +-> zone observations -> aggregation
+extra sensors of the zone ---------------------------------+
+```
+
+The resolution is part of the Plant's configuration fingerprint.
+A change to a covered area that changes the resolved sensors, or removes or creates a covered area, reloads the Plant once through the same coalesced reload as a configuration edit, and a change that resolves to the same sensors reloads nothing.
+A reload is a command-free lifecycle boundary, so following an area never switches equipment by itself.
+
+Resolution never makes a Plant fail to load.
+Structural rules, such as a Hydronicus thermostat needing a temperature source, count an area as a source whatever it names today.
+An area that is missing or names no sensor adds nothing, and a zone left without a usable reading is blocked by the same fail-closed aggregation as a zone whose sensors are unavailable.
+An area sensor that Hydronicus itself provides is dropped, because it would feed the Plant back into itself.
+Each of these cases has a Repair, described below.
 
 ## The evaluation cycle
 
@@ -70,7 +96,7 @@ This separation keeps safety decisions reproducible while containing external si
 ## Heating behavior
 
 Hydronicus thermostat heating demand uses its runtime target, configured hysteresis, minimum active duration, and minimum idle duration.
-A required observation that is unknown, unavailable, invalid, or stale blocks the room and releases demand immediately.
+A required observation that is unknown, unavailable, invalid, or stale blocks the zone and releases demand immediately.
 
 ### Thermostat ownership
 
@@ -98,7 +124,7 @@ Invalid or unavailable external input fails closed and releases demand immediate
 The virtual hydraulic sequence is:
 
 ```text
-Room demand
+Zone demand
   -> loop requested
   -> required valves requested
   -> valve readiness confirmed by feedback or configured delay
@@ -109,6 +135,7 @@ Room demand
 The codebase contains a generic Home Assistant executor for switch and valve service calls.
 It is tested with synthetic and intercepted services.
 While Dry run is enabled, the executor records the complete plan as proposed operations and dispatches no service calls.
+The proposed valve and pump states then carry over from one evaluation to the next, because the untouched entities never report them, so a proposed operation appears once, when the plan changes.
 
 When Dry run is off, Hydronicus executes heating valves, pumps, and an explicitly configured direct source-demand output.
 Turning it off requires one confirmation of the displayed output set.
@@ -116,7 +143,7 @@ Turning Dry run back on will perform the ordered safe shutdown before suppressin
 
 ## Cooling behavior
 
-Cooling demand uses room temperature, humidity, the worst-case room dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
+Cooling demand uses zone temperature, humidity, the worst-case zone dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
 It blocks unsafe or incomplete paths and explains condensation and shared-equipment conflicts.
 
 When Dry run is off, Hydronicus opens the valves and starts the pumps of loops that deliver cooling, in the same order as for heating.
@@ -138,14 +165,14 @@ Direct source-demand output can execute only when Dry run is off and a valid pum
 ## Shared equipment
 
 Shared equipment is owned by its complete active-consumer set.
-One room releasing demand cannot turn off an actuator that another requested loop still needs.
+One zone releasing demand cannot turn off an actuator that another requested loop still needs.
 
 ### Shared pump with independent valves
 
 ```text
-Room A -> Loop A -> Valve A -+
+Zone A -> Loop A -> Valve A -+
                              +-> Shared pump
-Room B -> Loop B -> Valve B -+
+Zone B -> Loop B -> Valve B -+
 ```
 
 The pump remains requested until both ready loop consumer sets are empty.
@@ -154,20 +181,20 @@ This is the manifold that guided setup builds, and the review warns that the sha
 ### Shared valve and pump
 
 ```text
-Room A -> Loop A -+
+Zone A -> Loop A -+
                   +-> Shared valve -> Shared pump
-Room B -> Loop B -+
+Zone B -> Loop B -+
 ```
 
 The topology is valid but physically coupled.
-Hydronicus warns that separate room thermostats cannot independently control loops coupled by the same physical valve.
-A valve used by the loops of two rooms is a shared valve, written in the plant file.
+Hydronicus warns that separate zone thermostats cannot independently control loops coupled by the same physical valve.
+A valve used by the loops of two zones is a shared valve, written in the plant file.
 
-### One room with several loops
+### One zone with several loops
 
 ```text
                 +-> Floor loop -> Floor valve -> Floor pump
-Room A ---------+
+Zone A ---------+
                 +-> Ceiling loop -> Ceiling valve -> Ceiling pump
 ```
 
@@ -178,8 +205,15 @@ The model does not infer water temperature, capacity, balancing, or manufacturer
 
 The integration publishes Hydronicus climate targets, aggregate temperatures, heating and cooling demand, blocked states and reasons, virtual valve and pump requests, source recommendations, topology summaries, and decision explanations.
 
-Repairs identify configured entity bindings that are missing or unresolved.
-A missing binding of a room, its private loops, or its private valves opens that room's reconfigure flow, and a source with its own entry opens that source.
+Repairs identify configured entity bindings that are missing or unresolved, and the area problems of zones:
+
+- `Zone {zone} covers a missing area` appears when a covered area no longer exists, and opens the zone's edit menu so the area can be removed.
+- `Zone {zone} has no temperature sensor` appears when no area of a zone with a Hydronicus thermostat names a temperature sensor it can follow and the zone has no extra one, so the zone is blocked; it opens the zone's edit menu.
+- `Area {area} names a Hydronicus sensor` is a warning without a form: choose another sensor in the area settings.
+- `Missing area sensor for {zone}` appears when an area names a sensor that does not exist, for example after its entity ID was renamed, and asks you to choose the sensor again in the area settings.
+
+Each of them clears itself once the problem is gone.
+A missing binding of a zone, its private loops, or its private valves opens that zone's reconfigure flow, and a source with its own entry opens that source.
 A missing pump binding opens the Plant settings.
 A missing binding of a shared loop, a shared valve, a source without its own entry, or the source selector cannot be fixed in a form, and the repair tells you to edit the plant file.
 Downloadable diagnostics provide bounded and redacted runtime information for troubleshooting.

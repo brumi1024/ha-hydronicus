@@ -9,14 +9,14 @@ from .const import (
     CONFIG_ENTRY_MINOR_VERSION,
     CONFIG_ENTRY_VERSION,
     DOMAIN,
-    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
+    SUBENTRY_TYPE_ZONE,
 )
 from .flows.common import OwnEntityPickerMixin
 from .flows.plant import PlantSettingsOptionsFlow
-from .flows.room import RoomSubentryFlowHandler
 from .flows.setup import SetupSteps
 from .flows.source import SourceSubentryFlowHandler
+from .flows.zone import ZoneSubentryFlowHandler
 
 
 class HydronicClimateConfigFlow(  # type: ignore[call-arg]
@@ -40,8 +40,8 @@ class HydronicClimateConfigFlow(  # type: ignore[call-arg]
     def async_get_supported_subentry_types(
         cls, config_entry: config_entries.ConfigEntry
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """Return the handle types of a Plant: rooms and sources."""
+        """Return the handle types of a Plant: zones and sources."""
         return {
-            SUBENTRY_TYPE_ROOM: RoomSubentryFlowHandler,
+            SUBENTRY_TYPE_ZONE: ZoneSubentryFlowHandler,
             SUBENTRY_TYPE_SOURCE: SourceSubentryFlowHandler,
         }

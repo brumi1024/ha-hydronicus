@@ -8,12 +8,15 @@ from typing import Any, cast
 
 from homeassistant.helpers import entity_registry as entity_registry_helper
 
+from .areas import ZoneAreaProblemKind, listed
 from .const import DOMAIN
 from .core.executor import (
     ActuatorExecutionFailure,
     ActuatorOperation,
 )
 from .core.model import (
+    BindingCategory,
+    EntityBinding,
     ExternalClimateThermostatState,
     ExternalHvacAction,
     HydronicusThermostatConfig,
@@ -108,12 +111,16 @@ def build_plant_summary(runtime: Any) -> dict[str, object]:
     evaluation = runtime.evaluation
     diagnostics = evaluation.diagnostics if evaluation is not None else None
     status = runtime.operational_status()
-    if runtime.unresolved_bindings:
+    if _blocking_bindings(runtime):
         health = "unavailable"
     elif status == "blocked":
         health = "blocked"
     elif status in {"initializing", "stopped"}:
         health = status
+    elif runtime.area_problems or runtime.unresolved_bindings:
+        # A zone area repair is open or a sensor is missing: the Plant runs, but
+        # a zone or loop lacks a reading.
+        health = "degraded"
     else:
         health = "healthy"
 
@@ -187,7 +194,9 @@ def _zone_snapshots(
     zone_entity_ids: Mapping[str, str],
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
-    for zone_id, zone in sorted(runtime.plant.zones.items()):
+    without_source = _zones_without_temperature_source(runtime)
+    for zone_id in _zone_ids(runtime):
+        zone = runtime.plant.zones[zone_id]
         heating = diagnostics.zone_decisions.get(zone_id) if diagnostics else None
         cooling = diagnostics.cooling_zone_decisions.get(zone_id) if diagnostics else None
         aggregation = heating.aggregation if heating else None
@@ -213,7 +222,7 @@ def _zone_snapshots(
             ).value
             hvac_modes = [mode.value for mode in thermostat_hvac_modes(runtime.plant, zone_id)]
             thermostat_available = thermostat_state is not None
-            ownership = "Hydronicus owns this room's digital thermostat."
+            ownership = "Hydronicus owns this zone's digital thermostat."
         else:
             target = external_state.target_temperature
             preset = None
@@ -224,7 +233,7 @@ def _zone_snapshots(
                 cooling if external_state.hvac_action is ExternalHvacAction.COOLING else heating
             )
             thermostat_available = external_state.available and external_state.hvac_mode_valid
-            ownership = "An external thermostat controls this room. " + (
+            ownership = "An external thermostat controls this zone. " + (
                 external_decision.explanation if external_decision else external_state.explanation
             )
         blocked = (
@@ -237,6 +246,10 @@ def _zone_snapshots(
             {
                 "id": zone_id,
                 "name": zone.name,
+                # The sensors an area names in Home Assistant are household choices,
+                # not Plant bindings, so the card may open them; the stream still
+                # hides each one the user may not read.
+                "areas": runtime.zone_areas(zone_id),
                 "thermostat": {
                     "kind": zone.thermostat.kind.value,
                     "state": "available" if not blocked else "blocked",
@@ -261,7 +274,11 @@ def _zone_snapshots(
                 ),
                 "blocked": runtime.zone_is_blocked(zone_id)
                 or runtime.cooling_zone_is_blocked(zone_id),
-                "blocked_reason": runtime.zone_blocked_reason(zone_id)
+                # A zone whose areas name no temperature sensor is blocked for
+                # that reason, which its area alert states in these words.
+                "blocked_reason": _NO_TEMPERATURE_SOURCE_MESSAGE
+                if zone_id in without_source
+                else runtime.zone_blocked_reason(zone_id)
                 or runtime.cooling_zone_blocked_reason(zone_id),
                 "sensor_status": {
                     "usable": len(aggregation.usable_sensor_ids) if aggregation else 0,
@@ -295,6 +312,26 @@ def _zone_snapshots(
             }
         )
     return result
+
+
+def _zone_ids(runtime: Any) -> list[str]:
+    """Return the zone ids in setup order, then any others by id."""
+    rank = {zone_id: index for index, zone_id in enumerate(runtime.zone_order)}
+    return sorted(runtime.plant.zones, key=lambda zone_id: (rank.get(zone_id, len(rank)), zone_id))
+
+
+def _ordered_routes(runtime: Any) -> list[Any]:
+    """Return the routes grouped by zone in setup order, each zone's in stored order."""
+    zone_rank = {zone_id: index for index, zone_id in enumerate(_zone_ids(runtime))}
+    route_rank = {route_id: index for index, route_id in enumerate(runtime.route_order)}
+    return sorted(
+        runtime.plant.routes,
+        key=lambda route: (
+            zone_rank.get(route.zone_id, len(zone_rank)),
+            route_rank.get(route.id, len(route_rank)),
+            route.id,
+        ),
+    )
 
 
 def _zone_phase(
@@ -508,7 +545,7 @@ def _delivery_paths(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
     control_plan = evaluation.control_plan if evaluation else None
     diagnostics = evaluation.diagnostics if evaluation else None
     paths: list[dict[str, object]] = []
-    for route in sorted(runtime.plant.routes, key=lambda item: item.id):
+    for route in _ordered_routes(runtime):
         zone = runtime.plant.zones[route.zone_id]
         circuit = runtime.plant.circuits[route.circuit_id]
         zone_runtime = runtime.runtime_state.zone_runtime.get(zone.id)
@@ -618,22 +655,34 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
         add("plant_initializing", "info", "plant", "Hydronicus is evaluating the Plant.")
     if runtime.operational_status() == "stopped":
         add("plant_unavailable", "error", "plant", "The Hydronicus Plant is unavailable.")
-    if runtime.unresolved_bindings:
+    if _blocking_bindings(runtime):
         add(
             "binding_unavailable",
             "error",
             "plant",
             "One or more configured bindings are unavailable; control is blocked.",
         )
+    for (required, scope), bindings in _missing_sensors(runtime).items():
+        code, severity, message = _missing_sensor_alert(runtime, required, bindings)
+        add(code, severity, scope, message)
+    for (kind, zone_id), area_ids in _area_problems_by_zone(runtime).items():
+        severity, message = _area_problem_alert(runtime, kind, area_ids)
+        add(kind.value, severity, zone_id, message)
     if evaluation is None:
         return _sorted_alerts(alerts.values())
+    # The area alert already explains why a zone without a temperature source is
+    # blocked, so the sensor block it causes is not reported again.
+    without_source = _zones_without_temperature_source(runtime)
     for zone_id, decision in sorted(evaluation.diagnostics.zone_decisions.items()):
         if decision.status is ZoneDecisionStatus.SENSOR_BLOCKED:
-            add("zone_sensor_blocked", "error", zone_id, decision.explanation)
+            if zone_id not in without_source:
+                add("zone_sensor_blocked", "error", zone_id, decision.explanation)
         elif decision.status is ZoneDecisionStatus.MODE_BLOCKED:
             add("zone_mode_blocked", "warning", zone_id, decision.explanation)
     for zone_id, decision in sorted(evaluation.diagnostics.cooling_zone_decisions.items()):
-        if decision.status in {ZoneDecisionStatus.SENSOR_BLOCKED, ZoneDecisionStatus.MODE_BLOCKED}:
+        if decision.status is ZoneDecisionStatus.MODE_BLOCKED or (
+            decision.status is ZoneDecisionStatus.SENSOR_BLOCKED and zone_id not in without_source
+        ):
             add("cooling_blocked", "warning", zone_id, decision.explanation)
     for actuator_id, diagnostic in sorted(evaluation.diagnostics.actuator_diagnostics.items()):
         if diagnostic.mismatch:
@@ -666,6 +715,102 @@ def _alerts(runtime: Any, evaluation: Any) -> list[dict[str, object]]:
                 "and not executed.",
             )
     return _sorted_alerts(alerts.values())
+
+
+def _blocking_bindings(runtime: Any) -> tuple[EntityBinding, ...]:
+    """Return the unresolved bindings that block control on their own.
+
+    A missing thermostat, actuator, or feedback entity blocks every path through
+    it. A missing sensor does not by itself: an optional one is left out, and the
+    controller blocks what needs a required one, which its own alerts report.
+    """
+    return tuple(
+        binding
+        for binding in runtime.unresolved_bindings
+        if binding.category is not BindingCategory.SENSOR
+    )
+
+
+def _missing_sensors(runtime: Any) -> dict[tuple[bool, str], list[EntityBinding]]:
+    """Group the unresolved sensors by whether they are required and what they belong to."""
+    grouped: dict[tuple[bool, str], list[EntityBinding]] = {}
+    for binding in runtime.unresolved_bindings:
+        if binding.category is BindingCategory.SENSOR:
+            grouped.setdefault((binding.required, binding.object_id), []).append(binding)
+    return grouped
+
+
+def _missing_sensor_alert(
+    runtime: Any, required: bool, bindings: list[EntityBinding]
+) -> tuple[str, str, str]:
+    """Return the code, severity, and message of the missing sensors of one object."""
+    qualifier = "" if required else "optional "
+    phrases = []
+    for binding in bindings:
+        if binding.area_id is not None:
+            role = binding.label.removeprefix("area ")
+            name = runtime.area_resolution.name(binding.area_id)
+            phrases.append(f"the {qualifier}{role} of area {name}")
+        else:
+            phrases.append(
+                f"the {qualifier}{binding.label.removeprefix(f'{binding.object_type} ')}"
+            )
+    text = listed(phrases)
+    several = len(bindings) > 1
+    missing = f"{text[0].upper()}{text[1:]} {'are' if several else 'is'} missing in Home Assistant"
+    pronoun = "them" if several else "it"
+    if required:
+        return "sensor_unavailable", "error", f"{missing}, so Hydronicus cannot use {pronoun}."
+    return (
+        "optional_sensor_unavailable",
+        "warning",
+        f"{missing}, so Hydronicus leaves {pronoun} out instead of blocking control.",
+    )
+
+
+_NO_TEMPERATURE_SOURCE_MESSAGE = (
+    "No area of the zone names a temperature sensor that Hydronicus can follow, "
+    "so the zone is blocked."
+)
+
+
+def _zones_without_temperature_source(runtime: Any) -> frozenset[str]:
+    """Return the zones that are blocked because their areas name no temperature sensor."""
+    return frozenset(
+        problem.zone_id
+        for problem in runtime.area_problems
+        if problem.kind is ZoneAreaProblemKind.NO_TEMPERATURE_SOURCE
+    )
+
+
+def _area_problems_by_zone(runtime: Any) -> dict[tuple[ZoneAreaProblemKind, str], list[str]]:
+    """Group the area problems of a Plant by kind and zone, keeping area order."""
+    grouped: dict[tuple[ZoneAreaProblemKind, str], list[str]] = {}
+    for problem in runtime.area_problems:
+        area_ids = grouped.setdefault((problem.kind, problem.zone_id), [])
+        if problem.area_id is not None:
+            area_ids.append(problem.area_id)
+    return grouped
+
+
+def _area_problem_alert(
+    runtime: Any, kind: ZoneAreaProblemKind, area_ids: list[str]
+) -> tuple[str, str]:
+    """Return the severity and message of one zone's area problem, like its repair."""
+    if kind is ZoneAreaProblemKind.NO_TEMPERATURE_SOURCE:
+        return "error", _NO_TEMPERATURE_SOURCE_MESSAGE
+    names = listed([runtime.area_resolution.name(area_id) for area_id in area_ids])
+    several = len(area_ids) > 1
+    if kind is ZoneAreaProblemKind.AREA_MISSING:
+        return "error", (
+            f"{'Areas' if several else 'Area'} {names} no longer "
+            f"{'exist' if several else 'exists'} in Home Assistant, so the zone gets no "
+            f"reading from {'them' if several else 'it'}."
+        )
+    return "warning", (
+        f"{'Areas' if several else 'Area'} {names} {'name' if several else 'names'} a "
+        "sensor that Hydronicus provides, so the zone ignores it."
+    )
 
 
 def _sorted_alerts(alerts: Any) -> list[dict[str, object]]:
@@ -792,7 +937,7 @@ def _safe_shutdown_snapshot(runtime: Any) -> dict[str, object]:
 
 
 def _scope_name(runtime: Any, scope: str) -> str:
-    """Name the Plant, room, loop, or equipment an alert or explanation is about."""
+    """Name the Plant, zone, loop, or equipment an alert or explanation is about."""
     plant = runtime.plant
     if scope == "plant":
         return str(runtime.name)

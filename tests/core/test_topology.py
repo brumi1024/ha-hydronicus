@@ -106,19 +106,18 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
         "Ceiling loop opens Shared valve, then starts Shared pump.",
         "Living room is heated by Floor loop and Ceiling loop.",
         "Office is heated by Floor loop.",
-        "Valve Shared valve is shared by loops Floor loop, Ceiling loop.",
-        "Pump Shared pump is shared by loops Floor loop, Ceiling loop.",
     )
+    # Shared equipment is a warning only, so the summary does not repeat it.
     # Warnings name the loops in configuration order, like the summary, and keep ids sorted.
     assert [(warning.circuit_ids, warning.message) for warning in compiled.warnings] == [
         (
             ("ceiling", "floor"),
-            "Valve Shared valve is shared by loops Floor loop, Ceiling loop; separate room "
+            "Valve Shared valve is shared by loops Floor loop, Ceiling loop; separate zone "
             "thermostats cannot independently control loops coupled by the same physical valve.",
         ),
         (
             ("ceiling", "floor"),
-            "Pump Shared pump is shared by loops Floor loop, Ceiling loop; separate room "
+            "Pump Shared pump is shared by loops Floor loop, Ceiling loop; separate zone "
             "thermostats cannot independently control heating and cooling through the same pump.",
         ),
     ]
@@ -272,7 +271,7 @@ def test_compile_topology_rejects_orphans() -> None:
         routes=tuple(),
     )
 
-    with pytest.raises(TopologyValidationError, match="Rooms without an enabled route to a loop"):
+    with pytest.raises(TopologyValidationError, match="Zones without an enabled route to a loop"):
         compile_topology(plant)
 
 
@@ -357,7 +356,7 @@ def test_unused_valve_and_pump_compile_with_warnings() -> None:
     assert warning.valve_id == "valve-2"
     assert warning.zone_ids == ()
     assert warning.message == (
-        "Valve Unused valve is not reached by any room, so Hydronicus never requests it."
+        "Valve Unused valve is not reached by any zone, so Hydronicus never requests it."
     )
     assert set(compiled.valves) == {"valve-1", "valve-2"}
     assert set(compiled.pumps) == {"pump-1", "pump-2"}
@@ -404,7 +403,7 @@ def test_unrouted_circuit_and_its_equipment_are_unused() -> None:
     )
     loop_warning = next(w for w in compiled.warnings if w.equipment_id == "circuit-3")
     assert loop_warning.message == (
-        "Loop Disabled loop is not reached by any room, so Hydronicus never requests it."
+        "Loop Disabled loop is not reached by any zone, so Hydronicus never requests it."
     )
 
 
@@ -420,7 +419,7 @@ def test_zone_without_enabled_route_is_still_rejected() -> None:
     )
 
     with pytest.raises(
-        TopologyValidationError, match="Rooms without an enabled route to a loop: zone-1.$"
+        TopologyValidationError, match="Zones without an enabled route to a loop: zone-1.$"
     ):
         compile_topology(plant)
 
@@ -546,7 +545,7 @@ def test_compile_topology_rejects_non_finite_zone_target(
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 target temperature must be finite",
+        match="Zone zone-1 target temperature must be finite",
     ):
         compile_topology(plant)
 
@@ -574,7 +573,7 @@ def test_compile_topology_rejects_out_of_range_zone_target(
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 target temperature must be between 5 and 35",
+        match="Zone zone-1 target temperature must be between 5 and 35",
     ):
         compile_topology(plant)
 
@@ -599,7 +598,7 @@ def test_compile_topology_rejects_duplicate_zone_temperature_sensors() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 temperature sensors must not contain duplicates",
+        match="Zone zone-1 temperature sensors must not contain duplicates",
     ):
         compile_topology(plant)
 
@@ -617,7 +616,7 @@ def test_compile_topology_rejects_zone_without_temperature_sensors() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 requires at least one temperature sensor",
+        match="Zone zone-1 requires at least one temperature sensor",
     ):
         compile_topology(plant)
 
@@ -644,7 +643,7 @@ def test_compile_topology_rejects_blank_temperature_sensor_id() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 temperature sensors must be non-empty entity ids",
+        match="Zone zone-1 temperature sensors must be non-empty entity ids",
     ):
         compile_topology(plant)
 
@@ -767,7 +766,7 @@ def test_compile_topology_rejects_unknown_temperature_aggregation() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 temperature aggregation must be a supported policy",
+        match="Zone zone-1 temperature aggregation must be a supported policy",
     ):
         compile_topology(plant)
 
@@ -791,7 +790,7 @@ def test_compile_topology_rejects_invalid_temperature_sensor_weights() -> None:
 
     with pytest.raises(
         TopologyValidationError,
-        match="Room zone-1 temperature sensor weights must be positive and finite",
+        match="Zone zone-1 temperature sensor weights must be positive and finite",
     ):
         compile_topology(plant)
 
@@ -924,7 +923,7 @@ def test_compile_topology_rejects_blank_bindings_and_unknown_routes() -> None:
         ),
         routes=(DeliveryRoute("route", "missing", "circuit"),),
     )
-    with pytest.raises(TopologyValidationError, match="unknown room missing"):
+    with pytest.raises(TopologyValidationError, match="unknown zone missing"):
         compile_topology(unknown_zone)
 
     unknown_circuit = _metadata_plant(
@@ -1023,8 +1022,8 @@ def test_compile_topology_accepts_cooling_references_and_metadata() -> None:
     assert "Zone is heated and cooled by Circuit." in compiled.logic_summary
 
 
-def test_compile_topology_names_the_cooling_loops_of_a_room() -> None:
-    """A room served by heating-only and cooling loops says which loops also cool it."""
+def test_compile_topology_names_the_cooling_loops_of_a_zone() -> None:
+    """A zone served by heating-only and cooling loops says which loops also cool it."""
     zone = Zone(
         "zone",
         "Living",
@@ -1121,7 +1120,7 @@ def test_compile_topology_warns_for_shared_pumps_and_sources() -> None:
     ]
     assert all("independently" in warning.message for warning in compiled.warnings)
     assert compiled.warnings[1].message == (
-        "Source Plant source is shared by the Plant; separate room thermostats cannot "
+        "Source Plant source is shared by the Plant; separate zone thermostats cannot "
         "independently change heating and cooling source mode."
     )
 
@@ -1256,7 +1255,7 @@ def test_cooling_observation_errors_name_the_circuit_zone_and_observation() -> N
     assert (humidity.value.circuit_id, humidity.value.zone_id) == ("circuit", "zone")
     assert humidity.value.observation == "humidity"
     assert isinstance(humidity.value, TopologyValidationError)
-    assert "requires humidity observations for room zone" in str(humidity.value)
+    assert "requires humidity observations for zone zone" in str(humidity.value)
 
     no_temperature = Zone(
         "zone",

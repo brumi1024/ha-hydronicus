@@ -20,7 +20,7 @@ from custom_components.hydronicus.core.model import (
     ThermostatHvacMode,
 )
 from custom_components.hydronicus.runtime import HydronicRuntime
-from tests.integration.plant_fixtures import subentries_data, with_room_handles
+from tests.integration.plant_fixtures import subentries_data, with_zone_handles
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 PLANT_UUID = "00000000-0000-4000-8000-000000000001"
@@ -48,9 +48,9 @@ def _prepare_states(hass: HomeAssistant, temperature: str) -> None:
     _set_temperature(hass, temperature)
 
 
-def _version_3(data: dict[str, object]) -> SimpleNamespace:
-    """Return a version 3 entry whose stored Plant has its room handles."""
-    data = with_room_handles(data)
+def _version_4(data: dict[str, object]) -> SimpleNamespace:
+    """Return a version 4 entry whose stored Plant has its zone handles."""
+    data = with_zone_handles(data)
     return SimpleNamespace(
         data=data,
         subentries={item["subentry_id"]: SimpleNamespace(**item) for item in subentries_data(data)},
@@ -70,7 +70,7 @@ def _configured_entry(
     }
     if zone_overrides:
         zone.update(zone_overrides)
-    return _version_3(
+    return _version_4(
         data={
             "name": "Hydronic plant",
             "plant_id": PLANT_UUID,

@@ -19,12 +19,12 @@ from hydronicus_core.model import (
 from hydronicus_core.ownership import (
     OwnershipError,
     PlantOwnership,
-    RoomClosure,
+    ZoneClosure,
     derive_ownership,
     owner_of,
-    room_closure,
     validate_ownership,
-    without_room,
+    without_zone,
+    zone_closure,
 )
 from hydronicus_core.topology import compile_topology
 from hypothesis import given, settings
@@ -37,7 +37,7 @@ def _zone(zone_id: str) -> Zone:
 
 
 def _manifold() -> PlantConfiguration:
-    """Two rooms with private loops and valves, one shared loop, and one pump."""
+    """Two zones with private loops and valves, one shared loop, and one pump."""
     return PlantConfiguration(
         id="plant",
         zones=(_zone("living"), _zone("bedroom")),
@@ -66,7 +66,7 @@ def _manifold() -> PlantConfiguration:
 
 
 MANIFOLD_OWNERSHIP = PlantOwnership(
-    room_objects={
+    zone_objects={
         "living-loop": "living",
         "living-valve": "living",
         "bedroom-loop": "bedroom",
@@ -75,15 +75,15 @@ MANIFOLD_OWNERSHIP = PlantOwnership(
 )
 
 
-def _rejects(configuration: PlantConfiguration, room_objects: dict[str, str]) -> tuple[str, ...]:
+def _rejects(configuration: PlantConfiguration, zone_objects: dict[str, str]) -> tuple[str, ...]:
     with pytest.raises(OwnershipError) as caught:
-        validate_ownership(configuration, PlantOwnership(room_objects))
+        validate_ownership(configuration, PlantOwnership(zone_objects))
     for object_id in caught.value.object_ids:
         assert object_id in str(caught.value)
     return caught.value.object_ids
 
 
-def test_derive_ownership_makes_single_room_objects_private() -> None:
+def test_derive_ownership_makes_single_zone_objects_private() -> None:
     """Circuits routed from one zone, and valves used only by them, are private."""
     assert derive_ownership(_manifold()) == MANIFOLD_OWNERSHIP
 
@@ -95,16 +95,16 @@ def test_derive_ownership_counts_disabled_routes() -> None:
         routes=tuple(route for route in _manifold().routes if route.id != "living-shared"),
     )
 
-    assert derive_ownership(configuration).room_objects["shared-loop"] == "bedroom"
-    assert "shared-valve" not in derive_ownership(configuration).room_objects
+    assert derive_ownership(configuration).zone_objects["shared-loop"] == "bedroom"
+    assert "shared-valve" not in derive_ownership(configuration).zone_objects
 
 
 def test_derive_ownership_keeps_unrouted_and_unused_equipment_on_the_plant() -> None:
-    """Nothing without a route or a user belongs to a room."""
+    """Nothing without a route or a user belongs to a zone."""
     ownership = derive_ownership(_manifold())
 
-    assert "spare-loop" not in ownership.room_objects
-    assert "spare-valve" not in ownership.room_objects
+    assert "spare-loop" not in ownership.zone_objects
+    assert "spare-valve" not in ownership.zone_objects
 
 
 def test_validate_ownership_accepts_the_derived_manifold() -> None:
@@ -112,7 +112,7 @@ def test_validate_ownership_accepts_the_derived_manifold() -> None:
     validate_ownership(_manifold(), PlantOwnership({}))
 
 
-def test_r1_room_objects_must_map_circuits_or_valves_to_zones() -> None:
+def test_r1_zone_objects_must_map_circuits_or_valves_to_zones() -> None:
     manifold = _manifold()
 
     assert _rejects(manifold, {"pump": "living"}) == ("pump",)
@@ -128,26 +128,26 @@ def test_r3_plant_circuit_uses_only_plant_valves() -> None:
     assert _rejects(_manifold(), {"shared-valve": "living"}) == ("living-loop", "shared-valve")
 
 
-def test_r4_room_circuit_uses_only_its_own_or_plant_valves() -> None:
-    room_objects = dict(MANIFOLD_OWNERSHIP.room_objects, **{"shared-valve": "bedroom"})
-    room_objects["shared-loop"] = "bedroom"
+def test_r4_zone_circuit_uses_only_its_own_or_plant_valves() -> None:
+    zone_objects = dict(MANIFOLD_OWNERSHIP.zone_objects, **{"shared-valve": "bedroom"})
+    zone_objects["shared-loop"] = "bedroom"
 
-    assert _rejects(_manifold(), room_objects) == ("living-loop", "shared-valve")
-
-
-def test_r5_route_targets_its_own_room_or_a_plant_circuit() -> None:
-    room_objects = dict(MANIFOLD_OWNERSHIP.room_objects, **{"shared-loop": "living"})
-
-    assert _rejects(_manifold(), room_objects) == ("bedroom-shared", "shared-loop")
+    assert _rejects(_manifold(), zone_objects) == ("living-loop", "shared-valve")
 
 
-def test_r6_private_objects_must_be_used_by_their_room() -> None:
+def test_r5_route_targets_its_own_zone_or_a_plant_circuit() -> None:
+    zone_objects = dict(MANIFOLD_OWNERSHIP.zone_objects, **{"shared-loop": "living"})
+
+    assert _rejects(_manifold(), zone_objects) == ("bedroom-shared", "shared-loop")
+
+
+def test_r6_private_objects_must_be_used_by_their_zone() -> None:
     loose = replace(
         _manifold(), valves=(*_manifold().valves, Valve("loose-valve", "Loose", "switch.loose"))
     )
 
     assert _rejects(_manifold(), {"spare-loop": "living"}) == ("spare-loop",)
-    assert _rejects(loose, {**MANIFOLD_OWNERSHIP.room_objects, "loose-valve": "living"}) == (
+    assert _rejects(loose, {**MANIFOLD_OWNERSHIP.zone_objects, "loose-valve": "living"}) == (
         "loose-valve",
     )
 
@@ -186,8 +186,8 @@ def test_owner_of_names_the_owning_zone_or_the_plant() -> None:
     }
 
 
-def test_room_closure_holds_the_zone_its_routes_and_its_private_objects() -> None:
-    assert room_closure(_manifold(), MANIFOLD_OWNERSHIP, "living") == RoomClosure(
+def test_zone_closure_holds_the_zone_its_routes_and_its_private_objects() -> None:
+    assert zone_closure(_manifold(), MANIFOLD_OWNERSHIP, "living") == ZoneClosure(
         zone_id="living",
         route_ids=frozenset({"living-route", "living-shared"}),
         circuit_ids=frozenset({"living-loop"}),
@@ -195,15 +195,15 @@ def test_room_closure_holds_the_zone_its_routes_and_its_private_objects() -> Non
     )
 
 
-def test_room_closure_rejects_an_unknown_zone() -> None:
+def test_zone_closure_rejects_an_unknown_zone() -> None:
     with pytest.raises(OwnershipError) as caught:
-        room_closure(_manifold(), MANIFOLD_OWNERSHIP, "attic")
+        zone_closure(_manifold(), MANIFOLD_OWNERSHIP, "attic")
 
     assert caught.value.object_ids == ("attic",)
 
 
-def test_without_room_removes_exactly_the_room_closure() -> None:
-    configuration, ownership = without_room(_manifold(), MANIFOLD_OWNERSHIP, "living")
+def test_without_zone_removes_exactly_the_zone_closure() -> None:
+    configuration, ownership = without_zone(_manifold(), MANIFOLD_OWNERSHIP, "living")
 
     assert [zone.id for zone in configuration.zones] == ["bedroom"]
     assert [valve.id for valve in configuration.valves] == [
@@ -225,10 +225,10 @@ def test_without_room_removes_exactly_the_room_closure() -> None:
     compile_topology(configuration)
 
 
-def test_without_every_room_leaves_plant_equipment_that_compiles() -> None:
+def test_without_every_zone_leaves_plant_equipment_that_compiles() -> None:
     configuration, ownership = _manifold(), MANIFOLD_OWNERSHIP
     for zone_id in ("living", "bedroom"):
-        configuration, ownership = without_room(configuration, ownership, zone_id)
+        configuration, ownership = without_zone(configuration, ownership, zone_id)
 
     compiled = compile_topology(configuration)
     assert configuration.zones == ()
@@ -243,18 +243,18 @@ def test_without_every_room_leaves_plant_equipment_that_compiles() -> None:
 @settings(max_examples=200)
 @given(plant_configurations())
 def test_derived_ownership_always_validates(configuration: PlantConfiguration) -> None:
-    """Migration can derive ownership for every Plant that compiles."""
+    """Ownership can be derived for every Plant that compiles."""
     validate_ownership(configuration, derive_ownership(configuration))
 
 
 @settings(max_examples=200)
 @given(plant_configurations(min_zones=1))
-def test_removing_any_room_leaves_a_valid_plant(configuration: PlantConfiguration) -> None:
-    """Ownership is deletion-closed: every room can be removed on its own."""
+def test_removing_any_zone_leaves_a_valid_plant(configuration: PlantConfiguration) -> None:
+    """Ownership is deletion-closed: every zone can be removed on its own."""
     ownership = derive_ownership(configuration)
     for zone in configuration.zones:
-        closure = room_closure(configuration, ownership, zone.id)
-        remaining, remaining_ownership = without_room(configuration, ownership, zone.id)
+        closure = zone_closure(configuration, ownership, zone.id)
+        remaining, remaining_ownership = without_zone(configuration, ownership, zone.id)
 
         validate_ownership(remaining, remaining_ownership)
         compile_topology(remaining)

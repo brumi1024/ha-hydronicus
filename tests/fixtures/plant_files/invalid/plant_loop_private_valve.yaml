@@ -6,7 +6,7 @@ loops:
   hall_loop:
     valves: [switch.hall_valve, living_valve]
     pump: pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     valves:

@@ -1,8 +1,8 @@
 """The plant file: one Plant as a portable, human-writable document.
 
-The plant file describes a whole Plant with rooms, loops, valves, pumps, and
+The plant file describes a whole Plant with zones, loops, valves, pumps, and
 sources addressed by slugs instead of UUIDs. Import turns a parsed document into
-stored version 3 topology records and room ownership, then validates them with
+stored topology records and zone ownership, then validates them with
 the stored decoder, the ownership rules, and the topology compiler. Export writes
 the canonical form of stored data, so exporting and importing rebuilds a Plant
 with the same object IDs, and therefore the same entity IDs, on any instance.
@@ -43,7 +43,7 @@ class PlantDocumentError(ValueError):
     """A plant file cannot be imported.
 
     ``path`` is the dotted path of the offending key, such as
-    ``rooms.bedroom.loops.bedroom_loop.pump``, with list items as indices. It is
+    ``zones.bedroom.loops.bedroom_loop.pump``, with list items as indices. It is
     empty for errors about the whole Plant.
     """
 
@@ -131,8 +131,17 @@ _THERMOSTAT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = {
     ),
     "external_climate": ("kind", "entity_id"),
 }
+# Area settings in canonical order, with the defaults an export leaves out.
+_AREA_SETTINGS: Final[Mapping[str, object]] = {
+    "required": False,
+    "designated_reference": False,
+    "weight": 1.0,
+    "max_age_seconds": 1800.0,
+}
+_AREA_KEYS: Final = frozenset({"area", *_AREA_SETTINGS})
 _ZONE_FIELDS: Final = (
     "thermostat",
+    "areas",
     "temperature_sensor_metadata",
     "humidity_sensor_metadata",
     "temperature_aggregation",
@@ -160,15 +169,16 @@ _TOP_LEVEL_KEYS: Final = (
     "pumps",
     "valves",
     "loops",
-    "rooms",
+    "zones",
     "sources",
     "source_selector",
 )
-_ROOM_KEYS: Final = frozenset(
+_ZONE_KEYS: Final = frozenset(
     {
         "id",
         "name",
         "thermostat",
+        "areas",
         "temperature_sensors",
         "humidity_sensors",
         "temperature_aggregation",
@@ -233,7 +243,7 @@ class _Declared:
 
     object_id: str
     path: str
-    room: str | None  # the owning room slug, or None for the Plant
+    zone: str | None  # the owning zone slug, or None for the Plant
 
 
 class _Importer:
@@ -248,7 +258,7 @@ class _Importer:
     def __init__(self, plant_id: str) -> None:
         self._plant_id = plant_id
         self._namespace = UUID(plant_id)
-        self._rooms: dict[str, _Declared] = {}
+        self._zones: dict[str, _Declared] = {}
         self._valves: dict[str, _Declared] = {}
         self._loops: dict[str, _Declared] = {}
         self._pumps: dict[str, _Declared] = {}
@@ -257,7 +267,7 @@ class _Importer:
         self._id_paths: dict[str, str] = {}  # object or route id -> defining path
         self._topology: dict[str, Any] = {collection: [] for collection in _COLLECTIONS}
         self._records: list[tuple[str, dict[str, Any], str]] = []
-        self._room_objects: dict[str, str] = {}
+        self._zone_objects: dict[str, str] = {}
         self._entity_paths: dict[str, str] = {}
         self._actuator_paths: list[tuple[str, str]] = []
 
@@ -277,15 +287,15 @@ class _Importer:
             elif key == "sources":
                 for slug, item, path in _entries(value, key):
                     self._declare(self._sources, "source", slug, item, path, None)
-            elif key == "rooms":
+            elif key == "zones":
                 for slug, item, path in _entries(value, key):
-                    self._declare_room(slug, item, path)
+                    self._declare_zone(slug, item, path)
 
-    def _declare_room(self, slug: str, room: object, path: str) -> None:
-        self._declare(self._rooms, "zone", slug, room, path, None)
-        if not isinstance(room, Mapping):
+    def _declare_zone(self, slug: str, zone: object, path: str) -> None:
+        self._declare(self._zones, "zone", slug, zone, path, None)
+        if not isinstance(zone, Mapping):
             return
-        for key, value in room.items():
+        for key, value in zone.items():
             if key == "valves":
                 for valve_slug, item, item_path in _entries(value, _join(path, key)):
                     self._declare(self._valves, "valve", valve_slug, item, item_path, slug)
@@ -293,8 +303,8 @@ class _Importer:
                 for loop_slug, item, item_path in _entries(value, _join(path, key)):
                     self._declare_loop(loop_slug, item, item_path, slug)
 
-    def _declare_loop(self, slug: str, loop: object, path: str, room: str | None) -> None:
-        self._declare(self._loops, "circuit", slug, loop, path, room)
+    def _declare_loop(self, slug: str, loop: object, path: str, zone: str | None) -> None:
+        self._declare(self._loops, "circuit", slug, loop, path, zone)
         valves = loop.get("valves") if isinstance(loop, Mapping) else None
         if not isinstance(valves, list):
             return
@@ -305,7 +315,7 @@ class _Importer:
                 valve_slug = f"{slug}_valve" if count == 1 else f"{slug}_valve_{count}"
                 item_path = _join(_join(path, "valves"), index)
                 self._shorthand_valves[item_path] = valve_slug
-                self._declare(self._valves, "valve", valve_slug, None, item_path, room)
+                self._declare(self._valves, "valve", valve_slug, None, item_path, zone)
 
     def _declare(
         self,
@@ -314,7 +324,7 @@ class _Importer:
         slug: str,
         item: object,
         path: str,
-        room: str | None,
+        zone: str | None,
     ) -> None:
         if slug in table:
             raise PlantDocumentError(path, f"Slug {slug!r} is already used at {table[slug].path}.")
@@ -324,7 +334,7 @@ class _Importer:
         else:
             object_id = str(uuid5(self._namespace, f"{kind}:{slug}"))
             self._claim(object_id, path, path)
-        table[slug] = _Declared(object_id, path, room)
+        table[slug] = _Declared(object_id, path, zone)
 
     def _claim(self, object_id: str, path: str, error_path: str) -> None:
         if object_id in self._id_paths:
@@ -349,9 +359,9 @@ class _Importer:
             elif key == "loops":
                 for slug, item, path in _entries(value, key):
                     self._loop(slug, item, path, None)
-            elif key == "rooms":
+            elif key == "zones":
                 for slug, item, path in _entries(value, key):
-                    self._room(slug, item, path)
+                    self._zone(slug, item, path)
             elif key == "sources":
                 for slug, item, path in _entries(value, key):
                     if not isinstance(item, Mapping):
@@ -439,20 +449,20 @@ class _Importer:
         return record
 
     def _valve(
-        self, slug: str, item: object, path: str, room: str | None, *, name: str | None = None
+        self, slug: str, item: object, path: str, zone: str | None, *, name: str | None = None
     ) -> None:
         declared = self._valves[slug]
         record = self._actuator(declared, item, path, _VALVE_FIELDS, name or _name_from_slug(slug))
-        if room is not None:
-            self._room_objects[declared.object_id] = self._rooms[room].object_id
+        if zone is not None:
+            self._zone_objects[declared.object_id] = self._zones[zone].object_id
         self._add("valves", record, path)
 
-    def _loop(self, slug: str, item: object, path: str, room: str | None) -> None:
+    def _loop(self, slug: str, item: object, path: str, zone: str | None) -> None:
         declared = self._loops[slug]
         if not isinstance(item, Mapping):
             raise PlantDocumentError(path, "A loop must be a mapping.")
         allowed = {"id", "name", "valves", "pump", *_CIRCUIT_FIELDS}
-        if room is not None:
+        if zone is not None:
             allowed.update(_ROUTE_KEYS)
         name = self._name(item, path, _name_from_slug(slug))
         valve_ids: list[str] | None = None
@@ -462,7 +472,7 @@ class _Importer:
             if key not in allowed:
                 raise _unknown_key(path, key)
             if key == "valves":
-                valve_ids = self._loop_valves(name, value, key_path, room)
+                valve_ids = self._loop_valves(name, value, key_path, zone)
             elif key == "pump":
                 pump = self._pumps.get(value) if isinstance(value, str) else None
                 if pump is None:
@@ -482,11 +492,11 @@ class _Importer:
         }
         record.update((key, deepcopy(item[key])) for key in _CIRCUIT_FIELDS if key in item)
         self._add("circuits", record, path)
-        if room is not None:
-            self._room_objects[declared.object_id] = self._rooms[room].object_id
-            self._route(room, slug, item, path)
+        if zone is not None:
+            self._zone_objects[declared.object_id] = self._zones[zone].object_id
+            self._route(zone, slug, item, path)
 
-    def _loop_valves(self, loop_name: str, value: object, path: str, room: str | None) -> list[str]:
+    def _loop_valves(self, loop_name: str, value: object, path: str, zone: str | None) -> list[str]:
         if not isinstance(value, list) or not value:
             raise PlantDocumentError(path, "A loop needs a non-empty list of valves.")
         valve_ids: list[str] = []
@@ -499,21 +509,21 @@ class _Importer:
                 count += 1
                 valve_slug = self._shorthand_valves[item_path]
                 valve_name = f"{loop_name} valve" if count == 1 else f"{loop_name} valve {count}"
-                self._valve(valve_slug, item, item_path, room, name=valve_name)
+                self._valve(valve_slug, item, item_path, zone, name=valve_name)
                 declared = self._valves[valve_slug]
             else:
                 found = self._valves.get(item)
                 if found is None:
                     raise PlantDocumentError(item_path, f"Unknown valve {item!r}.")
-                if found.room is not None and found.room != room:
-                    if room is None:
+                if found.zone is not None and found.zone != zone:
+                    if zone is None:
                         raise PlantDocumentError(
                             item_path,
-                            f"Valve {item!r} is private to room {found.room!r}, and a Plant "
+                            f"Valve {item!r} is private to zone {found.zone!r}, and a Plant "
                             "loop can only use Plant valves.",
                         )
                     raise PlantDocumentError(
-                        item_path, f"Valve {item!r} is private to room {found.room!r}."
+                        item_path, f"Valve {item!r} is private to zone {found.zone!r}."
                     )
                 declared = found
             if declared.object_id in valve_ids:
@@ -521,13 +531,13 @@ class _Importer:
             valve_ids.append(declared.object_id)
         return valve_ids
 
-    def _route(self, room: str, loop: str, options: Mapping[str, Any], path: str) -> None:
+    def _route(self, zone: str, loop: str, options: Mapping[str, Any], path: str) -> None:
         if "route_id" in options:
             route_path = _join(path, "route_id")
             route_id = _uuid(options["route_id"], route_path)
             self._claim(route_id, path, route_path)
         else:
-            route_id = str(uuid5(self._namespace, f"route:{room}:{loop}"))
+            route_id = str(uuid5(self._namespace, f"route:{zone}:{loop}"))
             self._claim(route_id, path, path)
         enabled = options.get("route_enabled", True)
         if not isinstance(enabled, bool):
@@ -536,24 +546,26 @@ class _Importer:
             )
         record: dict[str, Any] = {
             "id": route_id,
-            "zone_id": self._rooms[room].object_id,
+            "zone_id": self._zones[zone].object_id,
             "circuit_id": self._loops[loop].object_id,
         }
         if not enabled:
             record["enabled"] = False
         self._add("routes", record, path)
 
-    def _room(self, slug: str, item: object, path: str) -> None:
-        declared = self._rooms[slug]
+    def _zone(self, slug: str, item: object, path: str) -> None:
+        declared = self._zones[slug]
         if not isinstance(item, Mapping):
-            raise PlantDocumentError(path, "A room must be a mapping.")
+            raise PlantDocumentError(path, "A zone must be a mapping.")
         fields: dict[str, Any] = {"thermostat": {"kind": "hydronicus"}}
         for key, value in item.items():
             key_path = _join(path, key)
-            if key not in _ROOM_KEYS:
+            if key not in _ZONE_KEYS:
                 raise _unknown_key(path, key)
             if key == "thermostat":
                 fields["thermostat"] = self._thermostat(value, key_path)
+            elif key == "areas":
+                fields["areas"] = self._areas(value, key_path)
             elif key == "temperature_sensors":
                 fields["temperature_sensor_metadata"] = self._sensors(value, key_path)
             elif key == "humidity_sensors":
@@ -568,18 +580,21 @@ class _Importer:
                     self._loop(loop_slug, loop, loop_path, slug)
             elif key == "shared_loops":
                 self._shared_loops(slug, value, key_path)
-        if fields["thermostat"]["kind"] == "hydronicus" and not fields.get(
-            "temperature_sensor_metadata"
+        if (
+            fields["thermostat"]["kind"] == "hydronicus"
+            and not fields.get("temperature_sensor_metadata")
+            and not fields.get("areas")
         ):
             raise PlantDocumentError(
                 _join(path, "temperature_sensors"),
-                "A room with a Hydronicus thermostat needs at least one temperature sensor.",
+                "A zone with a Hydronicus thermostat needs at least one temperature sensor "
+                "or area.",
             )
         if not any(
             route["zone_id"] == declared.object_id and route.get("enabled", True)
             for route in self._topology["routes"]
         ):
-            raise PlantDocumentError(path, "A room needs at least one enabled loop.")
+            raise PlantDocumentError(path, "A zone needs at least one enabled loop.")
         record: dict[str, Any] = {
             "id": declared.object_id,
             "name": self._name(item, path, _name_from_slug(slug)),
@@ -631,7 +646,33 @@ class _Importer:
                 raise PlantDocumentError(item_path, "Expected an entity ID or a sensor mapping.")
         return records
 
-    def _shared_loops(self, room: str, value: object, path: str) -> None:
+    def _areas(self, value: object, path: str) -> list[dict[str, Any]]:
+        """Read areas, each an area ID or a mapping of ``area`` and its settings."""
+        if not isinstance(value, list):
+            raise PlantDocumentError(path, "Expected a list of areas.")
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(value):
+            item_path = _join(path, index)
+            if isinstance(item, str) and item.strip():
+                area_id, settings = item, {}
+            elif isinstance(item, Mapping):
+                for key in item:
+                    if key not in _AREA_KEYS:
+                        raise _unknown_key(item_path, key)
+                area_id = item.get("area")
+                if not isinstance(area_id, str) or not area_id.strip():
+                    raise PlantDocumentError(_join(item_path, "area"), "An area needs an area ID.")
+                settings = {key: deepcopy(item[key]) for key in _AREA_SETTINGS if key in item}
+            else:
+                raise PlantDocumentError(item_path, "Expected an area ID or an area mapping.")
+            if area_id in seen:
+                raise PlantDocumentError(item_path, f"Area {area_id!r} is listed twice.")
+            seen.add(area_id)
+            records.append({"area_id": area_id, **settings})
+        return records
+
+    def _shared_loops(self, zone: str, value: object, path: str) -> None:
         if not isinstance(value, list):
             raise PlantDocumentError(path, "Expected a list of loop slugs.")
         seen: set[str] = set()
@@ -653,16 +694,16 @@ class _Importer:
             declared = self._loops.get(slug) if isinstance(slug, str) else None
             if declared is None:
                 raise PlantDocumentError(slug_path, f"Unknown loop {slug!r}.")
-            if declared.room is not None:
+            if declared.zone is not None:
                 raise PlantDocumentError(
                     slug_path,
-                    f"Loop {slug!r} is private to room {declared.room!r}; shared_loops can "
+                    f"Loop {slug!r} is private to zone {declared.zone!r}; shared_loops can "
                     "only list Plant loops.",
                 )
             if slug in seen:
                 raise PlantDocumentError(slug_path, f"Loop {slug!r} is listed twice.")
             seen.add(slug)
-            self._route(room, slug, options, item_path)
+            self._route(zone, slug, options, item_path)
 
     def _source_selector(self, value: object, path: str) -> None:
         if not isinstance(value, Mapping):
@@ -696,7 +737,7 @@ class _Importer:
         configuration = plant_configuration_from_entry_data(
             {"plant_id": self._plant_id, "topology": self._topology}
         )
-        ownership = PlantOwnership(room_objects=self._room_objects)
+        ownership = PlantOwnership(zone_objects=self._zone_objects)
         try:
             validate_ownership(configuration, ownership)
         except OwnershipError as error:
@@ -827,6 +868,18 @@ def _long_form(
     }
 
 
+def _area_entry(area: Mapping[str, Any]) -> str | dict[str, Any]:
+    """Write an area as its bare ID when every setting is the default."""
+    entry: dict[str, Any] = {"area": area["area_id"]}
+    entry.update(_ordered(area, tuple(_AREA_SETTINGS), skip=("area_id",)))
+    if all(
+        key == "area" or (key in _AREA_SETTINGS and value == _AREA_SETTINGS[key])
+        for key, value in entry.items()
+    ):
+        return str(area["area_id"])
+    return entry
+
+
 def _route_options(route: Mapping[str, Any]) -> dict[str, Any]:
     options: dict[str, Any] = {"route_id": route["id"]}
     if route.get("enabled", True) is False:
@@ -850,7 +903,7 @@ def export_plant_document(
         {"plant_id": plant_id, "topology": topology}
     )
     validate_ownership(configuration, ownership)
-    owners = ownership.room_objects
+    owners = ownership.zone_objects
     zones, valves, pumps, circuits, routes, sources = (
         tuple(topology.get(key, ())) for key in _COLLECTIONS
     )
@@ -875,7 +928,7 @@ def export_plant_document(
             if owners.get(valve["id"]) == owner
         )
 
-    def room(zone: Mapping[str, Any]) -> dict[str, Any]:
+    def zone_entry(zone: Mapping[str, Any]) -> dict[str, Any]:
         zone_id = zone["id"]
         thermostat = zone["thermostat"]
         result: dict[str, Any] = {
@@ -883,12 +936,14 @@ def export_plant_document(
             "name": zone["name"],
             "thermostat": _ordered(thermostat, _THERMOSTAT_FIELDS[thermostat["kind"]]),
         }
+        if "areas" in zone:
+            result["areas"] = [_area_entry(area) for area in zone["areas"]]
         for stored_key, file_key in _SENSOR_COLLECTIONS:
             if stored_key in zone:
                 result[file_key] = [_ordered(sensor, _SENSOR_FIELDS) for sensor in zone[stored_key]]
         result.update(_ordered(zone, ("temperature_aggregation",), skip=("id", *_ZONE_FIELDS)))
-        if room_valves := owned_valves(zone_id):
-            result["valves"] = room_valves
+        if zone_valves := owned_valves(zone_id):
+            result["valves"] = zone_valves
         own_routes = [route for route in routes if route["zone_id"] == zone_id]
         # Ownership rules R5 and R6 give every private loop exactly one route.
         if private_loops := _by_slug(
@@ -911,7 +966,7 @@ def export_plant_document(
             result["shared_loops"] = shared_loops
         return result
 
-    room_slugs = _slugs(zones, "room")
+    zone_slugs = _slugs(zones, "zone")
     source_slugs = _slugs(sources, "source")
     sections = {
         "pumps": _by_slug(
@@ -923,7 +978,7 @@ def export_plant_document(
             for circuit in circuits
             if circuit["id"] not in owners
         ),
-        "rooms": _by_slug((room_slugs[zone["id"]], room(zone)) for zone in zones),
+        "zones": _by_slug((zone_slugs[zone["id"]], zone_entry(zone)) for zone in zones),
         "sources": _by_slug(
             (source_slugs[source["id"]], _long_form(source, _SOURCE_FIELDS)) for source in sources
         ),

@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import selector
 
+from ..areas import area_review_warnings, area_warnings_to_confirm
 from ..const import (
     CONF_CIRCUITS,
     CONF_DRY_RUN,
@@ -35,8 +36,8 @@ from ..const import (
     CONF_VALVES,
     CONF_ZONES,
     DEFAULT_PUMP_OVERRUN,
-    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
+    SUBENTRY_TYPE_ZONE,
 )
 from ..core.configuration import StoredTopologyError
 from ..core.model import CompiledPlant
@@ -54,12 +55,12 @@ from ..entry_configuration import (
     invalidate_output_authorization,
     object_ids,
     output_authorization,
-    room_objects,
     subentry_sync,
     topology_copy,
+    zone_objects,
 )
-from ..migration import async_move_object_registrations, async_remove_object_registrations
 from ..plant_file import first_own_entity, parsed_plant_file, plant_file, plant_file_yaml
+from ..registrations import async_move_object_registrations, async_remove_object_registrations
 from .common import (
     DEFAULT_FEEDBACK_MAX_AGE,
     SECTION_FEEDBACK,
@@ -71,10 +72,12 @@ from .common import (
     max_age_selector,
     name_selector,
     optional_entity,
-    other_plant_sharing_warnings,
     own_entity_errors,
     seconds_selector,
     sensor_selector,
+    shared_outputs,
+    sharing_messages,
+    sharing_to_confirm,
     topology_select,
     warning_review_schema,
     warning_text,
@@ -96,7 +99,7 @@ _PUMP_FEEDBACK: Final = (
 )
 # Graph collections and the word the review's change list uses for their objects.
 _CHANGE_KINDS: Final = (
-    (CONF_ZONES, "room"),
+    (CONF_ZONES, "zone"),
     (CONF_CIRCUITS, "loop"),
     (CONF_VALVES, "valve"),
     (CONF_PUMPS, "pump"),
@@ -198,7 +201,7 @@ def _signature(data: Mapping[str, Any]) -> tuple[Any, ...]:
         data.get(CONF_NAME),
         json.dumps(collections, sort_keys=True),
         json.dumps(topology.get(_SOURCE_SELECTOR), sort_keys=True),
-        room_objects(data),
+        zone_objects(data),
     )
 
 
@@ -215,7 +218,7 @@ def _plant_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
     if before.get(CONF_NAME) != after.get(CONF_NAME):
         lines.append(f"Renames the Plant from {before.get(CONF_NAME)} to {after.get(CONF_NAME)}")
     old_topology, new_topology = topology_copy(before), topology_copy(after)
-    old_owners, new_owners = room_objects(before), room_objects(after)
+    old_owners, new_owners = zone_objects(before), zone_objects(after)
     old_zones = {canonical_id(zone.get("id")): zone for zone in old_topology[CONF_ZONES]}
     new_zones = {canonical_id(zone.get("id")): zone for zone in new_topology[CONF_ZONES]}
     for collection, kind in _CHANGE_KINDS:
@@ -242,7 +245,7 @@ def _plant_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
                 lines.append(f"Moves {kind} {new_name} from {old_owner} to {new_owner}")
     for zone_id in old_zones.keys() & new_zones.keys():
         if _routes_of(old_topology, zone_id) != _routes_of(new_topology, zone_id):
-            lines.append(f"Changes the loops of room {new_zones[zone_id].get(CONF_NAME)}")
+            lines.append(f"Changes the loops of zone {new_zones[zone_id].get(CONF_NAME)}")
     old_selector = old_topology.get(_SOURCE_SELECTOR)
     new_selector = new_topology.get(_SOURCE_SELECTOR)
     if old_selector is None and new_selector is not None:
@@ -275,15 +278,15 @@ def _handle_owners(
     owners: dict[str, str | None] = {}
     for zone in topology[CONF_ZONES]:
         zone_id = canonical_id(zone.get("id"))
-        owners[zone_id] = handles.get((SUBENTRY_TYPE_ROOM, zone_id))
+        owners[zone_id] = handles.get((SUBENTRY_TYPE_ZONE, zone_id))
     for collection in (CONF_CIRCUITS, CONF_VALVES, CONF_PUMPS):
         for record in topology[collection]:
             owners[canonical_id(record.get("id"))] = None
     for source in topology[CONF_SOURCES]:
         source_id = canonical_id(source.get("id"))
         owners[source_id] = handles.get((SUBENTRY_TYPE_SOURCE, source_id))
-    for object_id, zone_id in room_objects(data).items():
-        owners[object_id] = handles.get((SUBENTRY_TYPE_ROOM, zone_id))
+    for object_id, zone_id in zone_objects(data).items():
+        owners[object_id] = handles.get((SUBENTRY_TYPE_ZONE, zone_id))
     return owners
 
 
@@ -569,22 +572,19 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
     def _pump_warnings(self, entry: config_entries.ConfigEntry, proposed: Mapping[str, Any]) -> str:
         """Describe what the pump change needs confirmed, or return an empty string.
 
-        That is a compiler warning the change introduces (Decision 11), or a pump
-        entity another Plant already binds, which is confirmed on every save.
+        That is a compiler warning the change introduces (Decision 11), or an
+        output the change newly shares with another Plant.
         """
         compiled = effective_plant_from_data(proposed).compiled
-        _pump_id, record = self._pump_edit
-        sharing = (
-            other_plant_sharing_warnings(self.hass, entry.entry_id, (record[CONF_ENTITY_ID],))
-            if record is not None
-            else ()
-        )
+        sharing = shared_outputs(self.hass, entry.entry_id, proposed)
         try:
             before: CompiledPlant | None = effective_plant(entry).compiled
         except GRAPH_EDIT_ERRORS:
             before = None
-        if sharing or warnings_to_confirm(compiled, before):
-            return warning_text(compiled, sharing)
+        if sharing_to_confirm(
+            sharing, shared_outputs(self.hass, entry.entry_id, entry.data)
+        ) or warnings_to_confirm(compiled, before):
+            return warning_text(compiled, sharing_messages(sharing))
         return ""
 
     async def _async_save_pump(self, entry: config_entries.ConfigEntry) -> bool:
@@ -751,17 +751,18 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
         """Show the changes against the current Plant, and remember which Plant was shown."""
         data = data_with_plant(entry.data, self._imported)
         compiled: CompiledPlant = self._imported.compiled
-        sharing = other_plant_sharing_warnings(
-            self.hass,
-            entry.entry_id,
-            (output["entity_id"] for output in output_authorization(data)["outputs"]),
-        )
+        sharing = shared_outputs(self.hass, entry.entry_id, data)
         try:
             before: CompiledPlant | None = effective_plant(entry).compiled
         except GRAPH_EDIT_ERRORS:
             # An unreadable stored graph can still be replaced by a plant file.
             before = None
-        self._review_blocking = bool(sharing) or bool(warnings_to_confirm(compiled, before))
+        areas = area_review_warnings(self.hass, data)
+        self._review_blocking = (
+            bool(sharing_to_confirm(sharing, shared_outputs(self.hass, entry.entry_id, entry.data)))
+            or bool(warnings_to_confirm(compiled, before))
+            or bool(area_warnings_to_confirm(areas, area_review_warnings(self.hass, entry.data)))
+        )
         self._reviewed = _signature(entry.data)
         blocking = self._review_blocking
         return self.async_show_form(
@@ -771,7 +772,14 @@ class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow)
             description_placeholders={
                 "changes": _plant_changes(entry.data, data),
                 "logic": "\n".join(f"- {line}" for line in compiled.logic_summary) or "- None",
-                "warnings": warning_text(compiled, sharing) or "- None",
+                "warnings": warning_text(
+                    compiled,
+                    (
+                        *(warning.message for warning in areas),
+                        *sharing_messages(sharing),
+                    ),
+                )
+                or "- None",
             },
         )
 

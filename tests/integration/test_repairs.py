@@ -19,11 +19,13 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
     CONF_SUPPLY_TEMPERATURE_SENSOR,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
     DOMAIN,
-    SUBENTRY_TYPE_ROOM,
+    SUBENTRY_TYPE_ZONE,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
-from custom_components.hydronicus.flows.room import RoomSubentryFlowHandler
+from custom_components.hydronicus.flows.zone import ZoneSubentryFlowHandler
 from tests.integration.plant_fixtures import plant_entry, subentry_id_for
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
@@ -43,7 +45,7 @@ MISSING_VALVE = "switch.zone_a_valve"
 MISSING_READINESS = "binary_sensor.zone_a_valve_ready"
 MISSING_SUBENTRY_VALVE = "switch.repairs_subentry_valve"
 RESTORED_SUBENTRY_VALVE = "switch.repairs_replacement_valve"
-ROOM_OWNED_TRANSLATION_KEYS = {
+ZONE_OWNED_TRANSLATION_KEYS = {
     "missing_sensor_binding_fixable",
     "missing_feedback_binding_fixable",
     "missing_actuator_binding_fixable",
@@ -51,9 +53,9 @@ ROOM_OWNED_TRANSLATION_KEYS = {
 
 
 def _entry(*, shared_valve_a: bool = False, supply_sensor_b: str | None = None) -> MockConfigEntry:
-    """Build two independent synthetic rooms, one intentionally unresolved.
+    """Build two independent synthetic zones, one intentionally unresolved.
 
-    Each room owns its loop and valve and each loop has its own Plant pump. With
+    Each zone owns its loop and valve and each loop has its own Plant pump. With
     ``shared_valve_a`` the Zone B loop also uses the Zone A valve, which makes that
     valve shared Plant equipment.
     """
@@ -70,6 +72,8 @@ def _entry(*, shared_valve_a: bool = False, supply_sensor_b: str | None = None) 
 def _plant_entry() -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
         title="Synthetic plant",
         data={
             CONF_NAME: "Synthetic plant",
@@ -176,7 +180,7 @@ async def test_setup_reload_and_restoration_create_and_remove_repairs(hass) -> N
 
     repairs = _issues(hass)
     translation_keys = {issue.translation_key for issue in repairs.values()}
-    assert translation_keys == ROOM_OWNED_TRANSLATION_KEYS
+    assert translation_keys == ZONE_OWNED_TRANSLATION_KEYS
     for issue in repairs.values():
         assert issue.is_fixable is True
         assert issue.data["subentry_id"] == subentry_id_for(ZONE_A)
@@ -277,7 +281,7 @@ def _set_healthy_parent_states(hass) -> None:
 
 
 async def _setup_with_unresolved_subentry_valve(hass) -> tuple[MockConfigEntry, str, str]:
-    """Set up a Plant whose Zone B room owns a valve with a missing actuator entity."""
+    """Set up a Plant whose Zone B zone owns a valve with a missing actuator entity."""
     _set_healthy_parent_states(hass)
     hass.states.async_remove("switch.zone_b_valve")
     entry = _entry()
@@ -434,16 +438,16 @@ async def test_pump_fix_flow_aborts_when_the_plant_is_gone(hass) -> None:
     assert hass.config_entries.options.async_progress() == []
 
 
-async def test_room_binding_repair_opens_the_room_reconfigure_flow(
+async def test_zone_binding_repair_opens_the_zone_reconfigure_flow(
     hass, hass_client, monkeypatch
 ) -> None:
-    """The fix flow for a room-owned valve hands off to that room's reconfigure flow."""
+    """The fix flow for a zone-owned valve hands off to that zone's reconfigure flow."""
 
     async def show_reconfigure(self, user_input=None):
         # Keep the flow open so the test can inspect where the repair handed off.
         return self.async_show_form(step_id="reconfigure")
 
-    monkeypatch.setattr(RoomSubentryFlowHandler, "async_step_reconfigure", show_reconfigure)
+    monkeypatch.setattr(ZoneSubentryFlowHandler, "async_step_reconfigure", show_reconfigure)
     assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
     entry, subentry_id, issue_id = await _setup_with_unresolved_subentry_valve(hass)
     client = await hass_client()
@@ -472,15 +476,15 @@ async def test_room_binding_repair_opens_the_room_reconfigure_flow(
     assert flow_type == "config_subentries_flow"
 
     subentry_flow = hass.config_entries.subentries.async_get(next_flow_id)
-    assert subentry_flow["handler"] == (entry.entry_id, SUBENTRY_TYPE_ROOM)
+    assert subentry_flow["handler"] == (entry.entry_id, SUBENTRY_TYPE_ZONE)
     assert subentry_flow["context"]["source"] == config_entries.SOURCE_RECONFIGURE
     assert subentry_flow["context"]["subentry_id"] == subentry_id
     # Handing off does not claim the repair is fixed while the binding is still missing.
     assert issue_id in _issues(hass)
 
 
-async def test_room_reconfigure_opens_the_room_menu_without_changes(hass) -> None:
-    """The repair target is the room menu, which changes nothing until a step is saved."""
+async def test_zone_reconfigure_opens_the_zone_menu_without_changes(hass) -> None:
+    """The repair target is the zone menu, which changes nothing until a step is saved."""
     entry, subentry_id, _issue_id = await _setup_with_unresolved_subentry_valve(hass)
     data = dict(entry.data)
 
@@ -488,8 +492,8 @@ async def test_room_reconfigure_opens_the_room_menu_without_changes(hass) -> Non
 
     assert result["type"] == FlowResultType.MENU
     assert "edit_loop" in result["menu_options"]
-    # The menu names the room it edits, since a repair opens it without context.
-    assert result["description_placeholders"] == {"room": "Zone B"}
+    # The menu names the zone it edits, since a repair opens it without context.
+    assert result["description_placeholders"] == {"zone": "Zone B"}
     assert dict(entry.data) == data
 
 
@@ -504,8 +508,8 @@ async def test_subentry_binding_repair_clears_when_the_entity_returns(hass) -> N
     assert _issues(hass) == {}
 
 
-async def test_fix_flow_aborts_when_the_owning_room_is_gone(hass) -> None:
-    """A fix flow opened before its room was removed aborts without a hand-off."""
+async def test_fix_flow_aborts_when_the_owning_zone_is_gone(hass) -> None:
+    """A fix flow opened before its zone was removed aborts without a hand-off."""
     assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
     entry, subentry_id, issue_id = await _setup_with_unresolved_subentry_valve(hass)
     manager = hass.data[REPAIRS_DOMAIN]["flow_manager"]
@@ -527,8 +531,8 @@ async def test_fix_flow_aborts_when_the_owning_room_is_gone(hass) -> None:
     assert hass.config_entries.subentries.async_progress() == []
 
 
-async def test_room_loop_sensor_repair_belongs_to_the_room(hass) -> None:
-    """A reference sensor of a room's private loop is fixed through that room."""
+async def test_zone_loop_sensor_repair_belongs_to_the_zone(hass) -> None:
+    """A reference sensor of a zone's private loop is fixed through that zone."""
     _set_healthy_parent_states(hass)
     entry = _entry(supply_sensor_b="sensor.repairs_missing_supply")
     entry.add_to_hass(hass)
@@ -538,7 +542,9 @@ async def test_room_loop_sensor_repair_belongs_to_the_room(hass) -> None:
     repairs = _issues(hass)
     assert len(repairs) == 1
     (issue,) = repairs.values()
-    assert issue.translation_key == "missing_sensor_binding_fixable"
+    # A loop that does not cool only reads its supply reference, so it is optional.
+    assert issue.translation_key == "missing_optional_sensor_binding_fixable"
+    assert issue.severity is issue_registry.IssueSeverity.WARNING
     assert issue.data is not None
     assert issue.data["object_id"] == CIRCUIT_B
     assert issue.data["subentry_id"] == subentry_id_for(ZONE_B)
@@ -548,6 +554,48 @@ async def test_room_loop_sensor_repair_belongs_to_the_room(hass) -> None:
         "binding": "supply temperature reference of Zone B circuit",
         "owner": "Zone B",
     }
+
+
+async def test_an_optional_zone_sensor_repair_says_it_is_left_out(hass) -> None:
+    """An optional sensor set on the zone is left out, so its repair is a warning, not a block."""
+    _set_healthy_parent_states(hass)
+    entry = _entry()
+    data = deepcopy(dict(entry.data))
+    data["topology"]["zones"][1]["temperature_sensor_metadata"].append(
+        {"entity_id": "sensor.zone_b_spare", "required": False}
+    )
+    entry = plant_entry(data, title="Synthetic plant")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    (issue,) = _issues(hass).values()
+    assert issue.translation_key == "missing_optional_sensor_binding_fixable"
+    assert issue.severity is issue_registry.IssueSeverity.WARNING
+    assert issue.translation_placeholders["binding"] == "temperature sensor of Zone B"
+    strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
+    issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
+    text = issues["missing_optional_sensor_binding_fixable"]["fix_flow"]["step"]["confirm"]
+    assert "blocked" not in text["description"]
+    assert "leaves it out" in text["description"]
+    assert "blocked" not in issues["missing_optional_sensor_binding"]["description"]
+
+
+async def test_a_required_zone_sensor_repair_is_an_error(hass) -> None:
+    """A required sensor blocks what depends on it, so its repair stays an error."""
+    hass.states.async_set("sensor.zone_b_temperature", "18.0")
+    for entity_id in (MISSING_VALVE, MISSING_READINESS, "switch.zone_b_valve"):
+        hass.states.async_set(entity_id, "off")
+    for entity_id in ("switch.zone_a_pump", "switch.zone_b_pump"):
+        hass.states.async_set(entity_id, "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    (issue,) = _issues(hass).values()
+    assert issue.translation_key == "missing_sensor_binding_fixable"
+    assert issue.severity is issue_registry.IssueSeverity.ERROR
 
 
 def test_binding_repair_titles_fit_on_one_header_line() -> None:
@@ -563,8 +611,12 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
         "binding": "readiness feedback of Living valve",
         "owner": "Living room",
     }
-    binding_keys = [key for key in issues if key.startswith("missing_")]
-    assert len(binding_keys) == 10
+    # An area sensor repair names its Plant and zone first instead, like every
+    # area repair, because several Plants can have the same zone and area names.
+    binding_keys = [
+        key for key in issues if key.startswith("missing_") and key != "missing_area_sensor_binding"
+    ]
+    assert len(binding_keys) == 12
     for key in binding_keys:
         issue = issues[key]
         titles = [issue["title"]]

@@ -110,10 +110,8 @@ def _cooling_entry(
 
 def _shared_mode_entry() -> MockConfigEntry:
     """Return synthetic heating and cooling routes sharing a valve and pump."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Shared mode plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "Shared mode plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: True,
@@ -183,6 +181,8 @@ def _shared_mode_entry() -> MockConfigEntry:
                 ],
             },
         },
+        title="Shared mode plant",
+        source_handles=False,
     )
 
 
@@ -296,7 +296,7 @@ async def test_humid_space_of_a_room_blocks_cooling_and_reports_its_dew_point(ha
 
 
 async def test_presentation_offers_the_climate_entity_cooling_modes(hass) -> None:
-    """A cooling-capable Room offers the same HVAC modes as its climate entity."""
+    """A cooling-capable Zone offers the same HVAC modes as its climate entity."""
     hass.states.async_set("sensor.living_temperature", "25.0")
     hass.states.async_set("sensor.living_humidity", "50.0")
     hass.states.async_set("sensor.cooling_supply", "18.0")
@@ -415,13 +415,13 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
 async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
     """The public setup flow persists cooling topology and sensor relationships.
 
-    Guided setup creates heating rooms only, so cooling comes from a plant file.
+    Guided setup creates heating zones only, so cooling comes from a plant file.
     """
     document = {
         "hydronicus": 1,
         CONF_NAME: "Hydronic plant",
         "pumps": {"cooling_pump": {"entity_id": "switch.cooling_pump", "overrun_seconds": 120}},
-        "rooms": {
+        "zones": {
             "living": {
                 "thermostat": {
                     "initial_target_temperature": 21.0,

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { actionForHvacMode, actionForMode, alertTitle, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneDemandKind, zoneHvacModes } from "../src/logic";
+import { actionForHvacMode, actionForMode, alertTitle, zoneAlerts, zoneBadge, zoneVisualState, actionForPreset, actionForSafeShutdown, actionForTarget, adjustTarget, boundaryLabel, hvacModeLabel, isFlowingState, nodeKindLabel, parseSnapshot, plantVisualState, prioritizedAlerts, sourceSummary, zoneAreaLines, zoneDemandKind, zoneHvacModes, zoneTileSize } from "../src/logic";
 import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
 
 const zone: ZoneSnapshot = {
-  id: "zone-1", name: "Living room",
+  id: "zone-1", name: "Living room", areas: [],
   thermostat: {
     kind: "hydronicus", state: "available", control_entity_id: "climate.hydronic_living_room",
     current_temperature: 20, target_temperature: 21, preset: "comfort", preset_modes: ["comfort", "eco"], hvac_mode: "heat", hvac_modes: ["off", "heat"],
-    explanation: "Hydronicus owns this Room's thermostat.",
+    explanation: "Hydronicus owns this Zone's thermostat.",
   },
   demand: true, phase: "heating", blocked: false, blocked_reason: null,
   sensor_status: { usable: 1, optional_excluded: 0, required_blocking: 0 },
@@ -95,7 +95,7 @@ describe("Hydronicus presentation logic", () => {
         preset_modes: [],
         hvac_mode: "heat",
         hvac_modes: [],
-        explanation: "External thermostat owns this Room.",
+        explanation: "External thermostat owns this Zone.",
       },
     };
 
@@ -130,10 +130,10 @@ describe("Hydronicus presentation logic", () => {
   });
 });
 
-describe("Room HVAC modes", () => {
+describe("Zone HVAC modes", () => {
   const coolingZone: ZoneSnapshot = { ...zone, thermostat: { ...zone.thermostat, hvac_mode: "off", hvac_modes: ["off", "heat", "cool", "heat_cool"] } };
 
-  it("offers exactly the modes the Room's climate entity supports", () => {
+  it("offers exactly the modes the Zone's climate entity supports", () => {
     expect(zoneHvacModes(zone)).toEqual(["off", "heat"]);
     expect(zoneHvacModes(coolingZone)).toEqual(["off", "heat", "cool", "heat_cool"]);
   });
@@ -150,7 +150,7 @@ describe("Room HVAC modes", () => {
     expect(actionForHvacMode(external, "heat")).toBeNull();
   });
 
-  it("names what a Room is asking for, with cooling before heating", () => {
+  it("names what a Zone is asking for, with cooling before heating", () => {
     expect(zoneDemandKind(zone)).toBe("heating");
     expect(zoneDemandKind({ ...zone, demand: false })).toBe("none");
     expect(zoneDemandKind({ ...zone, cooling: { ...zone.cooling, demand: true } })).toBe("cooling");
@@ -182,20 +182,99 @@ describe("Header summaries", () => {
     expect(sourceSummary(idle)).toBe("None active · recommended Boiler");
   });
 
-  it("names path nodes with the Room and Loop vocabulary", () => {
-    expect(["zone", "circuit", "valve", "pump", "source"].map(nodeKindLabel)).toEqual(["Room", "Loop", "Valve", "Pump", "Source"]);
+  it("names path nodes with the Zone and Loop vocabulary", () => {
+    expect(["zone", "circuit", "valve", "pump", "source"].map(nodeKindLabel)).toEqual(["Zone", "Loop", "Valve", "Pump", "Source"]);
   });
 });
 
 describe("Alert titles", () => {
-  it("names the room or equipment and uses a readable label", () => {
+  it("names the zone or equipment and uses a readable label", () => {
     expect(alertTitle({ code: "zone_sensor_blocked", scope: "zone-1", name: "Living" })).toBe("Living · Sensor blocked");
     expect(alertTitle({ code: "actuator_mismatch", scope: "valve-1", name: "Living loop valve" })).toBe("Living loop valve · Equipment mismatch");
   });
 
   it("leaves the Plant name out of Plant alerts and falls back without a name", () => {
     expect(alertTitle({ code: "binding_unavailable", scope: "plant", name: "Hydronic plant" })).toBe("Entity unavailable");
-    expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Room blocked");
+    expect(alertTitle({ code: "zone_mode_blocked", scope: "zone-1" })).toBe("Zone blocked");
     expect(alertTitle({ code: "something_new", scope: "plant" })).toBe("Something new");
+  });
+});
+
+describe("area lines", () => {
+  const area = { id: "kitchen", name: "Kitchen", missing: false, temperature: 20, humidity: 45, temperature_entity_id: "sensor.kitchen", humidity_entity_id: null };
+
+  it("shows a line per area only for a Zone that covers several areas", () => {
+    expect(zoneAreaLines({ areas: [] })).toEqual([]);
+    expect(zoneAreaLines({ areas: [area] })).toEqual([]);
+    expect(zoneAreaLines({ areas: [area, { ...area, id: "hall" }] })).toHaveLength(2);
+  });
+
+  it("grows a Zone tile's masonry size by one unit per two area lines", () => {
+    expect(zoneTileSize({ areas: [area] })).toBe(5);
+    expect(zoneTileSize({ areas: [area, area] })).toBe(6);
+    expect(zoneTileSize({ areas: [area, area, area] })).toBe(7);
+  });
+});
+
+describe("Plant and Zone attention", () => {
+  const alert = (code: string, severity: "error" | "warning", scope: string) => ({ code, severity, priority: severity === "error" ? 1 : 2, scope, name: "Living room", message: code });
+
+  it("needs attention while the Plant is degraded or an entity is unavailable", () => {
+    // Only a warning is open, so the health alone must mark the Plant.
+    const warned = { ...snapshot, alerts: [alert("zone_area_self_feed", "warning", "zone-1")] };
+    expect(plantVisualState({ ...warned, plant: { ...snapshot.plant, health: "degraded" } })).toBe("attention");
+    expect(plantVisualState({ ...warned, plant: { ...snapshot.plant, health: "unavailable" } })).toBe("attention");
+    expect(plantVisualState(warned)).toBe("heating");
+  });
+
+  it("lists the alerts about one Zone, most urgent first", () => {
+    const alerts = [
+      alert("zone_area_self_feed", "warning", "zone-1"),
+      alert("zone_sensor_blocked", "error", "zone-2"),
+      alert("zone_area_missing", "error", "zone-1"),
+      alert("binding_unavailable", "error", "plant"),
+    ];
+    expect(zoneAlerts({ alerts }, "zone-1").map((item) => item.code)).toEqual(["zone_area_missing", "zone_area_self_feed"]);
+  });
+
+  it("needs attention for a Zone with an error, but not for a warning", () => {
+    const idle = { ...zone, demand: false, phase: "idle" };
+    expect(zoneVisualState(idle, [alert("zone_area_missing", "error", "zone-1")])).toBe("attention");
+    expect(zoneVisualState(idle, [alert("zone_area_self_feed", "warning", "zone-1")])).toBe("idle");
+    expect(zoneVisualState(idle)).toBe("idle");
+  });
+
+  it("labels the area alerts and a missing sensor", () => {
+    expect(alertTitle({ code: "zone_area_missing", scope: "zone-1", name: "Home" })).toBe("Home · Area missing");
+    expect(alertTitle({ code: "zone_without_temperature_source", scope: "zone-1", name: "Home" })).toBe("Home · No temperature sensor");
+    expect(alertTitle({ code: "zone_area_self_feed", scope: "zone-1", name: "Home" })).toBe("Home · Area sensor ignored");
+    expect(alertTitle({ code: "optional_sensor_unavailable", scope: "zone-1", name: "Home" })).toBe("Home · Optional sensor missing");
+    expect(alertTitle({ code: "sensor_unavailable", scope: "zone-1", name: "Home" })).toBe("Home · Sensor missing");
+  });
+});
+
+describe("Zone badge", () => {
+  const off = { ...zone.thermostat, hvac_mode: "off" };
+
+  it("shows Off for an off thermostat, even when the Zone is blocked and idle", () => {
+    expect(zoneBadge({ ...zone, thermostat: off, phase: "idle" }, undefined)).toEqual({ label: "Off", kind: "off" });
+    expect(zoneBadge({ ...zone, thermostat: off, phase: "idle", blocked: true }, undefined)).toEqual({ label: "Off", kind: "off" });
+    expect(zoneBadge({ ...zone, thermostat: off, phase: "blocked", blocked: true }, undefined)).toEqual({ label: "Off", kind: "off" });
+  });
+
+  it("shows Blocked for a blocked Zone that is on, whatever its phase", () => {
+    expect(zoneBadge({ ...zone, phase: "idle", blocked: true }, undefined)).toEqual({ label: "Blocked", kind: "blocked" });
+    expect(zoneBadge({ ...zone, phase: "blocked", blocked: true }, undefined)).toEqual({ label: "Blocked", kind: "blocked" });
+  });
+
+  it("shows the phase of a Zone that is on and not blocked", () => {
+    expect(zoneBadge(zone, undefined)).toEqual({ label: "Heating", kind: "phase" });
+    expect(zoneBadge({ ...zone, phase: "idle" }, undefined)).toEqual({ label: "Idle", kind: "phase" });
+    expect(zoneBadge({ ...zone, thermostat: { ...zone.thermostat, hvac_mode: null }, phase: "idle" }, undefined)).toEqual({ label: "Idle", kind: "phase" });
+  });
+
+  it("uses Home Assistant's translation of Off", () => {
+    const localize = (key: string) => (key === "component.climate.entity_component._.state.off" ? "Aus" : "");
+    expect(zoneBadge({ ...zone, thermostat: off }, localize).label).toBe("Aus");
   });
 });

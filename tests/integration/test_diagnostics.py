@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -11,10 +12,10 @@ from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    DOMAIN,
 )
-from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.core.model import PumpState, ThermostatHvacMode, ValveState
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_ID = "00000000-0000-4000-8000-000000000002"
@@ -81,7 +82,7 @@ def _entry(*, detailed_actuators: bool = False) -> MockConfigEntry:
     }
     if detailed_actuators:
         data[CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS] = True
-    return MockConfigEntry(domain=DOMAIN, title="Private Solymar Plant", data=data)
+    return plant_entry(data, title="Private Solymar Plant", source_handles=False)
 
 
 async def test_downloadable_diagnostics_are_deterministic_and_redacted(hass) -> None:
@@ -179,6 +180,48 @@ async def test_repeated_identical_evaluations_do_not_publish_entity_updates(hass
     remove_listener()
 
 
+async def test_a_dry_run_plant_keeps_its_proposed_equipment_state_between_refreshes(
+    hass, monkeypatch
+) -> None:
+    """Dry run never moves the equipment, so reading it back must not undo the plan.
+
+    Resetting the proposed valve and pump from the untouched entities made them
+    alternate on every refresh, and every entity published again each time.
+    """
+    hass.states.async_set("sensor.private_bedroom_temperature", "18.0")
+    hass.states.async_set("switch.private_manifold_valve", "off")
+    hass.states.async_set("switch.private_plant_pump", "off")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    runtime = entry.runtime_data
+    clock = [runtime._now()]
+    monkeypatch.setattr(type(runtime), "_now", lambda _self: clock[0])
+    await runtime.async_set_zone_hvac_mode(ZONE_ID, ThermostatHvacMode.HEAT, hass=hass)
+    # Past the valve opening time, the proposed pump runs for the ready loop.
+    clock[0] += timedelta(seconds=40)
+    await runtime.async_refresh(hass)
+    assert runtime.runtime_state.valves[VALVE_ID].state is ValveState.OPEN
+    assert runtime.runtime_state.pumps[PUMP_ID].state is PumpState.RUNNING
+    # The next refresh proposes nothing new, which is itself a change to publish.
+    clock[0] += timedelta(seconds=40)
+    await runtime.async_refresh(hass)
+    assert runtime.last_execution.proposed == ()
+    settled = runtime.runtime_state
+    publications: list[None] = []
+    remove_listener = runtime.async_add_listener(lambda: publications.append(None))
+
+    for _ in range(3):
+        clock[0] += timedelta(seconds=40)
+        await runtime.async_refresh(hass)
+
+    assert runtime.runtime_state.valves == settled.valves
+    assert runtime.runtime_state.pumps == settled.pumps
+    assert publications == []
+    assert hass.states.get("switch.private_plant_pump").state == "off"
+    remove_listener()
+
+
 async def test_detailed_actuator_diagnostics_are_explicitly_opt_in(hass) -> None:
     """Opt-in details remain opaque and do not reintroduce entity IDs."""
     hass.states.async_set("sensor.private_bedroom_temperature", "18.0")
@@ -212,8 +255,8 @@ async def test_verbose_actuator_entities_are_opt_in(hass) -> None:
     assert hass.states.get("sensor.private_manifold_valve_feedback_reason") is None
 
 
-async def test_diagnostics_name_the_owner_of_every_object_without_room_titles(hass) -> None:
-    """Each object names its room, by opaque zone reference, or the Plant."""
+async def test_diagnostics_name_the_owner_of_every_object_without_zone_titles(hass) -> None:
+    """Each object names its zone, by opaque zone reference, or the Plant."""
     hass.states.async_set("sensor.private_bedroom_temperature", "18.0")
     hass.states.async_set("switch.private_manifold_valve", "off")
     hass.states.async_set("switch.private_plant_pump", "off")
@@ -224,14 +267,14 @@ async def test_diagnostics_name_the_owner_of_every_object_without_room_titles(ha
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
 
     relationships = diagnostics["compiled_topology"]["relationships"]
-    room = {"kind": "room", "reference": "zone-1"}
+    zone = {"kind": "zone", "reference": "zone-1"}
     plant = {"kind": "plant", "reference": "plant-1"}
-    assert [zone["owner"] for zone in relationships["zones"]] == [room]
-    assert [circuit["owner"] for circuit in relationships["circuits"]] == [room, room]
-    assert [route["owner"] for route in relationships["routes"]] == [room, room]
-    assert [valve["owner"] for valve in relationships["actuators"]["valves"]] == [room]
+    assert [zone["owner"] for zone in relationships["zones"]] == [zone]
+    assert [circuit["owner"] for circuit in relationships["circuits"]] == [zone, zone]
+    assert [route["owner"] for route in relationships["routes"]] == [zone, zone]
+    assert [valve["owner"] for valve in relationships["actuators"]["valves"]] == [zone]
     assert [pump["owner"] for pump in relationships["actuators"]["pumps"]] == [plant]
-    # The room title is the zone name, which diagnostics keep redacted.
-    (room_subentry,) = entry.subentries.values()
-    assert room_subentry.title == "Bedroom near the nursery"
-    assert room_subentry.title not in json.dumps(diagnostics)
+    # The zone title is the zone name, which diagnostics keep redacted.
+    (zone_subentry,) = entry.subentries.values()
+    assert zone_subentry.title == "Bedroom near the nursery"
+    assert zone_subentry.title not in json.dumps(diagnostics)

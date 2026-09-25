@@ -2,7 +2,7 @@ hydronicus: 1
 name: Designated reference without a designated sensor
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     temperature_aggregation: designated_reference
     temperature_sensors: [sensor.living_temperature, sensor.living_temperature_2]

@@ -1,4 +1,4 @@
-import type { PlantSnapshot, ZoneSnapshot } from "../src/types";
+import type { PlantSnapshot, ZoneArea, ZoneSnapshot } from "../src/types";
 
 export const PLANT_ID = "00000000-0000-4000-8000-000000000001";
 export const OTHER_PLANT_ID = "00000000-0000-4000-8000-000000000002";
@@ -7,6 +7,7 @@ export function makeZone(overrides: Partial<ZoneSnapshot> = {}): ZoneSnapshot {
   return {
     id: "zone-1",
     name: "Living room",
+    areas: [],
     thermostat: {
       kind: "hydronicus",
       state: "available",
@@ -17,7 +18,7 @@ export function makeZone(overrides: Partial<ZoneSnapshot> = {}): ZoneSnapshot {
       preset_modes: ["comfort", "eco"],
       hvac_mode: "heat",
       hvac_modes: ["off", "heat"],
-      explanation: "Hydronicus owns this Room's thermostat.",
+      explanation: "Hydronicus owns this Zone's thermostat.",
     },
     demand: true,
     phase: "heating",
@@ -37,6 +38,31 @@ export function makeZone(overrides: Partial<ZoneSnapshot> = {}): ZoneSnapshot {
     coupling_group_ids: [],
     ...overrides,
   };
+}
+
+export function makeArea(overrides: Partial<ZoneArea> = {}): ZoneArea {
+  return {
+    id: "kitchen",
+    name: "Kitchen",
+    missing: false,
+    temperature: 20.5,
+    humidity: 45,
+    temperature_entity_id: "sensor.kitchen_temperature",
+    humidity_entity_id: "sensor.kitchen_humidity",
+    ...overrides,
+  };
+}
+
+/** A Zone that covers a kitchen, a hall whose temperature is stale, and a study without sensors. */
+export function makeAreaZone(overrides: Partial<ZoneSnapshot> = {}): ZoneSnapshot {
+  return makeZone({
+    areas: [
+      makeArea(),
+      makeArea({ id: "hall", name: "Hall", temperature: null, humidity: 52.4, temperature_entity_id: "sensor.hall_temperature", humidity_entity_id: "sensor.hall_humidity" }),
+      makeArea({ id: "study", name: "Study", temperature: null, humidity: null, temperature_entity_id: null, humidity_entity_id: null }),
+    ],
+    ...overrides,
+  });
 }
 
 export function makeSnapshot(overrides: Partial<PlantSnapshot> = {}): PlantSnapshot {

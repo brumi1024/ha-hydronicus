@@ -9,8 +9,13 @@ from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, PERCENTAGE, UnitOfTemp
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.const import (
+    CONF_DRY_RUN,
+    CONF_NAME,
+    CONF_PLANT_ID,
+)
 from custom_components.hydronicus.core.model import ExternalClimateThermostatState
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000301"
 ZONE_ID = "00000000-0000-4000-8000-000000000302"
@@ -39,10 +44,8 @@ def _entry(*, external: bool = False) -> MockConfigEntry:
         if external
         else {"kind": "hydronicus", "initial_target_temperature": 21.0}
     )
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="Unit plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "Unit plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: True,
@@ -82,6 +85,8 @@ def _entry(*, external: bool = False) -> MockConfigEntry:
                 ],
             },
         },
+        title="Unit plant",
+        source_handles=False,
     )
 
 

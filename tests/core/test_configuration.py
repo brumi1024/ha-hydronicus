@@ -326,7 +326,7 @@ def test_rejects_missing_required_persisted_topology_field() -> None:
 
 def test_rejects_predecessor_zone_thermostat_fields() -> None:
     """The fresh-install contract has no decoder for flat thermostat fields."""
-    with pytest.raises(StoredTopologyError, match="room thermostat uses unsupported fields"):
+    with pytest.raises(StoredTopologyError, match="zone thermostat uses unsupported fields"):
         plant_configuration_from_entry_data(
             {
                 "plant_id": PLANT_ID,
@@ -822,6 +822,21 @@ def test_rejects_unsupported_sensor_representations(unsupported_fields) -> None:
                     ],
                     "circuits": [],
                     "routes": [],
+                },
+            }
+        )
+
+
+def test_rejects_a_loop_without_valves() -> None:
+    """A stored loop must name at least one valve."""
+    with pytest.raises(StoredTopologyError, match="'valve_ids' must be a non-empty list of ids"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": PLANT_ID,
+                "topology": {
+                    "circuits": [
+                        {"id": CIRCUIT_ID, "name": "Loop", "valve_ids": [], "pump_id": PUMP_ID}
+                    ]
                 },
             }
         )

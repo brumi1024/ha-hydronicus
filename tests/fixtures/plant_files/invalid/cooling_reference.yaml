@@ -2,7 +2,7 @@ hydronicus: 1
 name: Cooling without a reference
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     humidity_sensors: [sensor.living_humidity]

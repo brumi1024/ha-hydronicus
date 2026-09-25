@@ -2,7 +2,7 @@ hydronicus: 1
 name: Sources
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     loops:

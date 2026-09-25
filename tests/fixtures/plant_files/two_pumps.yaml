@@ -7,7 +7,7 @@ pumps:
   upper_pump:
     entity_id: switch.upper_pump
     power_feedback_entity: sensor.upper_pump_power
-rooms:
+zones:
   kitchen:
     temperature_sensors: [sensor.kitchen_temperature]
     loops:

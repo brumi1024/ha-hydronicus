@@ -3,7 +3,7 @@ hydronicus: 1
 name: Duplicate actuator binding
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     loops:

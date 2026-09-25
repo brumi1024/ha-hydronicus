@@ -11,7 +11,12 @@ from homeassistant.setup import async_setup_component
 from homeassistant.util.hass_dict import HassKey
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
+from custom_components.hydronicus.const import (
+    CONF_DRY_RUN,
+    CONF_NAME,
+    CONF_PLANT_ID,
+    DOMAIN,
+)
 from custom_components.hydronicus.presentation import PRESENTATION_SCHEMA_VERSION
 from custom_components.hydronicus.websocket import (
     DATA_SUBSCRIPTIONS,
@@ -23,6 +28,7 @@ from custom_components.hydronicus.websocket import (
     ws_list_plants,
     ws_subscribe_plant,
 )
+from tests.integration.plant_fixtures import plant_entry
 
 PLANT_ID = "00000000-0000-4000-8000-000000000101"
 ZONE_A = "00000000-0000-4000-8000-000000000102"
@@ -61,10 +67,8 @@ class _Connection:
 
 def _entry() -> MockConfigEntry:
     """Create one two-zone Plant with synthetic bindings."""
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title="WebSocket Plant",
-        data={
+    return plant_entry(
+        {
             CONF_NAME: "WebSocket Plant",
             CONF_PLANT_ID: PLANT_ID,
             CONF_DRY_RUN: True,
@@ -99,6 +103,8 @@ def _entry() -> MockConfigEntry:
                 ],
             },
         },
+        title="WebSocket Plant",
+        source_handles=False,
     )
 
 

@@ -154,12 +154,12 @@ class TopologyPreviewSensor(_HydronicSensor):
 
     @property
     def native_value(self) -> str:
-        """Summarize the graph size in rooms and loops, within the state length limit."""
-        room_count = len(self._runtime.plant.zones)
+        """Summarize the graph size in zones and loops, within the state length limit."""
+        zone_count = len(self._runtime.plant.zones)
         loop_count = len(self._runtime.plant.circuits)
-        room_noun = "room" if room_count == 1 else "rooms"
+        zone_noun = "zone" if zone_count == 1 else "zones"
         loop_noun = "loop" if loop_count == 1 else "loops"
-        return f"{room_count} {room_noun}, {loop_count} {loop_noun}"
+        return f"{zone_count} {zone_noun}, {loop_count} {loop_noun}"
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -234,8 +234,11 @@ class ZoneAggregateTemperatureSensor(_HydronicSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Expose sensor-health details without requiring prose parsing."""
-        return _zone_diagnostic_attributes(self._runtime, self._zone_id)
+        """Expose sensor-health details, and the sensors each covered area resolves to."""
+        attributes = _zone_diagnostic_attributes(self._runtime, self._zone_id)
+        if areas := self._runtime.zone_area_sensors(self._zone_id):
+            attributes["areas"] = areas
+        return attributes
 
 
 class ZoneBlockedReasonSensor(_HydronicSensor):

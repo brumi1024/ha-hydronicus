@@ -1,6 +1,6 @@
 """Hypothesis strategies for valid Plant configurations of many shapes.
 
-The strategies draw stored version 3 topology records, the form persisted in a
+The strategies draw stored version 4 topology records, the form persisted in a
 config entry, and decode them with the real decoder, so tests can use either the
 stored records or the typed configuration. Every drawn Plant compiles.
 """
@@ -24,6 +24,21 @@ _NAMES = ("Living room", "Bedroom", "Bedroom", "2nd floor", "Kid's room", "Bad",
 def object_id(kind: str, index: int) -> str:
     """Return the deterministic UUID of one generated object."""
     return str(uuid5(_NAMESPACE, f"{kind}:{index}"))
+
+
+_AREAS = ("living_room", "kitchen", "hall", "bedroom")
+
+
+def _area_settings() -> st.SearchStrategy[dict[str, Any]]:
+    """Draw area settings, each left out or set to a value other than its default."""
+    return st.fixed_dictionaries(
+        {},
+        optional={
+            "required": st.just(True),
+            "weight": st.sampled_from((0.5, 2.0)),
+            "max_age_seconds": st.sampled_from((600.0, 3600.0)),
+        },
+    )
 
 
 def _names(draw: st.DrawFn, count: int) -> list[str]:
@@ -58,13 +73,21 @@ def stored_plants(draw: st.DrawFn, *, min_zones: int = 0, max_zones: int = 4) ->
     zones: list[dict[str, Any]] = []
     for index, name in enumerate(_names(draw, zone_count)):
         external = draw(st.booleans())
-        temperature = not external or draw(st.booleans())
+        # Areas repeat across zones, since several zones may cover one area.
+        areas = [
+            {"area_id": area_id, **draw(_area_settings())}
+            for area_id in draw(st.lists(st.sampled_from(_AREAS), unique=True, max_size=3))
+        ]
+        # A Hydronicus thermostat needs a temperature sensor or an area.
+        temperature = not (external or areas) or draw(st.booleans())
         zone: dict[str, Any] = {"id": object_id("zone", index), "name": name}
         zone["thermostat"] = (
             {"kind": "external_climate", "entity_id": f"climate.zone_{index}"}
             if external
             else {"kind": "hydronicus"}
         )
+        if areas:
+            zone["areas"] = areas
         if temperature:
             zone["temperature_sensor_metadata"] = [{"entity_id": f"sensor.zone_{index}_temp"}]
         if draw(st.booleans()):
@@ -117,11 +140,15 @@ def stored_plants(draw: st.DrawFn, *, min_zones: int = 0, max_zones: int = 4) ->
                 route["enabled"] = False
             routes.append(route)
 
-    # Cooling needs temperature and humidity observations in every served zone.
+    # Cooling needs temperature and humidity observations in every served zone,
+    # and an area counts as both.
     for circuit_index, circuit in enumerate(circuits):
         observed = all(
-            "temperature_sensor_metadata" in zones[zone]
-            and "humidity_sensor_metadata" in zones[zone]
+            "areas" in zones[zone]
+            or (
+                "temperature_sensor_metadata" in zones[zone]
+                and "humidity_sensor_metadata" in zones[zone]
+            )
             for zone in served[circuit_index]
         )
         if observed and draw(st.booleans()):

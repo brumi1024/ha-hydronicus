@@ -1,4 +1,4 @@
-"""The room subentry flow adds and edits rooms with their private loops and valves."""
+"""The zone subentry flow adds and edits zones with their private loops and valves."""
 
 from __future__ import annotations
 
@@ -15,28 +15,28 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import DOMAIN, SUBENTRY_TYPE_ROOM
+from custom_components.hydronicus.const import DOMAIN, SUBENTRY_TYPE_ZONE
 from custom_components.hydronicus.core.model import ThermostatHvacMode
 from custom_components.hydronicus.entry_configuration import (
     effective_plant,
     output_authorization,
-    room_draft,
+    zone_draft,
 )
-from custom_components.hydronicus.flows import room_form
+from custom_components.hydronicus.flows import zone_form
 from custom_components.hydronicus.runtime import HydronicRuntime
 from tests.integration.flow_forms import form_fields, form_value, frontend_submission
 from tests.integration.plant_fixtures import (
     MANIFOLD_PUMP_ENTITY,
     MANIFOLD_PUMP_ID,
     manifold_entry,
-    manifold_rooms,
     manifold_topology,
+    manifold_zones,
     plant_data,
     plant_entry,
-    room_subentry,
+    zone_subentry,
 )
 
-LIVING, BEDROOM = manifold_rooms(("Living room", "Bedroom"))
+LIVING, BEDROOM = manifold_zones(("Living room", "Bedroom"))
 SECOND_PUMP_ID = "00000000-0000-4000-8000-000500000002"
 SECOND_PUMP_ENTITY = "switch.second_pump"
 SHARED_LOOP_ID = "00000000-0000-4000-8000-000600000001"
@@ -61,13 +61,13 @@ def _pump(pump_id: str = MANIFOLD_PUMP_ID, entity_id: str = MANIFOLD_PUMP_ENTITY
 
 
 def _pump_only_entry(*, pumps: int = 1, **kwargs: Any) -> MockConfigEntry:
-    """Return a Plant with pumps and nothing else, the start of a room-by-room setup."""
+    """Return a Plant with pumps and nothing else, the start of a zone-by-zone setup."""
     topology = {"pumps": [_pump(), _pump(SECOND_PUMP_ID, SECOND_PUMP_ENTITY)][:pumps]}
     return plant_entry(plant_data(topology), **kwargs)
 
 
 def _with_shared_loop(topology: dict) -> dict:
-    """Add a Plant-owned loop with a Plant-owned valve that no room uses yet."""
+    """Add a Plant-owned loop with a Plant-owned valve that no zone uses yet."""
     topology.setdefault("valves", []).append(
         {
             "id": SHARED_VALVE_ID,
@@ -88,9 +88,9 @@ def _with_shared_loop(topology: dict) -> dict:
 
 
 def _set_states(hass) -> None:
-    for room in (LIVING, BEDROOM):
-        hass.states.async_set(room.temperature_sensor, "20.0")
-        hass.states.async_set(room.valve_entity, "off")
+    for zone in (LIVING, BEDROOM):
+        hass.states.async_set(zone.temperature_sensor, "20.0")
+        hass.states.async_set(zone.valve_entity, "off")
     for entity_id in (
         MANIFOLD_PUMP_ENTITY,
         SECOND_PUMP_ENTITY,
@@ -118,9 +118,9 @@ async def _setup(hass, entry: MockConfigEntry) -> MockConfigEntry:
     return entry
 
 
-async def _start_room(hass, entry: MockConfigEntry) -> dict:
+async def _start_zone(hass, entry: MockConfigEntry) -> dict:
     return await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_ROOM), context={"source": config_entries.SOURCE_USER}
+        (entry.entry_id, SUBENTRY_TYPE_ZONE), context={"source": config_entries.SOURCE_USER}
     )
 
 
@@ -139,15 +139,15 @@ async def _confirmed(hass, result: dict) -> dict:
     return result
 
 
-async def _add_room(hass, entry: MockConfigEntry, user_input: Mapping[str, Any]) -> dict:
-    result = await _start_room(hass, entry)
+async def _add_zone(hass, entry: MockConfigEntry, user_input: Mapping[str, Any]) -> dict:
+    result = await _start_zone(hass, entry)
     assert result["step_id"] == "user"
     return await _confirmed(hass, await _configure(hass, result, user_input))
 
 
 async def _menu(hass, entry: MockConfigEntry, zone_id: str, option: str | None = None) -> dict:
     result = await entry.start_subentry_reconfigure_flow(
-        hass, room_subentry(entry, zone_id).subentry_id
+        hass, zone_subentry(entry, zone_id).subentry_id
     )
     assert result["type"] == FlowResultType.MENU
     if option is None:
@@ -164,8 +164,8 @@ def _zone_id(entry: MockConfigEntry, name: str) -> str:
 
 
 def _ids(entry: MockConfigEntry, zone_id: str) -> dict[str, Any]:
-    """Return the stored ids of one room, by collection."""
-    draft = room_draft(entry.data, zone_id)
+    """Return the stored ids of one zone, by collection."""
+    draft = zone_draft(entry.data, zone_id)
     return {
         "zone": draft.zone["id"],
         "circuits": [circuit["id"] for circuit in draft.circuits],
@@ -184,17 +184,17 @@ def _own_entity(hass, domain: str, object_id: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Adding rooms
+# Adding zones
 # --------------------------------------------------------------------------
 
 
-async def test_rooms_on_one_pump_get_independent_private_loops(hass) -> None:
-    """The Evidence scenario: each room gets its own loop and valve on the shared pump."""
+async def test_zones_on_one_pump_get_independent_private_loops(hass) -> None:
+    """The Evidence scenario: each zone gets its own loop and valve on the shared pump."""
     entry = await _setup(hass, _pump_only_entry())
 
-    result = await _add_room(hass, entry, LIVING_INPUT)
+    result = await _add_zone(hass, entry, LIVING_INPUT)
     assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     result = await _configure(hass, result, BEDROOM_INPUT)
     # The second loop on the pump is the only warning, and it is reviewed.
     assert result["step_id"] == "review"
@@ -222,16 +222,16 @@ async def test_rooms_on_one_pump_get_independent_private_loops(hass) -> None:
         "Bedroom loop valve": BEDROOM.valve_entity,
     }
     assert {circuit["pump_id"] for circuit in circuits.values()} == {MANIFOLD_PUMP_ID}
-    owners = entry.data["room_objects"]
+    owners = entry.data["zone_objects"]
     for zone_id in zones:
-        draft = room_draft(entry.data, zone_id)
+        draft = zone_draft(entry.data, zone_id)
         assert {owners[circuit["id"]] for circuit in draft.circuits} == {zone_id}
         assert {owners[valve["id"]] for valve in draft.valves} == {zone_id}
     assert _warning_codes(entry) == {"shared_pump_limits_independent_control"}
     assert {
         subentry.unique_id: subentry.title
         for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_TYPE_ROOM
+        if subentry.subentry_type == SUBENTRY_TYPE_ZONE
     } == zones
     assert entry.data["dry_run"] is True
     assert entry.state is ConfigEntryState.LOADED
@@ -239,16 +239,16 @@ async def test_rooms_on_one_pump_get_independent_private_loops(hass) -> None:
 
 
 @pytest.mark.parametrize("order", [("Living room", "Bedroom"), ("Bedroom", "Living room")])
-async def test_deleting_each_room_leaves_a_plant_that_loads(hass, order) -> None:
-    """Removing rooms in turn leaves a loading Plant, with only unused equipment at the end."""
+async def test_deleting_each_zone_leaves_a_plant_that_loads(hass, order) -> None:
+    """Removing zones in turn leaves a loading Plant, with only unused equipment at the end."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
-    await _add_room(hass, entry, BEDROOM_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, BEDROOM_INPUT)
     zone_ids = {name: _zone_id(entry, name) for name in order}
 
     first, second = order
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, zone_ids[first]).subentry_id
+        entry, zone_subentry(entry, zone_ids[first]).subentry_id
     )
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
@@ -257,7 +257,7 @@ async def test_deleting_each_room_leaves_a_plant_that_loads(hass, order) -> None
     assert [circuit["name"] for circuit in entry.data["topology"]["circuits"]] == [f"{second} loop"]
 
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, zone_ids[second]).subentry_id
+        entry, zone_subentry(entry, zone_ids[second]).subentry_id
     )
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
@@ -270,14 +270,14 @@ async def test_deleting_each_room_leaves_a_plant_that_loads(hass, order) -> None
         [],
     )
     assert [pump["id"] for pump in topology["pumps"]] == [MANIFOLD_PUMP_ID]
-    assert entry.data["room_objects"] == {}
+    assert entry.data["zone_objects"] == {}
 
 
-async def test_adding_a_room_needs_a_pump(hass) -> None:
-    """Without a pump no loop can run, so the room flow explains that first."""
+async def test_adding_a_zone_needs_a_pump(hass) -> None:
+    """Without a pump no loop can run, so the zone flow explains that first."""
     entry = await _setup(hass, plant_entry(plant_data({})))
 
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
 
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "no_pumps"
@@ -286,14 +286,14 @@ async def test_adding_a_room_needs_a_pump(hass) -> None:
 async def test_the_pump_is_asked_for_only_when_there_is_a_choice(hass) -> None:
     """One pump is implied; with two pumps the form asks, and requires an answer."""
     single = await _setup(hass, _pump_only_entry())
-    result = await _start_room(hass, single)
+    result = await _start_zone(hass, single)
     assert "pump" not in form_fields(result)
     assert "shared_loops" not in form_fields(result)
 
     entry = _pump_only_entry(pumps=2)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     assert "pump" in form_fields(result)
 
     result = await _configure(hass, result, LIVING_INPUT)
@@ -307,11 +307,11 @@ async def test_the_pump_is_asked_for_only_when_there_is_a_choice(hass) -> None:
     assert circuit["pump_id"] == SECOND_PUMP_ID
 
 
-async def test_a_room_can_use_a_shared_loop_without_private_valves(hass) -> None:
+async def test_a_zone_can_use_a_shared_loop_without_private_valves(hass) -> None:
     """Shared loops are offered when they exist, and are enough to deliver heat."""
     topology = _with_shared_loop({"pumps": [_pump()]})
     entry = await _setup(hass, plant_entry(plant_data(topology)))
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     options = form_fields(result)["shared_loops"]["selector"]["select"]["options"]
     assert options == [{"value": SHARED_LOOP_ID, "label": "Shared loop"}]
 
@@ -328,10 +328,10 @@ async def test_a_room_can_use_a_shared_loop_without_private_valves(hass) -> None
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     zone_id = _zone_id(entry, "Living room")
-    draft = room_draft(entry.data, zone_id)
+    draft = zone_draft(entry.data, zone_id)
     assert (draft.circuits, draft.valves) == ([], [])
     assert [route["circuit_id"] for route in draft.routes] == [SHARED_LOOP_ID]
-    assert entry.data["room_objects"] == {}
+    assert entry.data["zone_objects"] == {}
     assert _warning_codes(entry) == set()
 
 
@@ -342,10 +342,10 @@ LIVING_COOLING = {
 }
 
 
-async def test_adding_a_cooling_room_cools_its_private_loop(hass) -> None:
-    """The Cooling section of Add a room enables cooling on the room's own loop."""
+async def test_adding_a_cooling_zone_cools_its_private_loop(hass) -> None:
+    """The Cooling section of Add a zone enables cooling on the zone's own loop."""
     entry = await _setup(hass, _pump_only_entry())
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     fields = form_fields(result)
     assert fields["cooling"]["expanded"] is False
     assert form_value(result, "cooling.cooling_enabled") is False
@@ -354,7 +354,7 @@ async def test_adding_a_cooling_room_cools_its_private_loop(hass) -> None:
     result = await _confirmed(hass, result)
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
-    draft = room_draft(entry.data, _zone_id(entry, "Living room"))
+    draft = zone_draft(entry.data, _zone_id(entry, "Living room"))
     (circuit,) = draft.circuits
     assert circuit["cooling_enabled"] is True
     assert circuit["supply_temperature_sensor"] == "sensor.living_room_supply"
@@ -367,20 +367,20 @@ async def test_adding_a_cooling_room_cools_its_private_loop(hass) -> None:
     assert effective_plant(entry).compiled.circuits[circuit["id"]].cooling_enabled is True
 
 
-async def test_room_basics_edit_has_no_cooling_section(hass) -> None:
-    """Cooling of an existing room stays in its loop and sensors steps."""
+async def test_zone_basics_edit_has_no_cooling_section(hass) -> None:
+    """Cooling of an existing zone stays in its loop and sensors steps."""
     entry = await _setup(hass, _pump_only_entry())
-    result = await _configure(hass, await _start_room(hass, entry), LIVING_INPUT)
-    subentry = room_subentry(entry, _zone_id(entry, "Living room"))
+    result = await _configure(hass, await _start_zone(hass, entry), LIVING_INPUT)
+    subentry = zone_subentry(entry, _zone_id(entry, "Living room"))
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
-    result = await _configure(hass, result, {"next_step_id": "room"})
+    result = await _configure(hass, result, {"next_step_id": "zone"})
 
     assert "cooling" not in form_fields(result)
 
 
 @pytest.mark.parametrize(
-    ("room_input", "errors"),
+    ("zone_input", "errors"),
     [
         pytest.param(
             {
@@ -389,7 +389,7 @@ async def test_room_basics_edit_has_no_cooling_section(hass) -> None:
                 "shared_loops": [SHARED_LOOP_ID],
                 "cooling": LIVING_COOLING,
             },
-            {"base": "cooling_requires_room_loop"},
+            {"base": "cooling_requires_zone_loop"},
             id="shared loops only",
         ),
         pytest.param(
@@ -421,13 +421,13 @@ async def test_room_basics_edit_has_no_cooling_section(hass) -> None:
         ),
     ],
 )
-async def test_adding_a_cooling_room_is_validated(hass, room_input, errors) -> None:
-    """Cooling needs the room's own loop, a condensation reference, and room sensors."""
+async def test_adding_a_cooling_zone_is_validated(hass, zone_input, errors) -> None:
+    """Cooling needs the zone's own loop, a condensation reference, and zone sensors."""
     topology = _with_shared_loop({"pumps": [_pump()]})
     entry = await _setup(hass, plant_entry(plant_data(topology)))
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
 
-    result = await _configure(hass, result, room_input)
+    result = await _configure(hass, result, zone_input)
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -438,23 +438,23 @@ async def test_adding_a_cooling_room_is_validated(hass, room_input, errors) -> N
 async def test_empty_required_selections_are_reported_on_their_fields(hass) -> None:
     """A lazily loaded picker can submit an empty list, which the flow rejects by field."""
     entry = await _setup(hass, _pump_only_entry())
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
 
     result = await _configure(hass, result, {"name": " ", "temperature_sensors": [], "valves": []})
 
     assert result["errors"] == {
-        "name": "name_required",
-        "temperature_sensors": "temperature_sensors_required",
+        "name": "zone_name_required",
+        "areas": "no_temperature_source",
         "base": "delivery_required",
     }
     assert entry.data["topology"]["zones"] == []
 
 
-async def test_an_external_thermostat_room_needs_no_temperature_sensor(hass) -> None:
+async def test_an_external_thermostat_zone_needs_no_temperature_sensor(hass) -> None:
     """An existing climate entity owns demand, so temperature sensors become optional."""
     entry = await _setup(hass, _pump_only_entry())
 
-    result = await _add_room(
+    result = await _add_zone(
         hass,
         entry,
         {
@@ -476,9 +476,9 @@ async def test_an_external_thermostat_room_needs_no_temperature_sensor(hass) -> 
 async def test_a_valve_entity_bound_elsewhere_in_the_plant_is_rejected(hass) -> None:
     """One entity cannot drive two actuators of a Plant, so the valves field says so."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     data = dict(entry.data)
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
 
     for entity_id in (LIVING.valve_entity, MANIFOLD_PUMP_ENTITY):
         result = await _configure(hass, result, {**BEDROOM_INPUT, "valves": [entity_id]})
@@ -488,13 +488,13 @@ async def test_a_valve_entity_bound_elsewhere_in_the_plant_is_rejected(hass) -> 
     assert dict(entry.data) == data
 
 
-async def test_room_forms_hide_hydronicus_entities(hass) -> None:
+async def test_zone_forms_hide_hydronicus_entities(hass) -> None:
     """Pickers leave out Hydronicus entities, which would feed the Plant back into itself."""
     entry = await _setup(hass, _pump_only_entry())
     own_switch = _own_entity(hass, "switch", "own_valve")
     own_sensor = _own_entity(hass, "sensor", "own_temperature")
 
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     fields = form_fields(result)
 
     assert own_switch in fields["valves"]["selector"]["entity"]["exclude_entities"]
@@ -502,16 +502,16 @@ async def test_room_forms_hide_hydronicus_entities(hass) -> None:
     assert own_sensor in fields["external_climate_entity"]["selector"]["entity"]["exclude_entities"]
 
 
-async def test_a_new_room_whose_id_is_taken_aborts_without_saving(hass, monkeypatch) -> None:
+async def test_a_new_zone_whose_id_is_taken_aborts_without_saving(hass, monkeypatch) -> None:
     """A zone id that already names a subentry aborts before the graph changes."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     data = dict(entry.data)
     taken = iter([_zone_id(entry, "Living room")])
-    real_uuid4 = room_form.uuid4
-    monkeypatch.setattr(room_form, "uuid4", lambda: next(taken, None) or real_uuid4())
+    real_uuid4 = zone_form.uuid4
+    monkeypatch.setattr(zone_form, "uuid4", lambda: next(taken, None) or real_uuid4())
 
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     result = await _configure(hass, result, BEDROOM_INPUT)
 
     assert result["type"] == FlowResultType.ABORT
@@ -539,7 +539,7 @@ async def test_a_valve_bound_by_another_plant_is_a_reviewed_warning(hass) -> Non
     _other_plant_binding_living_valve(hass)
     entry = await _setup(hass, _pump_only_entry(title="Plant 2"))
 
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     result = await _configure(hass, result, LIVING_INPUT)
 
     assert result["step_id"] == "review"
@@ -557,11 +557,31 @@ async def test_a_valve_bound_by_another_plant_is_a_reviewed_warning(hass) -> Non
     ]
 
 
+async def test_sharing_confirmed_once_is_not_reviewed_on_later_edits(hass) -> None:
+    """Only sharing an edit introduces needs a confirmation, not sharing the Plant already had."""
+    _other_plant_binding_living_valve(hass)
+    entry = await _setup(hass, _pump_only_entry(title="Plant 2"))
+    result = await _configure(hass, await _start_zone(hass, entry), LIVING_INPUT)
+    assert result["step_id"] == "review"
+    await _configure(hass, result, {"confirm": True})
+    zone_id = _zone_id(entry, "Living room")
+
+    for name in ("Lounge", "Sitting room"):
+        result = await _menu(hass, entry, zone_id, "zone")
+        result = await _configure(hass, result, {**frontend_submission(result), "name": name})
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+    result = await _menu(hass, entry, zone_id, "thermostat")
+    result = await _configure(hass, result, frontend_submission(result))
+    assert result["type"] == FlowResultType.ABORT
+    assert zone_subentry(entry, zone_id).title == "Sitting room"
+
+
 async def test_moving_a_loop_valve_onto_another_plants_output_is_reviewed(hass) -> None:
     """The reconfigure twin: a loop edit that binds another Plant's valve is reviewed."""
     _other_plant_binding_living_valve(hass)
     entry = await _setup(hass, _pump_only_entry(title="Plant 2"))
-    await _add_room(hass, entry, {**LIVING_INPUT, "valves": ["switch.living_room_extra_valve"]})
+    await _add_zone(hass, entry, {**LIVING_INPUT, "valves": ["switch.living_room_extra_valve"]})
     zone_id = _zone_id(entry, "Living room")
 
     result = await _menu(hass, entry, zone_id, "edit_loop")
@@ -578,7 +598,7 @@ async def test_moving_a_loop_valve_onto_another_plants_output_is_reviewed(hass) 
     ]
 
 
-async def test_a_live_plant_reaches_dry_run_before_a_room_is_saved(hass, monkeypatch) -> None:
+async def test_a_live_plant_reaches_dry_run_before_a_zone_is_saved(hass, monkeypatch) -> None:
     """When the safe shutdown cannot finish, nothing is stored and the user can retry."""
     entry = await _setup(hass, manifold_entry(("Living room",), dry_run=False))
     assert entry.runtime_data.dry_run is False
@@ -597,7 +617,7 @@ async def test_a_live_plant_reaches_dry_run_before_a_room_is_saved(hass, monkeyp
     assert result["errors"] == {"base": "dry_run_shutdown_in_progress"}
 
     # A reviewed change retries from the review.
-    result = await _start_room(hass, entry)
+    result = await _start_zone(hass, entry)
     result = await _configure(hass, result, BEDROOM_INPUT)
     assert result["step_id"] == "review"
     result = await _configure(hass, result, {"confirm": True})
@@ -613,16 +633,16 @@ async def test_a_live_plant_reaches_dry_run_before_a_room_is_saved(hass, monkeyp
 
 
 # --------------------------------------------------------------------------
-# Reconfiguring rooms
+# Reconfiguring zones
 # --------------------------------------------------------------------------
 
 
-async def test_the_reconfigure_menu_offers_what_the_room_has(hass) -> None:
+async def test_the_reconfigure_menu_offers_what_the_zone_has(hass) -> None:
     """Thermostat settings need a Hydronicus thermostat; loop editing needs a private loop."""
     topology = _with_shared_loop({"pumps": [_pump()]})
     entry = await _setup(hass, plant_entry(plant_data(topology)))
-    await _add_room(hass, entry, LIVING_INPUT)
-    await _add_room(
+    await _add_zone(hass, entry, LIVING_INPUT)
+    await _add_zone(
         hass,
         entry,
         {
@@ -635,22 +655,23 @@ async def test_the_reconfigure_menu_offers_what_the_room_has(hass) -> None:
     living = await _menu(hass, entry, _zone_id(entry, "Living room"))
     bedroom = await _menu(hass, entry, _zone_id(entry, "Bedroom"))
 
-    assert living["menu_options"] == ["room", "thermostat", "sensors", "add_loop", "edit_loop"]
-    assert bedroom["menu_options"] == ["room", "sensors", "add_loop"]
+    assert living["menu_options"] == ["zone", "thermostat", "sensors", "add_loop", "edit_loop"]
+    assert bedroom["menu_options"] == ["zone", "sensors", "add_loop"]
 
 
-async def test_room_step_keeps_ids_and_switches_the_thermostat(hass) -> None:
-    """Editing the room keeps every id; the thermostat kind switch drops or resets settings."""
+async def test_zone_step_keeps_ids_and_switches_the_thermostat(hass) -> None:
+    """Editing the zone keeps every id; the thermostat kind switch drops or resets settings."""
     topology = _with_shared_loop({"pumps": [_pump()]})
     entry = await _setup(hass, plant_entry(plant_data(topology)))
-    await _add_room(hass, entry, {**LIVING_INPUT, "shared_loops": [SHARED_LOOP_ID]})
+    await _add_zone(hass, entry, {**LIVING_INPUT, "shared_loops": [SHARED_LOOP_ID]})
     zone_id = _zone_id(entry, "Living room")
     before = _ids(entry, zone_id)
 
-    result = await _menu(hass, entry, zone_id, "room")
-    assert result["step_id"] == "room"
+    result = await _menu(hass, entry, zone_id, "zone")
+    assert result["step_id"] == "zone"
     assert set(form_fields(result)) == {
         "name",
+        "areas",
         "temperature_sensors",
         "external_climate_entity",
         "shared_loops",
@@ -668,15 +689,15 @@ async def test_room_step_keeps_ids_and_switches_the_thermostat(hass) -> None:
     result = await _confirmed(hass, result)
     assert result["reason"] == "reconfigure_successful"
     assert _ids(entry, zone_id) == before
-    zone = room_draft(entry.data, zone_id).zone
+    zone = zone_draft(entry.data, zone_id).zone
     assert zone["name"] == "Lounge"
     assert zone["thermostat"] == {
         "kind": "external_climate",
         "entity_id": "climate.living_room_thermostat",
     }
-    assert room_subentry(entry, zone_id).title == "Lounge"
+    assert zone_subentry(entry, zone_id).title == "Lounge"
 
-    result = await _menu(hass, entry, zone_id, "room")
+    result = await _menu(hass, entry, zone_id, "zone")
     submission = frontend_submission(result)
     submission.pop("external_climate_entity")
     result = await _confirmed(
@@ -685,16 +706,16 @@ async def test_room_step_keeps_ids_and_switches_the_thermostat(hass) -> None:
     assert result["reason"] == "reconfigure_successful"
     after = _ids(entry, zone_id)
     assert after == {**before, "routes": before["routes"][:1]}
-    thermostat = room_draft(entry.data, zone_id).zone["thermostat"]
+    thermostat = zone_draft(entry.data, zone_id).zone["thermostat"]
     assert thermostat["kind"] == "hydronicus"
     assert thermostat["heating_start_delta"] == 0.3
 
 
-async def test_a_room_without_private_loops_keeps_a_shared_loop(hass) -> None:
-    """Dropping the last shared loop of a room without private loops leaves no delivery."""
+async def test_a_zone_without_private_loops_keeps_a_shared_loop(hass) -> None:
+    """Dropping the last shared loop of a zone without private loops leaves no delivery."""
     topology = _with_shared_loop({"pumps": [_pump()]})
     entry = await _setup(hass, plant_entry(plant_data(topology)))
-    await _add_room(
+    await _add_zone(
         hass,
         entry,
         {
@@ -705,7 +726,7 @@ async def test_a_room_without_private_loops_keeps_a_shared_loop(hass) -> None:
     )
     zone_id = _zone_id(entry, "Living room")
 
-    result = await _menu(hass, entry, zone_id, "room")
+    result = await _menu(hass, entry, zone_id, "zone")
     result = await _configure(hass, result, {**frontend_submission(result), "shared_loops": []})
 
     assert result["errors"] == {"base": "delivery_required"}
@@ -714,7 +735,7 @@ async def test_a_room_without_private_loops_keeps_a_shared_loop(hass) -> None:
 async def test_thermostat_step_keeps_ids(hass) -> None:
     """Thermostat settings change only the thermostat record."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     zone_id = _zone_id(entry, "Living room")
     before = _ids(entry, zone_id)
 
@@ -728,7 +749,7 @@ async def test_thermostat_step_keeps_ids(hass) -> None:
 
     assert result["reason"] == "reconfigure_successful"
     assert _ids(entry, zone_id) == before
-    thermostat = room_draft(entry.data, zone_id).zone["thermostat"]
+    thermostat = zone_draft(entry.data, zone_id).zone["thermostat"]
     assert thermostat["heating_start_delta"] == 0.5
     assert thermostat["cooling_start_delta"] == 0.8
     assert thermostat["preset_targets"] == {"comfort": 22.0}
@@ -738,7 +759,7 @@ async def test_thermostat_step_keeps_ids(hass) -> None:
 async def test_sensors_step_edits_metadata_and_policy_and_keeps_ids(hass) -> None:
     """The sensor editor and policy steps keep ids and store typed metadata."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(
+    await _add_zone(
         hass,
         entry,
         {
@@ -751,6 +772,7 @@ async def test_sensors_step_edits_metadata_and_policy_and_keeps_ids(hass) -> Non
 
     result = await _menu(hass, entry, zone_id, "sensors")
     assert set(form_fields(result)) == {
+        "areas",
         "temperature_aggregation",
         "humidity_sensors",
         "configure_sensor_metadata",
@@ -780,7 +802,7 @@ async def test_sensors_step_edits_metadata_and_policy_and_keeps_ids(hass) -> Non
 
     assert result["reason"] == "reconfigure_successful"
     assert _ids(entry, zone_id) == before
-    zone = room_draft(entry.data, zone_id).zone
+    zone = zone_draft(entry.data, zone_id).zone
     assert zone["temperature_aggregation"] == "weighted_mean"
     assert [record["weight"] for record in zone["temperature_sensor_metadata"]] == [3.0, 1.0]
     assert [record["entity_id"] for record in zone["humidity_sensor_metadata"]] == [
@@ -791,7 +813,7 @@ async def test_sensors_step_edits_metadata_and_policy_and_keeps_ids(hass) -> Non
 async def test_sensor_policy_errors_point_at_the_fixable_form(hass) -> None:
     """A designated reference needs exactly one sensor, and a sensor appears once."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(
+    await _add_zone(
         hass,
         entry,
         {
@@ -824,7 +846,7 @@ async def test_sensor_policy_errors_point_at_the_fixable_form(hass) -> None:
     )
     result = await _configure(hass, result, {"temperature_aggregation": "mean"})
     assert result["step_id"] == "sensor_policy"
-    assert result["errors"] == {"base": "invalid_room"}
+    assert result["errors"] == {"base": "invalid_zone"}
     assert "duplicate" in result["description_placeholders"]["error"]
     assert dict(entry.data) == data
 
@@ -832,7 +854,7 @@ async def test_sensor_policy_errors_point_at_the_fixable_form(hass) -> None:
 async def test_loop_edits_keep_valve_identity_by_entity_id(hass) -> None:
     """A retained entity keeps its valve; a new one adds a valve; a dropped one is removed."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     zone_id = _zone_id(entry, "Living room")
     before = _ids(entry, zone_id)
     (loop_id,) = before["circuits"]
@@ -859,7 +881,7 @@ async def test_loop_edits_keep_valve_identity_by_entity_id(hass) -> None:
     assert after["circuits"] == before["circuits"]
     assert after["routes"] == before["routes"]
     assert after["valves"][LIVING.valve_entity] == before["valves"][LIVING.valve_entity]
-    draft = room_draft(entry.data, zone_id)
+    draft = zone_draft(entry.data, zone_id)
     assert [(valve["name"], valve["opening_time_seconds"]) for valve in draft.valves] == [
         ("Living room loop valve", 45.0),
         ("Living room loop valve 2", 45.0),
@@ -877,14 +899,14 @@ async def test_loop_edits_keep_valve_identity_by_entity_id(hass) -> None:
     assert final["valves"] == {"switch.living_room_valve_2": added_valve_id}
     assert final["circuits"] == before["circuits"]
     assert final["routes"] == before["routes"]
-    assert entry.data["room_objects"] == {loop_id: zone_id, added_valve_id: zone_id}
+    assert entry.data["zone_objects"] == {loop_id: zone_id, added_valve_id: zone_id}
 
 
-async def test_loops_can_be_added_share_room_valves_and_be_removed(hass) -> None:
-    """A second private loop may reuse a room valve; removing a loop keeps valves still used."""
+async def test_loops_can_be_added_share_zone_valves_and_be_removed(hass) -> None:
+    """A second private loop may reuse a zone valve; removing a loop keeps valves still used."""
     topology = _with_shared_loop({"pumps": [_pump()]})
     entry = await _setup(hass, plant_entry(plant_data(topology)))
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     zone_id = _zone_id(entry, "Living room")
     before = _ids(entry, zone_id)
 
@@ -911,9 +933,9 @@ async def test_loops_can_be_added_share_room_valves_and_be_removed(hass) -> None
     assert added["circuits"][0] == before["circuits"][0]
     assert added["routes"][0] == before["routes"][0]
     assert len(added["circuits"]) == len(added["routes"]) == 2
-    # The room's valve is shared by its two loops, so it keeps one identity.
+    # The zone's valve is shared by its two loops, so it keeps one identity.
     assert added["valves"] == before["valves"]
-    ceiling = room_draft(entry.data, zone_id).circuits[1]
+    ceiling = zone_draft(entry.data, zone_id).circuits[1]
     assert ceiling["valve_ids"] == [before["valves"][LIVING.valve_entity], SHARED_VALVE_ID]
 
     result = await _menu(hass, entry, zone_id, "edit_loop")
@@ -949,10 +971,10 @@ def _object_registrations(hass, entry: MockConfigEntry, object_id: str) -> list[
     return entities + devices
 
 
-async def test_objects_a_room_edit_drops_leave_no_registrations(hass) -> None:
+async def test_objects_a_zone_edit_drops_leave_no_registrations(hass) -> None:
     """Dropping a valve entity or removing a loop removes the registrations of what it drops."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(
+    await _add_zone(
         hass,
         entry,
         {**LIVING_INPUT, "valves": [LIVING.valve_entity, "switch.living_room_valve_2"]},
@@ -1004,7 +1026,7 @@ async def test_objects_a_room_edit_drops_leave_no_registrations(hass) -> None:
 async def test_loop_form_reports_required_fields(hass) -> None:
     """A loop needs a name, at least one valve, and a pump."""
     entry = await _setup(hass, _pump_only_entry(pumps=2))
-    await _add_room(hass, entry, {**LIVING_INPUT, "pump": MANIFOLD_PUMP_ID})
+    await _add_zone(hass, entry, {**LIVING_INPUT, "pump": MANIFOLD_PUMP_ID})
     zone_id = _zone_id(entry, "Living room")
 
     result = await _menu(hass, entry, zone_id, "add_loop")
@@ -1024,7 +1046,7 @@ async def test_loop_form_reports_required_fields(hass) -> None:
 async def test_valve_details_set_feedback_per_private_valve(hass) -> None:
     """Valve feedback is edited once per private valve of the loop, keeping ids."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     zone_id = _zone_id(entry, "Living room")
     before = _ids(entry, zone_id)
 
@@ -1050,7 +1072,7 @@ async def test_valve_details_set_feedback_per_private_valve(hass) -> None:
 
     assert result["reason"] == "reconfigure_successful"
     assert _ids(entry, zone_id) == before
-    (valve,) = room_draft(entry.data, zone_id).valves
+    (valve,) = zone_draft(entry.data, zone_id).valves
     assert valve["readiness_entity_id"] == "binary_sensor.living_room_valve_ready"
     assert valve["position_feedback_entity"] == "sensor.living_room_valve_position"
     assert valve["position_feedback_max_age_seconds"] == 60.0
@@ -1062,9 +1084,9 @@ async def test_valve_details_set_feedback_per_private_valve(hass) -> None:
 
 
 async def test_loop_cooling_errors_point_at_the_loop_form(hass) -> None:
-    """Cooling needs a reference, and humidity in every room the loop serves."""
+    """Cooling needs a reference, and humidity in every zone the loop serves."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     zone_id = _zone_id(entry, "Living room")
     loop_id = _ids(entry, zone_id)["circuits"][0]
 
@@ -1081,10 +1103,10 @@ async def test_loop_cooling_errors_point_at_the_loop_form(hass) -> None:
     assert result["errors"] == {"base": "cooling_requires_zone_observations"}
 
 
-async def _cooling_room(hass) -> tuple[MockConfigEntry, str]:
-    """Return a Plant whose external-thermostat room has a cooling loop."""
+async def _cooling_zone(hass) -> tuple[MockConfigEntry, str]:
+    """Return a Plant whose external-thermostat zone has a cooling loop."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(
+    await _add_zone(
         hass,
         entry,
         {
@@ -1111,12 +1133,12 @@ async def _cooling_room(hass) -> tuple[MockConfigEntry, str]:
     return entry, zone_id
 
 
-async def test_room_cooling_errors_point_at_the_sensor_fields(hass) -> None:
-    """A cooling room keeps a temperature and a humidity sensor, even with its own thermostat."""
-    entry, zone_id = await _cooling_room(hass)
+async def test_zone_cooling_errors_point_at_the_sensor_fields(hass) -> None:
+    """A cooling zone keeps a temperature and a humidity sensor, even with its own thermostat."""
+    entry, zone_id = await _cooling_zone(hass)
     data = dict(entry.data)
 
-    result = await _menu(hass, entry, zone_id, "room")
+    result = await _menu(hass, entry, zone_id, "zone")
     result = await _configure(
         hass, result, {**frontend_submission(result), "temperature_sensors": []}
     )
@@ -1189,11 +1211,11 @@ async def test_stored_hydronicus_entities_are_rejected_on_submit(hass) -> None:
     entry.add_to_hass(hass)
     data = dict(entry.data)
 
-    result = await _menu(hass, entry, LIVING.zone_id, "room")
+    result = await _menu(hass, entry, LIVING.zone_id, "zone")
     result = await _configure(hass, result, frontend_submission(result))
     assert result["errors"] == {"temperature_sensors": "own_entity"}
 
-    result = await _menu(hass, entry, BEDROOM.zone_id, "room")
+    result = await _menu(hass, entry, BEDROOM.zone_id, "zone")
     result = await _configure(hass, result, frontend_submission(result))
     assert result["errors"] == {"base": "thermostat_loop"}
 
@@ -1218,12 +1240,12 @@ async def test_stored_hydronicus_entities_are_rejected_on_submit(hass) -> None:
 
 
 # --------------------------------------------------------------------------
-# Repairs hand off to the room's reconfigure flow
+# Repairs hand off to the zone's reconfigure flow
 # --------------------------------------------------------------------------
 
 
-async def test_a_binding_repair_is_fixed_through_the_room_flow(hass) -> None:
-    """A repair opens the room's reconfigure flow, whose loop step replaces the valve."""
+async def test_a_binding_repair_is_fixed_through_the_zone_flow(hass) -> None:
+    """A repair opens the zone's reconfigure flow, whose loop step replaces the valve."""
     entry = manifold_entry(("Living room",))
     entry.add_to_hass(hass)
     hass.states.async_set(LIVING.temperature_sensor, "20.0")
@@ -1236,10 +1258,10 @@ async def test_a_binding_repair_is_fixed_through_the_room_flow(hass) -> None:
 
     # This is the hand-off the fix flow makes.
     result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_ROOM),
+        (entry.entry_id, SUBENTRY_TYPE_ZONE),
         context={
             "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": room_subentry(entry, LIVING.zone_id).subentry_id,
+            "subentry_id": zone_subentry(entry, LIVING.zone_id).subentry_id,
         },
     )
     assert result["type"] == FlowResultType.MENU
@@ -1262,19 +1284,19 @@ async def test_a_binding_repair_is_fixed_through_the_room_flow(hass) -> None:
 async def test_only_warnings_a_change_introduces_are_reviewed(hass) -> None:
     """A warning the Plant already had does not ask for confirmation again."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
-    result = await _configure(hass, await _start_room(hass, entry), BEDROOM_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
+    result = await _configure(hass, await _start_zone(hass, entry), BEDROOM_INPUT)
     assert result["step_id"] == "review"
     result = await _configure(hass, result, {"confirm": True})
     assert "shared_pump_limits_independent_control" in _warning_codes(entry)
     zone_id = _zone_id(entry, "Bedroom")
 
-    result = await _menu(hass, entry, zone_id, "room")
+    result = await _menu(hass, entry, zone_id, "zone")
     result = await _configure(hass, result, {**frontend_submission(result), "name": "Guest room"})
 
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert room_subentry(entry, zone_id).title == "Guest room"
+    assert zone_subentry(entry, zone_id).title == "Guest room"
 
 
 # --------------------------------------------------------------------------
@@ -1317,10 +1339,10 @@ async def test_concurrent_edits_of_a_live_plant_keep_each_others_changes(hass) -
     """Two saves that both wait for the safe shutdown each apply to the graph the other stored."""
     gate = asyncio.Event()
     entry = await _live_heating_manifold(hass, gate)
-    room = await _start_room(hass, entry)
-    # The room save waits in the slow safe shutdown.
-    room_task = hass.async_create_task(
-        hass.config_entries.subentries.async_configure(room["flow_id"], KITCHEN_INPUT)
+    zone = await _start_zone(hass, entry)
+    # The zone save waits in the slow safe shutdown.
+    zone_task = hass.async_create_task(
+        hass.config_entries.subentries.async_configure(zone["flow_id"], KITCHEN_INPUT)
     )
     pump = await hass.config_entries.options.async_init(entry.entry_id)
     pump = await hass.config_entries.options.async_configure(
@@ -1340,16 +1362,16 @@ async def test_concurrent_edits_of_a_live_plant_keep_each_others_changes(hass) -
     for _ in range(5):
         await asyncio.sleep(0)
     gate.set()
-    room_result = await room_task
+    zone_result = await zone_task
     pump_result = await pump_task
     await hass.async_block_till_done()
 
-    assert room_result["type"] == FlowResultType.CREATE_ENTRY
+    assert zone_result["type"] == FlowResultType.CREATE_ENTRY
     assert pump_result["reason"] == "settings_saved"
     topology = entry.data["topology"]
     assert [zone["name"] for zone in topology["zones"]] == ["Living room", "Bedroom", "Kitchen"]
     assert [pump["name"] for pump in topology["pumps"]] == ["Renamed pump"]
-    kitchen = room_subentry(entry, _zone_id(entry, "Kitchen"))
+    kitchen = zone_subentry(entry, _zone_id(entry, "Kitchen"))
     assert effective_plant(entry).object_subentry_ids[kitchen.unique_id] == kitchen.subentry_id
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data.dry_run is True
@@ -1359,15 +1381,15 @@ async def test_concurrent_edits_of_a_live_plant_keep_each_others_changes(hass) -
 
 
 async def test_a_review_confirmed_after_the_graph_changed_shows_the_conflict(hass) -> None:
-    """A room whose valve another room took meanwhile returns to its form with the error."""
+    """A zone whose valve another zone took meanwhile returns to its form with the error."""
     hass.states.async_set("sensor.kitchen_temperature", "18.0")
     hass.states.async_set("switch.kitchen_valve", "off")
     entry = await _setup(hass, manifold_entry(("Living room",)))
     flows = []
     for name in ("Kitchen", "Pantry"):
-        result = await _start_room(hass, entry)
+        result = await _start_zone(hass, entry)
         result = await _configure(hass, result, {**KITCHEN_INPUT, "name": name})
-        # The second room on the pump is a new shared pump warning in both flows.
+        # The second zone on the pump is a new shared pump warning in both flows.
         assert result["step_id"] == "review"
         flows.append(result)
     first = await _configure(hass, flows[0], {"confirm": True})
@@ -1387,13 +1409,13 @@ async def test_a_review_confirmed_after_the_graph_changed_shows_the_conflict(has
     ]
 
 
-async def test_editing_a_room_that_was_deleted_meanwhile_aborts(hass) -> None:
-    """A room removed while its reconfigure flow is open ends that flow instead of raising."""
+async def test_editing_a_zone_that_was_deleted_meanwhile_aborts(hass) -> None:
+    """A zone removed while its reconfigure flow is open ends that flow instead of raising."""
     entry = await _setup(hass, manifold_entry())
     menu = await _menu(hass, entry, BEDROOM.zone_id)
-    form = await _menu(hass, entry, BEDROOM.zone_id, "room")
+    form = await _menu(hass, entry, BEDROOM.zone_id, "zone")
     assert hass.config_entries.async_remove_subentry(
-        entry, room_subentry(entry, BEDROOM.zone_id).subentry_id
+        entry, zone_subentry(entry, BEDROOM.zone_id).subentry_id
     )
     await hass.async_block_till_done()
 
@@ -1407,10 +1429,10 @@ async def test_editing_a_room_that_was_deleted_meanwhile_aborts(hass) -> None:
     assert entry.state is ConfigEntryState.LOADED
 
 
-async def test_valve_details_keep_room_edits_made_meanwhile(hass) -> None:
-    """A loop saved after its valve feedback steps applies to the room as it is now."""
+async def test_valve_details_keep_zone_edits_made_meanwhile(hass) -> None:
+    """A loop saved after its valve feedback steps applies to the zone as it is now."""
     entry = await _setup(hass, _pump_only_entry())
-    await _add_room(hass, entry, LIVING_INPUT)
+    await _add_zone(hass, entry, LIVING_INPUT)
     zone_id = _zone_id(entry, "Living room")
     circuit_id = _ids(entry, zone_id)["circuits"][0]
     loop = await _menu(hass, entry, zone_id, "edit_loop")
@@ -1419,7 +1441,7 @@ async def test_valve_details_keep_room_edits_made_meanwhile(hass) -> None:
         hass, loop, {**frontend_submission(loop), "configure_valve_feedback": True}
     )
     assert details["step_id"] == "valve_details"
-    rename = await _menu(hass, entry, zone_id, "room")
+    rename = await _menu(hass, entry, zone_id, "zone")
     rename = await _configure(hass, rename, {**frontend_submission(rename), "name": "Lounge"})
     assert rename["reason"] == "reconfigure_successful"
 
@@ -1433,8 +1455,8 @@ async def test_valve_details_keep_room_edits_made_meanwhile(hass) -> None:
     )
 
     assert result["reason"] == "reconfigure_successful"
-    draft = room_draft(entry.data, zone_id)
+    draft = zone_draft(entry.data, zone_id)
     assert draft.zone["name"] == "Lounge"
-    assert room_subentry(entry, zone_id).title == "Lounge"
+    assert zone_subentry(entry, zone_id).title == "Lounge"
     (valve,) = draft.valves
     assert valve["readiness_entity_id"] == "binary_sensor.living_room_valve_ready"

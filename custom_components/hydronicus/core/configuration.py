@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from math import isfinite
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
 from .model import (
+    AreaSensors,
     Circuit,
     DeliveryRoute,
     ExternalClimateThermostatConfig,
@@ -21,6 +24,7 @@ from .model import (
     TemperatureSensorMetadata,
     Valve,
     Zone,
+    ZoneArea,
 )
 
 
@@ -55,6 +59,7 @@ _SENSOR_KEYS = frozenset(
         "designated_reference",
     }
 )
+_AREA_KEYS = frozenset({"area_id", "required", "weight", "designated_reference", "max_age_seconds"})
 _PRESET_NAMES = frozenset({"comfort", "eco", "away"})
 _LEGACY_MAX_AGE_SECONDS = 1800.0
 _SOURCE_MAX_AGE_SECONDS = 1800.0
@@ -406,7 +411,7 @@ def _thermostat_from_mapping(
     """Decode one canonical discriminated thermostat union."""
     raw = mapping.get("thermostat")
     if not isinstance(raw, Mapping):
-        raise StoredTopologyError("Stored room thermostat must be an object.")
+        raise StoredTopologyError("Stored zone thermostat must be an object.")
     kind = raw.get("kind")
     if kind == "hydronicus":
         allowed = {
@@ -467,7 +472,7 @@ def _thermostat_from_mapping(
                 "Stored external thermostat entity_id must belong to the climate domain."
             )
         return ExternalClimateThermostatConfig(entity_id)
-    raise StoredTopologyError("Stored room thermostat kind must be supported.")
+    raise StoredTopologyError("Stored zone thermostat kind must be supported.")
 
 
 def _zone_timing(mapping: Mapping[str, Any]) -> tuple[float, float, float, float, float, float]:
@@ -486,9 +491,12 @@ def _validate_reference_policy(
     zone_id: str,
     aggregation: TemperatureAggregation,
     metadata: tuple[TemperatureSensorMetadata, ...],
-) -> tuple[TemperatureSensorMetadata, ...]:
-    """Validate designated-reference metadata against the selected policy."""
-    designated = [sensor for sensor in metadata if sensor.designated_reference]
+    areas: tuple[ZoneArea, ...],
+) -> None:
+    """Validate the declared designated references, sensors and areas, against the policy."""
+    designated = [sensor for sensor in metadata if sensor.designated_reference] + [
+        area for area in areas if area.designated_reference
+    ]
     if len(designated) > 1:
         raise DesignatedReferenceError(
             zone_id, "Stored temperature sensors have multiple designated references."
@@ -497,7 +505,104 @@ def _validate_reference_policy(
         raise DesignatedReferenceError(
             zone_id, "Designated-reference aggregation requires exactly one designated sensor."
         )
-    return metadata
+
+
+def _areas_from_mapping(mapping: Mapping[str, Any]) -> tuple[ZoneArea, ...]:
+    """Decode the optional list of Home Assistant areas a zone covers."""
+    raw_areas = mapping.get("areas", [])
+    if not isinstance(raw_areas, list) or not all(isinstance(item, Mapping) for item in raw_areas):
+        raise StoredTopologyError("Stored topology field 'areas' must be a list of objects.")
+    areas: list[ZoneArea] = []
+    seen: set[str] = set()
+    for index, raw_area in enumerate(raw_areas):
+        unknown = set(raw_area) - _AREA_KEYS
+        if unknown:
+            raise StoredTopologyError(
+                "Stored areas have unknown fields: "
+                + ", ".join(sorted(str(field) for field in unknown))
+                + "."
+            )
+        area_id = raw_area.get("area_id")
+        if not isinstance(area_id, str) or not area_id:
+            raise StoredTopologyError(f"Stored area {index} requires a non-empty area_id.")
+        if area_id in seen:
+            raise StoredTopologyError(f"Stored areas must not contain duplicate area {area_id!r}.")
+        seen.add(area_id)
+        areas.append(
+            ZoneArea(
+                area_id=area_id,
+                required=_boolean(raw_area, "required", False),
+                weight=_number(raw_area, "weight", 1.0, positive=True),
+                designated_reference=_boolean(raw_area, "designated_reference", False),
+                max_age_seconds=_number(
+                    raw_area, "max_age_seconds", _LEGACY_MAX_AGE_SECONDS, positive=True
+                ),
+            )
+        )
+    return tuple(areas)
+
+
+def _merged(
+    explicit: tuple[TemperatureSensorMetadata, ...],
+    resolved: list[TemperatureSensorMetadata],
+) -> tuple[TemperatureSensorMetadata, ...]:
+    """Append resolved area records, counting an entity that is already listed once.
+
+    The record listed first keeps its settings, so an explicit sensor wins over an
+    area and an earlier area over a later one, and it keeps a designated
+    reference that either record marks.
+    """
+    records = list(explicit)
+    positions = {record.entity_id: index for index, record in enumerate(records)}
+    for record in resolved:
+        position = positions.get(record.entity_id)
+        if position is None:
+            positions[record.entity_id] = len(records)
+            records.append(record)
+        elif record.designated_reference:
+            records[position] = replace(records[position], designated_reference=True)
+    return tuple(records)
+
+
+def _effective_sensors(
+    temperature: tuple[TemperatureSensorMetadata, ...],
+    humidity: tuple[TemperatureSensorMetadata, ...],
+    areas: tuple[ZoneArea, ...],
+    area_sensors: Mapping[str, AreaSensors],
+) -> tuple[tuple[TemperatureSensorMetadata, ...], tuple[TemperatureSensorMetadata, ...]]:
+    """Return the explicit records followed by the records the covered areas resolve to.
+
+    An area's temperature sensor takes the area's settings. Its humidity sensor is
+    always required, because an unobserved humid room is where a cooled floor
+    condenses. An area that is not resolved, or names no sensor, adds nothing.
+    """
+    area_temperature: list[TemperatureSensorMetadata] = []
+    area_humidity: list[TemperatureSensorMetadata] = []
+    for area in areas:
+        sensors = area_sensors.get(area.area_id)
+        if sensors is None:
+            continue
+        if sensors.temperature_entity_id:
+            area_temperature.append(
+                TemperatureSensorMetadata(
+                    entity_id=sensors.temperature_entity_id,
+                    required=area.required,
+                    weight=area.weight,
+                    max_age_seconds=area.max_age_seconds,
+                    designated_reference=area.designated_reference,
+                    area_id=area.area_id,
+                )
+            )
+        if sensors.humidity_entity_id:
+            area_humidity.append(
+                TemperatureSensorMetadata(
+                    entity_id=sensors.humidity_entity_id,
+                    required=True,
+                    max_age_seconds=area.max_age_seconds,
+                    area_id=area.area_id,
+                )
+            )
+    return _merged(temperature, area_temperature), _merged(humidity, area_humidity)
 
 
 def _route_enabled(mapping: Mapping[str, Any]) -> bool:
@@ -508,8 +613,8 @@ def _route_enabled(mapping: Mapping[str, Any]) -> bool:
     return enabled
 
 
-def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
-    """Decode one canonical zone object."""
+def _zone_from_mapping(item: Mapping[str, Any], area_sensors: Mapping[str, AreaSensors]) -> Zone:
+    """Decode one canonical zone object and resolve the sensors of its areas."""
     _reject_unsupported_fields(
         item,
         {
@@ -526,18 +631,23 @@ def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
             "eco",
             "away",
         },
-        "room thermostat",
+        "zone thermostat",
     )
     thermostat = _thermostat_from_mapping(item)
+    areas = _areas_from_mapping(item)
+    # A Hydronicus thermostat needs a temperature source, and an area is one.
     metadata = _sensor_metadata_from_mapping(
         item,
         _SENSOR_METADATA_KEY,
-        required_collection=isinstance(thermostat, HydronicusThermostatConfig),
+        required_collection=isinstance(thermostat, HydronicusThermostatConfig) and not areas,
     )
     humidity_metadata = humidity_sensor_metadata_from_mapping(item)
     aggregation = _temperature_aggregation(item)
     zone_id = _id(item, "id", require_uuid=True)
-    metadata = _validate_reference_policy(zone_id, aggregation, metadata)
+    _validate_reference_policy(zone_id, aggregation, metadata, areas)
+    metadata, humidity_metadata = _effective_sensors(
+        metadata, humidity_metadata, areas, area_sensors
+    )
     return Zone(
         id=zone_id,
         name=str(_required(item, "name")),
@@ -545,6 +655,7 @@ def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
         aggregation=aggregation,
         humidity_sensor_metadata=humidity_metadata,
         thermostat=thermostat,
+        areas=areas,
     )
 
 
@@ -664,8 +775,19 @@ def _route_from_mapping(item: Mapping[str, Any]) -> DeliveryRoute:
     )
 
 
-def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfiguration:
-    """Build a generic plant configuration from one config entry's persisted data."""
+def plant_configuration_from_entry_data(
+    data: Mapping[str, Any],
+    *,
+    area_sensors: Mapping[str, AreaSensors] = MappingProxyType({}),
+) -> PlantConfiguration:
+    """Build a generic plant configuration from one config entry's persisted data.
+
+    The declarations are validated first. Each zone's sensor metadata then holds
+    its explicit sensors in stored order, followed by the sensors that
+    ``area_sensors`` resolves for its areas in area order. An area absent from
+    ``area_sensors`` contributes nothing, so the stored graph alone decodes and
+    compiles the same whatever Home Assistant's areas currently name.
+    """
     raw_topology = data.get("topology", {})
     if not isinstance(raw_topology, Mapping):
         raise StoredTopologyError("Stored topology must be an object.")
@@ -679,7 +801,9 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
         raise StoredTopologyError("Stored source selector must be an object.")
     return PlantConfiguration(
         id=_id(data, "plant_id", require_uuid=True),
-        zones=tuple(_zone_from_mapping(item) for item in _objects(raw_topology, "zones")),
+        zones=tuple(
+            _zone_from_mapping(item, area_sensors) for item in _objects(raw_topology, "zones")
+        ),
         valves=tuple(_valve_from_mapping(item) for item in _objects(raw_topology, "valves")),
         pumps=tuple(_pump_from_mapping(item) for item in _objects(raw_topology, "pumps")),
         circuits=tuple(_circuit_from_mapping(item) for item in _objects(raw_topology, "circuits")),

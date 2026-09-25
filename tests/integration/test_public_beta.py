@@ -5,7 +5,11 @@ from __future__ import annotations
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import DOMAIN
+from custom_components.hydronicus.const import (
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+)
 from tests.integration.test_trial_kit import (
     assert_helpers_untouched,
     async_setup_trial_package,
@@ -17,7 +21,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     """The README trial path works with the trial kit's disposable entities only.
 
     It follows "First simulated Plant": load the trial package, build the same
-    two rooms as ``plant.yaml`` with guided setup, confirm the shared pump
+    two zones as ``plant.yaml`` with guided setup, confirm the shared pump
     warning, and exercise heating demand in Dry run.
     """
     await async_setup_trial_package(hass)
@@ -34,7 +38,11 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
         result["flow_id"],
         user_input={"name": "Trial plant", "pump_entity": "switch.hydronicus_trial_pump"},
     )
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zoning"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"next_step_id": "zoning_grouped"}
+    )
+    assert result["step_id"] == "zone"
     assert "target_temperature" not in {str(key.schema) for key in result["data_schema"].schema}
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
@@ -45,7 +53,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
             "add_another": True,
         },
     )
-    assert result["step_id"] == "room"
+    assert result["step_id"] == "zone"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
@@ -56,7 +64,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "review"
-    assert result["description_placeholders"]["rooms"] == "- Living room\n- Bedroom"
+    assert result["description_placeholders"]["zones"] == "- Living room\n- Bedroom"
     assert result["description_placeholders"]["warnings"].startswith(
         "- Pump Circulation pump is shared by loops Living room loop, Bedroom loop; "
     )
@@ -89,7 +97,7 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     topology_state = hass.states.get("sensor.trial_plant_topology_preview")
     valve_request = hass.states.get("binary_sensor.living_room_loop_valve_requested")
     assert demand_state is not None and demand_state.state == "on"
-    assert topology_state is not None and topology_state.state == "2 rooms, 2 loops"
+    assert topology_state is not None and topology_state.state == "2 zones, 2 loops"
     assert valve_request is not None and valve_request.state == "on"
 
     await hass.services.async_call(
@@ -109,6 +117,8 @@ async def test_public_beta_fresh_entry_can_reload_without_changing_domain(hass) 
     """A fresh package entry remains a Hydronicus entry across a reload."""
     entry = MockConfigEntry(
         domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
         title="Fresh package plant",
         data={
             "name": "Fresh package plant",

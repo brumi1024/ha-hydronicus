@@ -314,12 +314,12 @@ describe("Zone presets", () => {
   });
 });
 
-describe("Room HVAC mode", () => {
+describe("Zone HVAC mode", () => {
   function modeButtons(card: CardElement): HTMLButtonElement[] {
     return [...root(card).querySelectorAll<HTMLButtonElement>(".hvac-modes button")];
   }
 
-  it("shows an Off Room as Off and turns heating on with one tap", async () => {
+  it("shows an Off Zone as Off and turns heating on with one tap", async () => {
     const hass = makeHass();
     const card = await mount(hass);
     const zone = makeZone({ demand: false, phase: "idle" });
@@ -344,7 +344,7 @@ describe("Room HVAC mode", () => {
     ]);
   });
 
-  it("offers cooling modes only when the Room's climate entity supports them", async () => {
+  it("offers cooling modes only when the Zone's climate entity supports them", async () => {
     const hass = makeHass();
     const card = await mount(hass);
     const zone = makeZone();
@@ -428,8 +428,36 @@ describe("Header", () => {
   });
 });
 
-describe("Room and Loop wording", () => {
-  it("uses Room and Loop instead of Zone and Circuit", async () => {
+describe("Plant health", () => {
+  it("says the Plant is degraded and marks it for attention", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const alerts = [{ code: "zone_area_self_feed", severity: "warning" as const, priority: 2, scope: "zone-1", name: "Living room", message: "Area Study names a sensor that Hydronicus provides, so the zone ignores it." }];
+    const snapshot = makeSnapshot({ alerts });
+    await deliver(card, hass.connection, { ...snapshot, plant: { ...snapshot.plant, health: "degraded" } });
+
+    expect(root(card).querySelector("ha-card")?.getAttribute("data-visual")).toBe("attention");
+    const health = root(card).querySelector<HTMLElement>(".status-line .health");
+    expect(health?.textContent?.replace(/\s+/g, " ").trim()).toBe("Health: Degraded");
+    expect(health?.dataset.health).toBe("degraded");
+    // The Zone the alert is about shows it too.
+    expect(root(card).querySelector(".zone .zone-alerts")?.textContent).toContain("Area sensor ignored");
+  });
+
+  it("names an unavailable entity and says nothing while healthy", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    const snapshot = makeSnapshot();
+    await deliver(card, hass.connection, snapshot);
+    expect(root(card).querySelector(".status-line .health")).toBeNull();
+
+    await deliver(card, hass.connection, { ...snapshot, plant: { ...snapshot.plant, health: "unavailable" } });
+    expect(root(card).querySelector(".status-line .health")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Health: Entity unavailable");
+  });
+});
+
+describe("Zone and Loop wording", () => {
+  it("uses Zone and Loop instead of Room and Circuit", async () => {
     const hass = makeHass();
     const card = await mount(hass);
     const snapshot = makeSnapshot({
@@ -443,21 +471,22 @@ describe("Room and Loop wording", () => {
     await deliver(card, hass.connection, snapshot);
 
     const content = text(card);
-    for (const phrase of ["Rooms", "Room → Loop → Valve → Pump → Source", "Equipment", "No loop is using this right now.", "this Room shares hydraulic equipment"]) {
+    for (const phrase of ["Zones", "Zone → Loop → Valve → Pump → Source", "Equipment", "No loop is using this right now.", "this Zone shares hydraulic equipment"]) {
       expect(content).toContain(phrase);
     }
-    expect([...root(card).querySelectorAll(".node-kind")].map((node) => node.textContent)).toEqual(["Room", "Loop"]);
+    expect([...root(card).querySelectorAll(".node-kind")].map((node) => node.textContent)).toEqual(["Zone", "Loop"]);
     expect(root(card).querySelector(".consumer-list")?.getAttribute("aria-label")).toBe("Loops using this equipment");
-    expect(root(card).querySelector(".diagnostic-list")?.getAttribute("aria-label")).toBe("Room diagnostics");
-    expect(content).not.toMatch(/\bZones?\b|\bCircuits?\b|circuit consumers|Actuator Ownership/);
+    expect(root(card).querySelector(".diagnostic-list")?.getAttribute("aria-label")).toBe("Zone diagnostics");
+    // "Living room" is a physical room in a Zone name, which the capital R excludes.
+    expect(content).not.toMatch(/\bRooms?\b|\bCircuits?\b|circuit consumers|Actuator Ownership/);
   });
 
-  it("uses Room wording for an empty Plant", async () => {
+  it("uses Zone wording for an empty Plant", async () => {
     const hass = makeHass();
     const card = await mount(hass);
     await deliver(card, hass.connection, makeSnapshot({ zones: [] }));
 
-    expect(text(card)).toContain("No Rooms are visible for this Plant.");
+    expect(text(card)).toContain("No Zones are visible for this Plant.");
   });
 });
 
@@ -533,7 +562,7 @@ describe("C11 theme and badge", () => {
 });
 
 describe("Hydraulic Flow", () => {
-  it("colours each path by its own Room's demand, not the Plant's", async () => {
+  it("colours each path by its own Zone's demand, not the Plant's", async () => {
     const hass = makeHass();
     const card = await mount(hass);
     const cooling = makeZone({ id: "zone-2", name: "Study", demand: false, phase: "cooling", cooling: { ...makeZone().cooling, demand: true } });
@@ -542,6 +571,12 @@ describe("Hydraulic Flow", () => {
 
     const kinds = [...root(card).querySelectorAll<HTMLElement>(".path")].map((element) => element.dataset.demandKind);
     expect(kinds).toEqual(["heating", "cooling", "none"]);
+  });
+
+  it("keeps an idle Zone's path in the idle colour, not the Plant's attention colour", () => {
+    // A shared pump running for another Zone showed in the Plant's red on an idle path.
+    const styles = (customElements.get(TAG) as unknown as { styles: { cssText: string } }).styles.cssText;
+    expect(styles).toMatch(/\.path\[data-demand-kind="none"\] \{ --_hy-state: var\(--_hy-idle\); \}/);
   });
 
   it("caps the connectors so a path stays a compact chain at any width", () => {
@@ -766,7 +801,7 @@ describe("Shared Plant subscription", () => {
   it("shares one subscription between cards for the same Plant", async () => {
     const hass = makeHass();
     const first = await mount(hass);
-    const second = await mount(hass, { sections: ["rooms"] });
+    const second = await mount(hass, { sections: ["zones"] });
     expect(hass.connection.subscriptions).toHaveLength(1);
 
     await deliver(first, hass.connection);
@@ -830,7 +865,7 @@ describe("Plant card sections", () => {
     const markers: Array<[string, string]> = [
       ["header", "header.header"],
       ["alerts", "[aria-labelledby='hydronicus-alerts']"],
-      ["rooms", "[aria-labelledby='hydronicus-zones']"],
+      ["zones", "[aria-labelledby='hydronicus-zones']"],
       ["paths", "[aria-labelledby='hydronicus-paths']"],
       ["equipment", "[aria-labelledby='hydronicus-actuators']"],
       ["explanations", "details:not([open])"],
@@ -849,16 +884,16 @@ describe("Plant card sections", () => {
     const card = await mount(hass);
     await deliver(card, hass.connection, richSnapshot());
 
-    expect(shown(card)).toEqual(["header", "alerts", "rooms", "paths", "equipment", "explanations", "operations"]);
+    expect(shown(card)).toEqual(["header", "alerts", "zones", "paths", "equipment", "explanations", "operations"]);
     expect(root(card).querySelector(".boundary")).not.toBeNull();
   });
 
   it("shows only the configured sections, in the configured order", async () => {
     const hass = makeHass();
-    const card = await mount(hass, { sections: ["rooms", "alerts"] });
+    const card = await mount(hass, { sections: ["zones", "alerts"] });
     await deliver(card, hass.connection, richSnapshot());
 
-    expect(shown(card)).toEqual(["rooms", "alerts"]);
+    expect(shown(card)).toEqual(["zones", "alerts"]);
     // The execution boundary belongs to the header section.
     expect(root(card).querySelector(".boundary")).toBeNull();
     expect(root(card).querySelector("button.shutdown")).toBeNull();
@@ -866,7 +901,7 @@ describe("Plant card sections", () => {
 
   it("keeps stream notices and action errors visible without the header", async () => {
     const hass = makeHass();
-    const card = await mount(hass, { sections: ["rooms"] });
+    const card = await mount(hass, { sections: ["zones"] });
     await deliver(card, hass.connection);
     hass.failNextCall = "Entity is unavailable.";
 
@@ -883,7 +918,7 @@ describe("Plant card sections", () => {
   it("validates `sections`", async () => {
     const hass = makeHass();
     const card = await mount(hass);
-    for (const sections of [["rooms", "rooms"], ["zones"], "rooms", [1]]) {
+    for (const sections of [["zones", "zones"], ["rooms"], "zones", [1]]) {
       expect(() => card.setConfig({ type: `custom:${TAG}`, plant: PLANT_ID, sections }), JSON.stringify(sections)).toThrow();
     }
     // The visual editor clears every choice to an empty list: every section.
@@ -897,8 +932,9 @@ describe("Plant card sections", () => {
     const field = form.schema.find((entry) => entry.name === "sections") as { selector: { select: Record<string, unknown> } };
     expect(field.selector.select).toMatchObject({ multiple: true, reorder: true });
     expect((field.selector.select.options as Array<{ value: string }>).map((option) => option.value)).toEqual([
-      "header", "alerts", "rooms", "paths", "equipment", "explanations", "operations",
+      "header", "alerts", "zones", "paths", "equipment", "explanations", "operations",
     ]);
+    expect((field.selector.select.options as Array<{ value: string; label: string }>).find((option) => option.value === "zones")?.label).toBe("Zones");
     expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID, sections: ["header"] })).not.toThrow();
     expect(() => form.assertConfig?.({ type: `custom:${TAG}`, plant: PLANT_ID, sections: ["nope"] })).toThrow();
     expect(form.computeLabel?.({ name: "sections" })).toBe("Sections");
@@ -908,16 +944,16 @@ describe("Plant card sections", () => {
     const hass = makeHass();
     const full = await mount(hass);
     const header = await mount(hass, { sections: ["header"] });
-    const rooms = await mount(hass, { sections: ["rooms"] });
+    const zones = await mount(hass, { sections: ["zones"] });
     await deliver(full, hass.connection, richSnapshot());
     await settle(header);
-    await settle(rooms);
+    await settle(zones);
 
     expect(header.getCardSize()).toBe(4);
-    expect(rooms.getCardSize()).toBe(6);
-    expect(full.getCardSize()).toBeGreaterThan(header.getCardSize() + rooms.getCardSize());
+    expect(zones.getCardSize()).toBe(6);
+    expect(full.getCardSize()).toBeGreaterThan(header.getCardSize() + zones.getCardSize());
     expect(full.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
-    expect(rooms.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
+    expect(zones.getGridOptions()).toEqual({ columns: 12, min_columns: 6 });
     expect(header.getGridOptions()).toEqual({ columns: 6, min_columns: 4 });
   });
 });

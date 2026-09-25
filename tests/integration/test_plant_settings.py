@@ -17,9 +17,9 @@ from homeassistant.helpers import entity_registry as er
 from custom_components.hydronicus.const import (
     CONF_DRY_RUN,
     CONF_OUTPUT_AUTHORIZATION,
-    CONF_ROOM_OBJECTS,
+    CONF_ZONE_OBJECTS,
     DOMAIN,
-    SUBENTRY_TYPE_ROOM,
+    SUBENTRY_TYPE_ZONE,
 )
 from custom_components.hydronicus.core.plant_document import export_plant_document
 from custom_components.hydronicus.entry_configuration import (
@@ -35,14 +35,14 @@ from tests.integration.plant_fixtures import (
     MANIFOLD_PUMP_ID,
     PLANT_ID,
     manifold_entry,
-    manifold_rooms,
     manifold_topology,
+    manifold_zones,
     plant_data,
     plant_entry,
-    room_subentry,
+    zone_subentry,
 )
 
-LIVING, BEDROOM = manifold_rooms(("Living room", "Bedroom"))
+LIVING, BEDROOM = manifold_zones(("Living room", "Bedroom"))
 SPARE_PUMP_ENTITY = "switch.spare_pump"
 KITCHEN_SENSOR = "sensor.kitchen_temperature"
 KITCHEN_VALVE = "switch.kitchen_valve"
@@ -50,9 +50,9 @@ NEW_BEDROOM_VALVE = "switch.bedroom_valve_new"
 
 
 def _set_states(hass) -> None:
-    for room in (LIVING, BEDROOM):
-        hass.states.async_set(room.temperature_sensor, "18.0")
-        hass.states.async_set(room.valve_entity, "off")
+    for zone in (LIVING, BEDROOM):
+        hass.states.async_set(zone.temperature_sensor, "18.0")
+        hass.states.async_set(zone.valve_entity, "off")
     for entity_id in (MANIFOLD_PUMP_ENTITY, SPARE_PUMP_ENTITY, KITCHEN_VALVE, NEW_BEDROOM_VALVE):
         hass.states.async_set(entity_id, "off")
     hass.states.async_set(KITCHEN_SENSOR, "18.0")
@@ -385,7 +385,7 @@ async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None
         OTHER_PLANT_OUTPUT,
     ]
 
-    # The shared output is confirmed on every edit, not only when it first appears.
+    # The shared output is confirmed when it first appears, not again on every edit.
     spare_id = entry.data["topology"]["pumps"][1]["id"]
     result = await _open(hass, entry, "edit_pump")
     result = await _submit(hass, result, {"pump": spare_id})
@@ -394,8 +394,7 @@ async def test_a_pump_bound_by_another_plant_is_a_reviewed_warning(hass) -> None
         result,
         {"name": "Reserve pump", "entity_id": OTHER_PLANT_OUTPUT, "overrun_seconds": 0.0},
     )
-    assert result["step_id"] == "pump_review"
-    result = await _submit(hass, result, {"confirm": True})
+    assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "settings_saved"
     assert entry.data["topology"]["pumps"][1]["name"] == "Reserve pump"
 
@@ -448,6 +447,21 @@ async def test_a_pump_change_without_new_warnings_saves_directly(hass) -> None:
     assert entry.data["topology"]["pumps"][0]["name"] == "Main pump"
 
 
+async def test_a_plant_file_edit_does_not_review_sharing_the_plant_already_had(hass) -> None:
+    """A plant file edit asks to confirm only sharing it introduces."""
+    _other_plant_binding_an_output(hass)
+    entry = await _loaded_manifold(hass)
+    # The other Plant binds the manifold pump too, so the Plant already shares it.
+    document = _export(entry)
+    document["zones"]["living_room"]["name"] = "Lounge"
+
+    result = await _edit(hass, entry, document)
+
+    assert result["step_id"] == "edit_plant_review"
+    assert "confirm" not in _schema_keys(result)
+    assert "Plant 1" in result["description_placeholders"]["warnings"]
+
+
 async def test_editing_a_pump_removed_meanwhile_is_an_invalid_pump(hass) -> None:
     """A pump another flow removed is not brought back by an open pump form."""
     entry = await _loaded_manifold(hass)
@@ -477,9 +491,10 @@ async def test_a_pump_review_confirmed_after_the_pump_was_removed_returns_to_the
     """A save-time graph error on the review is reported on the pump form."""
     _other_plant_binding_an_output(hass)
     entry = await _loaded_manifold(hass)
-    spare_id = await _stored_spare_pump(hass, entry, OTHER_PLANT_OUTPUT)
+    spare_id = await _stored_spare_pump(hass, entry)
     result = await _open(hass, entry, "edit_pump")
     result = await _submit(hass, result, {"pump": spare_id})
+    # Moving the pump onto another Plant's output introduces sharing, which is reviewed.
     result = await _submit(
         hass,
         result,
@@ -623,16 +638,16 @@ async def test_plant_file_of_another_plant_is_refused(hass) -> None:
     ("change", "path", "error"),
     [
         pytest.param(
-            lambda document: document["rooms"]["bedroom"].update(colour="blue"),
-            "rooms.bedroom.colour",
+            lambda document: document["zones"]["bedroom"].update(colour="blue"),
+            "zones.bedroom.colour",
             "Unknown key 'colour'.",
             id="unknown_key",
         ),
         pytest.param(
-            lambda document: document["rooms"]["bedroom"]["loops"]["bedroom_loop"].update(
+            lambda document: document["zones"]["bedroom"]["loops"]["bedroom_loop"].update(
                 pump="missing_pump"
             ),
-            "rooms.bedroom.loops.bedroom_loop.pump",
+            "zones.bedroom.loops.bedroom_loop.pump",
             None,
             id="unknown_reference",
         ),
@@ -709,8 +724,8 @@ async def test_review_lists_changes_and_requires_confirmation_of_warnings(hass) 
     data = deepcopy(dict(entry.data))
     document = _export(entry)
     document["name"] = "Home"
-    document["rooms"]["living_room"]["name"] = "Lounge"
-    del document["rooms"]["bedroom"]
+    document["zones"]["living_room"]["name"] = "Lounge"
+    del document["zones"]["bedroom"]
     document["pumps"]["spare_pump"] = SPARE_PUMP_ENTITY
 
     result = await _edit(hass, entry, document)
@@ -719,8 +734,8 @@ async def test_review_lists_changes_and_requires_confirmation_of_warnings(hass) 
     placeholders = result["description_placeholders"]
     changes = placeholders["changes"].splitlines()
     assert "- Renames the Plant from Hydronic plant to Home" in changes
-    assert "- Renames room Living room to Lounge" in changes
-    assert "- Removes room Bedroom" in changes
+    assert "- Renames zone Living room to Lounge" in changes
+    assert "- Removes zone Bedroom" in changes
     assert "- Removes loop Bedroom loop" in changes
     assert "- Removes valve Bedroom loop valve" in changes
     assert "- Adds pump Spare pump" in changes
@@ -731,10 +746,10 @@ async def test_review_lists_changes_and_requires_confirmation_of_warnings(hass) 
     assert "confirm" not in _schema_keys(result)
 
     document["pumps"].pop("spare_pump")
-    document["rooms"]["bedroom"] = _export(entry)["rooms"]["bedroom"]
+    document["zones"]["bedroom"] = _export(entry)["zones"]["bedroom"]
     document["valves"] = {"shared_valve": "switch.shared_valve"}
-    for room in document["rooms"].values():
-        for loop in room["loops"].values():
+    for zone in document["zones"].values():
+        for loop in zone["loops"].values():
             loop["valves"].append("shared_valve")
     result = await _edit(hass, entry, document)
     # The shared pump warning was already confirmed, but a newly shared valve needs a confirmation.
@@ -748,7 +763,7 @@ async def test_applying_a_plant_file_to_a_live_plant_returns_to_dry_run(hass) ->
     """A plant file edit is a graph change, so it invalidates the output authorization."""
     entry = await _loaded_manifold(hass, dry_run=False)
     document = _export(entry)
-    document["rooms"]["living_room"]["name"] = "Lounge"
+    document["zones"]["living_room"]["name"] = "Lounge"
 
     await _apply(hass, entry, document)
 
@@ -757,12 +772,12 @@ async def test_applying_a_plant_file_to_a_live_plant_returns_to_dry_run(hass) ->
     assert entry.runtime_data.dry_run is True
 
 
-async def test_plant_file_adds_a_room(hass) -> None:
-    """A new room gets its own subentry, which owns its entities and devices."""
+async def test_plant_file_adds_a_zone(hass) -> None:
+    """A new zone gets its own subentry, which owns its entities and devices."""
     entry = await _loaded_manifold(hass)
     before = _registrations(hass, entry)
     document = _export(entry)
-    document["rooms"]["kitchen"] = {
+    document["zones"]["kitchen"] = {
         "temperature_sensors": [KITCHEN_SENSOR],
         "loops": {"kitchen_loop": {"valves": [KITCHEN_VALVE], "pump": "manifold_pump"}},
     }
@@ -771,10 +786,10 @@ async def test_plant_file_adds_a_room(hass) -> None:
 
     kitchen_zone = _derived_id("zone", "kitchen")
     kitchen_valve = _derived_id("valve", "kitchen_loop_valve")
-    kitchen = room_subentry(entry, kitchen_zone)
+    kitchen = zone_subentry(entry, kitchen_zone)
     assert kitchen.title == "Kitchen"
     assert kitchen.data == {"id": kitchen_zone}
-    assert entry.data[CONF_ROOM_OBJECTS][kitchen_valve] == kitchen_zone
+    assert entry.data[CONF_ZONE_OBJECTS][kitchen_valve] == kitchen_zone
     after = _registrations(hass, entry)
     zone_entities = _object_registrations(after, kitchen_zone)
     valve_entities = _object_registrations(after, kitchen_valve)
@@ -790,13 +805,13 @@ async def test_plant_file_adds_a_room(hass) -> None:
     assert {unique_id: after[unique_id] for unique_id in before} == before
 
 
-async def test_plant_file_removes_a_room(hass) -> None:
-    """Removing a room removes its subentry, entities, and devices, and nothing else."""
+async def test_plant_file_removes_a_zone(hass) -> None:
+    """Removing a zone removes its subentry, entities, and devices, and nothing else."""
     entry = await _loaded_manifold(hass)
     before = _registrations(hass, entry)
-    bedroom_subentry = room_subentry(entry, BEDROOM.zone_id).subentry_id
+    bedroom_subentry = zone_subentry(entry, BEDROOM.zone_id).subentry_id
     document = _export(entry)
-    del document["rooms"]["bedroom"]
+    del document["zones"]["bedroom"]
 
     await _apply(hass, entry, document)
 
@@ -817,16 +832,16 @@ async def test_plant_file_removes_a_room(hass) -> None:
     assert {unique_id: after[unique_id] for unique_id in kept} == kept
 
 
-async def test_plant_file_renames_a_room(hass) -> None:
-    """Renaming a room retitles its subentry and keeps every entity ID."""
+async def test_plant_file_renames_a_zone(hass) -> None:
+    """Renaming a zone retitles its subentry and keeps every entity ID."""
     entry = await _loaded_manifold(hass)
     before = _registrations(hass, entry)
     document = _export(entry)
-    document["rooms"]["living_room"]["name"] = "Lounge"
+    document["zones"]["living_room"]["name"] = "Lounge"
 
     await _apply(hass, entry, document)
 
-    living = room_subentry(entry, LIVING.zone_id)
+    living = zone_subentry(entry, LIVING.zone_id)
     assert living.title == "Lounge"
     assert entry.runtime_data.plant.zones[LIVING.zone_id].name == "Lounge"
     assert _registrations(hass, entry) == before
@@ -837,7 +852,7 @@ async def test_plant_file_moves_a_private_loop_to_the_plant(hass) -> None:
     entry = await _loaded_manifold(hass)
     before = _registrations(hass, entry)
     document = _export(entry)
-    living = document["rooms"]["living_room"]
+    living = document["zones"]["living_room"]
     loop = living.pop("loops")["living_room_loop"]
     valve = living.pop("valves")["living_room_loop_valve"]
     route_id = loop.pop("route_id")
@@ -854,8 +869,8 @@ async def test_plant_file_moves_a_private_loop_to_the_plant(hass) -> None:
     await _submit(hass, result, {})
     await hass.async_block_till_done()
 
-    assert LIVING.circuit_id not in entry.data[CONF_ROOM_OBJECTS]
-    assert LIVING.valve_id not in entry.data[CONF_ROOM_OBJECTS]
+    assert LIVING.circuit_id not in entry.data[CONF_ZONE_OBJECTS]
+    assert LIVING.valve_id not in entry.data[CONF_ZONE_OBJECTS]
     assert entry.runtime_data.subentry_id_for(LIVING.valve_id) is None
     after = _registrations(hass, entry)
     valve_entities = _object_registrations(after, LIVING.valve_id)
@@ -878,7 +893,7 @@ async def test_plant_file_changes_a_valve_entity(hass) -> None:
     before = _registrations(hass, entry)
     devices = _devices(hass, entry)
     document = _export(entry)
-    document["rooms"]["bedroom"]["valves"]["bedroom_loop_valve"]["entity_id"] = NEW_BEDROOM_VALVE
+    document["zones"]["bedroom"]["valves"]["bedroom_loop_valve"]["entity_id"] = NEW_BEDROOM_VALVE
 
     await _apply(hass, entry, document)
 
@@ -886,30 +901,30 @@ async def test_plant_file_changes_a_valve_entity(hass) -> None:
     assert _registrations(hass, entry) == before
     assert _devices(hass, entry) == devices
     assert entry.runtime_data.subentry_id_for(BEDROOM.valve_id) == (
-        room_subentry(entry, BEDROOM.zone_id).subentry_id
+        zone_subentry(entry, BEDROOM.zone_id).subentry_id
     )
 
 
-async def test_plant_file_edit_keeps_room_handles_consistent(hass) -> None:
-    """Room subentries match the edited graph one to one after the reload."""
+async def test_plant_file_edit_keeps_zone_handles_consistent(hass) -> None:
+    """Zone subentries match the edited graph one to one after the reload."""
     entry = await _loaded_manifold(hass)
     document = _export(entry)
-    del document["rooms"]["living_room"]
-    document["rooms"]["kitchen"] = {
+    del document["zones"]["living_room"]
+    document["zones"]["kitchen"] = {
         "temperature_sensors": [KITCHEN_SENSOR],
         "loops": {"kitchen_loop": {"valves": [KITCHEN_VALVE], "pump": "manifold_pump"}},
     }
 
     await _apply(hass, entry, document)
 
-    rooms = sorted(
+    zones = sorted(
         subentry.unique_id
         for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_TYPE_ROOM
+        if subentry.subentry_type == SUBENTRY_TYPE_ZONE
     )
-    assert rooms == sorted([BEDROOM.zone_id, _derived_id("zone", "kitchen")])
+    assert zones == sorted([BEDROOM.zone_id, _derived_id("zone", "kitchen")])
     assert entry.state is ConfigEntryState.LOADED
-    assert set(entry.runtime_data.plant.zones) == set(rooms)
+    assert set(entry.runtime_data.plant.zones) == set(zones)
 
 
 BOILER_ID = "00000000-0000-4000-8000-0000000b0001"
@@ -923,7 +938,7 @@ BOILER_ID = "00000000-0000-4000-8000-0000000b0001"
     ],
 )
 async def test_plant_file_giving_an_object_the_id_of_another_kind_is_refused(hass, change) -> None:
-    """An id keeps its kind, and room and source handles never share a unique ID."""
+    """An id keeps its kind, and zone and source handles never share a unique ID."""
     _set_states(hass)
     entry = manifold_entry(
         sources=[{"id": BOILER_ID, "name": "Boiler", "source_type": "external", "priority": 1}]
@@ -934,7 +949,7 @@ async def test_plant_file_giving_an_object_the_id_of_another_kind_is_refused(has
     data = deepcopy(dict(entry.data))
     document = _export(entry)
     change(document)
-    document["rooms"]["kitchen"] = {
+    document["zones"]["kitchen"] = {
         "id": BOILER_ID,
         "temperature_sensors": [KITCHEN_SENSOR],
         "loops": {"kitchen_loop": {"valves": [KITCHEN_VALVE], "pump": "manifold_pump"}},
@@ -955,7 +970,7 @@ async def test_plant_file_review_confirmed_after_the_plant_changed_is_shown_agai
     """The review lists changes against one Plant, so a changed Plant is reviewed again."""
     entry = await _loaded_manifold(hass)
     document = _export(entry)
-    document["rooms"]["living_room"]["name"] = "Lounge"
+    document["zones"]["living_room"]["name"] = "Lounge"
     review = await _edit(hass, entry, document)
     assert review["step_id"] == "edit_plant_review"
     pump = await _open(hass, entry, "add_pump")
@@ -979,7 +994,7 @@ async def test_plant_file_review_confirmed_after_the_plant_changed_is_shown_agai
     assert result["reason"] == "settings_saved"
     await hass.async_block_till_done()
     assert [pump["name"] for pump in entry.data["topology"]["pumps"]] == ["Manifold pump"]
-    assert room_subentry(entry, LIVING.zone_id).title == "Lounge"
+    assert zone_subentry(entry, LIVING.zone_id).title == "Lounge"
 
 
 async def test_export_dialog_of_an_unreadable_plant_explains_why(hass) -> None:

@@ -1,8 +1,8 @@
 hydronicus: 1
-name: Other room's private valve
+name: Other zone's private valve
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     valves:

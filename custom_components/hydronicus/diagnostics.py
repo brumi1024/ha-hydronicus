@@ -228,19 +228,19 @@ def _configuration_shape(runtime: HydronicRuntime, references: _References) -> d
 def _owner(
     runtime: HydronicRuntime, references: _References, zone_id: str | None
 ) -> dict[str, str | None]:
-    """Name the room or the Plant that owns an object.
+    """Name the zone or the Plant that owns an object.
 
-    A room title is its zone name, which diagnostics redact, so a room is named
-    by the opaque reference of its zone.
+    A zone title is the zone name, which diagnostics redact, so a zone is named
+    by its opaque reference.
     """
     if zone_id is None:
         return {"kind": "plant", "reference": references.ref("plant", runtime.plant.id)}
-    return {"kind": "room", "reference": references.ref("zone", zone_id)}
+    return {"kind": "zone", "reference": references.ref("zone", zone_id)}
 
 
 def _configuration_objects(runtime: HydronicRuntime, references: _References) -> dict[str, object]:
     """Return the non-secret configuration needed to understand the topology."""
-    room_objects = runtime.ownership.room_objects
+    zone_objects = runtime.ownership.zone_objects
     zones = []
     for zone_id, zone in sorted(runtime.plant.zones.items()):
         zones.append(
@@ -261,6 +261,20 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                     not sensor.required for sensor in zone.sensor_metadata
                 ),
                 "humidity_sensor_count": len(zone.humidity_sensor_metadata),
+                "area_count": len(zone.areas),
+                "area_temperature_sensor_count": sum(
+                    sensor.area_id is not None for sensor in zone.sensor_metadata
+                ),
+                "area_humidity_sensor_count": sum(
+                    sensor.area_id is not None for sensor in zone.humidity_sensor_metadata
+                ),
+                "missing_area_count": sum(
+                    area.area_id in runtime.area_resolution.missing_area_ids for area in zone.areas
+                ),
+                "self_provided_area_sensor_count": sum(
+                    len(runtime.area_resolution.self_provided.get(area.area_id, ()))
+                    for area in zone.areas
+                ),
                 "configured_presets": sorted(zone.preset_targets),
                 "minimum_active_duration_configured": zone.minimum_active_duration_seconds > 0,
                 "minimum_idle_duration_configured": zone.minimum_idle_duration_seconds > 0,
@@ -272,7 +286,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
             {
                 "reference": references.ref("circuit", circuit_id),
                 "name": _REDACTED_NAME,
-                "owner": _owner(runtime, references, room_objects.get(circuit_id)),
+                "owner": _owner(runtime, references, zone_objects.get(circuit_id)),
                 "valve_references": [
                     references.ref("valve", valve_id) for valve_id in circuit.valve_ids
                 ],
@@ -303,7 +317,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                 {
                     "reference": references.ref("valve", actuator_id),
                     "kind": "valve",
-                    "owner": _owner(runtime, references, room_objects.get(actuator_id)),
+                    "owner": _owner(runtime, references, zone_objects.get(actuator_id)),
                     "readiness_feedback_configured": valve.readiness_entity_id is not None,
                     "position_feedback_configured": valve.position_entity_id is not None,
                 }

@@ -1,7 +1,7 @@
 export type Density = "comfortable" | "compact";
 
 /** A block of the Plant card, named for what it shows. */
-export type PlantSection = "header" | "alerts" | "rooms" | "paths" | "equipment" | "explanations" | "operations";
+export type PlantSection = "header" | "alerts" | "zones" | "paths" | "equipment" | "explanations" | "operations";
 
 export interface PlantCardConfig {
   type: "custom:hydronicus-plant-card";
@@ -12,12 +12,12 @@ export interface PlantCardConfig {
   sections?: PlantSection[];
 }
 
-export interface RoomCardConfig {
-  type: "custom:hydronicus-room-card";
+export interface ZoneCardConfig {
+  type: "custom:hydronicus-zone-card";
   /** The Plant UUID; an empty string means the card still needs a Plant. */
   plant: string;
-  /** The Room's id in the Plant snapshot; an empty string means none is chosen yet. */
-  room: string;
+  /** The Zone's id in the Plant snapshot; an empty string means none is chosen yet. */
+  zone: string;
   density?: Density;
 }
 
@@ -35,15 +35,35 @@ export interface Alert {
   severity: "critical" | "error" | "warning" | "info";
   priority: number;
   scope: string;
-  /** The Plant, room, loop, or equipment name; absent from older integration versions. */
+  /** The Plant, zone, loop, or equipment name; absent from older integration versions. */
   name?: string;
   message: string;
+}
+
+/**
+ * One Home Assistant area a Zone covers. A reading is null when the area
+ * names no such sensor or the controller could not use its reading; a sensor
+ * id is null when the area names none or the user may not read it.
+ */
+export interface ZoneArea {
+  id: string;
+  /** The area's name; a missing area keeps its last known name, or else its id. */
+  name: string;
+  /** True when the area no longer exists in Home Assistant; a repair then asks to remove it. */
+  missing: boolean;
+  temperature: number | null;
+  /** Relative humidity in percent. */
+  humidity: number | null;
+  temperature_entity_id: string | null;
+  humidity_entity_id: string | null;
 }
 
 /** Every temperature in a snapshot is in degrees Celsius. */
 export interface ZoneSnapshot {
   id: string;
   name: string;
+  /** The areas the Zone covers, in the Zone's order. */
+  areas: ZoneArea[];
   thermostat: {
     kind: "hydronicus" | "external_climate";
     state: "available" | "blocked";
@@ -87,6 +107,10 @@ export interface PlantSnapshot {
     id: string;
     name: string;
     status: string;
+    /**
+     * "healthy", "degraded" (a zone area repair is open), "blocked",
+     * "unavailable" (an entity binding is unresolved), "initializing", or "stopped".
+     */
     health: string;
     requested_mode: string;
     active_mode: string;

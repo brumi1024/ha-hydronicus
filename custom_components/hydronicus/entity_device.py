@@ -9,7 +9,7 @@ from .runtime import HydronicRuntime
 
 # The UI name of each device kind. The kind itself stays in the device identifier,
 # and the model is display text only, so renaming a model changes no ID.
-_MODEL_NAMES = {"zone": "Room", "circuit": "Loop"}
+_MODEL_NAMES = {"zone": "Zone", "circuit": "Loop"}
 
 
 def plant_device_info(runtime: HydronicRuntime) -> DeviceInfo:
@@ -31,7 +31,7 @@ def topology_device_info(
     """Return a subentry-safe device for one topology object.
 
     The device takes the object name alone: the Plant device above it already
-    carries the Plant name, and a room thermostat reads best as just the room.
+    carries the Plant name, and a zone thermostat reads best as just the zone.
     """
     if runtime.plant_device_id is None:
         raise RuntimeError("The Hydronicus Plant device must exist before object entities load.")

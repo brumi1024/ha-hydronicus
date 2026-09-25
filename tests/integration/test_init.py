@@ -22,13 +22,20 @@ from custom_components.hydronicus.const import (
     DOMAIN,
 )
 from custom_components.hydronicus.runtime import HydronicRuntime
-from tests.integration.plant_fixtures import manifold_entry, manifold_rooms, subentry_id_for
+from tests.integration.plant_fixtures import (
+    manifold_entry,
+    manifold_zones,
+    plant_entry,
+    subentry_id_for,
+)
 
 
 async def test_setup_unload_and_reload_entry(hass) -> None:
     """The integration should load, unload, and reload an empty plant cleanly."""
     entry = MockConfigEntry(
         domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
         title="Hydronic plant",
         data={
             CONF_NAME: "Hydronic plant",
@@ -48,30 +55,75 @@ async def test_setup_unload_and_reload_entry(hass) -> None:
     assert await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def test_config_entry_migrates_from_pre_release_1_1_to_version_3(hass) -> None:
-    """The pre-release 1.1 entry contract is upgraded before runtime setup."""
+def test_config_entry_version_is_4_0() -> None:
+    assert (CONFIG_ENTRY_VERSION, CONFIG_ENTRY_MINOR_VERSION) == (4, 0)
+
+
+@pytest.mark.parametrize(("version", "minor_version"), [(1, 1), (2, 0), (3, 0)])
+async def test_an_entry_from_an_earlier_development_version_is_refused(
+    hass, caplog: pytest.LogCaptureFixture, version: int, minor_version: int
+) -> None:
+    """Earlier storage versions are not migrated, and the log says to set the Plant up again."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        title="Hydronic plant",
-        version=1,
-        minor_version=1,
+        title="Old plant",
+        version=version,
+        minor_version=minor_version,
         data={
-            CONF_NAME: "Hydronic plant",
+            CONF_NAME: "Old plant",
             CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
             CONF_DRY_RUN: True,
         },
     )
     entry.add_to_hass(hass)
 
-    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
 
-    assert entry.version == 3
-    assert entry.minor_version == 0
-    assert entry.data[CONF_DRY_RUN] is True
+    assert entry.state is ConfigEntryState.MIGRATION_ERROR
+    assert (entry.version, entry.minor_version) == (version, minor_version)
+    assert not hasattr(entry, "runtime_data")
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == "ERROR" and record.name == "custom_components.hydronicus"
+    ]
+    assert len(errors) == 1
+    assert "Old plant" in errors[0]
+    assert "earlier development version" in errors[0]
+    assert "remove it and set the Plant up again" in errors[0]
+
+
+async def test_setup_rejects_an_unsupported_subentry_type(hass) -> None:
+    """A handle of a type Hydronicus does not know, such as ``room``, is an invalid graph."""
+    entry = manifold_entry()
+    bedroom = manifold_zones(["Living room", "Bedroom"])[1].zone_id
+    corrupt = MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
+        data=dict(entry.data),
+        subentries_data=[
+            *(
+                subentry.as_dict()
+                for subentry in entry.subentries.values()
+                if subentry.unique_id != bedroom
+            ),
+            {**entry.subentries[subentry_id_for(bedroom)].as_dict(), "subentry_type": "room"},
+        ],
+    )
+    corrupt.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryError) as error:
+        await async_setup_entry(hass, corrupt)
+
+    assert error.value.translation_key == "invalid_stored_graph"
+    placeholders = error.value.translation_placeholders
+    assert "Unsupported config subentry type 'room'" in placeholders["error"]
 
 
 async def test_setup_returns_unauthorized_active_entry_to_dry_run(hass) -> None:
-    """A stored active version 2 entry must still carry exact output authorization."""
+    """A stored active entry must still carry exact output authorization."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Hydronic plant",
@@ -103,6 +155,8 @@ async def test_setup_failure_stops_partial_runtime_and_clears_entry(hass, monkey
 
     entry = MockConfigEntry(
         domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
         title="Hydronic plant",
         data={
             CONF_NAME: "Hydronic plant",
@@ -131,10 +185,8 @@ async def test_setup_failure_stops_partial_runtime_and_clears_entry(hass, monkey
 async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
     """Configured climate entities must disappear with their parent entry."""
     hass.states.async_set("sensor.test_zone_temperature", "18.0")
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Hydronic plant",
-        data={
+    entry = plant_entry(
+        {
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
             CONF_DRY_RUN: True,
@@ -184,6 +236,8 @@ async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
                 ],
             },
         },
+        title="Hydronic plant",
+        source_handles=False,
     )
     entry.add_to_hass(hass)
 
@@ -245,6 +299,8 @@ async def test_unload_waits_for_inflight_refresh_before_detaching_runtime(
 
     entry = MockConfigEntry(
         domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
         title="Hydronic plant",
         data={
             CONF_NAME: "Hydronic plant",
@@ -279,6 +335,8 @@ async def test_unload_entry_leaves_runtime_data_cleanup_to_home_assistant(hass) 
     """The integration stops the runtime, and Home Assistant clears runtime data."""
     entry = MockConfigEntry(
         domain=DOMAIN,
+        version=CONFIG_ENTRY_VERSION,
+        minor_version=CONFIG_ENTRY_MINOR_VERSION,
         title="Hydronic plant",
         data={
             CONF_NAME: "Hydronic plant",
@@ -324,9 +382,9 @@ async def test_setup_with_invalid_stored_graph_raises_translated_config_entry_er
     """A stored graph that cannot be decoded or compiled fails setup with a translation."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        title="Hydronic plant",
         version=CONFIG_ENTRY_VERSION,
         minor_version=CONFIG_ENTRY_MINOR_VERSION,
+        title="Hydronic plant",
         data={
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
@@ -349,9 +407,9 @@ async def test_setup_with_invalid_stored_graph_raises_translated_config_entry_er
     assert entry.error_reason_translation_key == "invalid_stored_graph"
 
 
-async def test_setup_removes_the_closure_of_a_room_deleted_while_unloaded(hass) -> None:
-    """A zone whose room handle disappeared was deleted, so setup removes its closure."""
-    living, bedroom = manifold_rooms(("Living room", "Bedroom"))
+async def test_setup_removes_the_closure_of_a_zone_deleted_while_unloaded(hass) -> None:
+    """A zone whose zone handle disappeared was deleted, so setup removes its closure."""
+    living, bedroom = manifold_zones(("Living room", "Bedroom"))
     entry = manifold_entry(dry_run=False)
     entry.add_to_hass(hass)
     assert hass.config_entries.async_remove_subentry(entry, subentry_id_for(bedroom.zone_id))
@@ -364,3 +422,25 @@ async def test_setup_removes_the_closure_of_a_room_deleted_while_unloaded(hass) 
     assert entry.data[CONF_DRY_RUN] is True
     assert CONF_OUTPUT_AUTHORIZATION not in entry.data
     assert set(entry.runtime_data.plant.zones) == {living.zone_id}
+
+
+async def test_a_runtime_listener_formats_as_a_short_name(hass) -> None:
+    # Home Assistant formats a listener into its job name, such as the
+    # "onetime listen" job of the stop listener. The runtime holds the removal
+    # partials of Home Assistant's shared listener tables, so a generated repr
+    # expanded every other Plant's runtime through them and, with a few Plants,
+    # a reload hung Home Assistant while it built a repr of many gigabytes.
+    first = manifold_entry()
+    second = plant_entry(dict(first.data, plant_id="00000000-0000-4000-8000-0000000000ff"))
+    for zone in manifold_zones(("Living room", "Bedroom")):
+        hass.states.async_set(zone.temperature_sensor, "20.0")
+    for entry in (first, second):
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    runtime = first.runtime_data
+    listener = str(runtime._async_handle_homeassistant_stop)
+    assert len(listener) < 300
+    assert runtime.plant_id in listener
+    assert runtime.name in repr(runtime)

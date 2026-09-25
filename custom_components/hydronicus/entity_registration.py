@@ -1,7 +1,7 @@
 """Entity provision and stale registry cleanup for one Plant setup.
 
 Which entities a Plant provides depends on its graph: cooling entities exist
-only for rooms that can cool, and source entities only when the Plant has a
+only for zones that can cool, and source entities only when the Plant has a
 source. Every platform adds its entities through ``async_add_plant_entities``,
 which records the unique IDs it provided, so setup can then remove the
 registry entries of this Plant that no platform provides any more.

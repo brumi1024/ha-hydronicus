@@ -1,6 +1,6 @@
 # Plant file
 
-A plant file describes one whole Plant in YAML: its pumps, rooms, loops, valves, sources, and source selector.
+A plant file describes one whole Plant in YAML: its pumps, zones and the Home Assistant areas they cover, loops, valves, sources, and source selector.
 It is the portable form of a Plant.
 Exporting a Plant and importing the file rebuilds it with the same object IDs, and therefore the same entity IDs, on any Home Assistant instance.
 
@@ -24,21 +24,21 @@ The `hydronicus.export_plant` action is available only to administrators.
 Run it from **Settings > Tools > Actions** with the Plant selected; Home Assistant shows the response of this response-only action automatically.
 
 Import and edit both show a review before anything is saved.
-The review lists the rooms or the changes, how the Plant connects, and the warnings.
+The review lists the zones or the changes, how the Plant connects, and the warnings.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before saving.
 When you edit an existing Plant, only the warnings the edit introduces need that confirmation, because the Plant's earlier warnings were confirmed when they appeared.
 A Plant created from a file always starts in Dry run, and applying an edited file returns the Plant to Dry run.
 
 ## A first example
 
-This file describes a manifold with one pump and three rooms, each with its own loop and valve:
+This file describes a manifold with one pump and three zones, each with its own loop and valve:
 
 ```yaml
 hydronicus: 1
 name: Manifold
 pumps:
   manifold_pump: switch.manifold_pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     loops:
@@ -59,8 +59,8 @@ rooms:
         pump: manifold_pump
 ```
 
-The rooms get a Hydronicus thermostat, because none names another thermostat.
-Each valve entity in a loop's `valves` list creates a valve of that room named after the loop, such as `Living loop valve`.
+The zones get a Hydronicus thermostat, because none names another thermostat.
+Each valve entity in a loop's `valves` list creates a valve of that zone named after the loop, such as `Living loop valve`.
 Every loop uses the same pump, so the review shows a warning that the shared pump limits independent control, and you confirm it with **I understand these warnings**.
 
 The [trial kit plant file](examples/trial/plant.yaml) is a smaller file of the same shape, bound to the synthetic entities of the [trial package](examples/trial/package.yaml).
@@ -75,7 +75,7 @@ The [trial kit plant file](examples/trial/plant.yaml) is a smaller file of the s
 | `pumps` | no | Slug to pump. |
 | `valves` | no | Slug to shared valve, owned by the Plant. |
 | `loops` | no | Slug to shared loop, owned by the Plant. |
-| `rooms` | no | Slug to room. |
+| `zones` | no | Slug to zone. |
 | `sources` | no | Slug to source. |
 | `source_selector` | no | The source selector. |
 
@@ -88,8 +88,8 @@ These belong to one installation, so an imported Plant always starts in Dry run 
 
 Every object is written under a slug, such as `living_room` or `manifold_pump`.
 A slug starts with a lowercase letter and contains only lowercase letters, digits, and underscores.
-Slugs are unique per kind across the whole file: all valves share one namespace, all loops share one namespace, and rooms, pumps, and sources each have their own.
-A room-owned valve and a shared valve therefore cannot use the same slug.
+Slugs are unique per kind across the whole file: all valves share one namespace, all loops share one namespace, and zones, pumps, and sources each have their own.
+A zone-owned valve and a shared valve therefore cannot use the same slug.
 
 Other objects refer to an object by its slug, so a loop names its pump as `pump: manifold_pump`.
 References may point forward to an object written later in the file.
@@ -124,7 +124,7 @@ A valve is either an entity ID, or a mapping of the stored valve fields:
 | `position_feedback_entity` | Optional sensor that reports the measured valve position. |
 | `position_feedback_max_age_seconds` | Position feedback older than this is stale. |
 
-A valve written under a room's `valves` belongs to that room.
+A valve written under a zone's `valves` belongs to that zone.
 A valve written under the top-level `valves` is a shared valve, owned by the Plant.
 
 A loop can also create valves inline, as described below, so many files never write a `valves` section at all.
@@ -147,34 +147,35 @@ It creates a new valve with the same owner as the loop, with slug `<loop slug>_v
 A second inline valve in the same loop gets `<loop slug>_valve_2` and `<loop name> valve 2`, and so on.
 An inline valve keeps the default opening time; write it out under `valves` to set other fields.
 
-A loop written under a room's `loops` is a private loop of that room.
-It also delivers heat to that room, so it accepts two more keys for that connection, its Delivery Route:
+A loop written under a zone's `loops` is a private loop of that zone.
+It also delivers heat to that zone, so it accepts two more keys for that connection, its Delivery Route:
 
 | Field | Value |
 | --- | --- |
 | `route_id` | Optional UUID of the route. |
-| `route_enabled` | `false` keeps the loop but stops the room from requesting it. Defaults to `true`. |
+| `route_enabled` | `false` keeps the loop but stops the zone from requesting it. Defaults to `true`. |
 
 A loop written under the top-level `loops` is a shared loop, owned by the Plant.
-Rooms connect to it through their `shared_loops`.
+Zones connect to it through their `shared_loops`.
 
-## Rooms
+## Zones
 
-A room is one Comfort Zone with its thermostat, its sensors, and its loops:
+A zone is the space one thermostat controls, with its thermostat, its areas, its sensors, and its loops:
 
 | Field | Value |
 | --- | --- |
-| `thermostat` | The room's thermostat. Defaults to a Hydronicus thermostat with default settings. |
-| `temperature_sensors` | A list of entity IDs or sensor mappings. Required for a Hydronicus thermostat. |
-| `humidity_sensors` | A list of entity IDs or sensor mappings; cooling uses the highest usable reading for the dew point. |
+| `thermostat` | The zone's thermostat. Defaults to a Hydronicus thermostat with default settings. |
+| `areas` | A list of Home Assistant areas the zone covers, each an area ID or an area mapping. See [Areas](#areas). |
+| `temperature_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas. A Hydronicus thermostat needs a temperature sensor or an area. |
+| `humidity_sensors` | A list of entity IDs or sensor mappings, besides the sensors of the areas; cooling uses the highest usable reading for the dew point. |
 | `temperature_aggregation` | `mean`, `median`, `minimum`, `maximum`, `designated_reference`, or `weighted_mean`. Defaults to `mean`. |
-| `valves` | Slug to private valve of the room. |
-| `loops` | Slug to private loop of the room. |
-| `shared_loops` | A list of shared loop slugs that also deliver heat to the room. |
+| `valves` | Slug to private valve of the zone. |
+| `loops` | Slug to private loop of the zone. |
+| `shared_loops` | A list of shared loop slugs that also deliver heat to the zone. |
 
-A room needs at least one enabled loop, private or shared.
+A zone needs at least one enabled loop, private or shared.
 
-`thermostat` is either a `climate.*` entity ID, for an existing Home Assistant thermostat that owns the room's demand, or a mapping:
+`thermostat` is either a `climate.*` entity ID, for an existing Home Assistant thermostat that owns the zone's demand, or a mapping:
 
 | Field | Value |
 | --- | --- |
@@ -195,15 +196,69 @@ A sensor is either an entity ID or a mapping of the stored sensor fields:
 | Field | Value |
 | --- | --- |
 | `entity_id` | Required. |
-| `required` | A required sensor that is stale or unavailable blocks the room. Defaults to `true`. |
-| `designated_reference` | Used alone by `designated_reference` aggregation. Exactly one sensor must set it for that policy. |
+| `required` | A required sensor that is stale or unavailable blocks the zone. Defaults to `true`. |
+| `designated_reference` | Used alone by `designated_reference` aggregation. Exactly one sensor or area must set it for that policy. |
 | `weight` | Relative weight in `weighted_mean` temperature aggregation, ignored for humidity sensors. |
 | `calibration_offset` | Added to every reading before aggregation. |
 | `max_age_seconds` | A reading older than this is stale. |
 
 Items of `shared_loops` are loop slugs, or mappings with `loop` and the optional `route_id` and `route_enabled`.
 
-This file uses the long forms: sensor metadata, thermostat settings, a room valve with feedback, and an external thermostat.
+### Areas
+
+An item of `areas` is the ID of a Home Assistant area, or a mapping of `area` and the area's settings in this zone:
+
+| Field | Value |
+| --- | --- |
+| `area` | Required in a mapping. The area ID, such as `living_room`. |
+| `required` | A required area temperature that is stale or unavailable blocks the zone. Defaults to `false`. |
+| `designated_reference` | The area's temperature is used alone by `designated_reference` aggregation. Defaults to `false`. |
+| `weight` | Relative weight in `weighted_mean` aggregation. Defaults to 1. |
+| `max_age_seconds` | A reading older than this is stale. Defaults to 1800. |
+
+An area ID is the ID Home Assistant gave the area when it was created, which is its first name in lowercase with underscores, such as `living_room` for `Living room`; renaming the area keeps its ID.
+Each area appears at most once in a zone, and the same area may appear in several zones.
+
+The file names only the area, never its sensors.
+The zone follows the temperature sensor and the humidity sensor that the area names in its Home Assistant area settings, so the same file works on another instance whose areas name other sensors.
+The settings apply to the area's temperature sensor, and the area's humidity sensor is always required, with the area's `max_age_seconds`.
+[Areas](configuration.md#areas) in the configuration guide describes how a zone follows them.
+
+This file has a ground floor zone over three areas, with the dining room as its reference:
+
+```yaml
+hydronicus: 1
+name: Home
+pumps:
+  pump: switch.manifold_pump
+zones:
+  ground_floor:
+    areas:
+      - living_room
+      - area: kitchen
+        weight: 0.5
+      - area: dining_room
+        designated_reference: true
+    temperature_aggregation: designated_reference
+    loops:
+      ground_floor_loop:
+        valves: [switch.ground_floor_valve]
+        pump: pump
+```
+
+The review checks the areas against the Home Assistant instance you import into:
+
+| Review warning | Needs a confirmation |
+| --- | --- |
+| An area that does not exist, such as `Zone Ground floor covers area study, which does not exist in Home Assistant, so it adds no reading until the area exists. Home Assistant makes a new area's ID from its name, so an area named Study gets this ID.` | Yes |
+| An area without a humidity sensor in a zone that a cooling loop serves | Yes |
+| An area without a temperature sensor | No |
+| An area that several zones cover | No |
+
+A missing area needs a confirmation, like an entity that does not exist yet, so a file can move to an instance whose areas you create afterwards.
+A Hydronicus thermostat over missing areas alone has no reading, so it stays blocked until an area names a temperature sensor, and a repair says so.
+
+This file uses the long forms: sensor metadata, thermostat settings, a zone valve with feedback, and an external thermostat.
 
 ```yaml
 hydronicus: 1
@@ -212,7 +267,7 @@ pumps:
   upstairs_pump:
     entity_id: switch.upstairs_pump
     overrun_seconds: 180
-rooms:
+zones:
   bedroom:
     thermostat:
       initial_target_temperature: 20
@@ -248,23 +303,23 @@ rooms:
 
 ## Ownership and shared equipment
 
-Every object has one owner: the Plant or one room.
+Every object has one owner: the Plant or one zone.
 
-- A room owns itself, its routes, and the valves and loops written under it.
+- A zone owns itself, its routes, and the valves and loops written under it.
 - Pumps, sources, the source selector, and the top-level valves and loops belong to the Plant and are called Plant equipment.
-- A private loop may use the valves of its own room and shared valves.
+- A private loop may use the valves of its own zone and shared valves.
 - A shared loop may use only shared valves.
-- A room may connect to its own loops and to shared loops, never to another room's loop.
+- A zone may connect to its own loops and to shared loops, never to another zone's loop.
 
-References point only from a room toward the Plant, never from the Plant or another room into a room.
-This makes ownership deletion-closed: removing a room removes exactly the room, its routes, and its private loops and valves, and always leaves a valid Plant.
-It is why Home Assistant can delete a room without asking Hydronicus first.
+References point only from a zone toward the Plant, never from the Plant or another zone into a zone.
+This makes ownership deletion-closed: removing a zone removes exactly the zone, its routes, and its private loops and valves, and always leaves a valid Plant.
+It is why Home Assistant can delete a zone without asking Hydronicus first.
 
-The Home Assistant UI creates and edits rooms, their private loops and valves, pumps, and Dry run.
-Shared loops, shared valves, and the source selector are created and edited only through the plant file, although room forms can select existing shared loops and shared valves.
+The Home Assistant UI creates and edits zones, their private loops and valves, pumps, and Dry run.
+Shared loops, shared valves, and the source selector are created and edited only through the plant file, although zone forms can select existing shared loops and shared valves.
 Sources can be written in the file or added in the UI as **Source** entries.
 
-This file has a shared hall loop used by two rooms, and a Bedroom loop that also needs the shared hall valve open:
+This file has a shared hall loop used by two zones, and a Bedroom loop that also needs the shared hall valve open:
 
 ```yaml
 hydronicus: 1
@@ -279,7 +334,7 @@ loops:
   hall_loop:
     valves: [hall_valve]
     pump: pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     shared_loops: [hall_loop]
@@ -297,14 +352,14 @@ rooms:
 Bedroom keeps its connection to the hall loop but does not request it, because the route is disabled.
 The review warns that the hall valve is shared, because one valve serving two loops cannot give them independent flow.
 
-One room can also have several private loops that share a room valve:
+One zone can also have several private loops that share a zone valve:
 
 ```yaml
 hydronicus: 1
-name: Big room
+name: Big zone
 pumps:
   pump: switch.pump
-rooms:
+zones:
   hall:
     temperature_sensors: [sensor.hall_temperature]
     valves:
@@ -344,7 +399,7 @@ hydronicus: 1
 name: Sources
 pumps:
   pump: switch.pump
-rooms:
+zones:
   living_room:
     temperature_sensors: [sensor.living_temperature]
     humidity_sensors: [sensor.living_humidity]
@@ -392,11 +447,12 @@ An object with a new slug and no `id` is a new object, and an object whose `id` 
 Export writes the canonical form of a Plant:
 
 - every object in its long form, with explicit `id` and `name`, and every route with its `route_id`;
+- every area as its bare ID when every setting has its default, and as a mapping otherwise;
 - `route_enabled` only when it is `false`;
 - the stored fields exactly as stored, with collections sorted by slug;
 - slugs made from names.
 
-This is the export of a one-room Plant:
+This is the export of a one-zone Plant:
 
 ```yaml
 hydronicus: 1
@@ -407,7 +463,7 @@ pumps:
     id: a33aefa6-f061-56eb-b7b6-318fd6d13252
     name: Pump
     entity_id: switch.pump
-rooms:
+zones:
   bedroom:
     id: 510eb94b-7003-5859-80c7-658755af8533
     name: Bedroom
@@ -434,7 +490,7 @@ Export makes each slug from the object's name:
 
 1. The name is lowercased and accented letters are folded to ASCII, so `Ärkély` becomes `arkely`.
 2. Every run of other characters becomes `_`, and leading and trailing underscores are removed.
-3. A slug that would start with a digit gets its kind as a prefix: `room_`, `loop_`, `valve_`, `pump_`, or `source_`, so a pump named `2nd floor pump` becomes `pump_2nd_floor_pump`.
+3. A slug that would start with a digit gets its kind as a prefix: `zone_`, `loop_`, `valve_`, `pump_`, or `source_`, so a pump named `2nd floor pump` becomes `pump_2nd_floor_pump`.
 4. A name with nothing left, such as `!!!`, becomes the kind itself, such as `valve`.
 5. When two objects of one kind get the same slug, the later one in name and ID order gets `_2`, the next `_3`, and so on, such as `arkely_valve_2`.
 
@@ -443,7 +499,7 @@ Exporting a file you imported gives the canonical form of that file, and importi
 ## Errors
 
 A file that cannot be imported keeps the form open with the error `The plant file is not valid at <path>: <message>`.
-The path is a dotted list of keys, with list items as numbers, such as `rooms.bedroom.loops.bedroom_loop.pump` for an unknown pump slug, or `rooms.Living room` for a slug with capitals and a space.
+The path is a dotted list of keys, with list items as numbers, such as `zones.bedroom.loops.bedroom_loop.pump` for an unknown pump slug, or `zones.Living room` for a slug with capitals and a space.
 A problem with the whole Plant, such as invalid YAML or a topology that does not compile, is reported at the top level.
 
 Typical problems and where they are reported:
@@ -452,13 +508,14 @@ Typical problems and where they are reported:
 | --- | --- |
 | Unknown key, invalid slug, or duplicate slug | That key. |
 | Unknown valve, loop, or pump slug | The reference. |
-| A room valve used by another room's loop, or by a shared loop | The reference. |
-| A room without an enabled loop | The room. |
-| A Hydronicus thermostat without temperature sensors | The room's `temperature_sensors`. |
+| A zone valve used by another zone's loop, or by a shared loop | The reference. |
+| A zone without an enabled loop | The zone. |
+| A Hydronicus thermostat without temperature sensors or areas | The zone's `temperature_sensors`. |
+| An area item that is neither an area ID nor a mapping with `area`, or an area listed twice in one zone | That item of `areas`, such as `zones.ground_floor.areas.1`. |
 | The same valve or pump entity bound twice | The second binding of that entity. |
 | Cooling without a supply or surface reference | The loop. |
-| Cooling without room temperature or humidity sensors | The room's `temperature_sensors` or `humidity_sensors`. |
-| Designated reference without exactly one reference sensor | The room's `temperature_sensors`. |
+| Cooling without a zone temperature or humidity sensor, where an area counts as both | The zone's `temperature_sensors` or `humidity_sensors`. |
+| Designated reference without exactly one reference sensor or area | The zone's `temperature_sensors`. |
 
 A file that binds an entity provided by Hydronicus itself is refused with the path of that binding, because it would feed the Plant back into itself.
 An edited file identical to the current Plant stops with **The plant file matches the current Plant, so nothing was changed.**

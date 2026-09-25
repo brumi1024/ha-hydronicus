@@ -35,6 +35,7 @@ from .core.topology import thermostat_hvac_modes
 from .entity_device import topology_device_info
 from .entity_registration import async_add_plant_entities
 from .runtime import HydronicRuntime
+from .zone_area import zone_climate_unique_id
 
 # The runtime serializes thermostat changes under its own operation lock.
 PARALLEL_UPDATES = 0
@@ -67,7 +68,7 @@ class ZoneClimate(ClimateEntity, RestoreEntity):
         self._entry = entry
         runtime = entry.runtime_data
         self._zone_id = zone_id
-        self._attr_unique_id = f"{runtime.plant_id}_{zone_id}_climate"
+        self._attr_unique_id = zone_climate_unique_id(runtime.plant_id, zone_id)
         # No name or translation key: the thermostat is the Zone device's main
         # feature and takes the device name, as before.
         self._attr_device_info = topology_device_info(runtime, "zone", zone_id, name)
