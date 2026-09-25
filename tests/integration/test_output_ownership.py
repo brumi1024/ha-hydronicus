@@ -27,15 +27,11 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
-    CONF_CIRCUIT_IDS,
     CONF_DRY_RUN,
     CONF_DRY_RUN_CONFIRMATION,
-    CONF_ENTITY_ID,
     CONF_NAME,
-    CONF_OPENING_TIME,
     CONF_PLANT_ID,
     CONF_PUMP_ENTITY,
-    CONF_PUMP_OVERRUN,
     CONF_SOURCE_DEMAND_ENTITY,
     CONF_SOURCE_HYSTERESIS,
     CONF_SOURCE_MAXIMUM_AGE,
@@ -43,12 +39,7 @@ from custom_components.hydronicus.const import (
     CONF_SOURCE_PRIORITY,
     CONF_SOURCE_TYPE,
     CONF_TEMPERATURE_SENSORS,
-    CONF_VALVE_ENTITY,
-    CONF_VALVE_OPENING_TIME,
-    CONFIG_ENTRY_MINOR_VERSION,
-    CONFIG_ENTRY_VERSION,
     DOMAIN,
-    SUBENTRY_TYPE_ACTUATOR,
     SUBENTRY_TYPE_SOURCE,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
@@ -58,6 +49,7 @@ from custom_components.hydronicus.entry_configuration import (
     output_authorization,
 )
 from custom_components.hydronicus.runtime import HydronicRuntime
+from tests.integration.plant_fixtures import plant_entry
 
 SHARED_VALVE = "switch.valve_living"
 SHARED_PUMP = "switch.pump"
@@ -111,13 +103,7 @@ def _plant_data(
 
 
 def _entry(data: dict[str, Any]) -> MockConfigEntry:
-    return MockConfigEntry(
-        domain=DOMAIN,
-        title=data[CONF_NAME],
-        data=data,
-        version=CONFIG_ENTRY_VERSION,
-        minor_version=CONFIG_ENTRY_MINOR_VERSION,
-    )
+    return plant_entry(data, title=data[CONF_NAME])
 
 
 def _zone_id(entry: MockConfigEntry) -> str:
@@ -224,6 +210,9 @@ async def test_reconfigure_confirmation_shows_the_output_conflict(hass: HomeAssi
     )
 
     result = await second.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_DRY_RUN: False}
     )
@@ -598,6 +587,9 @@ async def test_reconfigure_shows_a_held_plant_in_dry_run(hass: HomeAssistant) ->
     )
 
     result = await second.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
     (dry_run_key,) = [key for key in result["data_schema"].schema if key == CONF_DRY_RUN]
     assert dry_run_key.default() is True
     result = await hass.config_entries.flow.async_configure(
@@ -695,97 +687,12 @@ async def _dry_run_pair(hass: HomeAssistant) -> MockConfigEntry:
     return second
 
 
-async def test_actuator_flow_warns_about_an_entity_bound_by_another_plant(
-    hass: HomeAssistant,
-) -> None:
-    """Sharing a valve with another Plant is a reviewed warning, not a blocking error.
-
-    Dry run Plants may share entities with a live Plant, for example to compare
-    a draft configuration, so confirming the warning saves the actuator.
-    """
-    second = await _dry_run_pair(hass)
-    circuit_id = second.data["topology"]["circuits"][0]["id"]
-    user_input = {
-        CONF_NAME: "Borrowed valve",
-        CONF_ENTITY_ID: SHARED_VALVE,
-        CONF_OPENING_TIME: 0,
-        CONF_CIRCUIT_IDS: [circuit_id],
-    }
-
-    result = await hass.config_entries.subentries.async_init(
-        (second.entry_id, SUBENTRY_TYPE_ACTUATOR),
-        context={"source": config_entries.SOURCE_USER},
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=user_input
-    )
-
-    assert result["step_id"] == "review"
-    assert not result.get("errors")
-    warnings = result["description_placeholders"]["warnings"]
-    assert SHARED_VALVE in warnings
-    assert "Plant 1" in warnings
-    assert not second.subentries
-
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={"confirm": False}
-    )
-    assert result["errors"] == {"base": "confirm_required"}
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-
-    assert result["type"] == "create_entry"
-    assert len(second.subentries) == 1
-
-
-async def test_actuator_reconfigure_warns_about_an_entity_bound_by_another_plant(
-    hass: HomeAssistant,
-) -> None:
-    """Moving an existing actuator onto a shared entity goes through the same review."""
-    second = await _dry_run_pair(hass)
-    circuit_id = second.data["topology"]["circuits"][0]["id"]
-    result = await hass.config_entries.subentries.async_init(
-        (second.entry_id, SUBENTRY_TYPE_ACTUATOR),
-        context={"source": config_entries.SOURCE_USER},
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Extra valve",
-            CONF_ENTITY_ID: "switch.other_boiler",
-            CONF_OPENING_TIME: 0,
-            CONF_CIRCUIT_IDS: [circuit_id],
-        },
-    )
-    assert result["type"] == "create_entry"
-    (subentry_id,) = second.subentries
-
-    result = await second.start_subentry_reconfigure_flow(hass, subentry_id)
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Extra valve",
-            CONF_ENTITY_ID: SHARED_VALVE,
-            CONF_OPENING_TIME: 0,
-            CONF_CIRCUIT_IDS: [circuit_id],
-        },
-    )
-    assert result["step_id"] == "review"
-    assert "Plant 1" in result["description_placeholders"]["warnings"]
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-
-    assert result["type"] == "abort"
-    assert result["reason"] == "reconfigure_successful"
-
-
 async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
     hass: HomeAssistant,
 ) -> None:
     """A source demand switch that another Plant binds is a reviewed warning."""
     second = await _dry_run_pair(hass)
+    handles = len(second.subentries)
 
     result = await hass.config_entries.subentries.async_init(
         (second.entry_id, SUBENTRY_TYPE_SOURCE),
@@ -809,7 +716,7 @@ async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
     warnings = result["description_placeholders"]["warnings"]
     assert SHARED_SOURCE in warnings
     assert "Plant 1" in warnings
-    assert not second.subentries
+    assert len(second.subentries) == handles
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input={"confirm": False}
@@ -820,33 +727,30 @@ async def test_source_flow_warns_about_a_demand_entity_bound_by_another_plant(
     )
 
     assert result["type"] == "create_entry"
-    assert len(second.subentries) == 1
+    assert len(second.subentries) == handles + 1
 
 
 async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     hass: HomeAssistant,
 ) -> None:
-    """The initial review lists a valve or pump that another Plant binds, and still saves."""
+    """The setup review lists a valve or pump that another Plant binds, and saves once confirmed."""
     _record_switch_calls(hass)
     await _set_up_one_by_one(hass, _plant_data(1, sensor="sensor.cold_room", live=False))
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={"name": "Second plant"}
+        result["flow_id"], user_input={"next_step_id": "guided"}
     )
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        user_input={"name": "Study", CONF_TEMPERATURE_SENSORS: ["sensor.warm_room"]},
+        result["flow_id"], user_input={"name": "Second plant", CONF_PUMP_ENTITY: SHARED_PUMP}
     )
-    assert result["step_id"] == "circuit"
+    assert result["step_id"] == "room"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
-            "name": "Study loop",
-            CONF_VALVE_ENTITY: "switch.other_valve",
-            CONF_PUMP_ENTITY: SHARED_PUMP,
-            CONF_VALVE_OPENING_TIME: 0,
-            CONF_PUMP_OVERRUN: 0,
+            "name": "Study",
+            CONF_TEMPERATURE_SENSORS: ["sensor.warm_room"],
+            "valves": ["switch.other_valve"],
         },
     )
 
@@ -857,7 +761,10 @@ async def test_initial_setup_warns_about_equipment_bound_by_another_plant(
     assert "Plant 1" in warnings
     assert "switch.other_valve" not in warnings
 
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+    # Sharing an output with another Plant is a warning that needs confirming.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
 
     assert result["type"] == "create_entry"
     assert result["data"][CONF_DRY_RUN] is True

@@ -1,0 +1,16 @@
+hydronicus: 1
+name: Big room
+pumps:
+  pump: switch.pump
+rooms:
+  hall:
+    temperature_sensors: [sensor.hall_temperature]
+    valves:
+      hall_zone_valve: switch.hall_zone_valve
+    loops:
+      north_loop:
+        valves: [hall_zone_valve, switch.north_valve]
+        pump: pump
+      south_loop:
+        valves: [hall_zone_valve, switch.south_valve]
+        pump: pump

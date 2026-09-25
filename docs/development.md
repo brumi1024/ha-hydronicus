@@ -5,14 +5,14 @@ The lockfile is the source of truth for exact development and test dependency ve
 
 ## First setup
 
-Install `uv`, then run:
+Install `uv` and Node.js with npm, then run:
 
 ```console
 make bootstrap
 make hooks
 ```
 
-`make bootstrap` creates or updates `.venv` from `uv.lock`.
+`make bootstrap` creates or updates `.venv` from `uv.lock` and installs the frontend packages from `frontend/package-lock.json`.
 `make hooks` installs the shared pre-commit hooks after bootstrapping the environment.
 
 ## Daily commands
@@ -31,26 +31,35 @@ The CI format check covers the same complete source tree.
 
 ## Canonical configuration and migration
 
-Config-entry version 2 and minor version 0 are the supported persisted contract.
-The parent config entry owns one complete UUID-backed graph in `topology`, including every Plant, Zone, Circuit, Delivery Route, Valve, Pump, Source, and selector relationship.
-The `subentry_objects` map records which graph objects are exposed through Home Assistant config subentries.
-Each version 2 subentry is only a stable Home Assistant ownership handle containing `{"id": "<object UUID>"}`.
+Config-entry version 3 and minor version 0 are the supported persisted contract.
+The parent config entry owns one complete UUID-backed graph in `topology`, including every Zone, Circuit, Delivery Route, Valve, Pump, Source, and the source selector.
+`room_objects` maps every room-owned Circuit and Valve to its owning Zone, and every other object belongs to the Plant, as `core/ownership.py` defines.
+`subentry_objects` records which graph objects are exposed through Home Assistant config subentries.
+Each Zone has exactly one `room` subentry, and a source may have one `source` subentry; each subentry is only a stable ownership handle containing `{"id": "<object UUID>"}`.
 No topology field is duplicated between the parent graph and a subentry.
-Fresh UI setup, reconfiguration, and deletion compile the proposed complete graph before it is persisted.
-If Home Assistant removes a subentry while a Plant is active, Hydronicus completes the ordered transition to Dry run against the old graph before deleting that object from the parent graph.
+Ownership is deletion-closed: removing a room subentry removes exactly its room closure through `without_room` and always leaves a graph that validates and compiles.
+Guided setup, plant file import and edits, room and pump edits, and deletion build the proposed complete graph through the graph edit API in `entry_configuration.py`, which validates ownership and compiles it before it is persisted.
+If Home Assistant removes a subentry while a Plant is active, Hydronicus completes the ordered transition to Dry run against the old graph before deleting that room or source from the parent graph.
 If the shutdown cannot complete, the parent graph and active runtime are retained and the failure is logged.
 Zone observations use typed temperature and humidity metadata collections rather than parallel legacy representations.
 
-Version 1.1 entries are migrated to version 2.0 before runtime setup.
-Migration first makes the complete graph durable in the parent entry, then minimizes each legacy subentry to its object ID.
-Repeating migration after an interruption is safe because both phases are idempotent.
-Migration invalidates output authorization and returns the Plant to Dry run.
+The plant file in `core/plant_document.py` is the portable form of the same graph, documented for users in [the plant file reference](plant-file.md).
+It maps slugs to objects, derives missing IDs with `uuid5` from the Plant ID and the slug, and exports the canonical form with every ID written, so an export and import round trip keeps every object ID and entity ID.
+
+Version 2.0 entries are migrated to version 3.0 before runtime setup, and version 1.1 entries chain through version 2.0 in the same call.
+The version 3 migration first completes version 2 removals of objects whose handles were deleted while the entry was unloaded, then derives ownership, adds room subentries, moves entity and device registrations to their new owners, removes the legacy `zone`, `circuit`, and `actuator` subentries, and writes version 3.0 data last.
+Every step is idempotent, so repeating migration after an interruption resumes to the same result.
+Migration keeps every entity unique ID, entity ID, entity registry customization, and device identifier, invalidates output authorization, and returns the Plant to Dry run.
+The migration is one way; rolling back means restoring a Home Assistant backup.
 Do not add speculative schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
 
 ## Architecture boundaries
 
 `custom_components/hydronicus/core/configuration.py` decodes only the canonical persisted objects into typed domain values.
-`custom_components/hydronicus/entry_configuration.py` owns graph mutation, migration, subentry ownership, and exact output-authorization fingerprints without importing controller policy.
+`custom_components/hydronicus/core/ownership.py` assigns every graph object to the Plant or to one room so that removing a room always leaves a valid graph.
+`custom_components/hydronicus/entry_configuration.py` owns graph mutation, room and source subentry handles, and exact output-authorization fingerprints without importing controller policy.
+`custom_components/hydronicus/migration.py` migrates stored config entries, moves entity and device registrations between subentries, and removes the registrations of objects a graph edit drops.
+`custom_components/hydronicus/config_flow.py` composes the flow step modules in `custom_components/hydronicus/flows/`.
 `custom_components/hydronicus/core/topology.py` indexes objects, validates relationships, and builds deterministic summaries and warnings.
 `custom_components/hydronicus/core/controller.py` is a pure pipeline for heating, cooling, route arbitration, mode changeover, valve planning, pump planning, source coordination, and final assembly.
 Its public evaluation result, diagnostics, deadlines, and command order are the contract; private phase helper structure is not.

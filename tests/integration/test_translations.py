@@ -16,10 +16,12 @@ from __future__ import annotations
 import ast
 import json
 from collections.abc import Iterator, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
@@ -34,11 +36,10 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PLANT_ID,
     DOMAIN,
-    SUBENTRY_TYPE_ACTUATOR,
-    SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
-    SUBENTRY_TYPE_ZONE,
 )
+from tests.integration.plant_fixtures import plant_data, plant_entry
 
 COMPONENT_DIR = Path(__file__).parents[2] / "custom_components" / DOMAIN
 STRINGS_PATH = COMPONENT_DIR / "strings.json"
@@ -105,7 +106,7 @@ class Unresolved(Exception):
     """A key expression that the static pass cannot reduce to literals."""
 
 
-@dataclass
+@dataclass(eq=False)
 class _Module:
     path: Path
     tree: ast.Module
@@ -194,6 +195,13 @@ class _Resolver:
                 values |= self.resolve(module, value, depth + 1)
             return values
         if isinstance(node, ast.Subscript):
+            if (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, int)
+            ):
+                # One element of a helper's tuple result, such as (errors, placeholders).
+                return self._function_returns(module, node.value, depth, index=node.slice.value)
             return self.resolve(module, node.value, depth + 1)
         if isinstance(node, ast.Name):
             return self._resolve_name(module, node, depth)
@@ -238,6 +246,15 @@ class _Resolver:
                     for t in child.targets
                 ):
                     yield child.value
+                # errors, placeholders = helper(...) binds one element of the helper's result.
+                for target in child.targets:
+                    if isinstance(target, ast.Tuple) and isinstance(child.value, ast.Call):
+                        for index, element in enumerate(target.elts):
+                            if isinstance(element, ast.Name) and element.id == name:
+                                yield ast.copy_location(
+                                    ast.Subscript(value=child.value, slice=ast.Constant(index)),
+                                    child,
+                                )
             elif isinstance(child, ast.AnnAssign | ast.NamedExpr):
                 target = child.target
                 if isinstance(target, ast.Name) and target.id == name:
@@ -263,18 +280,32 @@ class _Resolver:
                     values |= self.resolve(other, argument, depth + 1)
         return values
 
-    def _function_returns(self, module: _Module, call: ast.Call, depth: int) -> set[str]:
+    def _function_returns(
+        self, module: _Module, call: ast.Call, depth: int, index: int | None = None
+    ) -> set[str]:
+        """Resolve what a helper returns, or one element of the tuples it returns."""
+        if depth > 8:
+            raise Unresolved(module.location(call))
         name = _call_name(call)
-        for function in ast.walk(module.tree):
-            if (
-                isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
-                and function.name == name
-            ):
-                values: set[str] = set()
-                for node in ast.walk(function):
-                    if isinstance(node, ast.Return) and node.value is not None:
-                        values |= self.resolve(module, node.value, depth + 1)
-                return values
+        # A helper is looked up in the calling module first, then in the modules it imports from.
+        for owner in (module, *(other for other in self.modules if other is not module)):
+            for function in ast.walk(owner.tree):
+                if (
+                    isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and function.name == name
+                ):
+                    values: set[str] = set()
+                    for node in ast.walk(function):
+                        if not isinstance(node, ast.Return) or node.value is None:
+                            continue
+                        value = node.value
+                        if index is not None and isinstance(value, ast.Tuple):
+                            values |= self.resolve(owner, value.elts[index], depth + 1)
+                        elif index is not None and isinstance(value, ast.Call):
+                            values |= self._function_returns(owner, value, depth + 1, index)
+                        else:
+                            values |= self.resolve(owner, value, depth + 1)
+                    return values
         raise Unresolved(module.location(call))
 
 
@@ -332,6 +363,20 @@ def _discover() -> _Discovery:
     subentry_types: dict[str, str] = {}
     for module in modules:
         subentry_types |= _subentry_types(module, resolver)
+    # Flow step mixins live in their own modules, so classes are indexed across modules.
+    all_classes = {
+        node.name: (module, node)
+        for module in modules
+        for node in ast.walk(module.tree)
+        if isinstance(node, ast.ClassDef)
+    }
+
+    def with_mixins(module: _Module, flow: ast.ClassDef) -> list[tuple[_Module, ast.ClassDef]]:
+        owners = [(module, flow)]
+        for base in flow.bases:
+            if isinstance(base, ast.Name) and base.id in all_classes:
+                owners.extend(with_mixins(*all_classes[base.id]))
+        return owners
 
     def keys(module: _Module, node: ast.expr, *, skip_attributes: bool = False) -> set[str]:
         if skip_attributes and isinstance(node, ast.Attribute):
@@ -400,23 +445,22 @@ def _discover() -> _Discovery:
                         f"{module.location(flow)}: repairs flow {flow.name} has no issue fix_flow"
                     )
             steps = found.form_steps.setdefault(prefixes[0] if prefixes else flow.name, set())
-            paths: set[tuple[str, ast.AST]] = set()
-            # A flow also owns the keys of mixins it inherits from the same module.
-            mixins = [
-                classes[base.id]
-                for base in flow.bases
-                if isinstance(base, ast.Name) and base.id in classes
-            ]
-            for node in (node for owner in (flow, *mixins) for node in ast.walk(owner)):
+            paths: set[tuple[str, _Module, ast.AST]] = set()
+            # A flow also owns the keys of the mixins it inherits, from any module.
+            for owner_module, node in (
+                (owner_module, node)
+                for owner_module, owner in with_mixins(module, flow)
+                for node in ast.walk(owner)
+            ):
                 if isinstance(node, ast.Call):
                     name = _call_name(node)
                     if (step_node := _keyword(node, "step_id")) is not None:
-                        for step in keys(module, step_node):
+                        for step in keys(owner_module, step_node):
                             steps.add(step)
-                            paths.add((f"step.{step}", node))
+                            paths.add((f"step.{step}", owner_module, node))
                     if (errors := _keyword(node, "errors")) is not None:
-                        for error in keys(module, errors):
-                            paths.add((f"error.{error}", node))
+                        for error in keys(owner_module, errors):
+                            paths.add((f"error.{error}", owner_module, node))
                     # errors.update(helper(...)) merges the errors a helper returns.
                     if (
                         name == "update"
@@ -425,14 +469,14 @@ def _discover() -> _Discovery:
                         and node.func.value.id == "errors"
                         and node.args
                     ):
-                        for error in keys(module, node.args[0]):
-                            paths.add((f"error.{error}", node))
+                        for error in keys(owner_module, node.args[0]):
+                            paths.add((f"error.{error}", owner_module, node))
                     if name == "async_abort" and (reason := _keyword(node, "reason")):
-                        for abort in keys(module, reason):
-                            paths.add((f"abort.{abort}", node))
+                        for abort in keys(owner_module, reason):
+                            paths.add((f"abort.{abort}", owner_module, node))
                     if name == "AbortFlow" and node.args:
-                        for abort in keys(module, node.args[0]):
-                            paths.add((f"abort.{abort}", node))
+                        for abort in keys(owner_module, node.args[0]):
+                            paths.add((f"abort.{abort}", owner_module, node))
                     implicit = IMPLICIT_ABORTS.get(kind, {}).get(name, set())
                     if name == "async_set_unique_id" and any(
                         kw.arg == "raise_on_progress"
@@ -444,9 +488,9 @@ def _discover() -> _Discovery:
                     if (reason := _keyword(node, "reason")) is not None and name.endswith(
                         "_and_abort"
                     ):
-                        implicit = keys(module, reason)
+                        implicit = keys(owner_module, reason)
                     for abort in implicit:
-                        paths.add((f"abort.{abort}", node))
+                        paths.add((f"abort.{abort}", owner_module, node))
                 elif isinstance(node, ast.Assign):
                     for target in node.targets:
                         if (
@@ -454,12 +498,12 @@ def _discover() -> _Discovery:
                             and isinstance(target.value, ast.Name)
                             and target.value.id == "errors"
                         ):
-                            for error in keys(module, node.value):
-                                paths.add((f"error.{error}", node))
+                            for error in keys(owner_module, node.value):
+                                paths.add((f"error.{error}", owner_module, node))
             # Errors returned through helper methods such as _details_form(error=...).
-            for path, node in sorted(paths, key=lambda item: item[0]):
+            for path, owner_module, node in sorted(paths, key=lambda item: item[0]):
                 for prefix in prefixes:
-                    requirement = _Requirement(f"{prefix}.{path}", module.location(node))
+                    requirement = _Requirement(f"{prefix}.{path}", owner_module.location(node))
                     if kind == "RepairsFlow":
                         found.fix_flow_requirements.append(requirement)
                     else:
@@ -496,23 +540,37 @@ def test_static_discovery_sees_the_flow_contract() -> None:
         "config.abort.reconfigure_successful",
         "config.error.thermostat_loop",
         "config.error.name_required",
-        "selector.thermostat_kind",
+        # Returned inside an (errors, placeholders) tuple by the room basics helper.
+        "config.error.delivery_required",
+        "config.error.invalid_document",
         "selector.temperature_aggregation",
         "selector.source_type",
     } <= paths
-    for subentry_type in ("actuator", "circuit", "zone", "source"):
-        assert f"config_subentries.{subentry_type}.error.dry_run_shutdown_in_progress" in paths
-        assert f"config_subentries.{subentry_type}.abort.reconfigure_successful" in paths
-    assert "config_subentries.zone.error.invalid_zone" in paths
-    assert "config_subentries.zone.error.thermostat_loop" in paths
-    assert found.form_steps["config_subentries.zone"] == {
+    assert "config_subentries.source.error.dry_run_shutdown_in_progress" in paths
+    assert "config_subentries.source.abort.reconfigure_successful" in paths
+    assert {
+        "config_subentries.room.abort.no_pumps",
+        "config_subentries.room.error.delivery_required",
+        # Returned inside an (errors, placeholders) tuple by a room helper.
+        "config_subentries.room.error.actuator_entity_in_use",
+    } <= paths
+    assert found.form_steps["config_subentries.room"] == {
         "user",
+        "review",
         "reconfigure",
-        "details",
+        "room",
+        "thermostat",
+        "sensors",
         "sensor_metadata",
         "sensor_policy",
-        "review",
+        "edit_loop",
+        "loop",
+        "valve_details",
     }
+    assert found.form_steps["config_subentries.source"] == {"user", "reconfigure", "review"}
+    assert {"user", "guided", "room", "review", "import_plant", "import_review"} <= (
+        found.form_steps["config"]
+    )
 
 
 def test_every_section_entry_is_a_nonempty_string() -> None:
@@ -574,6 +632,12 @@ class _FormAudit:
                 )
             for error in (result.get("errors") or {}).values():
                 self._need(f"{self.flow_prefix}.error.{error}")
+        elif result["type"] == FlowResultType.MENU:
+            step = f"{self.flow_prefix}.step.{result['step_id']}"
+            self.steps.add(result["step_id"])
+            self._need(f"{step}.title")
+            for option in result["menu_options"]:
+                self._need(f"{step}.menu_options.{option}")
         elif result["type"] == FlowResultType.ABORT:
             self._need(f"{self.flow_prefix}.abort.{result['reason']}")
         return result
@@ -644,111 +708,201 @@ def _plant_entry(*, dry_run: bool = True) -> MockConfigEntry:
     )
 
 
-async def test_initial_flow_steps_are_fully_translated(hass) -> None:
-    """Every initial setup form, field, section, option, error, and abort is translated."""
+async def test_setup_flow_steps_are_fully_translated(hass) -> None:
+    """Every guided setup and import menu, form, field, section, error, and abort is translated."""
     audit = _FormAudit("config")
     flow = hass.config_entries.flow
 
-    result = audit.check(await flow.async_init(DOMAIN, context={"source": "user"}))
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {CONF_NAME: " ", CONF_DRY_RUN: False})
-    )
-    assert result["errors"] == {"base": "name_required"}
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {CONF_NAME: "Plant", CONF_DRY_RUN: False})
-    )
-    external = audit.check(await flow.async_init(DOMAIN, context={"source": "user"}))
-    external = audit.check(await flow.async_configure(external["flow_id"], {CONF_NAME: "Plant"}))
-    external = audit.check(
-        await flow.async_configure(external["flow_id"], {"thermostat_kind": "external_climate"})
-    )
-    assert external["step_id"] == "zone_details"
-    flow.async_abort(external["flow_id"])
+    async def start(option: str) -> Mapping[str, Any]:
+        result = audit.check(await flow.async_init(DOMAIN, context={"source": "user"}))
+        return audit.check(await flow.async_configure(result["flow_id"], {"next_step_id": option}))
 
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {"thermostat_kind": "hydronicus"})
+    async def submit(result: Mapping[str, Any], user_input: Mapping[str, Any]) -> Mapping[str, Any]:
+        return audit.check(await flow.async_configure(result["flow_id"], dict(user_input)))
+
+    plant = {CONF_NAME: "Plant", "pump_entity": "switch.pump"}
+    result = await start("guided")
+    result = await submit(result, {**plant, CONF_NAME: " "})
+    assert result["errors"] == {CONF_NAME: "name_required"}
+    result = await submit(result, plant)
+    result = await submit(result, {CONF_NAME: "Living room", "valves": ["switch.pump"]})
+    assert result["errors"] == {"temperature_sensors": "temperature_sensors_required"}
+    room = {CONF_NAME: "Living room", "temperature_sensors": ["sensor.room"]}
+    result = await submit(result, room)
+    assert result["errors"] == {"base": "delivery_required"}
+    result = await submit(result, {**room, "valves": ["switch.pump"]})
+    assert result["errors"] == {"valves": "actuator_entity_in_use"}
+    result = await submit(result, {**room, "valves": ["switch.living"], "add_another": True})
+    result = await submit(
+        result,
+        {CONF_NAME: "Bedroom", "temperature_sensors": ["sensor.bed"], "valves": ["switch.bed"]},
     )
-    result = audit.check(
-        await flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_NAME: " ",
-                "temperature_sensors": ["sensor.room"],
-                "temperature_aggregation": "mean",
-            },
-        )
-    )
-    assert result["errors"] == {"base": "name_required"}
-    result = audit.check(
-        await flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_NAME: "Living room",
-                "temperature_sensors": ["sensor.room"],
-                "temperature_aggregation": "mean",
-                "configure_sensor_metadata": True,
-            },
-        )
-    )
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {"sensor_entity": "sensor.room"})
-    )
-    result = audit.check(
-        await flow.async_configure(result["flow_id"], {"temperature_aggregation": "mean"})
-    )
-    circuit = {
-        CONF_NAME: "Floor loop",
-        "valve_entity": "switch.floor_valve",
-        "pump_entity": "switch.floor_valve",
-    }
-    result = audit.check(await flow.async_configure(result["flow_id"], circuit))
-    assert result["errors"] == {"base": "duplicate_actuator_entity"}
-    result = audit.check(
-        await flow.async_configure(
-            result["flow_id"], {**circuit, "pump_entity": "switch.floor_pump"}
-        )
-    )
-    result = audit.check(await flow.async_configure(result["flow_id"], {}))
-    assert result["errors"] == {"base": "dry_run_confirmation_required"}
-    result = await flow.async_configure(result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True})
+    # Two rooms on one pump carry a warning, so the review asks for confirmation.
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await flow.async_configure(result["flow_id"], {"confirm": True})
     assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
 
-    assert audit.steps == {
-        "user",
-        "zone",
-        "zone_details",
-        "sensor_metadata",
-        "sensor_policy",
-        "circuit",
-        "review",
-    }
+    document = yaml.safe_load(
+        (Path(__file__).parents[1] / "fixtures" / "plant_files" / "sources.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    result = await start("import_plant")
+    result = await submit(result, {"document": {"name": "No format version"}})
+    assert result["errors"] == {"base": "invalid_document"}
+    own_entity = next(
+        registry_entry.entity_id
+        for registry_entry in er.async_get(hass).entities.values()
+        if registry_entry.platform == DOMAIN and registry_entry.domain == "sensor"
+    )
+    owning = deepcopy(document)
+    owning["rooms"]["living_room"]["temperature_sensors"] = [own_entity]
+    result = await submit(result, {"document": owning})
+    assert result["errors"] == {"base": "document_own_entity"}
+    result = await submit(result, {"document": document})
+    assert result["step_id"] == "import_review"
+    # The first Plant already binds switch.pump, which needs confirming.
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await flow.async_configure(result["flow_id"], {"confirm": True})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    result = await start("import_plant")
+    (imported,) = (
+        entry for entry in hass.config_entries.async_entries(DOMAIN) if entry.title == "Sources"
+    )
+    result = await submit(result, {"document": {**document, "id": imported.data[CONF_PLANT_ID]}})
+    assert result["reason"] == "already_configured"
+
+    assert audit.steps == {"user", "guided", "room", "review", "import_plant", "import_review"}
     assert audit.missing == []
 
 
 async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
-    """The Dry run reconfigure path renders translated forms, errors, and aborts."""
+    """Every Plant settings menu, form, error, and abort renders translated."""
     audit = _FormAudit("config")
-    entry = _plant_entry()
+    flow = hass.config_entries.flow
+    entry = plant_entry(dict(_plant_entry().data))
     entry.add_to_hass(hass)
 
-    result = audit.check(await entry.start_reconfigure_flow(hass))
-    result = audit.check(
-        await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_DRY_RUN: False})
-    )
-    result = audit.check(await hass.config_entries.flow.async_configure(result["flow_id"], {}))
+    async def menu(option: str) -> Mapping[str, Any]:
+        result = audit.check(await entry.start_reconfigure_flow(hass))
+        return audit.check(await flow.async_configure(result["flow_id"], {"next_step_id": option}))
+
+    async def submit(result: Mapping[str, Any], user_input: Mapping[str, Any]) -> Mapping[str, Any]:
+        return audit.check(await flow.async_configure(result["flow_id"], dict(user_input)))
+
+    result = await menu("dry_run")
+    result = await submit(result, {CONF_DRY_RUN: False})
+    result = await submit(result, {})
     assert result["errors"] == {"base": "dry_run_confirmation_required"}
-    result = audit.check(
-        await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_DRY_RUN_CONFIRMATION: True}
-        )
-    )
+    result = await submit(result, {CONF_DRY_RUN_CONFIRMATION: True})
     assert result["errors"] == {"base": "dry_run_runtime_unavailable"}
-    result = audit.check(
-        await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_DRY_RUN: True})
-    )
+    result = await submit(result, {CONF_DRY_RUN: True})
     assert result["reason"] == "reconfigure_successful"
 
-    assert audit.steps == {"reconfigure", "dry_run_confirmation"}
+    pump = {CONF_NAME: "Spare pump", "entity_id": "switch.spare_pump", "overrun_seconds": 0.0}
+    result = await menu("add_pump")
+    result = await submit(result, {**pump, CONF_NAME: " "})
+    assert result["errors"] == {CONF_NAME: "name_required"}
+    result = await submit(result, {**pump, "entity_id": "switch.floor_valve"})
+    assert result["errors"] == {"entity_id": "actuator_entity_in_use"}
+    result = await submit(result, pump)
+    assert result["reason"] == "reconfigure_successful"
+
+    # A pump entity another Plant binds is reviewed before it is saved.
+    other_pump = {
+        "id": "00000000-0000-4000-8000-0000000000fd",
+        "name": "Other pump",
+        "entity_id": "switch.other_plant_pump",
+        "overrun_seconds": 0.0,
+    }
+    plant_entry(
+        plant_data(
+            {"pumps": [other_pump]},
+            name="Other plant",
+            plant_id="00000000-0000-4000-8000-0000000000fe",
+        )
+    ).add_to_hass(hass)
+    result = await menu("add_pump")
+    result = await submit(
+        result, {**pump, CONF_NAME: "Shared pump", "entity_id": "switch.other_plant_pump"}
+    )
+    assert result["step_id"] == "pump_review"
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await submit(result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+
+    result = await menu("edit_pump")
+    result = await submit(result, {"pump": PUMP_ID})
+    result = await submit(
+        result,
+        {
+            CONF_NAME: "Floor pump",
+            "entity_id": "switch.floor_pump",
+            "overrun_seconds": 120.0,
+            "remove_pump": True,
+        },
+    )
+    assert result["errors"] == {"remove_pump": "equipment_in_use"}
+
+    result = await menu("export_plant")
+    assert result["reason"] == "plant_exported"
+    document = yaml.safe_load(
+        result["description_placeholders"]["document"].removeprefix("```yaml\n").removesuffix("```")
+    )
+
+    own_entity = er.async_get(hass).async_get_or_create(
+        "sensor", DOMAIN, "translation_own_sensor", suggested_object_id="translation_own"
+    )
+    result = await menu("edit_plant")
+    result = await submit(result, {"document": {}})
+    assert result["errors"] == {"base": "invalid_document"}
+    result = await submit(
+        result, {"document": {**document, "id": "00000000-0000-4000-8000-0000000000ff"}}
+    )
+    assert result["errors"] == {"base": "plant_id_mismatch"}
+    owned = deepcopy(document)
+    owned["pumps"]["floor_pump"]["power_feedback_entity"] = own_entity.entity_id
+    result = await submit(result, {"document": owned})
+    assert result["errors"] == {"base": "document_own_entity"}
+    result = await submit(result, {"document": document})
+    assert result["reason"] == "no_changes"
+
+    renamed = deepcopy(document)
+    renamed["name"] = "Renamed plant"
+    # A newly shared valve is a warning the edit introduces, so it needs a confirmation.
+    renamed.setdefault("valves", {})["newly_shared_valve"] = "switch.shared_equipment"
+    loops = [*renamed.get("loops", {}).values()]
+    loops += [
+        loop
+        for room in renamed.get("rooms", {}).values()
+        for loop in room.get("loops", {}).values()
+    ]
+    for loop in loops:
+        loop["valves"].append("newly_shared_valve")
+    result = await menu("edit_plant")
+    result = await submit(result, {"document": renamed})
+    assert result["step_id"] == "edit_plant_review"
+    result = await submit(result, {"confirm": False})
+    assert result["errors"] == {"base": "confirm_required"}
+    result = await submit(result, {"confirm": True})
+    assert result["reason"] == "reconfigure_successful"
+
+    assert audit.steps == {
+        "reconfigure",
+        "dry_run",
+        "dry_run_confirmation",
+        "pump",
+        "pump_review",
+        "edit_pump",
+        "edit_plant",
+        "edit_plant_review",
+    }
     assert audit.missing == []
 
 
@@ -785,82 +939,74 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     entry = _plant_entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
-    confirm = {"confirm": True}
 
-    actuator = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ACTUATOR}")
-    valve = {
-        CONF_NAME: "Return valve",
-        "entity_id": "switch.return_valve",
-        "opening_time_seconds": 30,
-        "circuit_ids": [FLOOR_CIRCUIT_ID],
-    }
-    result = await _subentry_flow(
-        hass, entry, SUBENTRY_TYPE_ACTUATOR, actuator, [{**valve, CONF_NAME: " "}, valve, {}]
-    )
-    assert result["step_id"] == "review"
-    assert result["errors"] == {"base": "confirm_required"}
-    result = actuator.check(
-        await hass.config_entries.subentries.async_configure(result["flow_id"], confirm)
-    )
-    await hass.async_block_till_done()
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _reconfigure(hass, entry, SUBENTRY_TYPE_ACTUATOR, actuator, [valve, confirm])
-    assert result["reason"] == "reconfigure_successful"
-
-    circuit = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_CIRCUIT}")
-    loop = {
-        CONF_NAME: "Wall loop",
-        "zone_ids": [ZONE_ID],
-        "valve_ids": [VALVE_ID],
-        "pump_id": PUMP_ID,
-    }
-    result = await _subentry_flow(
-        hass, entry, SUBENTRY_TYPE_CIRCUIT, circuit, [{**loop, CONF_NAME: " "}, loop, confirm]
-    )
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _reconfigure(hass, entry, SUBENTRY_TYPE_CIRCUIT, circuit, [loop, confirm])
-    assert result["reason"] == "reconfigure_successful"
-
-    zone = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ZONE}")
-    office = {
-        CONF_NAME: "Office",
-        "temperature_sensors": ["sensor.office"],
-        "temperature_aggregation": "mean",
-        "circuit_ids": [FLOOR_CIRCUIT_ID],
-    }
-    result = await _subentry_flow(
-        hass,
-        entry,
-        SUBENTRY_TYPE_ZONE,
-        zone,
-        [
-            {"thermostat_kind": "hydronicus"},
-            {**office, CONF_NAME: " "},
-            {**office, "configure_sensor_metadata": True},
-            {"sensor_entity": "sensor.office"},
-            {"temperature_aggregation": "weighted_mean"},
-            confirm,
+    room = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ROOM}")
+    for option, steps in {
+        "room": [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_room"]}],
+        "thermostat": [{}],
+        "sensors": [
+            {"temperature_aggregation": "mean", "configure_sensor_metadata": True},
+            {"sensor_entity": "sensor.missing_room"},
+            {"temperature_aggregation": "mean"},
         ],
-    )
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    result = await _reconfigure(
-        hass,
-        entry,
-        SUBENTRY_TYPE_ZONE,
-        zone,
-        [
-            # The picker hides Hydronicus climates, so the loop is submitted with the
-            # thermostat kind, which the backend still rejects.
+        "edit_loop": [
+            {"loop": FLOOR_CIRCUIT_ID},
             {
-                "thermostat_kind": "external_climate",
-                **office,
-                "external_climate_entity": "climate.hydronic_plant_living_room",
+                CONF_NAME: "Floor loop",
+                "valves": ["switch.floor_valve"],
+                "pump": PUMP_ID,
+                "configure_valve_feedback": True,
             },
-            {**office, "external_climate_entity": "climate.office"},
-            confirm,
+            {},
         ],
+    }.items():
+        result = await _reconfigure(
+            hass,
+            entry,
+            SUBENTRY_TYPE_ROOM,
+            room,
+            [{"next_step_id": option}, *steps],
+        )
+        # The warnings already existed, so a save is reviewed only when it adds one.
+        if result["type"] == FlowResultType.FORM and result["step_id"] == "review":
+            result = room.check(
+                await hass.config_entries.subentries.async_configure(
+                    result["flow_id"], {"confirm": True}
+                )
+            )
+        assert result["reason"] == "reconfigure_successful"
+    menu = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
+    room.check(menu)
+    hass.config_entries.subentries.async_abort(menu["flow_id"])
+    # Another Plant already binds the Bedroom valve, so adding the room is reviewed.
+    plant_entry(
+        plant_data(
+            {
+                "valves": [
+                    {
+                        "id": "00000000-0000-4000-8000-0000000000f1",
+                        "name": "Return valve",
+                        "entity_id": "switch.return_valve",
+                    }
+                ]
+            },
+            plant_id="00000000-0000-4000-8000-0000000000f0",
+        ),
+        title="Other plant",
+    ).add_to_hass(hass)
+    bedroom = {
+        CONF_NAME: "Bedroom",
+        "temperature_sensors": ["sensor.bedroom"],
+        "valves": ["switch.return_valve"],
+    }
+    result = await _subentry_flow(
+        hass,
+        entry,
+        SUBENTRY_TYPE_ROOM,
+        room,
+        [{**bedroom, CONF_NAME: " "}, bedroom, {"confirm": False}, {"confirm": True}],
     )
-    assert result["reason"] == "reconfigure_successful"
+    assert result["type"] == FlowResultType.CREATE_ENTRY
 
     source = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_SOURCE}")
     boiler = {CONF_NAME: "Boiler", "source_type": "external", "priority": 1}
@@ -871,18 +1017,21 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     result = await _reconfigure(hass, entry, SUBENTRY_TYPE_SOURCE, source, [boiler])
     assert result["reason"] == "reconfigure_successful"
 
-    assert actuator.steps == {"user", "reconfigure", "review"}
-    assert circuit.steps == {"user", "reconfigure", "review"}
-    assert zone.steps == {
+    assert room.steps == {
         "user",
+        "review",
         "reconfigure",
-        "details",
+        "room",
+        "thermostat",
+        "sensors",
         "sensor_metadata",
         "sensor_policy",
-        "review",
+        "edit_loop",
+        "loop",
+        "valve_details",
     }
     assert source.steps == {"user", "reconfigure"}
-    assert [*actuator.missing, *circuit.missing, *zone.missing, *source.missing] == []
+    assert [*room.missing, *source.missing] == []
 
 
 async def test_runtime_entities_and_issues_are_translated(hass) -> None:

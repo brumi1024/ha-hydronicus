@@ -22,6 +22,7 @@ from custom_components.hydronicus.const import (
     DOMAIN,
 )
 from custom_components.hydronicus.runtime import HydronicRuntime
+from tests.integration.plant_fixtures import manifold_entry, manifold_rooms, subentry_id_for
 
 
 async def test_setup_unload_and_reload_entry(hass) -> None:
@@ -47,7 +48,7 @@ async def test_setup_unload_and_reload_entry(hass) -> None:
     assert await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def test_config_entry_migrates_from_pre_release_1_1_to_version_2(hass) -> None:
+async def test_config_entry_migrates_from_pre_release_1_1_to_version_3(hass) -> None:
     """The pre-release 1.1 entry contract is upgraded before runtime setup."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -64,7 +65,7 @@ async def test_config_entry_migrates_from_pre_release_1_1_to_version_2(hass) -> 
 
     assert await hass.config_entries.async_setup(entry.entry_id)
 
-    assert entry.version == 2
+    assert entry.version == 3
     assert entry.minor_version == 0
     assert entry.data[CONF_DRY_RUN] is True
 
@@ -348,3 +349,20 @@ async def test_setup_with_invalid_stored_graph_raises_translated_config_entry_er
     assert not await hass.config_entries.async_setup(entry.entry_id)
     assert entry.state is ConfigEntryState.SETUP_ERROR
     assert entry.error_reason_translation_key == "invalid_stored_graph"
+
+
+async def test_setup_removes_the_closure_of_a_room_deleted_while_unloaded(hass) -> None:
+    """A zone whose room handle disappeared was deleted, so setup removes its closure."""
+    living, bedroom = manifold_rooms(("Living room", "Bedroom"))
+    entry = manifold_entry(dry_run=False)
+    entry.add_to_hass(hass)
+    assert hass.config_entries.async_remove_subentry(entry, subentry_id_for(bedroom.zone_id))
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert [zone["id"] for zone in entry.data["topology"]["zones"]] == [living.zone_id]
+    assert [circuit["id"] for circuit in entry.data["topology"]["circuits"]] == [living.circuit_id]
+    assert [valve["id"] for valve in entry.data["topology"]["valves"]] == [living.valve_id]
+    assert entry.data[CONF_DRY_RUN] is True
+    assert CONF_OUTPUT_AUTHORIZATION not in entry.data
+    assert set(entry.runtime_data.plant.zones) == {living.zone_id}

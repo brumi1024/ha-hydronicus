@@ -25,8 +25,8 @@ Then perform the applicable staging checks:
 
 1. Synchronize the integration directory and restart Home Assistant or reload the integration as appropriate.
 2. Confirm Home Assistant starts without integration or translation errors.
-3. Create, reconfigure, reload, and delete the affected plant objects through the UI.
-4. Confirm entity IDs, unique IDs, topology preview, and diagnostics match the configured synthetic plant.
+3. Create a Plant with guided setup or by importing a plant file, such as the trial kit's `docs/examples/trial/plant.yaml`, then add, edit, and delete the affected rooms, loops, and pumps, apply an edited plant file, and reload the Plant.
+4. Confirm entity IDs, unique IDs, topology preview, and diagnostics match the configured synthetic Plant, and that exporting the plant file and importing it into a fresh instance keeps every entity ID.
 5. Drive the synthetic sensor values through the chunk's named scenario.
 6. Confirm the visible explanations and virtual actuator sequence match the automated scenario.
 7. Confirm logs contain no unexpected exceptions or repeated warnings.
@@ -35,6 +35,8 @@ Then perform the applicable staging checks:
 Record the Home Assistant version, commit SHA, scenario name, result, and any log excerpt needed to explain a failure.
 
 ## Observed disposable run on 2026-08-28
+
+This section is a historical evidence record of a version 2 run with Zone, Circuit, and Actuator subentries, not a procedure to follow.
 
 The production-hardening working tree was staged against Home Assistant `2026.8.2` in a new disposable configuration derived from base commit `7b9defc2f3f6cb7913fb8550cc21b92d37ff2513`.
 Because the hardening changes were not committed, this run is working-tree evidence and is not release-artifact or HACS-install evidence.

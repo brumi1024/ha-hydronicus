@@ -4,6 +4,7 @@ UV ?= uv
 
 bootstrap:
 	$(UV) sync --frozen --extra test
+	npm ci --prefix frontend
 
 hooks: bootstrap
 	$(UV) run pre-commit install

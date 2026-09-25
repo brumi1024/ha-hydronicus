@@ -5,16 +5,16 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+COMPONENT_DIR = Path(__file__).parents[1] / "custom_components" / "hydronicus"
+FLOW_MODULES = (COMPONENT_DIR / "config_flow.py", *sorted((COMPONENT_DIR / "flows").glob("*.py")))
+
 
 def test_selector_is_imported_from_homeassistant_helpers() -> None:
-    """The config flow must use Home Assistant's public selector module."""
-    config_flow_path = (
-        Path(__file__).parents[1] / "custom_components" / "hydronicus" / "config_flow.py"
-    )
-    tree = ast.parse(config_flow_path.read_text())
+    """The config flows must use Home Assistant's public selector module."""
     imports = {
         (node.module, imported.name)
-        for node in ast.walk(tree)
+        for path in FLOW_MODULES
+        for node in ast.walk(ast.parse(path.read_text()))
         if isinstance(node, ast.ImportFrom)
         for imported in node.names
     }

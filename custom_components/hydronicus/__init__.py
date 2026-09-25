@@ -18,22 +18,22 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .core.configuration import StoredTopologyError
-from .core.topology import TopologyValidationError
 from .entry_configuration import (
+    GRAPH_EDIT_ERRORS,
     invalidate_output_authorization,
-    migration_plan,
     output_authorization_is_valid,
     reconcile_removed_subentries,
     runtime_configuration_fingerprint,
 )
 from .frontend import async_register_frontend
+from .migration import async_migrate_1_1_to_2_0, async_migrate_2_0_to_3_0
 from .output_ownership import (
     async_create_output_conflict_issue,
     async_schedule_output_review,
     live_output_conflict,
 )
 from .runtime import HydronicRuntime
+from .services import async_setup_services
 from .websocket import (
     async_setup as async_setup_websocket,
 )
@@ -67,7 +67,8 @@ def _ensure_plant_device(hass: HomeAssistant, entry: ConfigEntry, runtime: Hydro
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, object]) -> bool:
-    """Register the read-only Plant presentation WebSocket commands."""
+    """Register the actions and the read-only Plant presentation WebSocket commands."""
+    async_setup_services(hass)
     await async_register_frontend(hass)
     return bool(await async_setup_websocket(hass, config))
 
@@ -85,9 +86,17 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
         await existing
         return
 
+    def _reconciled() -> dict[str, object] | None:
+        try:
+            return reconcile_removed_subentries(entry)
+        except GRAPH_EDIT_ERRORS:
+            # Handles that do not match the stored graph cannot be reconciled here;
+            # the reload's setup reports the invalid stored graph instead.
+            return None
+
     async def _reload() -> None:
         await asyncio.sleep(0)
-        reconciled = reconcile_removed_subentries(entry)
+        reconciled = _reconciled()
         if reconciled is not None and not bool(entry.data.get(CONF_DRY_RUN, True)):
             active_runtime = getattr(entry, "runtime_data", None)
             if (
@@ -100,7 +109,7 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
                     entry.entry_id,
                 )
                 return
-            reconciled = reconcile_removed_subentries(entry)
+            reconciled = _reconciled()
         if reconciled is not None:
             hass.config_entries.async_update_entry(entry, data=reconciled)
             await asyncio.sleep(0)
@@ -116,39 +125,26 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate stored Hydronicus config entries before runtime setup."""
-    if entry.version > CONFIG_ENTRY_VERSION:
+    """Migrate stored Hydronicus config entries before runtime setup.
+
+    Version 1.1 chains through 2.0 to 3.0 in one call, and every step is safe to
+    repeat, so a restart during migration resumes to the same result.
+    """
+    if entry.version > CONFIG_ENTRY_VERSION or (
+        entry.version == CONFIG_ENTRY_VERSION and entry.minor_version > CONFIG_ENTRY_MINOR_VERSION
+    ):
         return False
-    if entry.version == CONFIG_ENTRY_VERSION:
-        if entry.minor_version > CONFIG_ENTRY_MINOR_VERSION:
-            return False
-        if entry.minor_version == CONFIG_ENTRY_MINOR_VERSION:
-            return True
-
-    if entry.version == 1 and entry.minor_version <= 1:
-        try:
-            plan = migration_plan(entry)
-            # Make every migrated object durable in the parent before minimizing
-            # any legacy subentry. A restart can safely repeat either half.
-            hass.config_entries.async_update_entry(entry, data=plan.data)
-            for update in plan.subentries:
-                hass.config_entries.async_update_subentry(
-                    entry,
-                    update.subentry,
-                    data={"id": update.object_id},
-                    unique_id=update.object_id,
-                )
-            hass.config_entries.async_update_entry(
-                entry,
-                version=CONFIG_ENTRY_VERSION,
-                minor_version=CONFIG_ENTRY_MINOR_VERSION,
-            )
-            return True
-        except StoredTopologyError, TopologyValidationError:
-            _LOGGER.exception("Could not migrate Hydronicus Plant %s", entry.entry_id)
-            return False
-
-    return False
+    try:
+        if entry.version == 1 and entry.minor_version <= 1:
+            async_migrate_1_1_to_2_0(hass, entry)
+        if entry.version == 2 and entry.minor_version == 0:
+            async_migrate_2_0_to_3_0(hass, entry)
+    except GRAPH_EDIT_ERRORS:
+        _LOGGER.exception("Could not migrate Hydronicus Plant %s", entry.entry_id)
+        return False
+    return entry.version == CONFIG_ENTRY_VERSION and (
+        entry.minor_version == CONFIG_ENTRY_MINOR_VERSION
+    )
 
 
 def _stored_graph_error(entry: ConfigEntry, error: Exception) -> ConfigEntryError:
@@ -164,7 +160,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
     """Set up a hydronic plant from a config entry."""
     try:
         reconciled = reconcile_removed_subentries(entry)
-    except (StoredTopologyError, TopologyValidationError) as error:
+    except GRAPH_EDIT_ERRORS as error:
         raise _stored_graph_error(entry, error) from error
     if reconciled:
         hass.config_entries.async_update_entry(entry, data=reconciled)
@@ -196,7 +192,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -> 
         )
     try:
         runtime = HydronicRuntime.from_entry(entry, output_hold=hold)
-    except (StoredTopologyError, TopologyValidationError) as error:
+    except GRAPH_EDIT_ERRORS as error:
         raise _stored_graph_error(entry, error) from error
     entry.runtime_data = runtime
     if hold is not None:

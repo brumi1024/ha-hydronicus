@@ -1,19 +1,26 @@
-"""Own the persisted Plant graph behind small Home Assistant subentry handles."""
+"""Own the persisted Plant graph behind small Home Assistant subentry handles.
+
+Config entry version 3 keeps the complete graph in the parent entry. A ``room``
+subentry is a handle for one zone, and through ``room_objects`` for that room's
+private loops and valves; a ``source`` subentry is a handle for one source.
+Every other object belongs to the Plant. Removing a handle removes exactly what
+it owns, and deletion-closed ownership keeps the remaining graph valid.
+
+The graph edit functions here are pure over mappings, import nothing from Home
+Assistant, validate ownership, compile, and return data in Dry run.
+"""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from .const import (
-    ACTUATOR_KIND_VALVE,
-    CONF_ACTUATOR_KIND,
-    CONF_CIRCUIT_IDS,
     CONF_CIRCUITS,
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
     CONF_DRY_RUN,
@@ -21,36 +28,25 @@ from .const import (
     CONF_OUTPUT_AUTHORIZATION,
     CONF_PLANT_ID,
     CONF_PUMPS,
-    CONF_REQUESTED_MODE,
+    CONF_ROOM_OBJECTS,
     CONF_ROUTES,
     CONF_SOURCES,
     CONF_SUBENTRY_OBJECTS,
     CONF_TOPOLOGY,
     CONF_VALVES,
-    CONF_ZONE_IDS,
     CONF_ZONES,
-    SUBENTRY_TYPE_ACTUATOR,
-    SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
-    SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
-from .core.model import PlantConfiguration, PlantMode
+from .core.model import CompiledPlant, PlantConfiguration
+from .core.ownership import OwnershipError, PlantOwnership, validate_ownership, without_room
 from .core.topology import TopologyValidationError, compile_topology
 
-_SUPPORTED_SUBENTRY_TYPES = frozenset(
-    {
-        SUBENTRY_TYPE_ACTUATOR,
-        SUBENTRY_TYPE_CIRCUIT,
-        SUBENTRY_TYPE_SOURCE,
-        SUBENTRY_TYPE_ZONE,
-    }
-)
+SUPPORTED_SUBENTRY_TYPES = frozenset({SUBENTRY_TYPE_ROOM, SUBENTRY_TYPE_SOURCE})
 _COLLECTION_BY_SUBENTRY_TYPE = {
-    SUBENTRY_TYPE_ACTUATOR: CONF_VALVES,
-    SUBENTRY_TYPE_CIRCUIT: CONF_CIRCUITS,
+    SUBENTRY_TYPE_ROOM: CONF_ZONES,
     SUBENTRY_TYPE_SOURCE: CONF_SOURCES,
-    SUBENTRY_TYPE_ZONE: CONF_ZONES,
 }
 _TOPOLOGY_COLLECTIONS = (
     CONF_ZONES,
@@ -60,33 +56,74 @@ _TOPOLOGY_COLLECTIONS = (
     CONF_ROUTES,
     CONF_SOURCES,
 )
+# Collections of objects that own an id, and the word the plant file uses for each.
+_OBJECT_KINDS = (
+    (CONF_ZONES, "room"),
+    (CONF_CIRCUITS, "loop"),
+    (CONF_VALVES, "valve"),
+    (CONF_PUMPS, "pump"),
+    (CONF_SOURCES, "source"),
+)
+# Every error a rejected graph edit can raise, for callers that report rather than raise.
+GRAPH_EDIT_ERRORS: tuple[type[Exception], ...] = (
+    StoredTopologyError,
+    TopologyValidationError,
+    OwnershipError,
+)
+
+
+class ImportedPlantLike(Protocol):
+    """The parts of an imported plant file that replace a Plant graph."""
+
+    @property
+    def name(self) -> str:
+        """Return the imported Plant name."""
+
+    @property
+    def topology(self) -> Mapping[str, Any]:
+        """Return the stored version 3 topology collections."""
+
+    @property
+    def ownership(self) -> PlantOwnership:
+        """Return the imported room ownership."""
 
 
 @dataclass(frozen=True, slots=True)
-class EffectivePlantConfiguration:
-    """A parent-owned Plant graph and entity-owning subentry ids."""
+class EffectivePlant:
+    """A validated, compiled Plant graph and the subentries that own its objects."""
 
     configuration: PlantConfiguration
-    actuator_subentry_ids: Mapping[str, str]
-    circuit_subentry_ids: Mapping[str, str]
-    zone_subentry_ids: Mapping[str, str]
-    source_subentry_ids: Mapping[str, str]
+    ownership: PlantOwnership
+    compiled: CompiledPlant
+    # Zone, room-owned circuit and valve, and source ids -> owning subentry id.
+    object_subentry_ids: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
-class SubentryMigration:
-    """One validated legacy subentry update applied after its graph is durable."""
+class RoomDraft:
+    """Everything one room owns, as stored records."""
 
-    subentry: Any
-    object_id: str
+    zone: dict[str, Any]
+    circuits: list[dict[str, Any]]
+    valves: list[dict[str, Any]]
+    routes: list[dict[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
-class MigrationPlan:
-    """A restart-safe parent graph and the handles that should point into it."""
+class SubentrySync:
+    """Subentry changes that make the handles of an entry match new entry data."""
 
-    data: Mapping[str, Any]
-    subentries: tuple[SubentryMigration, ...]
+    add: list[dict[str, Any]]
+    remove: list[str]
+    retitle: list[tuple[str, str]]
+
+
+class EquipmentInUseError(ValueError):
+    """Plant equipment cannot be removed while loops still use it."""
+
+    def __init__(self, users: tuple[str, ...]) -> None:
+        self.users = users
+        super().__init__("The equipment is used by " + ", ".join(users) + ".")
 
 
 def runtime_configuration_fingerprint(entry: Any) -> str:
@@ -109,8 +146,9 @@ def runtime_configuration_fingerprint(entry: Any) -> str:
         CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS: bool(
             entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
         ),
-        CONF_TOPOLOGY: _topology_copy(entry.data),
-        CONF_SUBENTRY_OBJECTS: _ownership(entry.data),
+        CONF_TOPOLOGY: topology_copy(entry.data),
+        CONF_SUBENTRY_OBJECTS: subentry_objects(entry.data),
+        CONF_ROOM_OBJECTS: room_objects(entry.data),
         "subentries": handles,
     }
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -130,11 +168,26 @@ def _uuid(value: Any, owner: str) -> str:
         raise StoredTopologyError(f"{owner} must be a UUID.") from error
 
 
-def _object_id(data: Mapping[str, Any], owner: str) -> str:
+def record_object_id(data: Mapping[str, Any], owner: str) -> str:
+    """Return the canonical UUID of one stored record or handle."""
     return _uuid(_required(data, "id", owner), f"{owner} id")
 
 
-def _topology_copy(data: Mapping[str, Any]) -> dict[str, Any]:
+def canonical_id(object_id: Any) -> str:
+    """Return a stored id in the canonical UUID form the core decoder uses.
+
+    A value that is not a UUID is returned as its string, so a malformed stored
+    id still compares and reports as written; the decoder rejects it.
+    """
+    raw = str(object_id)
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return raw
+
+
+def topology_copy(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of the stored topology with every collection present."""
     raw_topology = data.get(CONF_TOPOLOGY, {})
     if not isinstance(raw_topology, Mapping):
         raise StoredTopologyError("Stored topology must be an object.")
@@ -151,32 +204,52 @@ def _topology_copy(data: Mapping[str, Any]) -> dict[str, Any]:
     return topology
 
 
-def _ownership(data: Mapping[str, Any]) -> dict[str, str]:
-    raw_ownership = data.get(CONF_SUBENTRY_OBJECTS, {})
-    if not isinstance(raw_ownership, Mapping):
+def subentry_objects(data: Mapping[str, Any]) -> dict[str, str]:
+    """Return the stored object id -> handle type map of every room and source handle."""
+    raw_handles = data.get(CONF_SUBENTRY_OBJECTS, {})
+    if not isinstance(raw_handles, Mapping):
         raise StoredTopologyError(f"Stored field {CONF_SUBENTRY_OBJECTS!r} must be an object.")
-    ownership: dict[str, str] = {}
-    for raw_object_id, raw_subentry_type in raw_ownership.items():
+    handles: dict[str, str] = {}
+    for raw_object_id, raw_subentry_type in raw_handles.items():
         object_id = _uuid(raw_object_id, "Subentry-owned object id")
         subentry_type = str(raw_subentry_type)
-        if subentry_type not in _SUPPORTED_SUBENTRY_TYPES:
+        if subentry_type not in SUPPORTED_SUBENTRY_TYPES:
             raise StoredTopologyError(
                 f"Subentry-owned object {object_id} has unsupported type {subentry_type!r}."
             )
-        ownership[object_id] = subentry_type
-    return ownership
+        handles[object_id] = subentry_type
+    return handles
 
 
-def _records(topology: Mapping[str, Any], collection: str) -> list[dict[str, Any]]:
-    records = topology[collection]
-    if not isinstance(records, list):
+def room_objects(data: Mapping[str, Any]) -> dict[str, str]:
+    """Return the stored private circuit or valve id -> owning zone id map."""
+    raw_owners = data.get(CONF_ROOM_OBJECTS, {})
+    if not isinstance(raw_owners, Mapping):
+        raise StoredTopologyError(f"Stored field {CONF_ROOM_OBJECTS!r} must be an object.")
+    return {
+        _uuid(object_id, "Room-owned object id"): _uuid(zone_id, "Owning zone id")
+        for object_id, zone_id in raw_owners.items()
+    }
+
+
+def plant_ownership(data: Mapping[str, Any]) -> PlantOwnership:
+    """Return the stored room ownership of one Plant."""
+    return PlantOwnership(room_objects=room_objects(data))
+
+
+def records(topology: Mapping[str, Any], collection: str) -> list[dict[str, Any]]:
+    """Return one stored topology collection, the list itself rather than a copy."""
+    stored = topology[collection]
+    if not isinstance(stored, list):
         raise StoredTopologyError(f"Stored topology field {collection!r} must be a list.")
-    return records
+    return stored
 
 
 def _record_by_id(topology: Mapping[str, Any], collection: str, object_id: str) -> dict[str, Any]:
     matches = [
-        record for record in _records(topology, collection) if str(record.get("id")) == object_id
+        record
+        for record in records(topology, collection)
+        if canonical_id(record.get("id")) == object_id
     ]
     if len(matches) != 1:
         raise StoredTopologyError(
@@ -185,200 +258,61 @@ def _record_by_id(topology: Mapping[str, Any], collection: str, object_id: str) 
     return deepcopy(matches[0])
 
 
-def _object_exists(topology: Mapping[str, Any], subentry_type: str, object_id: str) -> bool:
-    collection = _COLLECTION_BY_SUBENTRY_TYPE[subentry_type]
-    return any(str(record.get("id")) == object_id for record in _records(topology, collection))
-
-
-def _replace_record(
+def replace_record(
     topology: dict[str, Any], collection: str, object_id: str, record: Mapping[str, Any]
 ) -> None:
-    records = _records(topology, collection)
-    for index, current in enumerate(records):
-        if str(current.get("id")) == object_id:
-            records[index] = deepcopy(dict(record))
+    """Replace the record with the canonical id ``object_id`` in place, or append it."""
+    stored = records(topology, collection)
+    for index, current in enumerate(stored):
+        if canonical_id(current.get("id")) == object_id:
+            stored[index] = deepcopy(dict(record))
             return
-    records.append(deepcopy(dict(record)))
+    stored.append(deepcopy(dict(record)))
 
 
-def _remove_records(
-    topology: dict[str, Any],
-    collection: str,
-    predicate: Callable[[Mapping[str, Any]], bool],
-) -> None:
-    topology[collection] = [
-        record for record in _records(topology, collection) if not predicate(record)
-    ]
-
-
-def _remove_object(topology: dict[str, Any], subentry_type: str, object_id: str) -> None:
-    collection = _COLLECTION_BY_SUBENTRY_TYPE[subentry_type]
-    _remove_records(topology, collection, lambda record: str(record.get("id")) == object_id)
-    if subentry_type == SUBENTRY_TYPE_ZONE:
-        _remove_records(
-            topology,
-            CONF_ROUTES,
-            lambda route: str(route.get("zone_id")) == object_id,
-        )
-    elif subentry_type == SUBENTRY_TYPE_CIRCUIT:
-        _remove_records(
-            topology,
-            CONF_ROUTES,
-            lambda route: str(route.get("circuit_id")) == object_id,
-        )
-    elif subentry_type == SUBENTRY_TYPE_ACTUATOR:
-        for circuit in _records(topology, CONF_CIRCUITS):
-            raw_valve_ids = circuit.get("valve_ids", [])
-            if isinstance(raw_valve_ids, list):
-                circuit["valve_ids"] = [
-                    valve_id for valve_id in raw_valve_ids if str(valve_id) != object_id
-                ]
-
-
-def _route_flag(route: Mapping[str, Any]) -> dict[str, Any]:
-    return {"enabled": route["enabled"]} if "enabled" in route else {}
-
-
-def _apply_zone(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
-    zone_id = _object_id(draft, "Zone draft")
-    circuit_ids = _required(draft, CONF_CIRCUIT_IDS, "Zone draft")
-    routes = _required(draft, CONF_ROUTES, "Zone draft")
-    if not isinstance(circuit_ids, list) or not isinstance(routes, list):
-        raise StoredTopologyError("Zone draft relationships must be lists.")
-    canonical = deepcopy(dict(draft))
-    canonical.pop(CONF_CIRCUIT_IDS, None)
-    canonical.pop(CONF_ROUTES, None)
-    canonical.pop("temperature_sensors", None)
-    canonical.pop("humidity_sensors", None)
-    canonical.pop("configure_sensor_metadata", None)
-    _replace_record(topology, CONF_ZONES, zone_id, canonical)
-    _remove_records(
-        topology,
-        CONF_ROUTES,
-        lambda route: str(route.get("zone_id")) == zone_id,
-    )
-    for raw_route in routes:
-        if not isinstance(raw_route, Mapping):
-            raise StoredTopologyError("Zone draft routes must be objects.")
-        circuit_id = _uuid(
-            _required(raw_route, "circuit_id", "Zone draft route"),
-            "Zone draft route circuit id",
-        )
-        route = {
-            "id": _object_id(raw_route, "Zone draft route"),
-            "zone_id": zone_id,
-            "circuit_id": circuit_id,
-            **_route_flag(raw_route),
-        }
-        _records(topology, CONF_ROUTES).append(route)
-    if {str(value) for value in circuit_ids} != {
-        str(route["circuit_id"])
-        for route in _records(topology, CONF_ROUTES)
-        if str(route.get("zone_id")) == zone_id
-    }:
-        raise StoredTopologyError("Zone draft routes must match its selected circuit ids.")
-    return zone_id
-
-
-def _apply_circuit(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
-    circuit_id = _object_id(draft, "Circuit draft")
-    zone_ids = _required(draft, CONF_ZONE_IDS, "Circuit draft")
-    routes = _required(draft, CONF_ROUTES, "Circuit draft")
-    if not isinstance(zone_ids, list) or not isinstance(routes, list):
-        raise StoredTopologyError("Circuit draft relationships must be lists.")
-    canonical = deepcopy(dict(draft))
-    canonical.pop(CONF_ZONE_IDS, None)
-    canonical.pop(CONF_ROUTES, None)
-    _replace_record(topology, CONF_CIRCUITS, circuit_id, canonical)
-    _remove_records(
-        topology,
-        CONF_ROUTES,
-        lambda route: str(route.get("circuit_id")) == circuit_id,
-    )
-    for raw_route in routes:
-        if not isinstance(raw_route, Mapping):
-            raise StoredTopologyError("Circuit draft routes must be objects.")
-        zone_id = _uuid(
-            _required(raw_route, "zone_id", "Circuit draft route"),
-            "Circuit draft route zone id",
-        )
-        route = {
-            "id": _object_id(raw_route, "Circuit draft route"),
-            "zone_id": zone_id,
-            "circuit_id": circuit_id,
-            **_route_flag(raw_route),
-        }
-        _records(topology, CONF_ROUTES).append(route)
-    if {str(value) for value in zone_ids} != {
-        str(route["zone_id"])
-        for route in _records(topology, CONF_ROUTES)
-        if str(route.get("circuit_id")) == circuit_id
-    }:
-        raise StoredTopologyError("Circuit draft routes must match its selected zone ids.")
-    return circuit_id
-
-
-def _apply_actuator(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
-    kind = str(_required(draft, CONF_ACTUATOR_KIND, "Actuator draft"))
-    if kind != ACTUATOR_KIND_VALVE:
-        raise StoredTopologyError(f"Unsupported actuator draft kind {kind!r}.")
-    actuator_id = _object_id(draft, "Actuator draft")
-    circuit_ids = _required(draft, CONF_CIRCUIT_IDS, "Actuator draft")
-    if not isinstance(circuit_ids, list) or not circuit_ids:
-        raise StoredTopologyError("Actuator draft requires at least one circuit id.")
-    selected_circuit_ids = {
-        _uuid(circuit_id, "Actuator draft circuit id") for circuit_id in circuit_ids
+def _all_handles(topology: Mapping[str, Any]) -> dict[str, str]:
+    """Give every zone a room handle and every source a source handle."""
+    handles = {
+        canonical_id(zone.get("id")): SUBENTRY_TYPE_ROOM for zone in records(topology, CONF_ZONES)
     }
-    canonical = deepcopy(dict(draft))
-    canonical.pop(CONF_ACTUATOR_KIND, None)
-    canonical.pop(CONF_CIRCUIT_IDS, None)
-    _replace_record(topology, CONF_VALVES, actuator_id, canonical)
-    known_circuit_ids = {
-        _object_id(circuit, "Stored circuit") for circuit in _records(topology, CONF_CIRCUITS)
-    }
-    if unknown := selected_circuit_ids - known_circuit_ids:
-        raise StoredTopologyError(
-            "Actuator draft references unknown circuits: " + ", ".join(sorted(unknown)) + "."
-        )
-    for circuit in _records(topology, CONF_CIRCUITS):
-        circuit_id = _object_id(circuit, "Stored circuit")
-        raw_valve_ids = circuit.get("valve_ids", [])
-        if not isinstance(raw_valve_ids, list):
-            raise StoredTopologyError("Stored circuit valve ids must be a list.")
-        valve_ids = [str(value) for value in raw_valve_ids if str(value) != actuator_id]
-        if circuit_id in selected_circuit_ids:
-            valve_ids.append(actuator_id)
-        circuit["valve_ids"] = valve_ids
-    return actuator_id
+    handles.update(
+        {
+            canonical_id(source.get("id")): SUBENTRY_TYPE_SOURCE
+            for source in records(topology, CONF_SOURCES)
+        }
+    )
+    return handles
 
 
-def _apply_source(topology: dict[str, Any], draft: Mapping[str, Any]) -> str:
-    source_id = _object_id(draft, "Source draft")
-    _replace_record(topology, CONF_SOURCES, source_id, draft)
-    return source_id
+def _validated(data: Mapping[str, Any]) -> tuple[PlantConfiguration, PlantOwnership, CompiledPlant]:
+    """Decode, check ownership and room handles, and compile one stored graph."""
+    configuration = plant_configuration_from_entry_data(data)
+    ownership = plant_ownership(data)
+    validate_ownership(configuration, ownership)
+    handles = subentry_objects(data)
+    zone_ids = {zone.id for zone in configuration.zones}
+    source_ids = {source.id for source in configuration.sources}
+    for object_id, subentry_type in handles.items():
+        if subentry_type == SUBENTRY_TYPE_ROOM and object_id not in zone_ids:
+            raise StoredTopologyError(f"Room handle {object_id} does not name a stored zone.")
+        if subentry_type == SUBENTRY_TYPE_SOURCE and object_id not in source_ids:
+            raise StoredTopologyError(f"Source handle {object_id} does not name a stored source.")
+    if unhandled := sorted(
+        zone_id for zone_id in zone_ids if handles.get(zone_id) != SUBENTRY_TYPE_ROOM
+    ):
+        raise StoredTopologyError("Zones without a room handle: " + ", ".join(unhandled) + ".")
+    return configuration, ownership, compile_topology(configuration)
 
 
-def _apply_draft(topology: dict[str, Any], subentry_type: str, draft: Mapping[str, Any]) -> str:
-    if subentry_type == SUBENTRY_TYPE_ZONE:
-        return _apply_zone(topology, draft)
-    if subentry_type == SUBENTRY_TYPE_CIRCUIT:
-        return _apply_circuit(topology, draft)
-    if subentry_type == SUBENTRY_TYPE_ACTUATOR:
-        return _apply_actuator(topology, draft)
-    if subentry_type == SUBENTRY_TYPE_SOURCE:
-        return _apply_source(topology, draft)
-    raise StoredTopologyError(f"Unsupported subentry type {subentry_type!r}.")
-
-
-def _subentry_object_id(subentry: Any, *, require_descriptor: bool) -> str:
+def _subentry_object_id(subentry: Any) -> str:
     data = subentry.data
     if not isinstance(data, Mapping):
         raise StoredTopologyError("Config subentry data must be an object.")
-    if require_descriptor and set(data) != {"id"}:
+    if set(data) != {"id"}:
         raise StoredTopologyError(
-            f"Version 2 subentry {subentry.subentry_id} must contain only its object id."
+            f"Subentry {subentry.subentry_id} must contain only its object id."
         )
-    object_id = _object_id(data, f"Subentry {subentry.subentry_id}")
+    object_id = record_object_id(data, f"Subentry {subentry.subentry_id}")
     if subentry.unique_id != object_id:
         raise StoredTopologyError(
             f"Subentry {subentry.subentry_id} unique id must match object id {object_id}."
@@ -386,307 +320,372 @@ def _subentry_object_id(subentry: Any, *, require_descriptor: bool) -> str:
     return object_id
 
 
-def _subentry_maps(
-    entry: Any,
-    topology: Mapping[str, Any],
-    ownership: Mapping[str, str],
-    *,
-    excluded_subentry_id: str | None = None,
-) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
-    actuator_ids: dict[str, str] = {}
-    circuit_ids: dict[str, str] = {}
-    zone_ids: dict[str, str] = {}
-    source_ids: dict[str, str] = {}
-    seen_object_ids: set[str] = set()
-    for subentry in getattr(entry, "subentries", {}).values():
-        if subentry.subentry_id == excluded_subentry_id:
-            continue
-        subentry_type = str(subentry.subentry_type)
-        if subentry_type not in _SUPPORTED_SUBENTRY_TYPES:
-            raise StoredTopologyError(f"Unsupported config subentry type {subentry_type!r}.")
-        object_id = _subentry_object_id(subentry, require_descriptor=True)
-        if object_id in seen_object_ids:
-            raise StoredTopologyError(f"Multiple subentries own object {object_id}.")
-        seen_object_ids.add(object_id)
-        if ownership.get(object_id) != subentry_type:
-            raise StoredTopologyError(
-                f"Subentry {subentry.subentry_id} has no matching parent ownership record."
-            )
-        if not _object_exists(topology, subentry_type, object_id):
-            raise StoredTopologyError(
-                f"Subentry {subentry.subentry_id} references missing object {object_id}."
-            )
-        target = {
-            SUBENTRY_TYPE_ACTUATOR: actuator_ids,
-            SUBENTRY_TYPE_CIRCUIT: circuit_ids,
-            SUBENTRY_TYPE_ZONE: zone_ids,
-            SUBENTRY_TYPE_SOURCE: source_ids,
-        }.get(subentry_type)
-        if target is not None:
-            target[object_id] = subentry.subentry_id
-    return actuator_ids, circuit_ids, zone_ids, source_ids
-
-
-def _entry_data_with_drafts(
-    entry: Any,
-    *,
-    proposed_actuators: Sequence[Mapping[str, Any]] = (),
-    proposed_circuits: Sequence[Mapping[str, Any]] = (),
-    proposed_zones: Sequence[Mapping[str, Any]] = (),
-    proposed_sources: Sequence[Mapping[str, Any]] = (),
-    excluded_subentry_id: str | None = None,
-    claim_subentry_objects: bool = False,
-    invalidate_authorization: bool = False,
-) -> dict[str, Any]:
-    data = deepcopy(dict(entry.data))
-    topology = _topology_copy(data)
-    ownership = _ownership(data)
-    excluded_object_id: str | None = None
-    excluded_type: str | None = None
-    if excluded_subentry_id is not None:
-        try:
-            subentry = entry.subentries[excluded_subentry_id]
-        except KeyError as error:
-            raise StoredTopologyError(
-                f"Unknown excluded subentry {excluded_subentry_id}."
-            ) from error
-        excluded_type = str(subentry.subentry_type)
-        excluded_object_id = _subentry_object_id(subentry, require_descriptor=True)
-        _remove_object(topology, excluded_type, excluded_object_id)
-
-    applied: list[tuple[str, str]] = []
-    for subentry_type, drafts in (
-        (SUBENTRY_TYPE_ACTUATOR, proposed_actuators),
-        (SUBENTRY_TYPE_CIRCUIT, proposed_circuits),
-        (SUBENTRY_TYPE_ZONE, proposed_zones),
-        (SUBENTRY_TYPE_SOURCE, proposed_sources),
-    ):
-        for draft in drafts:
-            object_id = _apply_draft(topology, subentry_type, draft)
-            applied.append((object_id, subentry_type))
-
-    if excluded_object_id is not None and applied != [(excluded_object_id, excluded_type)]:
-        raise StoredTopologyError(
-            "A subentry reconfiguration must replace the same object and object type."
-        )
-    if claim_subentry_objects:
-        ownership.update(applied)
-    data[CONF_TOPOLOGY] = topology
-    data[CONF_SUBENTRY_OBJECTS] = ownership
-    if invalidate_authorization:
-        data = invalidate_output_authorization(data)
-    return data
-
-
-def effective_plant_configuration(
-    entry: Any,
-    *,
-    proposed_actuators: Sequence[Mapping[str, Any]] = (),
-    proposed_circuits: Sequence[Mapping[str, Any]] = (),
-    proposed_zones: Sequence[Mapping[str, Any]] = (),
-    proposed_sources: Sequence[Mapping[str, Any]] = (),
-    excluded_subentry_id: str | None = None,
-) -> EffectivePlantConfiguration:
-    """Read only the parent graph and optionally compile one flow proposal."""
-    data = _entry_data_with_drafts(
-        entry,
-        proposed_actuators=proposed_actuators,
-        proposed_circuits=proposed_circuits,
-        proposed_zones=proposed_zones,
-        proposed_sources=proposed_sources,
-        excluded_subentry_id=excluded_subentry_id,
-    )
-    topology = _topology_copy(data)
-    ownership = _ownership(data)
-    actuator_ids, circuit_ids, zone_ids, source_ids = _subentry_maps(
-        entry,
-        topology,
-        ownership,
-        excluded_subentry_id=excluded_subentry_id,
-    )
-    return EffectivePlantConfiguration(
-        configuration=plant_configuration_from_entry_data(data),
-        actuator_subentry_ids=actuator_ids,
-        circuit_subentry_ids=circuit_ids,
-        zone_subentry_ids=zone_ids,
-        source_subentry_ids=source_ids,
-    )
-
-
-def entry_data_with_subentry_draft(
-    entry: Any,
-    subentry_type: str,
-    draft: Mapping[str, Any],
-    *,
-    excluded_subentry_id: str | None = None,
-) -> dict[str, Any]:
-    """Persist one validated draft into the parent graph and return to Dry run."""
-    proposals: dict[str, tuple[Mapping[str, Any], ...]] = {
-        SUBENTRY_TYPE_ACTUATOR: (),
-        SUBENTRY_TYPE_CIRCUIT: (),
-        SUBENTRY_TYPE_ZONE: (),
-        SUBENTRY_TYPE_SOURCE: (),
-    }
-    if subentry_type not in proposals:
-        raise StoredTopologyError(f"Unsupported subentry type {subentry_type!r}.")
-    proposals[subentry_type] = (draft,)
-    data = _entry_data_with_drafts(
-        entry,
-        proposed_actuators=proposals[SUBENTRY_TYPE_ACTUATOR],
-        proposed_circuits=proposals[SUBENTRY_TYPE_CIRCUIT],
-        proposed_zones=proposals[SUBENTRY_TYPE_ZONE],
-        proposed_sources=proposals[SUBENTRY_TYPE_SOURCE],
-        excluded_subentry_id=excluded_subentry_id,
-        claim_subentry_objects=True,
-        invalidate_authorization=True,
-    )
-    compile_topology(plant_configuration_from_entry_data(data))
-    return data
-
-
-def subentry_draft(entry: Any, subentry: Any) -> dict[str, Any]:
-    """Rebuild the complete UI draft for one minimal subentry handle."""
-    topology = _topology_copy(entry.data)
-    object_id = _subentry_object_id(subentry, require_descriptor=True)
-    subentry_type = str(subentry.subentry_type)
-    if subentry_type not in _SUPPORTED_SUBENTRY_TYPES:
-        raise StoredTopologyError(f"Unsupported config subentry type {subentry_type!r}.")
-    record = _record_by_id(
-        topology,
-        _COLLECTION_BY_SUBENTRY_TYPE[subentry_type],
-        object_id,
-    )
-    if subentry_type == SUBENTRY_TYPE_ZONE:
-        routes = [
-            {
-                "id": route["id"],
-                "circuit_id": route["circuit_id"],
-                **_route_flag(route),
-            }
-            for route in _records(topology, CONF_ROUTES)
-            if str(route.get("zone_id")) == object_id
-        ]
-        return {
-            **record,
-            CONF_CIRCUIT_IDS: [route["circuit_id"] for route in routes],
-            CONF_ROUTES: routes,
-        }
-    if subentry_type == SUBENTRY_TYPE_CIRCUIT:
-        routes = [
-            {
-                "id": route["id"],
-                "zone_id": route["zone_id"],
-                **_route_flag(route),
-            }
-            for route in _records(topology, CONF_ROUTES)
-            if str(route.get("circuit_id")) == object_id
-        ]
-        return {
-            **record,
-            CONF_ZONE_IDS: [route["zone_id"] for route in routes],
-            CONF_ROUTES: routes,
-        }
-    if subentry_type == SUBENTRY_TYPE_ACTUATOR:
-        circuit_ids = [
-            circuit["id"]
-            for circuit in _records(topology, CONF_CIRCUITS)
-            if object_id in [str(value) for value in circuit.get("valve_ids", [])]
-        ]
-        return {
-            **record,
-            CONF_ACTUATOR_KIND: ACTUATOR_KIND_VALVE,
-            CONF_CIRCUIT_IDS: circuit_ids,
-        }
-    return record
-
-
-def subentry_owned_ids(data: Mapping[str, Any], subentry_type: str) -> frozenset[str]:
-    """Return ids excluded from dependency selectors for deletion-safe flows."""
-    if subentry_type not in _SUPPORTED_SUBENTRY_TYPES:
-        raise StoredTopologyError(f"Unsupported subentry type {subentry_type!r}.")
-    return frozenset(
-        object_id
-        for object_id, owned_type in _ownership(data).items()
-        if owned_type == subentry_type
-    )
-
-
-def migration_plan(entry: Any) -> MigrationPlan:
-    """Build a restart-safe version 2 graph from version 1.1 hybrid storage."""
-    data = deepcopy(dict(entry.data))
-    topology = _topology_copy(data)
-    ownership = _ownership(data)
-    updates: list[SubentryMigration] = []
-    seen_object_ids: set[str] = set()
-    for subentry in sorted(
-        getattr(entry, "subentries", {}).values(), key=lambda item: item.subentry_id
-    ):
-        subentry_type = str(subentry.subentry_type)
-        if subentry_type not in _SUPPORTED_SUBENTRY_TYPES:
-            raise StoredTopologyError(f"Unsupported config subentry type {subentry_type!r}.")
-        if not isinstance(subentry.data, Mapping):
-            raise StoredTopologyError("Config subentry data must be an object.")
-        object_id = _object_id(subentry.data, f"Subentry {subentry.subentry_id}")
-        if object_id in seen_object_ids:
-            raise StoredTopologyError(f"Multiple subentries own object {object_id}.")
-        seen_object_ids.add(object_id)
-        if set(subentry.data) == {"id"}:
-            if not _object_exists(topology, subentry_type, object_id):
-                raise StoredTopologyError(
-                    f"Migrated subentry {subentry.subentry_id} references missing "
-                    f"object {object_id}."
-                )
-        else:
-            _apply_draft(topology, subentry_type, subentry.data)
-        ownership[object_id] = subentry_type
-        updates.append(SubentryMigration(subentry=subentry, object_id=object_id))
-    data[CONF_TOPOLOGY] = topology
-    data[CONF_SUBENTRY_OBJECTS] = ownership
-    data.setdefault(CONF_REQUESTED_MODE, PlantMode.AUTO.value)
-    data = invalidate_output_authorization(data)
-    compile_topology(plant_configuration_from_entry_data(data))
-    return MigrationPlan(data=data, subentries=tuple(updates))
-
-
-def reconcile_removed_subentries(entry: Any) -> Mapping[str, Any] | None:
-    """Remove graph objects whose deletion-safe Home Assistant handles vanished."""
-    data = deepcopy(dict(entry.data))
-    topology = _topology_copy(data)
-    ownership = _ownership(data)
+def _present_handles(entry: Any, handles: Mapping[str, str]) -> dict[str, str]:
+    """Return object id -> subentry id for every valid handle subentry of an entry."""
     present: dict[str, str] = {}
     for subentry in getattr(entry, "subentries", {}).values():
         subentry_type = str(subentry.subentry_type)
-        if subentry_type not in _SUPPORTED_SUBENTRY_TYPES:
+        if subentry_type not in SUPPORTED_SUBENTRY_TYPES:
             raise StoredTopologyError(f"Unsupported config subentry type {subentry_type!r}.")
-        object_id = _subentry_object_id(subentry, require_descriptor=True)
+        object_id = _subentry_object_id(subentry)
         if object_id in present:
             raise StoredTopologyError(f"Multiple subentries own object {object_id}.")
-        if ownership.get(object_id) != subentry_type:
+        if handles.get(object_id) != subentry_type:
             raise StoredTopologyError(
                 f"Subentry {subentry.subentry_id} has no matching parent ownership record."
             )
-        present[object_id] = subentry_type
-    missing_ids = sorted(set(ownership) - set(present))
-    if not missing_ids:
-        return None
-    for object_id in missing_ids:
-        _remove_object(topology, ownership[object_id], object_id)
-        ownership.pop(object_id)
-    data[CONF_TOPOLOGY] = topology
-    data[CONF_SUBENTRY_OBJECTS] = ownership
-    data = invalidate_output_authorization(data)
-    try:
-        compile_topology(plant_configuration_from_entry_data(data))
-    except (StoredTopologyError, TopologyValidationError) as error:
+        present[object_id] = subentry.subentry_id
+    return present
+
+
+def effective_plant_from_data(data: Mapping[str, Any]) -> EffectivePlant:
+    """Validate and compile stored data that has no subentries yet."""
+    configuration, ownership, compiled = _validated(data)
+    return EffectivePlant(
+        configuration=configuration,
+        ownership=ownership,
+        compiled=compiled,
+        object_subentry_ids={},
+    )
+
+
+def effective_plant(entry: Any) -> EffectivePlant:
+    """Validate and compile the graph of an entry, with the subentry owning each object."""
+    plant = effective_plant_from_data(entry.data)
+    handles = subentry_objects(entry.data)
+    present = _present_handles(entry, handles)
+    if orphaned := sorted(set(handles) - set(present)):
         raise StoredTopologyError(
-            "Removing the subentry would violate the deletion-safe topology boundary."
+            "Subentry-owned objects without a config subentry: " + ", ".join(orphaned) + "."
+        )
+    owners = dict(present)
+    owners.update(
+        {object_id: present[zone_id] for object_id, zone_id in plant.ownership.room_objects.items()}
+    )
+    return EffectivePlant(
+        configuration=plant.configuration,
+        ownership=plant.ownership,
+        compiled=plant.compiled,
+        object_subentry_ids=owners,
+    )
+
+
+def _finalized(data: dict[str, Any]) -> dict[str, Any]:
+    """Return to Dry run, then prove the edited graph valid before anyone stores it."""
+    updated = invalidate_output_authorization(data)
+    _validated(updated)
+    return updated
+
+
+def new_plant_data(
+    *, name: str, plant_id: str, topology: Mapping[str, Any], ownership: PlantOwnership
+) -> dict[str, Any]:
+    """Return version 3 data for a new Plant, with a handle for every zone and source."""
+    stored_topology = topology_copy({CONF_TOPOLOGY: topology})
+    return _finalized(
+        {
+            CONF_NAME: name,
+            CONF_PLANT_ID: plant_id,
+            CONF_DRY_RUN: True,
+            CONF_TOPOLOGY: stored_topology,
+            CONF_SUBENTRY_OBJECTS: _all_handles(stored_topology),
+            CONF_ROOM_OBJECTS: dict(ownership.room_objects),
+        }
+    )
+
+
+def room_draft(data: Mapping[str, Any], zone_id: str) -> RoomDraft:
+    """Return the stored records one room owns."""
+    topology = topology_copy(data)
+    owners = room_objects(data)
+    zone_id = _uuid(zone_id, "Room zone id")
+
+    def private(collection: str) -> list[dict[str, Any]]:
+        return [
+            deepcopy(record)
+            for record in records(topology, collection)
+            if owners.get(canonical_id(record.get("id"))) == zone_id
+        ]
+
+    return RoomDraft(
+        zone=_record_by_id(topology, CONF_ZONES, zone_id),
+        circuits=private(CONF_CIRCUITS),
+        valves=private(CONF_VALVES),
+        routes=[
+            deepcopy(route)
+            for route in records(topology, CONF_ROUTES)
+            if _uuid(route.get("zone_id"), "Stored route zone id") == zone_id
+        ],
+    )
+
+
+def _merged(
+    stored: list[dict[str, Any]],
+    replaceable_ids: set[str],
+    drafted: Iterable[Mapping[str, Any]],
+    collection: str,
+) -> list[dict[str, Any]]:
+    """Replace a room's records in place, drop the ones it no longer has, append new ones."""
+    new_by_id: dict[str, dict[str, Any]] = {}
+    for record in drafted:
+        object_id = record_object_id(record, f"Room {collection} record")
+        if object_id in new_by_id:
+            raise StoredTopologyError(f"Room {collection} repeat id {object_id}.")
+        new_by_id[object_id] = deepcopy(dict(record))
+    stored_ids = {canonical_id(record.get("id")) for record in stored}
+    if taken := sorted((set(new_by_id) & stored_ids) - replaceable_ids):
+        raise StoredTopologyError(
+            f"Room {collection} " + ", ".join(taken) + " belong to the Plant or another room."
+        )
+    merged: list[dict[str, Any]] = []
+    for record in stored:
+        object_id = canonical_id(record.get("id"))
+        if object_id not in replaceable_ids:
+            merged.append(record)
+        elif object_id in new_by_id:
+            merged.append(new_by_id.pop(object_id))
+    merged.extend(new_by_id.values())
+    return merged
+
+
+def data_with_room(data: Mapping[str, Any], draft: RoomDraft) -> dict[str, Any]:
+    """Insert a room, or replace everything the room with this zone id owns."""
+    zone_id = record_object_id(draft.zone, "Room zone")
+    for route in draft.routes:
+        if _uuid(_required(route, "zone_id", "Room route"), "Room route zone id") != zone_id:
+            raise StoredTopologyError("Every room route must start at the room's zone.")
+    updated = deepcopy(dict(data))
+    topology = topology_copy(updated)
+    owners = room_objects(updated)
+    private_ids = {object_id for object_id, owner in owners.items() if owner == zone_id}
+    replaceable = {
+        CONF_ZONES: {zone_id},
+        CONF_CIRCUITS: private_ids,
+        CONF_VALVES: private_ids,
+        CONF_ROUTES: {
+            canonical_id(route.get("id"))
+            for route in records(topology, CONF_ROUTES)
+            if _uuid(route.get("zone_id"), "Stored route zone id") == zone_id
+        },
+    }
+    drafted = {
+        CONF_ZONES: [draft.zone],
+        CONF_CIRCUITS: draft.circuits,
+        CONF_VALVES: draft.valves,
+        CONF_ROUTES: draft.routes,
+    }
+    for collection, drafted_records in drafted.items():
+        topology[collection] = _merged(
+            records(topology, collection), replaceable[collection], drafted_records, collection
+        )
+    owners = {object_id: owner for object_id, owner in owners.items() if owner != zone_id}
+    for record in (*draft.circuits, *draft.valves):
+        owners[record_object_id(record, "Room record")] = zone_id
+    handles = subentry_objects(updated)
+    handles[zone_id] = SUBENTRY_TYPE_ROOM
+    updated[CONF_TOPOLOGY] = topology
+    updated[CONF_SUBENTRY_OBJECTS] = handles
+    updated[CONF_ROOM_OBJECTS] = owners
+    return _finalized(updated)
+
+
+def data_with_pump(
+    data: Mapping[str, Any], pump_id: str, record: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Insert or replace one Plant pump, or remove it when ``record`` is ``None``."""
+    pump_id = _uuid(pump_id, "Pump id")
+    updated = deepcopy(dict(data))
+    topology = topology_copy(updated)
+    if record is None:
+        _record_by_id(topology, CONF_PUMPS, pump_id)
+        if users := tuple(
+            str(circuit.get(CONF_NAME, canonical_id(circuit.get("id"))))
+            for circuit in records(topology, CONF_CIRCUITS)
+            if str(circuit.get("pump_id")) == pump_id
+        ):
+            raise EquipmentInUseError(users)
+        topology[CONF_PUMPS] = [
+            pump
+            for pump in records(topology, CONF_PUMPS)
+            if canonical_id(pump.get("id")) != pump_id
+        ]
+    else:
+        if "id" in record and record_object_id(record, "Pump record") != pump_id:
+            raise StoredTopologyError("A pump record id must match its pump id.")
+        replace_record(topology, CONF_PUMPS, pump_id, {"id": pump_id, **record})
+    updated[CONF_TOPOLOGY] = topology
+    return _finalized(updated)
+
+
+def data_with_source(data: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
+    """Insert or replace one source that a source subentry owns."""
+    source_id = record_object_id(record, "Source record")
+    updated = deepcopy(dict(data))
+    topology = topology_copy(updated)
+    replace_record(topology, CONF_SOURCES, source_id, record)
+    handles = subentry_objects(updated)
+    handles[source_id] = SUBENTRY_TYPE_SOURCE
+    updated[CONF_TOPOLOGY] = topology
+    updated[CONF_SUBENTRY_OBJECTS] = handles
+    return _finalized(updated)
+
+
+def _objects_by_id(topology: Mapping[str, Any]) -> dict[str, tuple[str, Mapping[str, Any]]]:
+    """Return object id -> (kind, record) for every zone, loop, valve, pump, and source."""
+    return {
+        canonical_id(record.get("id")): (kind, record)
+        for collection, kind in _OBJECT_KINDS
+        for record in records(topology, collection)
+    }
+
+
+def object_ids(data: Mapping[str, Any]) -> set[str]:
+    """Return the id of every zone, loop, valve, pump, and source of stored data."""
+    return set(_objects_by_id(topology_copy(data)))
+
+
+def data_with_plant(data: Mapping[str, Any], imported: ImportedPlantLike) -> dict[str, Any]:
+    """Replace the name, topology, and ownership, giving every zone and source a handle.
+
+    An object id keeps its kind: a room, loop, valve, pump, or source cannot take
+    the id of an object of another kind, even one the file removes, because the
+    handles and registrations of that id belong to the old object.
+    """
+    updated = deepcopy(dict(data))
+    topology = topology_copy({CONF_TOPOLOGY: imported.topology})
+    try:
+        current = _objects_by_id(topology_copy(data))
+    except StoredTopologyError:
+        # A stored graph whose collections do not even read can still be replaced.
+        current = {}
+    for object_id, (kind, record) in _objects_by_id(topology).items():
+        if object_id in current and (old := current[object_id])[0] != kind:
+            raise StoredTopologyError(
+                f"The {kind} {record.get(CONF_NAME, object_id)} uses the id {object_id} of the "
+                f"{old[0]} {old[1].get(CONF_NAME, object_id)}; give the {kind} its own id."
+            )
+    updated[CONF_NAME] = imported.name
+    updated[CONF_TOPOLOGY] = topology
+    updated[CONF_SUBENTRY_OBJECTS] = _all_handles(topology)
+    updated[CONF_ROOM_OBJECTS] = dict(imported.ownership.room_objects)
+    return _finalized(updated)
+
+
+def subentries_for(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the room and source handles of stored data, for ``async_create_entry``."""
+    topology = topology_copy(data)
+    handles: list[dict[str, Any]] = []
+    for object_id, subentry_type in subentry_objects(data).items():
+        record = _record_by_id(topology, _COLLECTION_BY_SUBENTRY_TYPE[subentry_type], object_id)
+        handles.append(
+            {
+                "data": {"id": object_id},
+                "subentry_type": subentry_type,
+                "title": str(record.get(CONF_NAME, "")),
+                "unique_id": object_id,
+            }
+        )
+    return handles
+
+
+def subentry_sync(entry: Any, data: Mapping[str, Any]) -> SubentrySync:
+    """Return the handles to add, remove, and retitle so an entry matches new data."""
+    desired = {
+        (handle["subentry_type"], handle["unique_id"]): handle for handle in subentries_for(data)
+    }
+    kept: set[tuple[str, str]] = set()
+    remove: list[str] = []
+    retitle: list[tuple[str, str]] = []
+    for subentry in getattr(entry, "subentries", {}).values():
+        key = (str(subentry.subentry_type), str(subentry.unique_id))
+        handle = desired.get(key)
+        if handle is None or key in kept:
+            remove.append(subentry.subentry_id)
+            continue
+        kept.add(key)
+        if subentry.title != handle["title"]:
+            retitle.append((subentry.subentry_id, handle["title"]))
+    return SubentrySync(
+        add=[handle for key, handle in desired.items() if key not in kept],
+        remove=remove,
+        retitle=retitle,
+    )
+
+
+def subentry_draft(entry: Any, subentry: Any) -> dict[str, Any]:
+    """Return the stored record behind one room or source handle."""
+    subentry_type = str(subentry.subentry_type)
+    if subentry_type not in SUPPORTED_SUBENTRY_TYPES:
+        raise StoredTopologyError(f"Unsupported config subentry type {subentry_type!r}.")
+    return _record_by_id(
+        topology_copy(entry.data),
+        _COLLECTION_BY_SUBENTRY_TYPE[subentry_type],
+        _subentry_object_id(subentry),
+    )
+
+
+def _data_without_room(data: Mapping[str, Any], zone_id: str) -> dict[str, Any]:
+    """Remove one room closure from stored data, keeping the order of the rest."""
+    remaining, ownership = without_room(
+        plant_configuration_from_entry_data(data), plant_ownership(data), zone_id
+    )
+    kept_ids = {
+        CONF_ZONES: {zone.id for zone in remaining.zones},
+        CONF_VALVES: {valve.id for valve in remaining.valves},
+        CONF_CIRCUITS: {circuit.id for circuit in remaining.circuits},
+        CONF_ROUTES: {route.id for route in remaining.routes},
+    }
+    updated = deepcopy(dict(data))
+    topology = topology_copy(updated)
+    for collection, object_ids in kept_ids.items():
+        topology[collection] = [
+            record
+            for record in records(topology, collection)
+            if canonical_id(record.get("id")) in object_ids
+        ]
+    updated[CONF_TOPOLOGY] = topology
+    updated[CONF_ROOM_OBJECTS] = dict(ownership.room_objects)
+    return updated
+
+
+def _data_without_source(data: Mapping[str, Any], source_id: str) -> dict[str, Any]:
+    updated = deepcopy(dict(data))
+    topology = topology_copy(updated)
+    topology[CONF_SOURCES] = [
+        record
+        for record in records(topology, CONF_SOURCES)
+        if canonical_id(record.get("id")) != source_id
+    ]
+    updated[CONF_TOPOLOGY] = topology
+    return updated
+
+
+def reconcile_removed_subentries(entry: Any) -> dict[str, Any] | None:
+    """Remove what each vanished room or source handle owned, or return ``None``."""
+    handles = subentry_objects(entry.data)
+    present = _present_handles(entry, handles)
+    missing = [object_id for object_id in handles if object_id not in present]
+    if not missing:
+        return None
+    data = deepcopy(dict(entry.data))
+    try:
+        for object_id in missing:
+            if handles[object_id] == SUBENTRY_TYPE_ROOM:
+                data = _data_without_room(data, object_id)
+            else:
+                data = _data_without_source(data, object_id)
+            del handles[object_id]
+        data[CONF_SUBENTRY_OBJECTS] = dict(handles)
+        return _finalized(data)
+    except GRAPH_EDIT_ERRORS as error:
+        raise StoredTopologyError(
+            "Removing the deleted subentries would leave an invalid Plant graph."
         ) from error
-    return data
 
 
 def output_authorization(data: Mapping[str, Any]) -> dict[str, Any]:
     """Bind one explicit authorization to this graph and exact physical outputs."""
-    topology = _topology_copy(data)
+    topology = topology_copy(data)
     fingerprint_input = {
         CONF_PLANT_ID: data.get(CONF_PLANT_ID),
         CONF_TOPOLOGY: topology,
@@ -700,23 +699,23 @@ def output_authorization(data: Mapping[str, Any]) -> dict[str, Any]:
     ).hexdigest()
     outputs: list[dict[str, str]] = []
     for kind, collection in (("valve", CONF_VALVES), ("pump", CONF_PUMPS)):
-        for record in _records(topology, collection):
+        for record in records(topology, collection):
             entity_id = record.get("entity_id")
             if isinstance(entity_id, str) and entity_id:
                 outputs.append(
                     {
                         "kind": kind,
-                        "id": _object_id(record, f"Stored {kind}"),
+                        "id": record_object_id(record, f"Stored {kind}"),
                         "entity_id": entity_id,
                     }
                 )
-    for record in _records(topology, CONF_SOURCES):
+    for record in records(topology, CONF_SOURCES):
         entity_id = record.get("source_demand_entity")
         if isinstance(entity_id, str) and entity_id:
             outputs.append(
                 {
                     "kind": "source_demand",
-                    "id": _object_id(record, "Stored source"),
+                    "id": record_object_id(record, "Stored source"),
                     "entity_id": entity_id,
                 }
             )
@@ -762,7 +761,7 @@ def authorization_output_lines(data: Mapping[str, Any]) -> str:
         f"- {output['kind']}: {output['entity_id']}"
         for output in output_authorization(data)["outputs"]
     ]
-    selector = _topology_copy(data).get("source_selector")
+    selector = topology_copy(data).get("source_selector")
     if isinstance(selector, Mapping) and isinstance(selector.get("entity_id"), str):
         lines.append(
             f"- source_selector: {selector['entity_id']} (source selection stays in Dry run)"

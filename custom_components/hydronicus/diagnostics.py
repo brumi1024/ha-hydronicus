@@ -225,14 +225,29 @@ def _configuration_shape(runtime: HydronicRuntime, references: _References) -> d
     }
 
 
+def _owner(
+    runtime: HydronicRuntime, references: _References, zone_id: str | None
+) -> dict[str, str | None]:
+    """Name the room or the Plant that owns an object.
+
+    A room title is its zone name, which diagnostics redact, so a room is named
+    by the opaque reference of its zone.
+    """
+    if zone_id is None:
+        return {"kind": "plant", "reference": references.ref("plant", runtime.plant.id)}
+    return {"kind": "room", "reference": references.ref("zone", zone_id)}
+
+
 def _configuration_objects(runtime: HydronicRuntime, references: _References) -> dict[str, object]:
     """Return the non-secret configuration needed to understand the topology."""
+    room_objects = runtime.ownership.room_objects
     zones = []
     for zone_id, zone in sorted(runtime.plant.zones.items()):
         zones.append(
             {
                 "reference": references.ref("zone", zone_id),
                 "name": _REDACTED_NAME,
+                "owner": _owner(runtime, references, zone_id),
                 "thermostat_kind": zone.thermostat.kind.value,
                 "external_thermostat_configured": isinstance(
                     zone.thermostat, ExternalClimateThermostatConfig
@@ -257,6 +272,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
             {
                 "reference": references.ref("circuit", circuit_id),
                 "name": _REDACTED_NAME,
+                "owner": _owner(runtime, references, room_objects.get(circuit_id)),
                 "valve_references": [
                     references.ref("valve", valve_id) for valve_id in circuit.valve_ids
                 ],
@@ -271,6 +287,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
     routes = [
         {
             "reference": references.ref("route", route.id),
+            "owner": _owner(runtime, references, route.zone_id),
             "zone_reference": references.ref("zone", route.zone_id),
             "circuit_reference": references.ref("circuit", route.circuit_id),
             "enabled": route.enabled,
@@ -286,6 +303,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                 {
                     "reference": references.ref("valve", actuator_id),
                     "kind": "valve",
+                    "owner": _owner(runtime, references, room_objects.get(actuator_id)),
                     "readiness_feedback_configured": valve.readiness_entity_id is not None,
                     "position_feedback_configured": valve.position_entity_id is not None,
                 }
@@ -295,6 +313,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                 {
                     "reference": references.ref("pump", actuator_id),
                     "kind": "pump",
+                    "owner": _owner(runtime, references, None),
                     "power_feedback_configured": pump.power_entity_id is not None,
                     "flow_feedback_configured": pump.flow_entity_id is not None,
                     "fault_feedback_configured": pump.fault_entity_id is not None,
@@ -306,6 +325,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
             {
                 "reference": references.ref("source", source_id),
                 "kind": source.kind.value,
+                "owner": _owner(runtime, references, None),
                 "availability_configured": source.availability_entity_id is not None,
                 "temperature_reference_configured": source.temperature_entity_id is not None,
                 "demand_actuator_configured": source.demand_entity_id is not None,

@@ -1,0 +1,23 @@
+# Every shorthand form, without ids or names.
+hydronicus: 1
+name: Shorthand
+pumps:
+  main_pump: switch.main_pump
+valves:
+  shared_valve: switch.shared_valve
+loops:
+  shared_loop:
+    valves: [shared_valve, switch.shared_extra]
+    pump: main_pump
+rooms:
+  living_room:
+    thermostat: climate.living
+    temperature_sensors: [sensor.living_temperature]
+    humidity_sensors: [sensor.living_humidity]
+    valves:
+      living_valve: switch.living_valve
+    loops:
+      living_loop:
+        valves: [living_valve, switch.living_first, shared_valve, switch.living_second]
+        pump: main_pump
+    shared_loops: [shared_loop]

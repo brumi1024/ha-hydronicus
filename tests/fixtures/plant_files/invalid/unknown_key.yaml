@@ -1,0 +1,12 @@
+hydronicus: 1
+name: Unknown key
+pumps:
+  pump: switch.pump
+rooms:
+  bedroom:
+    temperature_sensors: [sensor.bedroom_temperature]
+    colour: blue
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve]
+        pump: pump

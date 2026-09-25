@@ -9,17 +9,11 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from custom_components.hydronicus.const import (
-    CONFIG_ENTRY_MINOR_VERSION,
-    CONFIG_ENTRY_VERSION,
-    DOMAIN,
-)
 from custom_components.hydronicus.core.configuration import plant_configuration_from_entry_data
 from custom_components.hydronicus.core.controller import evaluate
 from custom_components.hydronicus.core.model import RuntimeState
 from custom_components.hydronicus.core.topology import compile_topology
+from tests.integration.plant_fixtures import plant_entry
 
 from .plant_factory import (
     build_large_synthetic_entry,
@@ -111,13 +105,7 @@ async def test_large_synthetic_plant_benchmark_is_bounded_and_shadow_only(hass) 
     assert counts["shared_pump_references"] == counts["pumps"]
     assert len(evaluation.diagnostics.interlocks) >= counts["zones"]
 
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title=entry_data["name"],
-        data=entry_data,
-        version=CONFIG_ENTRY_VERSION,
-        minor_version=CONFIG_ENTRY_MINOR_VERSION,
-    )
+    entry = plant_entry(entry_data, title=entry_data["name"])
     for entity_id in synthetic_entity_ids(entry_data):
         hass.states.async_set(entity_id, synthetic_state(entity_id))
     entry.add_to_hass(hass)

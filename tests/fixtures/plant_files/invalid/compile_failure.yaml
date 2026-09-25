@@ -1,0 +1,14 @@
+# Decodes, but the compiler rejects the target temperature.
+hydronicus: 1
+name: Compile failure
+pumps:
+  pump: switch.pump
+rooms:
+  bedroom:
+    thermostat:
+      initial_target_temperature: 99
+    temperature_sensors: [sensor.bedroom_temperature]
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve]
+        pump: pump

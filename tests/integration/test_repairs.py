@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from homeassistant import config_entries
@@ -13,23 +14,17 @@ from homeassistant.helpers import issue_registry
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.config_flow import SECTION_COOLING
 from custom_components.hydronicus.const import (
-    CONF_CIRCUIT_IDS,
     CONF_DRY_RUN,
-    CONF_ENTITY_ID,
     CONF_NAME,
-    CONF_OPENING_TIME,
     CONF_PLANT_ID,
-    CONF_PUMP_ID,
     CONF_SUPPLY_TEMPERATURE_SENSOR,
-    CONF_VALVE_IDS,
-    CONF_ZONE_IDS,
     DOMAIN,
-    SUBENTRY_TYPE_ACTUATOR,
-    SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_ROOM,
 )
 from custom_components.hydronicus.core.model import ThermostatHvacMode
+from custom_components.hydronicus.flows.room import RoomSubentryFlowHandler
+from tests.integration.plant_fixtures import plant_entry, subentry_id_for
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_A = "00000000-0000-4000-8000-000000000002"
@@ -48,15 +43,31 @@ MISSING_VALVE = "switch.zone_a_valve"
 MISSING_READINESS = "binary_sensor.zone_a_valve_ready"
 MISSING_SUBENTRY_VALVE = "switch.repairs_subentry_valve"
 RESTORED_SUBENTRY_VALVE = "switch.repairs_replacement_valve"
-PARENT_OWNED_TRANSLATION_KEYS = {
-    "missing_sensor_binding",
-    "missing_feedback_binding",
-    "missing_actuator_binding",
+ROOM_OWNED_TRANSLATION_KEYS = {
+    "missing_sensor_binding_fixable",
+    "missing_feedback_binding_fixable",
+    "missing_actuator_binding_fixable",
 }
 
 
-def _entry() -> MockConfigEntry:
-    """Build two independent synthetic paths, one intentionally unresolved."""
+def _entry(*, shared_valve_a: bool = False, supply_sensor_b: str | None = None) -> MockConfigEntry:
+    """Build two independent synthetic rooms, one intentionally unresolved.
+
+    Each room owns its loop and valve and each loop has its own Plant pump. With
+    ``shared_valve_a`` the Zone B loop also uses the Zone A valve, which makes that
+    valve shared Plant equipment.
+    """
+    entry = _plant_entry()
+    data = deepcopy(dict(entry.data))
+    circuit_b = data["topology"]["circuits"][1]
+    if shared_valve_a:
+        circuit_b["valve_ids"] = [VALVE_B, VALVE_A]
+    if supply_sensor_b is not None:
+        circuit_b[CONF_SUPPLY_TEMPERATURE_SENSOR] = supply_sensor_b
+    return plant_entry(data, title="Synthetic plant")
+
+
+def _plant_entry() -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
         title="Synthetic plant",
@@ -165,9 +176,10 @@ async def test_setup_reload_and_restoration_create_and_remove_repairs(hass) -> N
 
     repairs = _issues(hass)
     translation_keys = {issue.translation_key for issue in repairs.values()}
-    assert translation_keys == PARENT_OWNED_TRANSLATION_KEYS
+    assert translation_keys == ROOM_OWNED_TRANSLATION_KEYS
     for issue in repairs.values():
-        assert issue.is_fixable is False
+        assert issue.is_fixable is True
+        assert issue.data["subentry_id"] == subentry_id_for(ZONE_A)
         assert MISSING_SENSOR not in str(issue.translation_placeholders)
         assert MISSING_VALVE not in str(issue.translation_placeholders)
         assert MISSING_READINESS not in str(issue.translation_placeholders)
@@ -227,7 +239,8 @@ async def test_reconfigure_replaces_an_unresolved_binding_and_removes_its_repair
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert any(
-        issue.translation_key == "missing_actuator_binding" for issue in _issues(hass).values()
+        issue.translation_key == "missing_actuator_binding_fixable"
+        for issue in _issues(hass).values()
     )
 
     updated_data = dict(entry.data)
@@ -240,10 +253,12 @@ async def test_reconfigure_replaces_an_unresolved_binding_and_removes_its_repair
 
     assert entry.runtime_data.plant.valves[VALVE_A].entity_id == "switch.reconfigured_zone_a_valve"
     assert all(
-        issue.translation_key != "missing_actuator_binding" for issue in _issues(hass).values()
+        issue.translation_key != "missing_actuator_binding_fixable"
+        for issue in _issues(hass).values()
     )
     assert any(
-        issue.translation_key == "missing_sensor_binding" for issue in _issues(hass).values()
+        issue.translation_key == "missing_sensor_binding_fixable"
+        for issue in _issues(hass).values()
     )
 
 
@@ -262,30 +277,14 @@ def _set_healthy_parent_states(hass) -> None:
 
 
 async def _setup_with_unresolved_subentry_valve(hass) -> tuple[MockConfigEntry, str, str]:
-    """Add a valve through its subentry flow while its actuator entity is missing."""
+    """Set up a Plant whose Zone B room owns a valve with a missing actuator entity."""
     _set_healthy_parent_states(hass)
+    hass.states.async_remove("switch.zone_b_valve")
     entry = _entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert _issues(hass) == {}
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_ACTUATOR),
-        context={"source": config_entries.SOURCE_USER},
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Return valve",
-            CONF_ENTITY_ID: MISSING_SUBENTRY_VALVE,
-            CONF_OPENING_TIME: 45.0,
-            CONF_CIRCUIT_IDS: [CIRCUIT_B],
-        },
-    )
-    await hass.async_block_till_done()
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    subentry = next(iter(entry.subentries.values()))
+    subentry_id = subentry_id_for(ZONE_B)
 
     repairs = _issues(hass)
     assert len(repairs) == 1
@@ -293,43 +292,79 @@ async def _setup_with_unresolved_subentry_valve(hass) -> tuple[MockConfigEntry, 
     assert issue.translation_key == "missing_actuator_binding_fixable"
     assert issue.is_fixable is True
     assert issue.data == {
-        "object_id": subentry.data["id"],
+        "object_id": VALVE_B,
         "binding_key": "actuator",
         "binding_category": "actuator",
         "entry_id": entry.entry_id,
-        "subentry_id": subentry.subentry_id,
+        "subentry_id": subentry_id,
     }
-    assert MISSING_SUBENTRY_VALVE not in str(issue.translation_placeholders)
-    return entry, subentry.subentry_id, issue_id
+    assert "switch.zone_b_valve" not in str(issue.translation_placeholders)
+    return entry, subentry_id, issue_id
 
 
-async def test_parent_owned_binding_repairs_are_not_fixable(hass) -> None:
-    """Objects created with the plant have no subentry reconfigure flow to open."""
-    hass.states.async_set("sensor.zone_b_temperature", "18.0")
-    hass.states.async_set("switch.zone_b_valve", "off")
-    hass.states.async_set("switch.zone_b_pump", "off")
-    hass.states.async_set("switch.zone_a_pump", "off")
-    entry = _entry()
+async def test_shared_equipment_binding_repairs_point_to_the_plant_file(hass) -> None:
+    """A shared valve is Plant equipment that only the plant file edits."""
+    _set_healthy_parent_states(hass)
+    hass.states.async_remove(MISSING_VALVE)
+    entry = _entry(shared_valve_a=True)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
+    assert entry.runtime_data.subentry_id_for(VALVE_A) is None
     repairs = _issues(hass)
-    assert {issue.translation_key for issue in repairs.values()} == PARENT_OWNED_TRANSLATION_KEYS
+    assert {issue.translation_key for issue in repairs.values()} == {"missing_actuator_binding"}
     for issue in repairs.values():
         assert issue.is_fixable is False
         assert issue.data is not None
+        assert issue.data["object_id"] == VALVE_A
         assert "subentry_id" not in issue.data
+        assert "entry_id" not in issue.data
 
 
-async def test_subentry_binding_repair_opens_owning_subentry_reconfigure_flow(
-    hass, hass_client
-) -> None:
-    """The fix flow hands off to the owning subentry, and the repair clears once restored."""
+def test_plant_equipment_repair_texts_explain_the_plant_file() -> None:
+    """Non-fixable texts send users to the plant file instead of a dead end."""
+    strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
+    issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
+    for key in (
+        "missing_sensor_binding",
+        "missing_feedback_binding",
+        "missing_actuator_binding",
+        "missing_thermostat_binding",
+    ):
+        description = issues[key]["description"]
+        assert "created together with" not in description, key
+        assert "Edit plant file" in description, key
+
+
+async def _setup_with_unresolved_pump(hass) -> tuple[MockConfigEntry, str]:
+    """Set up a Plant whose Zone A pump entity is missing."""
+    _set_healthy_parent_states(hass)
+    hass.states.async_remove("switch.zone_a_pump")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    repairs = _issues(hass)
+    assert len(repairs) == 1
+    issue_id, issue = next(iter(repairs.items()))
+    assert issue.translation_key == "missing_actuator_binding_plant_settings"
+    assert issue.is_fixable is True
+    assert issue.data == {
+        "object_id": PUMP_A,
+        "binding_key": "actuator",
+        "binding_category": "actuator",
+        "entry_id": entry.entry_id,
+    }
+    return entry, issue_id
+
+
+async def test_pump_binding_repair_opens_plant_settings(hass, hass_client) -> None:
+    """A pump is Plant equipment, so its fix flow hands off to Plant settings."""
     assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
-    entry, subentry_id, issue_id = await _setup_with_unresolved_subentry_valve(hass)
-    valve_id = entry.subentries[subentry_id].data["id"]
+    entry, issue_id = await _setup_with_unresolved_pump(hass)
     client = await hass_client()
 
     response = await client.post(
@@ -339,42 +374,104 @@ async def test_subentry_binding_repair_opens_owning_subentry_reconfigure_flow(
     result = await response.json()
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "confirm"
-    assert result["description_placeholders"]["object_name"] == "Return valve"
+    assert result["description_placeholders"] == {
+        "plant": "Synthetic plant",
+        "object_name": "Zone A pump",
+        "binding": "switch bound to Zone A pump",
+    }
 
     response = await client.post(f"/api/repairs/issues/fix/{result['flow_id']}", json={})
     assert response.status == 200
     result = await response.json()
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_subentry"
-    assert result["description_placeholders"]["object_name"] == "Return valve"
+    flow_type, next_flow_id = result["next_flow"]
+    assert flow_type == "config_flow"
+
+    config_flow = hass.config_entries.flow.async_get(next_flow_id)
+    assert config_flow["handler"] == DOMAIN
+    assert config_flow["context"]["source"] == config_entries.SOURCE_RECONFIGURE
+    assert config_flow["context"]["entry_id"] == entry.entry_id
+    assert config_flow["step_id"] == "reconfigure"
+    # Handing off does not claim the repair is fixed while the binding is still missing.
+    assert issue_id in _issues(hass)
+
+
+async def test_pump_fix_flow_aborts_when_the_plant_is_gone(hass) -> None:
+    """A fix flow opened before its Plant was removed aborts without a hand-off."""
+    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    entry, issue_id = await _setup_with_unresolved_pump(hass)
+    manager = hass.data[REPAIRS_DOMAIN]["flow_manager"]
+    result = await manager.async_init(DOMAIN, data={"issue_id": issue_id})
+    assert result["step_id"] == "confirm"
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    result = await manager.async_configure(result["flow_id"], {})
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "subentry_not_found"
+    assert "next_flow" not in result
+    assert hass.config_entries.flow.async_progress() == []
+
+
+async def test_room_binding_repair_opens_the_room_reconfigure_flow(
+    hass, hass_client, monkeypatch
+) -> None:
+    """The fix flow for a room-owned valve hands off to that room's reconfigure flow."""
+
+    async def show_reconfigure(self, user_input=None):
+        # Keep the flow open so the test can inspect where the repair handed off.
+        return self.async_show_form(step_id="reconfigure")
+
+    monkeypatch.setattr(RoomSubentryFlowHandler, "async_step_reconfigure", show_reconfigure)
+    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    entry, subentry_id, issue_id = await _setup_with_unresolved_subentry_valve(hass)
+    client = await hass_client()
+
+    response = await client.post(
+        "/api/repairs/issues/fix", json={"handler": DOMAIN, "issue_id": issue_id}
+    )
+    assert response.status == 200
+    result = await response.json()
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"] == {
+        "plant": "Synthetic plant",
+        "object_name": "Zone B valve",
+        "binding": "switch bound to Zone B valve",
+        "owner": "Zone B",
+    }
+
+    response = await client.post(f"/api/repairs/issues/fix/{result['flow_id']}", json={})
+    assert response.status == 200
+    result = await response.json()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_subentry"
     assert result["result"]["entry_id"] == entry.entry_id
     flow_type, next_flow_id = result["next_flow"]
     assert flow_type == "config_subentries_flow"
 
     subentry_flow = hass.config_entries.subentries.async_get(next_flow_id)
-    assert subentry_flow["handler"] == (entry.entry_id, SUBENTRY_TYPE_ACTUATOR)
+    assert subentry_flow["handler"] == (entry.entry_id, SUBENTRY_TYPE_ROOM)
     assert subentry_flow["context"]["source"] == config_entries.SOURCE_RECONFIGURE
     assert subentry_flow["context"]["subentry_id"] == subentry_id
-    assert subentry_flow["step_id"] == "reconfigure"
     # Handing off does not claim the repair is fixed while the binding is still missing.
     assert issue_id in _issues(hass)
 
-    hass.states.async_set(RESTORED_SUBENTRY_VALVE, "off")
-    result = await hass.config_entries.subentries.async_configure(
-        next_flow_id,
-        user_input={
-            CONF_NAME: "Return valve",
-            CONF_ENTITY_ID: RESTORED_SUBENTRY_VALVE,
-            CONF_OPENING_TIME: 45.0,
-            CONF_CIRCUIT_IDS: [CIRCUIT_B],
-        },
-    )
-    await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
-    assert entry.runtime_data.plant.valves[valve_id].entity_id == RESTORED_SUBENTRY_VALVE
-    assert _issues(hass) == {}
+async def test_room_reconfigure_opens_the_room_menu_without_changes(hass) -> None:
+    """The repair target is the room menu, which changes nothing until a step is saved."""
+    entry, subentry_id, _issue_id = await _setup_with_unresolved_subentry_valve(hass)
+    data = dict(entry.data)
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+
+    assert result["type"] == FlowResultType.MENU
+    assert "edit_loop" in result["menu_options"]
+    # The menu names the room it edits, since a repair opens it without context.
+    assert result["description_placeholders"] == {"room": "Zone B"}
+    assert dict(entry.data) == data
 
 
 async def test_subentry_binding_repair_clears_when_the_entity_returns(hass) -> None:
@@ -382,14 +479,14 @@ async def test_subentry_binding_repair_clears_when_the_entity_returns(hass) -> N
     _, _, issue_id = await _setup_with_unresolved_subentry_valve(hass)
     assert issue_id in _issues(hass)
 
-    hass.states.async_set(MISSING_SUBENTRY_VALVE, "off")
+    hass.states.async_set("switch.zone_b_valve", "off")
     await hass.async_block_till_done()
 
     assert _issues(hass) == {}
 
 
-async def test_fix_flow_aborts_when_the_owning_subentry_is_gone(hass) -> None:
-    """A fix flow opened before its subentry was removed aborts without a hand-off."""
+async def test_fix_flow_aborts_when_the_owning_room_is_gone(hass) -> None:
+    """A fix flow opened before its room was removed aborts without a hand-off."""
     assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
     entry, subentry_id, issue_id = await _setup_with_unresolved_subentry_valve(hass)
     manager = hass.data[REPAIRS_DOMAIN]["flow_manager"]
@@ -401,6 +498,7 @@ async def test_fix_flow_aborts_when_the_owning_subentry_is_gone(hass) -> None:
     assert hass.config_entries.async_remove_subentry(entry, subentry_id)
     await hass.async_block_till_done()
     assert _issues(hass) == {}
+    assert VALVE_B not in entry.runtime_data.plant.valves
 
     result = await manager.async_configure(result["flow_id"], {})
 
@@ -410,54 +508,27 @@ async def test_fix_flow_aborts_when_the_owning_subentry_is_gone(hass) -> None:
     assert hass.config_entries.subentries.async_progress() == []
 
 
-async def test_circuit_subentry_sensor_repair_opens_circuit_reconfigure_flow(hass) -> None:
-    """Circuit-owned reference sensors hand off to the owning circuit subentry."""
-    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+async def test_room_loop_sensor_repair_belongs_to_the_room(hass) -> None:
+    """A reference sensor of a room's private loop is fixed through that room."""
     _set_healthy_parent_states(hass)
-    entry = _entry()
+    entry = _entry(supply_sensor_b="sensor.repairs_missing_supply")
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
-        context={"source": config_entries.SOURCE_USER},
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Secondary loop",
-            CONF_ZONE_IDS: [ZONE_B],
-            CONF_VALVE_IDS: [VALVE_B],
-            CONF_PUMP_ID: PUMP_B,
-            SECTION_COOLING: {CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.repairs_missing_supply"},
-        },
-    )
-    if result["type"] == FlowResultType.FORM and result["step_id"] == "review":
-        result = await hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={"confirm": True}
-        )
-    await hass.async_block_till_done()
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    subentry = next(iter(entry.subentries.values()))
-
     repairs = _issues(hass)
     assert len(repairs) == 1
-    issue_id, issue = next(iter(repairs.items()))
+    (issue,) = repairs.values()
     assert issue.translation_key == "missing_sensor_binding_fixable"
-    assert issue.is_fixable is True
     assert issue.data is not None
-    assert issue.data["subentry_id"] == subentry.subentry_id
-
-    manager = hass.data[REPAIRS_DOMAIN]["flow_manager"]
-    result = await manager.async_init(DOMAIN, data={"issue_id": issue_id})
-    result = await manager.async_configure(result["flow_id"], {})
-
-    assert result["type"] == FlowResultType.ABORT
-    subentry_flow = hass.config_entries.subentries.async_get(result["next_flow"][1])
-    assert subentry_flow["handler"] == (entry.entry_id, SUBENTRY_TYPE_CIRCUIT)
-    assert subentry_flow["context"]["subentry_id"] == subentry.subentry_id
-    assert subentry_flow["step_id"] == "reconfigure"
+    assert issue.data["object_id"] == CIRCUIT_B
+    assert issue.data["subentry_id"] == subentry_id_for(ZONE_B)
+    assert issue.translation_placeholders == {
+        "plant": "Synthetic plant",
+        "object_name": "Zone B circuit",
+        "binding": "supply temperature reference of Zone B circuit",
+        "owner": "Zone B",
+    }
 
 
 def test_binding_repair_titles_fit_on_one_header_line() -> None:
@@ -468,12 +539,13 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
     strings_path = Path(__file__).parents[2] / "custom_components/hydronicus/strings.json"
     issues = json.loads(strings_path.read_text(encoding="utf-8"))["issues"]
     placeholders = {
-        "object_type": "valve",
+        "plant": "Hydronic plant",
         "object_name": "Living valve",
-        "binding_label": "valve readiness feedback",
+        "binding": "readiness feedback of Living valve",
+        "owner": "Living room",
     }
     binding_keys = [key for key in issues if key.startswith("missing_")]
-    assert len(binding_keys) == 8
+    assert len(binding_keys) == 10
     for key in binding_keys:
         issue = issues[key]
         titles = [issue["title"]]
@@ -486,5 +558,11 @@ def test_binding_repair_titles_fit_on_one_header_line() -> None:
         for title in titles:
             assert "{object_name}" in title, key
             assert len(title.format(**placeholders)) <= 36, (key, title)
-        assert "{object_type} {object_name}" in description, key
-        assert "{binding_label}" in description or "thermostat" in key, key
+        # The description names the Plant and the binding in UI terms.
+        assert "{plant}" in description, key
+        assert "the {binding}" in description, key
+        for core_term in ("{object_type}", "circuit", "Zone", "configured"):
+            assert core_term not in description, (key, core_term)
+        for reason, text in issue.get("fix_flow", {}).get("abort", {}).items():
+            assert "{object_type}" not in text, (key, reason)
+            text.format(**placeholders)

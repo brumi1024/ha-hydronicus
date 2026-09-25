@@ -11,17 +11,40 @@ Re-enabling Dry run performs an ordered safe shutdown before further commands ar
 ## The model
 
 A Plant contains the complete coordinated installation.
+The UI speaks of rooms and loops, and the controller underneath uses the terms in brackets.
 
-- A **Zone** represents an identity, its observations, and its topology relationships.
-- A **Zone thermostat** owns target state and demand semantics for exactly one Zone.
-- A **Circuit** represents one hydraulic delivery path.
-- A **Delivery Route** connects a Zone to a Circuit.
-- A **Valve** controls part of a Circuit path.
-- A **Pump** circulates water for one or more Circuits.
-- A **Source** represents equipment or stored heat that could supply the Plant.
+- A room (Comfort Zone) represents an identity, its observations, and its topology relationships.
+- A room thermostat owns target state and demand semantics for exactly one room.
+- A loop (Hydraulic Circuit) represents one hydraulic delivery path through one or more valves and one pump.
+- A Delivery Route connects a room to a loop.
+- A valve controls part of a loop's path.
+- A pump circulates water for one or more loops.
+- A source represents equipment or stored heat that could supply the Plant.
 
 Relationships are stored using generated identifiers rather than display names.
 This allows objects to be renamed without changing their logical relationships.
+
+## Ownership
+
+Every object belongs either to the Plant or to exactly one room.
+
+- A room owns itself, its Delivery Routes, and its private loops and valves.
+- Plant equipment belongs to the Plant: every pump, every source, the source selector, and the shared valves and shared loops that several rooms can use.
+- A private loop uses valves of its own room and shared valves.
+- A shared loop uses only shared valves.
+- A room routes only to its own loops and to shared loops.
+
+References therefore point only from a room toward the Plant.
+This makes ownership deletion-closed: removing a room removes exactly the room, its routes, and its private loops and valves, and always leaves a valid Plant.
+Home Assistant lets a user delete a room entry at any time, and this rule is why that is always safe for the graph.
+
+Plant equipment that no enabled route reaches is accepted as unused equipment.
+It is reported as a warning and never requested.
+A room that no enabled route leaves is still an error, because it could never receive heat.
+
+Each room is a Home Assistant config subentry, so its devices and entities are grouped under it and removed with it.
+Rooms, their private loops and valves, pumps, and Dry run are edited in the UI.
+Shared loops, shared valves, and the source selector are edited through the [plant file](plant-file.md), which describes the whole Plant as YAML for import, export, and editing.
 
 ## The evaluation cycle
 
@@ -47,7 +70,7 @@ This separation keeps safety decisions reproducible while containing external si
 ## Heating behavior
 
 Hydronicus thermostat heating demand uses its runtime target, configured hysteresis, minimum active duration, and minimum idle duration.
-A required observation that is unknown, unavailable, invalid, or stale blocks the Zone and releases demand immediately.
+A required observation that is unknown, unavailable, invalid, or stale blocks the room and releases demand immediately.
 
 ### Thermostat ownership
 
@@ -75,8 +98,8 @@ Invalid or unavailable external input fails closed and releases demand immediate
 The virtual hydraulic sequence is:
 
 ```text
-Zone demand
-  -> Circuit requested
+Room demand
+  -> loop requested
   -> required valves requested
   -> valve readiness confirmed by feedback or configured delay
   -> pump requested
@@ -93,7 +116,7 @@ Turning Dry run back on will perform the ordered safe shutdown before suppressin
 
 ## Cooling behavior
 
-Cooling demand uses Zone temperature, humidity, dew point, supply or surface temperature, sensor freshness, and explicit Circuit cooling compatibility.
+Cooling demand uses room temperature, humidity, dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
 It blocks unsafe or incomplete paths and explains condensation and shared-equipment conflicts.
 
 Cooling activation is more restricted than heating execution.
@@ -112,35 +135,37 @@ Direct source-demand output can execute only when Dry run is off and a valid pum
 ## Shared equipment
 
 Shared equipment is owned by its complete active-consumer set.
-One Zone releasing demand cannot turn off an actuator that another requested Circuit still needs.
+One room releasing demand cannot turn off an actuator that another requested loop still needs.
 
 ### Shared pump with independent valves
 
 ```text
-Zone A -> Circuit A -> Valve A -+
-                                +-> Shared pump
-Zone B -> Circuit B -> Valve B -+
+Room A -> Loop A -> Valve A -+
+                             +-> Shared pump
+Room B -> Loop B -> Valve B -+
 ```
 
-The pump remains requested until both ready Circuit consumer sets are empty.
+The pump remains requested until both ready loop consumer sets are empty.
+This is the manifold that guided setup builds, and the review warns that the shared pump limits independent control.
 
 ### Shared valve and pump
 
 ```text
-Zone A -> Circuit A -+
-                      +-> Shared valve -> Shared pump
-Zone B -> Circuit B -+
+Room A -> Loop A -+
+                  +-> Shared valve -> Shared pump
+Room B -> Loop B -+
 ```
 
 The topology is valid but physically coupled.
-Hydronicus warns that separate climate entities cannot create independent flow through the shared valve.
+Hydronicus warns that separate room thermostats cannot independently control loops coupled by the same physical valve.
+A valve used by the loops of two rooms is a shared valve, written in the plant file.
 
-### One Zone with multiple Circuits
+### One room with several loops
 
 ```text
-                +-> Floor Circuit -> Floor valve -> Floor pump
-Zone A ---------+
-                +-> Ceiling Circuit -> Ceiling valve -> Ceiling pump
+                +-> Floor loop -> Floor valve -> Floor pump
+Room A ---------+
+                +-> Ceiling loop -> Ceiling valve -> Ceiling pump
 ```
 
 Each route is evaluated explicitly.
@@ -151,6 +176,9 @@ The model does not infer water temperature, capacity, balancing, or manufacturer
 The integration publishes Hydronicus climate targets, aggregate temperatures, heating and cooling demand, blocked states and reasons, virtual valve and pump requests, source recommendations, topology summaries, and decision explanations.
 
 Repairs identify configured entity bindings that are missing or unresolved.
+A missing binding of a room, its private loops, or its private valves opens that room's reconfigure flow, and a source with its own entry opens that source.
+A missing pump binding opens the Plant settings.
+A missing binding of a shared loop, a shared valve, a source without its own entry, or the source selector cannot be fixed in a form, and the repair tells you to edit the plant file.
 Downloadable diagnostics provide bounded and redacted runtime information for troubleshooting.
 
 ## What Dry run proves

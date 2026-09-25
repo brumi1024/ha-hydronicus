@@ -344,35 +344,50 @@ async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> 
 
 
 async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
-    """The public setup flow persists cooling topology and sensor relationships."""
+    """The public setup flow persists cooling topology and sensor relationships.
+
+    Guided setup creates heating rooms only, so cooling comes from a plant file.
+    """
+    document = {
+        "hydronicus": 1,
+        CONF_NAME: "Hydronic plant",
+        "pumps": {"cooling_pump": {"entity_id": "switch.cooling_pump", "overrun_seconds": 120}},
+        "rooms": {
+            "living": {
+                "thermostat": {
+                    "initial_target_temperature": 21.0,
+                    CONF_COOLING_START_DELTA: 0.5,
+                    CONF_COOLING_STOP_DELTA: 0.2,
+                },
+                CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
+                CONF_HUMIDITY_SENSORS: [
+                    {
+                        "entity_id": "sensor.living_humidity",
+                        "required": True,
+                        "weight": 1.0,
+                        "calibration_offset": 0.0,
+                        "max_age_seconds": 1800.0,
+                        "designated_reference": False,
+                    }
+                ],
+                "loops": {
+                    "cooling_circuit": {
+                        "valves": ["switch.cooling_valve"],
+                        "pump": "cooling_pump",
+                        CONF_COOLING_ENABLED: True,
+                        CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply",
+                        CONF_CONDENSATION_MARGIN: 2.0,
+                    }
+                },
+            }
+        },
+    }
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={CONF_NAME: "Hydronic plant"}
+        result["flow_id"], user_input={"next_step_id": "import_plant"}
     )
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Living",
-            CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
-            CONF_HUMIDITY_SENSORS: ["sensor.living_humidity"],
-            CONF_COOLING_START_DELTA: 0.5,
-            CONF_COOLING_STOP_DELTA: 0.2,
-        },
-    )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Cooling circuit",
-            "valve_entity": "switch.cooling_valve",
-            "pump_entity": "switch.cooling_pump",
-            "valve_opening_time_seconds": 0.0,
-            "pump_overrun_seconds": 120.0,
-            "cooling": {
-                CONF_COOLING_ENABLED: True,
-                CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.cooling_supply",
-                CONF_CONDENSATION_MARGIN: 2.0,
-            },
-        },
+        result["flow_id"], user_input={"document": document}
     )
     assert result["type"] == FlowResultType.FORM
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})

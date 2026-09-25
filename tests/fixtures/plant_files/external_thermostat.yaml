@@ -1,0 +1,20 @@
+hydronicus: 1
+name: External
+pumps:
+  pump: switch.pump
+rooms:
+  bedroom:
+    thermostat: climate.bedroom
+    loops:
+      bedroom_loop:
+        valves: [switch.bedroom_valve]
+        pump: pump
+  study:
+    thermostat:
+      kind: external_climate
+      entity_id: climate.study
+    temperature_sensors: [sensor.study_temperature]
+    loops:
+      study_loop:
+        valves: [switch.study_valve]
+        pump: pump

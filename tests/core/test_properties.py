@@ -9,8 +9,12 @@ from hydronicus_core.model import (
     ActuatorAction,
     Circuit,
     DeliveryRoute,
+    ExternalClimateThermostatConfig,
+    ExternalClimateThermostatState,
+    ExternalHvacAction,
     NumericObservation,
     PlantConfiguration,
+    PlantMode,
     PlantSnapshot,
     Pump,
     PumpRuntime,
@@ -28,8 +32,10 @@ from hydronicus_core.model import (
     ZoneRuntime,
 )
 from hydronicus_core.topology import compile_topology
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
+
+from tests.core.strategies import plant_configurations
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 
@@ -463,3 +469,83 @@ def test_generated_shared_equipment_conflicts_never_share_mode_consumers(
     assert result.control_plan.cooling_valve_consumers == {}
     assert result.control_plan.cooling_pump_consumers == {}
     assert result.control_plan.cooling_actuator_ids == frozenset()
+
+
+def _demand_snapshot(
+    plant: PlantConfiguration, temperature: float, action: ExternalHvacAction
+) -> PlantSnapshot:
+    """Observe every zone at one temperature, with external thermostats reporting action."""
+    observed = {
+        sensor.entity_id: NumericObservation(temperature, NOW)
+        for zone in plant.zones
+        for sensor in (*zone.temperature_sensor_metadata, *zone.humidity_sensor_metadata)
+    }
+    references = {
+        reference: NumericObservation(18.0, NOW)
+        for circuit in plant.circuits
+        for reference in (circuit.supply_temperature_sensor, circuit.surface_temperature_sensor)
+        if reference is not None
+    }
+    return PlantSnapshot(
+        temperatures=observed,
+        humidities={entity_id: NumericObservation(40.0, NOW) for entity_id in observed},
+        supply_temperatures=references,
+        thermostats={
+            zone.id: ExternalClimateThermostatState(
+                available=True, hvac_action=action, current_temperature=temperature
+            )
+            for zone in plant.zones
+            if isinstance(zone.thermostat, ExternalClimateThermostatConfig)
+        },
+    )
+
+
+@settings(max_examples=200)
+@given(
+    configuration=plant_configurations(),
+    mode=st.sampled_from((PlantMode.HEATING, PlantMode.COOLING)),
+    steps=st.integers(min_value=1, max_value=4),
+)
+def test_unused_equipment_is_never_requested(
+    configuration: PlantConfiguration, mode: PlantMode, steps: int
+) -> None:
+    """With every zone demanding, unused equipment gets only the commands of an idle Plant."""
+    plant = compile_topology(configuration)
+    unused = {
+        str(warning.equipment_id)
+        for warning in plant.warnings
+        if warning.code == "unused_equipment"
+    }
+    heating = mode is PlantMode.HEATING
+    demand = _demand_snapshot(
+        configuration,
+        15.0 if heating else 30.0,
+        ExternalHvacAction.HEATING if heating else ExternalHvacAction.COOLING,
+    )
+    idle = _demand_snapshot(configuration, 21.0, ExternalHvacAction.IDLE)
+    runtime = RuntimeState(requested_mode=mode)
+
+    for step in range(steps):
+        now = NOW + timedelta(seconds=600 * step)
+        result = evaluate(plant, demand, runtime, now)
+        idle_result = evaluate(plant, idle, runtime, now)
+        plan = result.control_plan
+        for consumers in (
+            plan.valve_consumers,
+            plan.pump_consumers,
+            plan.cooling_valve_consumers,
+            plan.cooling_pump_consumers,
+        ):
+            for equipment_id, circuit_ids in consumers.items():
+                assert not (equipment_id in unused and circuit_ids)
+                assert unused.isdisjoint(circuit_ids)
+        # cooling_actuator_ids only forces start commands into shadow, so it requests nothing.
+        unused_commands = [c for c in plan.commands if c.actuator_id in unused]
+        assert all(
+            command.action in {ActuatorAction.CLOSE, ActuatorAction.TURN_OFF}
+            for command in unused_commands
+        )
+        assert unused_commands == [
+            c for c in idle_result.control_plan.commands if c.actuator_id in unused
+        ]
+        runtime = result.next_runtime

@@ -15,6 +15,9 @@ from tests.integration.test_source_subentry import SELECTOR_ID, _entry
 async def _show_confirmation(hass: HomeAssistant, entry) -> dict:
     result = await entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "dry_run"}
+    )
+    result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_DRY_RUN: False}
     )
     assert result["step_id"] == "dry_run_confirmation"

@@ -89,11 +89,12 @@ class InterlockStatus(StrEnum):
 
 
 class EquipmentKind(StrEnum):
-    """Kind of shared equipment that can couple heating and cooling."""
+    """Kind of Plant equipment named by a topology warning or mode conflict."""
 
     VALVE = "valve"
     PUMP = "pump"
     SOURCE = "source"
+    CIRCUIT = "circuit"
 
 
 class BindingCategory(StrEnum):
