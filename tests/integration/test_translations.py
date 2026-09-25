@@ -170,3 +170,16 @@ def test_every_form_field_has_a_label() -> None:
 
 def test_no_translation_uses_an_em_dash() -> None:
     assert "\u2014" not in (COMPONENT / "strings.json").read_text(encoding="utf-8")
+
+
+def test_a_config_or_options_menu_title_takes_no_placeholder() -> None:
+    """The frontend localizes the title of a config or options flow menu without placeholders.
+
+    Home Assistant's frontend passes ``description_placeholders`` to a menu's
+    description, and to a subentry flow menu's title, but not to the title of a
+    config flow or options flow menu, which then shows a translation error.
+    """
+    for flow in (STRINGS["config"]["step"], STRINGS["options"]["step"]):
+        for step_id, step in flow.items():
+            if "menu_options" in step:
+                assert not placeholders(step["title"]), step_id

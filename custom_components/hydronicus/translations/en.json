@@ -159,7 +159,7 @@
         }
       },
       "zone_menu": {
-        "title": "Zone {zone}",
+        "title": "The zone and its loops",
         "description": "Loops of {zone}: {loops}.{next}",
         "menu_options": {
           "zone_loop": "Add another loop to this zone",
@@ -237,7 +237,7 @@
         }
       },
       "reconfigure": {
-        "title": "Reconfigure {plant}",
+        "title": "Reconfigure the Plant",
         "description": "{status}\n\nChange the Plant, its source, pumps, or plant loops, or replace the whole Plant from a plant file, then save. Zones are changed in their own entries.",
         "menu_options": {
           "plant": "Plant and source",
