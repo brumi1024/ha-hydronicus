@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigFlowResult, OptionsFlow
 
 from ..const import OPTION_ARMED_OUTPUTS
@@ -51,18 +50,19 @@ class PlantSettingsFlow(OptionsFlow):
     async def async_step_plant_file(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show the plant file, which imports as the same Plant with the same entity IDs."""
+        """Show the plant file, which imports as the same Plant with the same entity IDs.
+
+        It closes the flow, since nothing is saved; an options entry would tell the
+        owner that options were saved.
+        """
         entry = self.config_entry
-        if user_input is not None:
-            return self.async_create_entry(data=dict(entry.options))
         try:
             text = write_plant_file(plant_from_entry(entry))
         except PlantFileError as error:
             return self.async_abort(
                 reason="invalid_plant", description_placeholders={"error": str(error)}
             )
-        return self.async_show_form(
-            step_id="plant_file",
-            data_schema=vol.Schema({}),
+        return self.async_abort(
+            reason="plant_file",
             description_placeholders={"plant": entry.title, "plant_file": text},
         )

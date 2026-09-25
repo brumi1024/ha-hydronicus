@@ -425,14 +425,11 @@
         "data_description": {
           "outputs": "Every output of {plant} with its role."
         }
-      },
-      "plant_file": {
-        "title": "Plant file of {plant}",
-        "description": "Importing this plant file rebuilds the Plant with the same entity IDs.\n\n```yaml\n{plant_file}```"
       }
     },
     "abort": {
-      "invalid_plant": "The stored Plant is not valid: {error}"
+      "invalid_plant": "The stored Plant is not valid: {error}",
+      "plant_file": "The plant file of {plant}. Importing it rebuilds the Plant with the same entity IDs.\n\n```yaml\n{plant_file}```"
     }
   },
   "selector": {

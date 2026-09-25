@@ -59,9 +59,11 @@ async def test_the_plant_file_in_plant_settings_round_trips(hass: HomeAssistant)
 
     result = await async_choose(flow, result, "plant_file")
 
+    # Shown in a closing dialog, since nothing is saved: an options entry would say
+    # "Options successfully saved".
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "plant_file"
     text = result["description_placeholders"]["plant_file"]
     assert text == write_plant_file(entry.runtime_data.plant)
     assert read_plant_file(text) == entry.runtime_data.plant
-    result = await async_submit(flow, result)
-    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options == {"armed_outputs": [], "control": False}
