@@ -61,7 +61,8 @@ These are settled; implement them rather than revisiting them.
 8. **IDs.** Export writes explicit IDs for the Plant and every object, a hand-written file without IDs derives them deterministically ([K5](#k5-plant-file-format)), and UI-created objects keep random UUIDs.
 9. **A room form creates at most one private loop.** Further private loops come from the room's `add_loop` step or the plant file.
 10. **Export surfaces.** Plant settings show the plant file in a dialog, and the admin action `hydronicus.export_plant` returns it as response data.
-11. **Confirmation.** A warning other than `unused_equipment` requires the existing confirm step before saving, and `unused_equipment` never blocks a save.
+11. **Confirmation.** A warning other than `unused_equipment` that the change introduces requires the existing confirm step before saving, and `unused_equipment` never blocks a save.
+    A warning is identified by its code and equipment, so a warning the Plant already had, such as the shared pump of a manifold, is not confirmed again on every edit; an output another Plant binds is always confirmed.
 12. **Flow modules.** Flow code lives in a `flows/` package so each workstream owns separate modules, and `config_flow.py` only composes them.
 
 ## Invariants

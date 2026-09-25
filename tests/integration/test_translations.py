@@ -39,7 +39,7 @@ from custom_components.hydronicus.const import (
     SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
 )
-from tests.integration.plant_fixtures import plant_entry
+from tests.integration.plant_fixtures import plant_data, plant_entry
 
 COMPONENT_DIR = Path(__file__).parents[2] / "custom_components" / DOMAIN
 STRINGS_PATH = COMPONENT_DIR / "strings.json"
@@ -851,6 +851,16 @@ async def test_parent_reconfigure_steps_are_fully_translated(hass) -> None:
 
     renamed = deepcopy(document)
     renamed["name"] = "Renamed plant"
+    # A newly shared valve is a warning the edit introduces, so it needs a confirmation.
+    renamed.setdefault("valves", {})["newly_shared_valve"] = "switch.shared_equipment"
+    loops = [*renamed.get("loops", {}).values()]
+    loops += [
+        loop
+        for room in renamed.get("rooms", {}).values()
+        for loop in room.get("loops", {}).values()
+    ]
+    for loop in loops:
+        loop["valves"].append("newly_shared_valve")
     result = await menu("edit_plant")
     result = await submit(result, {"document": renamed})
     assert result["step_id"] == "edit_plant_review"
@@ -906,7 +916,6 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
 
     room = _FormAudit(f"config_subentries.{SUBENTRY_TYPE_ROOM}")
-    # Every change carries the shared valve and pump warnings, so every save is reviewed.
     for option, steps in {
         "room": [{CONF_NAME: "Living room", "temperature_sensors": ["sensor.missing_room"]}],
         "thermostat": [{}],
@@ -931,12 +940,35 @@ async def test_subentry_flow_steps_are_fully_translated(hass) -> None:
             entry,
             SUBENTRY_TYPE_ROOM,
             room,
-            [{"next_step_id": option}, *steps, {"confirm": True}],
+            [{"next_step_id": option}, *steps],
         )
+        # The warnings already existed, so a save is reviewed only when it adds one.
+        if result["type"] == FlowResultType.FORM and result["step_id"] == "review":
+            result = room.check(
+                await hass.config_entries.subentries.async_configure(
+                    result["flow_id"], {"confirm": True}
+                )
+            )
         assert result["reason"] == "reconfigure_successful"
     menu = await _reconfigure(hass, entry, SUBENTRY_TYPE_ROOM, room, [])
     room.check(menu)
     hass.config_entries.subentries.async_abort(menu["flow_id"])
+    # Another Plant already binds the Bedroom valve, so adding the room is reviewed.
+    plant_entry(
+        plant_data(
+            {
+                "valves": [
+                    {
+                        "id": "00000000-0000-4000-8000-0000000000f1",
+                        "name": "Return valve",
+                        "entity_id": "switch.return_valve",
+                    }
+                ]
+            },
+            plant_id="00000000-0000-4000-8000-0000000000f0",
+        ),
+        title="Other plant",
+    ).add_to_hass(hass)
     bedroom = {
         CONF_NAME: "Bedroom",
         "temperature_sensors": ["sensor.bedroom"],

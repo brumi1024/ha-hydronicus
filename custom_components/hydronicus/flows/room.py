@@ -80,6 +80,7 @@ from .common import (
     valve_feedback_fields,
     warning_review_schema,
     warning_text,
+    warnings_to_confirm,
     with_submitted_values,
     zone_schema,
 )
@@ -104,7 +105,6 @@ CONF_LOOP = "loop"
 CONF_SHARED_VALVES = "shared_valves"
 CONF_CONFIGURE_VALVE_FEEDBACK = "configure_valve_feedback"
 CONF_REMOVE_LOOP = "remove_loop"
-_UNUSED_EQUIPMENT = "unused_equipment"
 _THERMOSTAT_FIELDS = frozenset(
     {
         CONF_HEATING_START_DELTA,
@@ -188,12 +188,13 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     async def _async_save(self) -> config_entries.SubentryFlowResult | None:
         """Review warnings first, or save now; ``None`` means Dry run is still pending.
 
-        A warning other than unused equipment, or an output shared with another
-        Plant, needs an explicit confirmation.
+        A warning this change introduces, or an output shared with another Plant,
+        needs an explicit confirmation.
         """
         compiled = effective_plant_from_data(self._proposed).compiled
         sharing = self._sharing()
-        if sharing or any(warning.code != _UNUSED_EQUIPMENT for warning in compiled.warnings):
+        before = effective_plant(self._get_entry()).compiled
+        if sharing or warnings_to_confirm(compiled, before):
             self._review_warnings = warning_text(compiled, sharing)
             return self._review_form()
         return await self._async_persist()

@@ -53,7 +53,8 @@ Add pumps in the Plant settings, and add shared loops and shared valves in the [
 Rooms whose loops share one pump, as in every manifold that guided setup builds, produce a warning that the shared pump limits independent control.
 The topology is valid; the warning says that separate room thermostats cannot control the shared pump independently.
 Turn on **I understand these warnings** to save.
-Only unused equipment is reported without needing a confirmation.
+Later edits do not ask about the shared pump again, because only a warning that a change introduces needs a confirmation.
+Unused equipment is reported without ever needing a confirmation.
 
 ### A plant file is rejected
 

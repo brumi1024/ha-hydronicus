@@ -502,8 +502,12 @@ async def test_review_lists_changes_and_requires_confirmation_of_warnings(hass) 
 
     document["pumps"].pop("spare_pump")
     document["rooms"]["bedroom"] = _export(entry)["rooms"]["bedroom"]
+    document["valves"] = {"shared_valve": "switch.shared_valve"}
+    for room in document["rooms"].values():
+        for loop in room["loops"].values():
+            loop["valves"].append("shared_valve")
     result = await _edit(hass, entry, document)
-    # The shared pump warning needs an explicit confirmation.
+    # The shared pump warning was already confirmed, but a newly shared valve needs a confirmation.
     assert "confirm" in _schema_keys(result)
     result = await _submit(hass, result, {"confirm": False})
     assert result["errors"] == {"base": "confirm_required"}
@@ -615,7 +619,9 @@ async def test_plant_file_moves_a_private_loop_to_the_plant(hass) -> None:
     changes = result["description_placeholders"]["changes"].splitlines()
     assert "- Moves loop Living room loop from Living room to the Plant" in changes
     assert "- Moves valve Living room loop valve from Living room to the Plant" in changes
-    await _submit(hass, result, {"confirm": True})
+    # Moving a loop introduces no warning, so nothing needs a confirmation.
+    assert "confirm" not in _schema_keys(result)
+    await _submit(hass, result, {})
     await hass.async_block_till_done()
 
     assert LIVING.circuit_id not in entry.data[CONF_ROOM_OBJECTS]

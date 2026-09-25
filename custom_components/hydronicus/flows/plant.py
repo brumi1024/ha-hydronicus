@@ -49,6 +49,7 @@ from ..entry_configuration import (
     authorization_output_lines,
     data_with_plant,
     data_with_pump,
+    effective_plant,
     invalidate_output_authorization,
     output_authorization,
     room_objects,
@@ -75,6 +76,7 @@ from .common import (
     topology_select,
     warning_review_schema,
     warning_text,
+    warnings_to_confirm,
     with_submitted_values,
 )
 
@@ -84,7 +86,6 @@ CONF_REMOVE_PUMP: Final = "remove_pump"
 CONF_CONFIRM: Final = "confirm"
 MENU_OPTIONS: Final = ("dry_run", "add_pump", "edit_pump", "export_plant", "edit_plant")
 # Compiler warnings that never block a save (Decision 11).
-_NON_BLOCKING_WARNINGS: Final = frozenset({"unused_equipment"})
 _TOP_LEVEL: Final = "the top level"
 _PUMP_FEEDBACK: Final = (
     (CONF_POWER_FEEDBACK_ENTITY, CONF_POWER_FEEDBACK_MAX_AGE),
@@ -633,8 +634,8 @@ class PlantSettingsSteps(ConfigFlowBase):
             entry.entry_id,
             (output["entity_id"] for output in output_authorization(data)["outputs"]),
         )
-        blocking = bool(sharing) or any(
-            warning.code not in _NON_BLOCKING_WARNINGS for warning in compiled.warnings
+        blocking = bool(sharing) or bool(
+            warnings_to_confirm(compiled, effective_plant(entry).compiled)
         )
         errors: dict[str, str] = {}
         if user_input is not None:

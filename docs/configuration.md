@@ -58,6 +58,7 @@ Guided setup takes one menu, one Plant form, one form per room, and a review.
 The compiled topology shows one line per loop and one per room, such as `Circuit Bedroom loop opens valves Bedroom loop valve before requesting pump Pump.` and `Zone Bedroom can request circuit Bedroom loop.`
 When the rooms share the pump, the review warns that the shared pump limits independent control.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before the Plant is created.
+Later room, loop, and plant file edits ask only about warnings that the edit introduces.
 
 The Plant is created in Dry run, with one room entry per room.
 Guided setup names the pump `Pump`; rename it, add more pumps, or change its options later in the Plant settings.

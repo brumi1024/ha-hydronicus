@@ -49,6 +49,7 @@ from .common import (
     seconds_selector,
     warning_review_schema,
     warning_text,
+    warnings_to_confirm,
     with_submitted_values,
 )
 from .room_form import graph_errors, room_draft_from_form, room_form_errors, room_form_schema
@@ -61,7 +62,6 @@ MENU_OPTIONS: Final = ("guided", "import_plant")
 # The name of the one pump guided setup creates; Plant settings can rename it.
 GUIDED_PUMP_NAME: Final = "Pump"
 # Compiler warnings that never block a save (Decision 11).
-_NON_BLOCKING_WARNINGS: Final = frozenset({"unused_equipment"})
 _TOP_LEVEL: Final = "the top level"
 
 
@@ -132,16 +132,14 @@ class SetupSteps(ConfigFlowBase):
     ) -> config_entries.ConfigFlowResult:
         """Review the drafted Plant, then create it.
 
-        A warning other than unused equipment, or an output another Plant
-        already binds, needs an explicit confirmation.
+        Every warning of a new Plant other than unused equipment, and every output
+        another Plant already binds, needs an explicit confirmation.
         """
         compiled = effective_plant_from_data(self._data).compiled
         sharing = other_plant_sharing_warnings(
             self.hass, None, sorted(exclusive_output_entity_ids(self._data))
         )
-        blocking = bool(sharing) or any(
-            warning.code not in _NON_BLOCKING_WARNINGS for warning in compiled.warnings
-        )
+        blocking = bool(sharing) or bool(warnings_to_confirm(compiled, None))
         errors: dict[str, str] = {}
         if user_input is not None:
             if not blocking or user_input.get(CONF_CONFIRM, False):

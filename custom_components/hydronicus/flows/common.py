@@ -91,6 +91,7 @@ from ..core.configuration import (
 from ..core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
+    CompiledPlant,
     TemperatureAggregation,
 )
 from ..core.ownership import OwnershipError
@@ -482,6 +483,28 @@ def effective_topology_error(
     except (StoredTopologyError, TopologyValidationError, OwnershipError) as error:
         return error
     return None
+
+
+# Unused equipment is reported but never requested, so it needs no confirmation.
+NON_BLOCKING_WARNINGS: Final = frozenset({"unused_equipment"})
+
+
+def warnings_to_confirm(compiled: CompiledPlant, before: CompiledPlant | None) -> tuple[Any, ...]:
+    """Return the warnings a save must confirm: the ones this change introduces.
+
+    A warning names its code and equipment. One the Plant already had before the
+    change was confirmed when it appeared, so editing a room of a manifold does
+    not ask about the shared pump again. Without a previous Plant, every warning
+    other than unused equipment is new.
+    """
+    previous = before.warnings if before is not None else ()
+    known = {(warning.code, warning.equipment_kind, warning.equipment_id) for warning in previous}
+    return tuple(
+        warning
+        for warning in compiled.warnings
+        if warning.code not in NON_BLOCKING_WARNINGS
+        and (warning.code, warning.equipment_kind, warning.equipment_id) not in known
+    )
 
 
 def warning_text(compiled: Any, sharing: Sequence[str] = ()) -> str:

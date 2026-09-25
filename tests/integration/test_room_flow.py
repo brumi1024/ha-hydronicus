@@ -1082,3 +1082,21 @@ async def test_a_binding_repair_is_fixed_through_the_room_flow(hass) -> None:
     assert [
         issue for (domain, _), issue in ir.async_get(hass).issues.items() if domain == DOMAIN
     ] == []
+
+
+async def test_only_warnings_a_change_introduces_are_reviewed(hass) -> None:
+    """A warning the Plant already had does not ask for confirmation again."""
+    entry = await _setup(hass, _pump_only_entry())
+    await _add_room(hass, entry, LIVING_INPUT)
+    result = await _configure(hass, await _start_room(hass, entry), BEDROOM_INPUT)
+    assert result["step_id"] == "review"
+    result = await _configure(hass, result, {"confirm": True})
+    assert "shared_pump_limits_independent_control" in _warning_codes(entry)
+    zone_id = _zone_id(entry, "Bedroom")
+
+    result = await _menu(hass, entry, zone_id, "room")
+    result = await _configure(hass, result, {**frontend_submission(result), "name": "Guest room"})
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert room_subentry(entry, zone_id).title == "Guest room"

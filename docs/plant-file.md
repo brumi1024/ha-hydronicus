@@ -25,6 +25,7 @@ Run it from **Developer tools > Actions** with the Plant selected, and choose to
 Import and edit both show a review before anything is saved.
 The review lists the rooms or the changes, the compiled topology, and the warnings.
 A warning other than unused equipment must be confirmed with **I understand these warnings** before saving.
+When you edit an existing Plant, only the warnings the edit introduces need that confirmation, because the Plant's earlier warnings were confirmed when they appeared.
 A Plant created from a file always starts in Dry run, and applying an edited file returns the Plant to Dry run.
 
 ## A first example
