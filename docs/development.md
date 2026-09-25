@@ -54,6 +54,8 @@ Do not add speculative schema aliases or migration paths without a concrete pers
 The redesign in [the redesign plan](redesign-plan.md) replaces the model below phase by phase.
 `custom_components/hydronicus/core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs.
 `custom_components/hydronicus/core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into config entry data and zone subentry data, and `from_storage` joins them again.
+`custom_components/hydronicus/core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output; `custom_components/hydronicus/core/reconcile.py` turns the desired state into the service calls to send, with retries and Dry run.
+Until phase R3 both are stubs that never act.
 Until the runtime, flows, and platforms move to the new model, they run on the v0.1 modules in `custom_components/hydronicus/core/legacy/`, which nothing new may import and which each phase deletes once their last consumer is gone.
 
 `custom_components/hydronicus/core/legacy/configuration.py` decodes only the canonical persisted objects into typed domain values.
@@ -78,6 +80,8 @@ Pure controller behavior belongs under `tests/core/` and must use only the depen
 Home Assistant setup, subentry, entity, reload, and adapter behavior belongs under `tests/integration/`.
 Multi-step behavior with a fake clock belongs under `tests/scenarios/` and should use the reusable scenario harness.
 Safety invariants that must hold across many topology shapes or timings belong in property-based tests.
+The redesigned control is checked in `tests/sim/`, a simulator that owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts the plan's invariants after every event over generated Plants and traces.
+Its Hypothesis profile `sim-ci` is deterministic; set `HYPOTHESIS_SIM_PROFILE=sim-dev` to explore many more examples locally.
 The large synthetic benchmark covers pure compilation, pure evaluation, Home Assistant setup, runtime refresh, reconciliation, entity publication, memory, and zero-service-call Dry run behavior.
 
 The current coverage threshold applies only to `custom_components/hydronicus/core`.

@@ -374,6 +374,8 @@ class Desired:
 
     outputs: Mapping[str, OutputTarget]
     source_request: bool
+    # The mode the outputs run in now: during a changeover it stays the old mode
+    # until the old mode's loops have stopped, and it is off during the dwell.
     mode: Mode
     # Always None until the setpoint strategy arrives in iteration 2.
     flow_setpoint: float | None
