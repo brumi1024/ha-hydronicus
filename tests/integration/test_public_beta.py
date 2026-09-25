@@ -6,16 +6,23 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import DOMAIN
+from tests.integration.test_trial_kit import (
+    assert_helpers_untouched,
+    async_setup_trial_package,
+    record_actuator_calls,
+)
 
 
 async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass) -> None:
-    """The README and configuration guide path works with disposable entities only."""
-    temperature_entity = "sensor.hydronicus_simulated_zone_temperature"
-    valve_entity = "switch.hydronicus_simulated_zone_valve"
-    pump_entity = "switch.hydronicus_simulated_zone_pump"
-    hass.states.async_set(temperature_entity, "18.0")
-    hass.states.async_set(valve_entity, "off")
-    hass.states.async_set(pump_entity, "off")
+    """The README trial path works with the trial kit's disposable entities only.
+
+    It follows "First simulated Plant": load the trial package, build the same
+    two rooms as ``plant.yaml`` with guided setup, confirm the shared pump
+    warning, and exercise heating demand in Dry run.
+    """
+    await async_setup_trial_package(hass)
+    calls = record_actuator_calls(hass)
+    living_temperature = "input_number.hydronicus_trial_living_room_temperature"
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     assert result["type"] == FlowResultType.MENU
@@ -25,63 +32,77 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
     assert result["step_id"] == "guided"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        user_input={
-            "name": "Public beta simulated plant",
-            "pump_entity": pump_entity,
-            "pump_options": {"overrun_seconds": 0.0},
-        },
+        user_input={"name": "Trial plant", "pump_entity": "switch.hydronicus_trial_pump"},
     )
     assert result["step_id"] == "room"
     assert "target_temperature" not in {str(key.schema) for key in result["data_schema"].schema}
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={
-            "name": "Simulated zone",
-            "temperature_sensors": [temperature_entity],
-            "valves": [valve_entity],
+            "name": "Living room",
+            "temperature_sensors": ["sensor.hydronicus_trial_living_room_temperature"],
+            "valves": ["switch.hydronicus_trial_living_room_valve"],
+            "add_another": True,
+        },
+    )
+    assert result["step_id"] == "room"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Bedroom",
+            "temperature_sensors": ["sensor.hydronicus_trial_bedroom_temperature"],
+            "valves": ["switch.hydronicus_trial_bedroom_valve"],
         },
     )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "review"
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
+    assert result["description_placeholders"]["rooms"] == "- Living room\n- Bedroom"
+    assert result["description_placeholders"]["warnings"].startswith(
+        "- Pump Pump is shared by circuits "
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     entry = next(
-        entry
-        for entry in hass.config_entries.async_entries(DOMAIN)
-        if entry.title == "Public beta simulated plant"
+        entry for entry in hass.config_entries.async_entries(DOMAIN) if entry.title == "Trial plant"
     )
     assert entry.data["dry_run"] is True
     await hass.async_block_till_done()
     await hass.services.async_call(
         "climate",
         "set_hvac_mode",
-        {
-            "entity_id": "climate.public_beta_simulated_plant_simulated_zone",
-            "hvac_mode": "heat",
-        },
+        {"entity_id": "climate.trial_plant_living_room", "hvac_mode": "heat"},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        "input_number",
+        "set_value",
+        {"entity_id": living_temperature, "value": 18},
         blocking=True,
     )
     await hass.async_block_till_done()
 
     assert entry.runtime_data.dry_run is True
-    demand_state = hass.states.get(
-        "binary_sensor.public_beta_simulated_plant_simulated_zone_demand"
-    )
-    topology_state = hass.states.get("sensor.public_beta_simulated_plant_topology_preview")
+    demand_state = hass.states.get("binary_sensor.trial_plant_living_room_demand")
+    topology_state = hass.states.get("sensor.trial_plant_topology_preview")
+    valve_request = hass.states.get("binary_sensor.trial_plant_living_room_loop_valve_requested")
     assert demand_state is not None and demand_state.state == "on"
-    assert topology_state is not None and topology_state.state == "1 zone, 1 circuit"
-    assert hass.states.get(valve_entity).state == "off"
-    assert hass.states.get(pump_entity).state == "off"
+    assert topology_state is not None and topology_state.state == "2 zones, 2 circuits"
+    assert valve_request is not None and valve_request.state == "on"
 
-    hass.states.async_set(temperature_entity, "22.0")
-    await hass.async_block_till_done()
-    demand_state = hass.states.get(
-        "binary_sensor.public_beta_simulated_plant_simulated_zone_demand"
+    await hass.services.async_call(
+        "input_number",
+        "set_value",
+        {"entity_id": living_temperature, "value": 22},
+        blocking=True,
     )
+    await hass.async_block_till_done()
+    demand_state = hass.states.get("binary_sensor.trial_plant_living_room_demand")
     assert demand_state is not None and demand_state.state == "off"
-    assert hass.states.get(valve_entity).state == "off"
-    assert hass.states.get(pump_entity).state == "off"
+    assert calls == []
+    assert_helpers_untouched(hass)
 
 
 async def test_public_beta_fresh_entry_can_reload_without_changing_domain(hass) -> None:

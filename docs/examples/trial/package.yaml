@@ -1,0 +1,82 @@
+# Hydronicus trial kit: synthetic entities for two rooms and one pump.
+# Load it as a Home Assistant package in a disposable or staging instance.
+# Every valve and pump is a template switch backed by an input_boolean, so any
+# command sent to it shows up in the input_boolean's history.
+# These entities are not a substitute for physical safety controls.
+
+input_number:
+  hydronicus_trial_living_room_temperature:
+    name: Hydronicus trial living room temperature
+    min: 5
+    max: 35
+    step: 0.5
+    initial: 21
+    unit_of_measurement: "°C"
+    mode: slider
+  hydronicus_trial_bedroom_temperature:
+    name: Hydronicus trial bedroom temperature
+    min: 5
+    max: 35
+    step: 0.5
+    initial: 21
+    unit_of_measurement: "°C"
+    mode: slider
+
+input_boolean:
+  hydronicus_trial_living_room_valve:
+    name: Hydronicus trial living room valve
+  hydronicus_trial_bedroom_valve:
+    name: Hydronicus trial bedroom valve
+  hydronicus_trial_pump:
+    name: Hydronicus trial pump
+
+template:
+  - sensor:
+      - name: Hydronicus trial living room temperature
+        unique_id: hydronicus_trial_living_room_temperature
+        device_class: temperature
+        unit_of_measurement: "°C"
+        state: "{{ states('input_number.hydronicus_trial_living_room_temperature') }}"
+
+      - name: Hydronicus trial bedroom temperature
+        unique_id: hydronicus_trial_bedroom_temperature
+        device_class: temperature
+        unit_of_measurement: "°C"
+        state: "{{ states('input_number.hydronicus_trial_bedroom_temperature') }}"
+
+  - switch:
+      - name: Hydronicus trial living room valve
+        unique_id: hydronicus_trial_living_room_valve
+        state: "{{ is_state('input_boolean.hydronicus_trial_living_room_valve', 'on') }}"
+        turn_on:
+          action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.hydronicus_trial_living_room_valve
+        turn_off:
+          action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.hydronicus_trial_living_room_valve
+
+      - name: Hydronicus trial bedroom valve
+        unique_id: hydronicus_trial_bedroom_valve
+        state: "{{ is_state('input_boolean.hydronicus_trial_bedroom_valve', 'on') }}"
+        turn_on:
+          action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.hydronicus_trial_bedroom_valve
+        turn_off:
+          action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.hydronicus_trial_bedroom_valve
+
+      - name: Hydronicus trial pump
+        unique_id: hydronicus_trial_pump
+        state: "{{ is_state('input_boolean.hydronicus_trial_pump', 'on') }}"
+        turn_on:
+          action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.hydronicus_trial_pump
+        turn_off:
+          action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.hydronicus_trial_pump
