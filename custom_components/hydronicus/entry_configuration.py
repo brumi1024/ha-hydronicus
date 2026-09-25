@@ -56,6 +56,14 @@ _TOPOLOGY_COLLECTIONS = (
     CONF_ROUTES,
     CONF_SOURCES,
 )
+# Collections of objects that own an id, and the word the plant file uses for each.
+_OBJECT_KINDS = (
+    (CONF_ZONES, "room"),
+    (CONF_CIRCUITS, "loop"),
+    (CONF_VALVES, "valve"),
+    (CONF_PUMPS, "pump"),
+    (CONF_SOURCES, "source"),
+)
 # Every error a rejected graph edit can raise, for callers that report rather than raise.
 GRAPH_EDIT_ERRORS: tuple[type[Exception], ...] = (
     StoredTopologyError,
@@ -507,10 +515,35 @@ def data_with_source(data: Mapping[str, Any], record: Mapping[str, Any]) -> dict
     return _finalized(updated)
 
 
+def _objects_by_id(topology: Mapping[str, Any]) -> dict[str, tuple[str, Mapping[str, Any]]]:
+    """Return object id -> (kind, record) for every zone, loop, valve, pump, and source."""
+    return {
+        _stored_id(record): (kind, record)
+        for collection, kind in _OBJECT_KINDS
+        for record in _records(topology, collection)
+    }
+
+
 def data_with_plant(data: Mapping[str, Any], imported: ImportedPlantLike) -> dict[str, Any]:
-    """Replace the name, topology, and ownership, giving every zone and source a handle."""
+    """Replace the name, topology, and ownership, giving every zone and source a handle.
+
+    An object id keeps its kind: a room, loop, valve, pump, or source cannot take
+    the id of an object of another kind, even one the file removes, because the
+    handles and registrations of that id belong to the old object.
+    """
     updated = deepcopy(dict(data))
     topology = topology_copy({CONF_TOPOLOGY: imported.topology})
+    try:
+        current = _objects_by_id(topology_copy(data))
+    except StoredTopologyError:
+        # A stored graph whose collections do not even read can still be replaced.
+        current = {}
+    for object_id, (kind, record) in _objects_by_id(topology).items():
+        if object_id in current and (old := current[object_id])[0] != kind:
+            raise StoredTopologyError(
+                f"The {kind} {record.get(CONF_NAME, object_id)} uses the id {object_id} of the "
+                f"{old[0]} {old[1].get(CONF_NAME, object_id)}; give the {kind} its own id."
+            )
     updated[CONF_NAME] = imported.name
     updated[CONF_TOPOLOGY] = topology
     updated[CONF_SUBENTRY_OBJECTS] = _all_handles(topology)

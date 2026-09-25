@@ -178,6 +178,7 @@ class SourceSubentryFlowHandler(
                     reconfigure=False,
                     warnings=self._review_text(entry, data),
                     errors=errors,
+                    user_input=user_input,
                 )
             ):
                 return result
@@ -192,7 +193,7 @@ class SourceSubentryFlowHandler(
     ) -> config_entries.SubentryFlowResult:
         """Update a source while preserving its stable UUID."""
         entry = self._get_entry()
-        subentry = self._get_reconfigure_subentry()
+        subentry = self._handle_subentry()
         defaults = subentry_draft(entry, subentry)
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -208,6 +209,7 @@ class SourceSubentryFlowHandler(
                     reconfigure=True,
                     warnings=self._review_text(entry, data),
                     errors=errors,
+                    user_input=user_input,
                 )
             ):
                 return result

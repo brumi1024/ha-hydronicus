@@ -511,7 +511,7 @@ async def test_persisting_data_aborts_when_safe_shutdown_cannot_finish(hass) -> 
     original = deepcopy(dict(entry.data))
 
     persisted = await async_persist_entry_data(
-        SimpleNamespace(hass=hass), entry, data_with_room(entry.data, _office())
+        SimpleNamespace(hass=hass), entry, lambda data: data_with_room(data, _office())
     )
 
     assert persisted is False
@@ -527,10 +527,54 @@ async def test_persisting_data_reaches_dry_run_then_stores(hass) -> None:
     entry.runtime_data = runtime
     data = data_with_room(entry.data, _office())
 
-    assert await async_persist_entry_data(SimpleNamespace(hass=hass), entry, data)
+    assert await async_persist_entry_data(
+        SimpleNamespace(hass=hass), entry, lambda current: data_with_room(current, _office())
+    )
 
     runtime.async_set_dry_run.assert_awaited_once_with(True, hass=hass)
     assert dict(entry.data) == data
+
+
+async def test_persisting_data_builds_on_what_another_edit_stored_meanwhile(hass) -> None:
+    """The edit applies to the data stored while the safe shutdown waited, with no await after."""
+    entry = manifold_entry(dry_run=False)
+    entry.add_to_hass(hass)
+    renamed = deepcopy(dict(entry.data))
+    renamed["name"] = "Renamed meanwhile"
+    stored: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    async def shutdown(dry_run: bool, *, hass: Any) -> bool:
+        # Another flow stores its edit while this one waits for the shutdown.
+        hass.config_entries.async_update_entry(entry, data=renamed)
+        return True
+
+    entry.runtime_data = SimpleNamespace(async_set_dry_run=shutdown)
+
+    assert await async_persist_entry_data(
+        SimpleNamespace(hass=hass),
+        entry,
+        lambda current: data_with_room(current, _office()),
+        on_stored=lambda previous, data: stored.append((dict(previous), dict(data))),
+    )
+
+    assert entry.data["name"] == "Renamed meanwhile"
+    assert entry.data == data_with_room(renamed, _office())
+    assert stored == [(renamed, dict(entry.data))]
+
+
+async def test_persisting_data_stores_nothing_when_the_edit_no_longer_fits(hass) -> None:
+    """A graph edit error of the late build reaches the caller and stores nothing."""
+    entry = manifold_entry(dry_run=True)
+    entry.add_to_hass(hass)
+    original = deepcopy(dict(entry.data))
+
+    def build(current: Any) -> dict[str, Any]:
+        raise StoredTopologyError("The Plant changed meanwhile.")
+
+    with pytest.raises(StoredTopologyError):
+        await async_persist_entry_data(SimpleNamespace(hass=hass), entry, build)
+
+    assert dict(entry.data) == original
 
 
 def test_plant_entry_builder_matches_the_contract() -> None:

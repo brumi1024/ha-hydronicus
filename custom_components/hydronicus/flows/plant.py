@@ -40,6 +40,7 @@ from ..const import (
     SUBENTRY_TYPE_ROOM,
     SUBENTRY_TYPE_SOURCE,
 )
+from ..core.configuration import StoredTopologyError
 from ..core.model import CompiledPlant
 from ..core.plant_document import ImportedPlant, PlantDocumentError, import_plant_document
 from ..core.topology import DuplicateActuatorBindingError
@@ -102,6 +103,10 @@ _CHANGE_KINDS: Final = (
 )
 _OBJECT_COLLECTIONS: Final = (CONF_ZONES, CONF_CIRCUITS, CONF_VALVES, CONF_PUMPS, CONF_SOURCES)
 _SOURCE_SELECTOR: Final = "source_selector"
+
+
+class _PlantChangedError(Exception):
+    """The Plant changed after the plant file review listed its changes."""
 
 
 def _dry_run_schema(default: bool) -> vol.Schema:
@@ -349,6 +354,9 @@ class PlantSettingsSteps(ConfigFlowBase):
     _shown_authorization: dict[str, Any]
     _pump_id: str | None
     _imported: ImportedPlant
+    _document: Any  # the submitted plant file
+    _reviewed: tuple[Any, ...]  # the signature of the Plant the review showed
+    _review_blocking: bool
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -528,12 +536,21 @@ class PlantSettingsSteps(ConfigFlowBase):
             if not errors:
                 pump_id = self._pump_id or str(uuid4())
                 removing = editing and bool(user_input.get(CONF_REMOVE_PUMP, False))
+                record = None if removing else _pump_record(pump_id, existing, user_input)
+
+                def build(data: Mapping[str, Any]) -> dict[str, Any]:
+                    if editing and not any(
+                        _object_id(pump) == pump_id for pump in topology_copy(data)[CONF_PUMPS]
+                    ):
+                        # A pump deleted meanwhile must not come back.
+                        raise StoredTopologyError("The pump was removed meanwhile.")
+                    return data_with_pump(data, pump_id, record)
+
                 try:
-                    data = data_with_pump(
-                        entry.data,
-                        pump_id,
-                        None if removing else _pump_record(pump_id, existing, user_input),
-                    )
+                    # Check the current Plant first, then save against the Plant as it
+                    # is once the safe shutdown completes.
+                    build(entry.data)
+                    stored = await async_persist_entry_data(self, entry, build)
                 except EquipmentInUseError as error:
                     errors[CONF_REMOVE_PUMP] = "equipment_in_use"
                     placeholders["users"] = ", ".join(error.users)
@@ -543,7 +560,7 @@ class PlantSettingsSteps(ConfigFlowBase):
                     errors["base"] = "invalid_pump"
                     placeholders["error"] = str(error)
                 else:
-                    if await async_persist_entry_data(self, entry, data):
+                    if stored:
                         if removing:
                             _async_remove_object_registrations(self.hass, entry, {pump_id})
                         return self.async_abort(reason="reconfigure_successful")
@@ -564,7 +581,13 @@ class PlantSettingsSteps(ConfigFlowBase):
     ) -> config_entries.ConfigFlowResult:
         """Show the plant file of this Plant."""
         entry = self._get_reconfigure_entry()
-        document = plant_file_yaml(plant_file(entry.data))
+        try:
+            document = plant_file_yaml(plant_file(entry.data))
+        except ValueError as error:
+            # A stored graph that does not decode has no faithful plant file.
+            return self.async_abort(
+                reason="plant_file_unavailable", description_placeholders={"error": str(error)}
+            )
         return self.async_abort(
             reason="plant_exported",
             description_placeholders={"document": f"```yaml\n{document}```"},
@@ -600,6 +623,7 @@ class PlantSettingsSteps(ConfigFlowBase):
                     return self.async_abort(reason="no_changes")
                 else:
                     self._imported = imported
+                    self._document = user_input.get(CONF_DOCUMENT)
                     return await self.async_step_edit_plant_review()
         return self.async_show_form(
             step_id="edit_plant",
@@ -625,8 +649,41 @@ class PlantSettingsSteps(ConfigFlowBase):
     async def async_step_edit_plant_review(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Review the changes of an edited plant file, then apply them."""
+        """Review the changes of an edited plant file, then apply them.
+
+        The review lists the changes against the Plant as it was shown. A Plant
+        that another flow changed meanwhile is reviewed again before anything is
+        applied, and a file that no longer fits it returns to the editor.
+        """
         entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                if self._reviewed != _signature(entry.data):
+                    raise _PlantChangedError
+                if self._review_blocking and not user_input.get(CONF_CONFIRM, False):
+                    errors["base"] = "confirm_required"
+                elif await self._async_apply_plant(entry):
+                    return self.async_abort(reason="reconfigure_successful")
+                else:
+                    errors["base"] = "dry_run_shutdown_in_progress"
+            except _PlantChangedError:
+                errors["base"] = "plant_changed"
+            except GRAPH_EDIT_ERRORS:
+                return await self._async_edit_plant_again()
+        try:
+            return self._edit_plant_review_form(entry, errors)
+        except GRAPH_EDIT_ERRORS:
+            return await self._async_edit_plant_again()
+
+    async def _async_edit_plant_again(self) -> config_entries.ConfigFlowResult:
+        """Submit the file to the editor again, which explains why it no longer fits."""
+        return await self.async_step_edit_plant({CONF_DOCUMENT: self._document})
+
+    def _edit_plant_review_form(
+        self, entry: config_entries.ConfigEntry, errors: dict[str, str]
+    ) -> config_entries.ConfigFlowResult:
+        """Show the changes against the current Plant, and remember which Plant was shown."""
         data = data_with_plant(entry.data, self._imported)
         compiled: CompiledPlant = self._imported.compiled
         sharing = other_plant_sharing_warnings(
@@ -634,17 +691,14 @@ class PlantSettingsSteps(ConfigFlowBase):
             entry.entry_id,
             (output["entity_id"] for output in output_authorization(data)["outputs"]),
         )
-        blocking = bool(sharing) or bool(
-            warnings_to_confirm(compiled, effective_plant(entry).compiled)
-        )
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            if blocking and not user_input.get(CONF_CONFIRM, False):
-                errors["base"] = "confirm_required"
-            elif await self._async_apply_plant(entry, data):
-                return self.async_abort(reason="reconfigure_successful")
-            else:
-                errors["base"] = "dry_run_shutdown_in_progress"
+        try:
+            before: CompiledPlant | None = effective_plant(entry).compiled
+        except GRAPH_EDIT_ERRORS:
+            # An unreadable stored graph can still be replaced by a plant file.
+            before = None
+        self._review_blocking = bool(sharing) or bool(warnings_to_confirm(compiled, before))
+        self._reviewed = _signature(entry.data)
+        blocking = self._review_blocking
         return self.async_show_form(
             step_id="edit_plant_review",
             data_schema=warning_review_schema() if blocking else vol.Schema({}),
@@ -656,14 +710,25 @@ class PlantSettingsSteps(ConfigFlowBase):
             },
         )
 
-    async def _async_apply_plant(
-        self, entry: config_entries.ConfigEntry, data: Mapping[str, Any]
-    ) -> bool:
-        """Store the edited graph and bring subentries and registrations in line with it."""
-        removed = _object_ids(entry.data) - _object_ids(data)
-        if not await async_persist_entry_data(self, entry, data):
-            return False
-        # async_persist_entry_data suspends only before it stores the data, so no
-        # other task runs between the parent update and the handle changes below.
-        async_apply_plant_handles(self.hass, entry, data, removed)
-        return True
+    async def _async_apply_plant(self, entry: config_entries.ConfigEntry) -> bool:
+        """Store the edited graph and bring subentries and registrations in line with it.
+
+        The Plant must still be the one the review showed once the safe shutdown
+        completes. The parent data and every handle and registration change are
+        then applied with no await in between, so the reload listener sees one
+        consistent graph.
+        """
+        reviewed = self._reviewed
+        imported = self._imported
+        hass = self.hass
+
+        def build(current: Mapping[str, Any]) -> dict[str, Any]:
+            if _signature(current) != reviewed:
+                raise _PlantChangedError
+            return data_with_plant(current, imported)
+
+        def on_stored(previous: Mapping[str, Any], stored: Mapping[str, Any]) -> None:
+            removed = _object_ids(previous) - _object_ids(stored)
+            async_apply_plant_handles(hass, entry, stored, removed)
+
+        return await async_persist_entry_data(self, entry, build, on_stored=on_stored)

@@ -296,6 +296,30 @@ async def test_source_form_selectors_and_persisted_types(hass) -> None:
     assert type(subentry_draft(entry, subentry)[CONF_SOURCE_PRIORITY]) is int
 
 
+async def test_editing_a_source_that_was_deleted_meanwhile_aborts(hass) -> None:
+    """A source removed while its reconfigure form is open is not saved back."""
+    hass.states.async_set("sensor.living_temperature", "19.0")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _add_buffer_source(hass, entry)
+    await hass.async_block_till_done()
+    subentry = _source_subentries(entry)[0]
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    assert hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=frontend_submission(result)
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "subentry_removed"
+    assert entry.data["topology"]["sources"] == []
+    assert _source_subentries(entry) == []
+
+
 @pytest.mark.parametrize("priority", ["nan", "inf", "-inf", 1.7])
 async def test_source_priority_rejects_non_finite_and_fractional_values(hass, priority) -> None:
     """A priority that is not a whole finite number fails schema validation cleanly."""

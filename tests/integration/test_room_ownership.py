@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from homeassistant.config_entries import ConfigEntryState
+from types import MappingProxyType
+
+from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -216,6 +218,31 @@ async def test_reload_reconstructs_rooms_and_their_entity_ownership(hass) -> Non
     assert entry.runtime_data is not runtime
     assert entry.runtime_data.object_subentry_ids == runtime.object_subentry_ids
     assert _owned_registrations(hass, entry) == before
+
+
+async def test_a_handle_without_a_parent_record_fails_the_reload_it_triggers(hass, caplog) -> None:
+    """A stored mismatch fails setup with a readable reason instead of in a background task."""
+    _set_states(hass)
+    entry = manifold_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    stray = "00000000-0000-4000-8000-00000000abcd"
+
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data=MappingProxyType({"id": stray}),
+            subentry_type="room",
+            title="Stray",
+            unique_id=stray,
+        ),
+    )
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert "no matching parent ownership record" in caplog.text
+    assert "Task exception was never retrieved" not in caplog.text
 
 
 async def test_initial_setup_creates_one_room_that_owns_its_loop_and_valve(hass) -> None:

@@ -86,9 +86,17 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
         await existing
         return
 
+    def _reconciled() -> dict[str, object] | None:
+        try:
+            return reconcile_removed_subentries(entry)
+        except GRAPH_EDIT_ERRORS:
+            # Handles that do not match the stored graph cannot be reconciled here;
+            # the reload's setup reports the invalid stored graph instead.
+            return None
+
     async def _reload() -> None:
         await asyncio.sleep(0)
-        reconciled = reconcile_removed_subentries(entry)
+        reconciled = _reconciled()
         if reconciled is not None and not bool(entry.data.get(CONF_DRY_RUN, True)):
             active_runtime = getattr(entry, "runtime_data", None)
             if (
@@ -101,7 +109,7 @@ async def _async_reload_entry(hass: HomeAssistant, entry: HydronicConfigEntry) -
                     entry.entry_id,
                 )
                 return
-            reconciled = reconcile_removed_subentries(entry)
+            reconciled = _reconciled()
         if reconciled is not None:
             hass.config_entries.async_update_entry(entry, data=reconciled)
             await asyncio.sleep(0)

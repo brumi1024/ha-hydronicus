@@ -680,3 +680,87 @@ async def test_plant_file_edit_keeps_room_handles_consistent(hass) -> None:
     assert rooms == sorted([BEDROOM.zone_id, _derived_id("zone", "kitchen")])
     assert entry.state is ConfigEntryState.LOADED
     assert set(entry.runtime_data.plant.zones) == set(rooms)
+
+
+BOILER_ID = "00000000-0000-4000-8000-0000000b0001"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(lambda document: document.pop("sources"), id="removed-source"),
+        pytest.param(lambda document: None, id="kept-source"),
+    ],
+)
+async def test_plant_file_giving_an_object_the_id_of_another_kind_is_refused(hass, change) -> None:
+    """An id keeps its kind, and room and source handles never share a unique ID."""
+    _set_states(hass)
+    entry = manifold_entry(
+        sources=[{"id": BOILER_ID, "name": "Boiler", "source_type": "external", "priority": 1}]
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    data = deepcopy(dict(entry.data))
+    document = _export(entry)
+    change(document)
+    document["rooms"]["kitchen"] = {
+        "id": BOILER_ID,
+        "temperature_sensors": [KITCHEN_SENSOR],
+        "loops": {"kitchen_loop": {"valves": [KITCHEN_VALVE], "pump": "manifold_pump"}},
+    }
+
+    result = await _edit(hass, entry, document)
+
+    assert result["step_id"] == "edit_plant"
+    assert result["errors"] == {"base": "invalid_document"}
+    assert BOILER_ID in result["description_placeholders"]["error"]
+    assert dict(entry.data) == data
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_plant_file_review_confirmed_after_the_plant_changed_is_shown_again(
+    hass,
+) -> None:
+    """The review lists changes against one Plant, so a changed Plant is reviewed again."""
+    entry = await _loaded_manifold(hass)
+    document = _export(entry)
+    document["rooms"]["living_room"]["name"] = "Lounge"
+    review = await _edit(hass, entry, document)
+    assert review["step_id"] == "edit_plant_review"
+    pump = await _open(hass, entry, "add_pump")
+    pump = await _submit(
+        hass,
+        pump,
+        {"name": "Spare pump", "entity_id": SPARE_PUMP_ENTITY, "overrun_seconds": 0.0},
+    )
+    assert pump["reason"] == "reconfigure_successful"
+    data = deepcopy(dict(entry.data))
+
+    result = await _submit(hass, review, {})
+
+    assert result["step_id"] == "edit_plant_review"
+    assert result["errors"] == {"base": "plant_changed"}
+    assert "- Removes pump Spare pump" in result["description_placeholders"]["changes"]
+    assert dict(entry.data) == data
+
+    result = await _submit(hass, result, {})
+
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+    assert [pump["name"] for pump in entry.data["topology"]["pumps"]] == ["Manifold pump"]
+    assert room_subentry(entry, LIVING.zone_id).title == "Lounge"
+
+
+async def test_export_dialog_of_an_unreadable_plant_explains_why(hass) -> None:
+    """A Plant whose stored graph is invalid cannot be exported, and the dialog says why."""
+    data = deepcopy(dict(manifold_entry().data))
+    data["topology"]["routes"][0]["circuit_id"] = "00000000-0000-4000-8000-00000000dead"
+    entry = plant_entry(data)
+    entry.add_to_hass(hass)
+
+    result = await _open(hass, entry, "export_plant")
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "plant_file_unavailable"
+    assert result["description_placeholders"]["error"]

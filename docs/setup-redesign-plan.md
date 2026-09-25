@@ -184,13 +184,13 @@ Migration from 2.0 to 3.0 runs in `async_migrate_entry` in this order.
 Every step is idempotent, so a restart at any point resumes to the same result.
 
 0. While migration has not started (no `room` subentry and no `legacy:` unique ID), remove every object whose version 2 handle was deleted while the entry was unloaded, with version 2 removal semantics, and write that version 2.0 data durably.
-   A version 2 Plant with circuits always has zones, so this condition cannot misread a Plant that stopped between steps 6 and 7.
+   A Plant whose every zone was deleted has no room, so after step 6 this condition reads as not started; step 6 therefore leaves no legacy record behind, and this step then finds nothing to remove.
 1. Compute the plan from the topology alone: `derive_ownership`, one room per zone, and the target owner of every object.
 2. Give every legacy `zone`, `circuit`, and `actuator` subentry the unique ID `legacy:<object id>`, which frees the object IDs for room handles.
 3. Add a `room` subentry for every zone that has none.
 4. Move every entity registry entry of the config entry to its target owner with `async_update_entity(config_subentry_id=...)`; the target object is the object UUID, other than the Plant id, contained in the entity's unique ID, and an entity without one belongs to the Plant.
 5. Move every topology device to the same owner with the move API of the installed device registry.
-6. Remove the legacy subentries, which by now own no entities or devices.
+6. Drop the legacy `zone`, `circuit`, and `actuator` records from `subentry_objects`, then remove the legacy subentries, which by now own no entities or devices, in the same synchronous block.
 7. Write the version 3 data, with output authorization invalidated, together with version 3.0 in one `async_update_entry` call.
 
 ### K4 Graph edit API
@@ -235,7 +235,11 @@ def subentry_sync(entry: Any, data: Mapping[str, Any]) -> SubentrySync: ...
 ```
 
 `data_with_pump` raises `EquipmentInUseError` when removing a pump that a loop uses.
-`flows/common.py` provides `async_persist_entry_data(flow, entry, data) -> bool`, which reaches Dry run through the runtime first when the Plant is active and returns `False` when that shutdown cannot complete.
+`flows/common.py` provides `async_persist_entry_data(flow, entry, build, *, on_stored=None) -> bool`, which reaches Dry run through the runtime first when the Plant is active and returns `False` when that shutdown cannot complete.
+The shutdown can wait while another flow stores the Plant, so `build` is a function of the entry data, such as `lambda data: data_with_room(data, draft)`, and is applied to the data as it is after the wait.
+Building, storing, and `on_stored(previous, stored)` run with no `await` in between, so no concurrent edit is lost and handle changes made in `on_stored` meet the data they belong to.
+A graph edit error that `build` raises stores nothing and reaches the flow, which shows the drafting form again with the mapped error.
+`data_with_plant` also refuses an object whose id belonged to an object of another kind, because that id's handles and registrations belong to the old object.
 `migration.py` provides `async_move_object_registrations(hass, entry, owners)`, which moves the entities and devices of every object id in `owners` to the given subentry id, or to the parent for `None`; migration and plant file edits share it.
 
 ### K5 Plant file format
@@ -418,7 +422,7 @@ Rules:
 
 Errors, reusing the current zone and circuit keys where they exist: `name_required`, `temperature_sensors_required`, `valves_required`, `actuator_entity_in_use`, `own_entity`, `thermostat_loop`, `sensor_metadata_required`, `designated_reference_count`, `temperature_required_for_cooling`, `humidity_required_for_cooling`, `cooling_reference_required`, `cooling_requires_zone_observations`, `confirm_required`, `dry_run_shutdown_in_progress`.
 New errors: `delivery_required` (neither `valves` nor `shared_loops`), `pump_required`, and `invalid_room` (placeholder `error`).
-Aborts: `no_pumps`, `already_configured`, `reconfigure_successful`.
+Aborts: `no_pumps`, `already_configured`, `reconfigure_successful`, `subentry_removed` (the room was deleted while the flow was open).
 
 #### Plant settings
 
@@ -435,10 +439,11 @@ Parent reconfigure flow in module `flows/plant.py`, built by W4.
 | `edit_plant` | form | `document`, an object selector prefilled with the current export. |
 | `edit_plant_review` | form | `confirm`, with placeholders `changes`, `logic`, `warnings`. |
 
-Errors: `name_required`, `actuator_entity_in_use`, `own_entity`, `equipment_in_use` (placeholder `users`), `invalid_document` (placeholders `path` and `error`), `document_own_entity` (placeholders `path` and `entity_id`), `plant_id_mismatch`, `confirm_required`, and the current Dry run errors.
-Aborts: `reconfigure_successful`, `plant_exported`, `no_changes`.
+Errors: `name_required`, `actuator_entity_in_use`, `own_entity`, `equipment_in_use` (placeholder `users`), `invalid_document` (placeholders `path` and `error`), `document_own_entity` (placeholders `path` and `entity_id`), `plant_id_mismatch`, `plant_changed`, `confirm_required`, and the current Dry run errors.
+Aborts: `reconfigure_successful`, `plant_exported`, `plant_file_unavailable` (placeholder `error`, for a stored graph that does not decode), `no_changes`.
 
 An edited plant file is applied in one synchronous block, with no `await` between the parent data update and the subentry adds, removes, and retitles, so the reload listener sees one consistent graph.
+When the Plant changed after the review listed its changes, the review is shown again with `plant_changed` instead of applying the file.
 
 #### Guided setup and import
 

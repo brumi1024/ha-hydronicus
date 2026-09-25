@@ -525,6 +525,36 @@ async def test_import_refuses_a_hydronicus_entity(hass) -> None:
     }
 
 
+_SHARED_ID = "00000000-0000-4000-8000-0000000000c1"
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param(("rooms", "living_room"), ("sources", "heat_pump"), id="room-and-source"),
+        pytest.param(("pumps", "pump"), ("sources", "buffer"), id="pump-and-source"),
+    ],
+)
+async def test_import_refuses_one_id_for_two_objects(
+    hass, first: tuple[str, str], second: tuple[str, str]
+) -> None:
+    """Every object id names one object, so handles and registrations never collide."""
+    document = _fixture("sources.yaml")
+    for kind, slug in (first, second):
+        record = document[kind][slug]
+        document[kind][slug] = {
+            **(record if isinstance(record, dict) else {"entity_id": record}),
+            "id": _SHARED_ID,
+        }
+
+    result = await _import(hass, document)
+
+    assert result["step_id"] == "import_plant"
+    assert result["errors"] == {"base": "invalid_document"}
+    assert _SHARED_ID in result["description_placeholders"]["error"]
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
 async def test_import_review_confirms_only_blocking_warnings(hass) -> None:
     """An unused pump never blocks an import; a shared pump needs confirming."""
     document = _fixture("single_room.yaml")

@@ -8,13 +8,14 @@ one opens a menu of focused steps. Every save applies the whole room with
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import selector
 
 from ..const import (
@@ -145,6 +146,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
 
     _draft: RoomDraft
     _proposed: dict[str, Any]
+    _origin: Callable[[], Awaitable[config_entries.SubentryFlowResult]]
     _review_warnings: str
     _zone: dict[str, Any]
     _metadata_records: list[dict[str, Any]]
@@ -153,15 +155,24 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
     _loop_input: dict[str, Any]
     _loop_draft: RoomDraft
     _loop_valve_ids: list[str]
+    _valve_details: dict[str, dict[str, Any]]  # valve entity id -> valve details form
     _valve_index: int
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
+    def _room_subentry(self) -> config_entries.ConfigSubentry:
+        """Return the handle of the room being reconfigured, ending the flow if it is gone."""
+        try:
+            return self._get_reconfigure_subentry()
+        except config_entries.UnknownSubEntry as error:
+            # The room was deleted while this flow was open.
+            raise AbortFlow("subentry_removed") from error
+
     def _room(self) -> RoomDraft:
         """Return the stored records of the room being reconfigured."""
-        subentry = self._get_reconfigure_subentry()
+        subentry = self._room_subentry()
         return room_draft(self._get_entry().data, str(subentry.data["id"]))
 
     def _propose(
@@ -185,12 +196,16 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
             (valve.get(CONF_ENTITY_ID) for valve in self._draft.valves),
         )
 
-    async def _async_save(self) -> config_entries.SubentryFlowResult | None:
+    async def _async_save(
+        self, origin: Callable[[], Awaitable[config_entries.SubentryFlowResult]]
+    ) -> config_entries.SubentryFlowResult | None:
         """Review warnings first, or save now; ``None`` means Dry run is still pending.
 
         A warning this change introduces, or an output shared with another Plant,
-        needs an explicit confirmation.
+        needs an explicit confirmation. ``origin`` submits the form that drafted
+        the room again, which reports why a Plant changed meanwhile rejects it.
         """
+        self._origin = origin
         compiled = effective_plant_from_data(self._proposed).compiled
         sharing = self._sharing()
         before = effective_plant(self._get_entry()).compiled
@@ -200,15 +215,31 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         return await self._async_persist()
 
     async def _async_persist(self) -> config_entries.SubentryFlowResult | None:
-        """Store the drafted room and finish, or return ``None`` if Dry run is pending."""
+        """Store the drafted room and finish, or return ``None`` if Dry run is pending.
+
+        The draft applies to the Plant as it is when the save happens. When another
+        flow changed it so that the draft no longer fits, the drafting form is shown
+        again with the reason.
+        """
         entry = self._get_entry()
-        data = data_with_room(entry.data, self._draft)
-        if not await async_persist_entry_data(self, entry, data):
-            return None
-        title = str(self._draft.zone[CONF_NAME])
-        if self.source == config_entries.SOURCE_RECONFIGURE:
-            return self.async_update_and_abort(entry, self._get_reconfigure_subentry(), title=title)
-        zone_id = str(self._draft.zone["id"])
+        draft = self._draft
+        reconfiguring = self.source == config_entries.SOURCE_RECONFIGURE
+
+        def build(data: Mapping[str, Any]) -> dict[str, Any]:
+            if reconfiguring:
+                # A room deleted meanwhile must not come back.
+                self._room_subentry()
+            return data_with_room(data, draft)
+
+        try:
+            if not await async_persist_entry_data(self, entry, build):
+                return None
+        except GRAPH_EDIT_ERRORS:
+            return await self._origin()
+        title = str(draft.zone[CONF_NAME])
+        if reconfiguring:
+            return self.async_update_and_abort(entry, self._room_subentry(), title=title)
+        zone_id = str(draft.zone["id"])
         return self.async_create_entry(title=title, data={"id": zone_id}, unique_id=zone_id)
 
     def _review_form(
@@ -263,7 +294,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 graph, placeholders = self._propose(draft, frozenset(schema.schema))
                 errors.update(graph)
             if not errors:
-                if result := await self._async_save():
+                if result := await self._async_save(lambda: self.async_step_user(user_input)):
                     return result
                 errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
@@ -316,7 +347,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 graph, placeholders = self._propose(draft, frozenset(schema.schema))
                 errors.update(graph)
             if not errors:
-                if result := await self._async_save():
+                if result := await self._async_save(lambda: self.async_step_room(user_input)):
                     return result
                 errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
@@ -361,7 +392,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 frozenset(schema.schema),
             )
             if not errors:
-                if result := await self._async_save():
+                if result := await self._async_save(lambda: self.async_step_thermostat(user_input)):
                     return result
                 errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
@@ -407,7 +438,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                     frozenset(schema.schema),
                 )
             if not errors:
-                if result := await self._async_save():
+                if result := await self._async_save(lambda: self.async_step_sensors(user_input)):
                     return result
                 errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
@@ -461,14 +492,26 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         if user_input is not None:
             room = self._room()
             self._zone[CONF_TEMPERATURE_AGGREGATION] = user_input[CONF_TEMPERATURE_AGGREGATION]
+            # Apply only the sensor settings to the room as it is now, which another
+            # flow may have changed while the metadata steps were open.
+            zone = deepcopy(room.zone)
+            for key in (
+                CONF_TEMPERATURE_SENSOR_METADATA,
+                CONF_HUMIDITY_SENSOR_METADATA,
+                CONF_TEMPERATURE_AGGREGATION,
+            ):
+                if key in self._zone:
+                    zone[key] = deepcopy(self._zone[key])
             errors, placeholders = self._propose(
                 RoomDraft(
-                    zone=self._zone, circuits=room.circuits, valves=room.valves, routes=room.routes
+                    zone=zone, circuits=room.circuits, valves=room.valves, routes=room.routes
                 ),
                 frozenset({CONF_TEMPERATURE_AGGREGATION}),
             )
             if not errors:
-                if result := await self._async_save():
+                if result := await self._async_save(
+                    lambda: self.async_step_sensor_policy(user_input)
+                ):
                     return result
                 errors["base"] = "dry_run_shutdown_in_progress"
         return self.async_show_form(
@@ -689,6 +732,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         if errors:
             return self._loop_form(user_input, errors)
         self._loop_input = dict(user_input)
+        self._valve_details = {}
         self._loop_draft, self._loop_valve_ids = self._drafted_loop(self._room(), user_input)
         if user_input.get(CONF_CONFIGURE_VALVE_FEEDBACK) and self._loop_valve_ids:
             self._valve_index = 0
@@ -696,12 +740,20 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         return await self._async_finish_loop()
 
     async def _async_finish_loop(self) -> config_entries.SubentryFlowResult:
-        """Propose the edited loop, showing any error on the loop form."""
+        """Propose the edited loop, showing any error on the loop form.
+
+        The loop and the valve details apply to the room as it is now, because
+        another flow may have changed it while the valve details were open.
+        """
         room = self._room()
+        draft, _ = self._drafted_loop(room, self._loop_input)
+        for valve in draft.valves:
+            if details := self._valve_details.get(str(valve[CONF_ENTITY_ID])):
+                _apply_valve_details(valve, details)
         fields = frozenset(self._loop_schema(room, effective_plant(self._get_entry())).schema)
-        errors, placeholders = self._propose(self._loop_draft, fields)
+        errors, placeholders = self._propose(draft, fields)
         if not errors:
-            if result := await self._async_save():
+            if result := await self._async_save(self._async_finish_loop):
                 return result
             errors["base"] = "dry_run_shutdown_in_progress"
         return self._loop_form(self._loop_input, errors, placeholders)
@@ -716,14 +768,7 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
         if user_input is not None:
             errors = own_entity_errors(self.hass, user_input)
             if not errors:
-                if readiness := user_input.get(CONF_VALVE_READINESS_ENTITY):
-                    valve[CONF_VALVE_READINESS_ENTITY] = readiness
-                else:
-                    valve.pop(CONF_VALVE_READINESS_ENTITY, None)
-                valve[CONF_POSITION_FEEDBACK_ENTITY] = (
-                    user_input.get(CONF_POSITION_FEEDBACK_ENTITY) or None
-                )
-                valve[CONF_POSITION_FEEDBACK_MAX_AGE] = user_input[CONF_POSITION_FEEDBACK_MAX_AGE]
+                self._valve_details[str(valve[CONF_ENTITY_ID])] = dict(user_input)
                 self._valve_index += 1
                 if self._valve_index >= len(self._loop_valve_ids):
                     return await self._async_finish_loop()
@@ -740,6 +785,16 @@ class RoomSubentryFlowHandler(OwnEntityPickerMixin, config_entries.ConfigSubentr
                 "entity": str(valve[CONF_ENTITY_ID]),
             },
         )
+
+
+def _apply_valve_details(valve: dict[str, Any], details: Mapping[str, Any]) -> None:
+    """Set the feedback entities of one valve from its valve details form."""
+    if readiness := details.get(CONF_VALVE_READINESS_ENTITY):
+        valve[CONF_VALVE_READINESS_ENTITY] = readiness
+    else:
+        valve.pop(CONF_VALVE_READINESS_ENTITY, None)
+    valve[CONF_POSITION_FEEDBACK_ENTITY] = details.get(CONF_POSITION_FEEDBACK_ENTITY) or None
+    valve[CONF_POSITION_FEEDBACK_MAX_AGE] = details[CONF_POSITION_FEEDBACK_MAX_AGE]
 
 
 _COOLING_DEFAULTS: dict[str, Any] = {

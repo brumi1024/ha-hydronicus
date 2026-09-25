@@ -212,6 +212,7 @@
       "invalid_document": "The plant file is not valid at {path}: {error}",
       "document_own_entity": "{entity_id} at {path} is provided by Hydronicus. Bind an entity from another integration, because Hydronicus entities would feed the plant back into itself.",
       "plant_id_mismatch": "This plant file belongs to another Plant. Remove its top-level id, or set it to this Plant's id, to apply it here.",
+      "plant_changed": "The Plant changed while you reviewed this plant file. Check the updated list of changes and submit again to apply it.",
       "delivery_required": "Choose at least one valve for the room's loop.",
       "pump_required": "Choose the pump for this loop.",
       "temperature_required_for_cooling": "Loops with cooling need at least one temperature sensor in each room they serve, even when an existing thermostat owns the room.",
@@ -223,6 +224,7 @@
       "already_in_progress": "A setup flow for this plant is already in progress.",
       "reconfigure_successful": "The plant configuration was updated.",
       "plant_exported": "This is the plant file of the Plant. Copy it to back up the Plant or to rebuild it with the same entity IDs on another Home Assistant instance.\n\n{document}",
+      "plant_file_unavailable": "The stored Plant graph is not valid, so it has no plant file to show: {error} Replace it through Edit plant file, or restore a backup.",
       "no_changes": "The plant file matches the current Plant, so nothing was changed."
     }
   },
@@ -462,6 +464,7 @@
       "abort": {
         "no_pumps": "The Plant has no pump yet. Add a pump before adding a room or a loop.",
         "already_configured": "This object is already configured.",
+        "subentry_removed": "This room was removed while it was being edited.",
         "reconfigure_successful": "The configuration was updated."
       }
     },
@@ -545,6 +548,7 @@
       },
       "abort": {
         "already_configured": "This object is already configured.",
+        "subentry_removed": "This source was removed while it was being edited.",
         "reconfigure_successful": "The configuration was updated."
       }
     }

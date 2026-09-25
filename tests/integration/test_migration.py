@@ -755,6 +755,113 @@ async def test_objects_deleted_before_migration_are_not_resurrected(
     assert set(entry.runtime_data.plant.zones) == {LIVING}
 
 
+_OFFICE_PLANT = "00000000-0000-4000-8000-0000000a0001"
+_OFFICE = "00000000-0000-4000-8000-0000000a0002"
+_OFFICE_VALVE = "00000000-0000-4000-8000-0000000a0003"
+_OFFICE_PUMP = "00000000-0000-4000-8000-0000000a0004"
+_OFFICE_LOOP = "00000000-0000-4000-8000-0000000a0005"
+_OFFICE_ROUTE = "00000000-0000-4000-8000-0000000a0006"
+
+
+def _office_version_2_entry() -> MockConfigEntry:
+    """Return a version 2 Plant whose one zone, loop, and valve all have legacy handles."""
+    data = authorize_outputs(
+        {
+            "name": "Hydronic plant",
+            "plant_id": _OFFICE_PLANT,
+            "dry_run": True,
+            "requested_mode": "auto",
+            "topology": {
+                "zones": [
+                    {
+                        "id": _OFFICE,
+                        "name": "Office",
+                        "thermostat": {"kind": "hydronicus"},
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.office"}],
+                    }
+                ],
+                "valves": [{"id": _OFFICE_VALVE, "name": "Office valve", "entity_id": "switch.ov"}],
+                "pumps": [{"id": _OFFICE_PUMP, "name": "Pump", "entity_id": "switch.op"}],
+                "circuits": [
+                    {
+                        "id": _OFFICE_LOOP,
+                        "name": "Office loop",
+                        "valve_ids": [_OFFICE_VALVE],
+                        "pump_id": _OFFICE_PUMP,
+                    }
+                ],
+                "routes": [{"id": _OFFICE_ROUTE, "zone_id": _OFFICE, "circuit_id": _OFFICE_LOOP}],
+            },
+            "subentry_objects": {
+                _OFFICE: SUBENTRY_TYPE_ZONE,
+                _OFFICE_LOOP: SUBENTRY_TYPE_CIRCUIT,
+                _OFFICE_VALVE: SUBENTRY_TYPE_ACTUATOR,
+            },
+        }
+    )
+
+    def handle(subentry_id: str, subentry_type: str, object_id: str) -> dict[str, Any]:
+        return {
+            "subentry_id": subentry_id,
+            "subentry_type": subentry_type,
+            "title": subentry_type,
+            "unique_id": object_id,
+            "data": {"id": object_id},
+        }
+
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Hydronic plant",
+        version=2,
+        minor_version=0,
+        data=data,
+        subentries_data=[
+            handle("LEGACYZONE", SUBENTRY_TYPE_ZONE, _OFFICE),
+            handle("LEGACYLOOP", SUBENTRY_TYPE_CIRCUIT, _OFFICE_LOOP),
+            handle("LEGACYVALVE", SUBENTRY_TYPE_ACTUATOR, _OFFICE_VALVE),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "completed_steps", [None, *_INTERRUPTIONS], ids=["uninterrupted", *_INTERRUPTION_IDS]
+)
+async def test_a_plant_whose_every_zone_was_deleted_keeps_its_equipment_when_resumed(
+    hass, completed_steps: int | None
+) -> None:
+    """Without zones, a restart after any step still keeps the loop and valve as Plant equipment.
+
+    After step 6 such a Plant has neither a room nor a legacy handle, which must not
+    look like a migration that has not started, whose deleted handles delete objects.
+    """
+    entry = _office_version_2_entry()
+    entry.add_to_hass(hass)
+    # The only zone is deleted while the version 2 entry is unloaded.
+    assert hass.config_entries.async_remove_subentry(entry, "LEGACYZONE")
+    if completed_steps is not None:
+        _run_until_interrupted(hass, entry, completed_steps)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (entry.version, entry.minor_version) == (3, 0)
+    assert entry.state is ConfigEntryState.LOADED
+    topology = entry.data["topology"]
+    assert {
+        key: [record["id"] for record in topology.get(key, [])]
+        for key in ("zones", "valves", "pumps", "circuits", "routes")
+    } == {
+        "zones": [],
+        "valves": [_OFFICE_VALVE],
+        "pumps": [_OFFICE_PUMP],
+        "circuits": [_OFFICE_LOOP],
+        "routes": [],
+    }
+    assert entry.data[CONF_SUBENTRY_OBJECTS] == {}
+    assert entry.data[CONF_ROOM_OBJECTS] == {}
+    assert not entry.subentries
+
+
 async def test_version_2_removals_that_break_the_graph_fail_migration(hass) -> None:
     """A reconciled version 2 graph that does not compile fails like other bad graphs."""
     entry = _evidence_version_2_entry()

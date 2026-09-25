@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, Literal
 from uuid import uuid4
 
@@ -12,7 +12,7 @@ from homeassistant import config_entries
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import section
+from homeassistant.data_entry_flow import AbortFlow, section
 from homeassistant.helpers import entity_registry as entity_registry_helper
 from homeassistant.helpers import selector
 
@@ -99,6 +99,7 @@ from ..core.topology import (
     TopologyValidationError,
 )
 from ..entry_configuration import (
+    GRAPH_EDIT_ERRORS,
     data_with_source,
     effective_plant_from_data,
 )
@@ -380,23 +381,41 @@ def subentry_handle(draft: Mapping[str, Any]) -> dict[str, str]:
     return {"id": str(draft["id"])}
 
 
+type EntryDataBuilder = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+type StoredCallback = Callable[[Mapping[str, Any], Mapping[str, Any]], None]
+
+
 async def async_persist_entry_data(
     flow: config_entries.ConfigFlow
     | config_entries.OptionsFlow
     | config_entries.ConfigSubentryFlow,
     entry: config_entries.ConfigEntry,
-    data: Mapping[str, Any],
+    build: EntryDataBuilder,
+    *,
+    on_stored: StoredCallback | None = None,
 ) -> bool:
     """Store edited Plant data once the Plant has safely reached Dry run.
 
     An active Plant first completes its safe shutdown through the runtime. When
     that cannot finish, nothing is stored and ``False`` is returned.
+
+    The safe shutdown can wait, and another flow may store the Plant meanwhile, so
+    ``build`` receives the entry data as it is after the wait and returns the data
+    to store. Building, storing, and ``on_stored(previous, stored)`` run with no
+    await in between, so no other edit is lost and every handle change made in
+    ``on_stored`` meets the data it belongs to. An error ``build`` raises, such as
+    a graph edit error against a Plant that changed meanwhile, stores nothing and
+    reaches the caller, which reports it on its form.
     """
     if not bool(entry.data.get(CONF_DRY_RUN, True)):
         runtime = getattr(entry, "runtime_data", None)
         if runtime is None or not await runtime.async_set_dry_run(True, hass=flow.hass):
             return False
-    flow.hass.config_entries.async_update_entry(entry, data=dict(data))
+    previous = entry.data
+    stored = dict(build(previous))
+    flow.hass.config_entries.async_update_entry(entry, data=stored)
+    if on_stored is not None:
+        on_stored(previous, stored)
     return True
 
 
@@ -931,6 +950,7 @@ class SubentryReviewMixin(_SubentryFlowBase):
     _subentry_type: str
     _draft: dict[str, Any]
     _reconfigure: bool
+    _origin_input: dict[str, Any]
     _review_warnings: str
 
     def _entry_data_with_draft(
@@ -948,10 +968,17 @@ class SubentryReviewMixin(_SubentryFlowBase):
         reconfigure: bool,
         warnings: str,
         errors: dict[str, str],
+        user_input: dict[str, Any],
     ) -> config_entries.SubentryFlowResult | None:
-        """Review warnings first, or save the draft now; ``None`` means the save failed."""
+        """Review warnings first, or save the draft now; ``None`` means the save failed.
+
+        ``user_input`` is the submitted form that drafted the subentry. It is
+        submitted again when a Plant changed meanwhile rejects the draft, so that
+        form reports why.
+        """
         self._draft = draft
         self._reconfigure = reconfigure
+        self._origin_input = user_input
         if warnings:
             self._review_warnings = warnings
             return await self.async_step_review()
@@ -960,25 +987,45 @@ class SubentryReviewMixin(_SubentryFlowBase):
         errors["base"] = "dry_run_shutdown_in_progress"
         return None
 
+    def _handle_subentry(self) -> config_entries.ConfigSubentry:
+        """Return the reconfigured handle, ending the flow if it was deleted meanwhile."""
+        try:
+            return self._get_reconfigure_subentry()
+        except config_entries.UnknownSubEntry as error:
+            raise AbortFlow("subentry_removed") from error
+
     async def _async_persist_draft(self) -> config_entries.SubentryFlowResult | None:
-        """Persist the draft graph and return its UI handle, or ``None`` if Dry run is pending."""
+        """Persist the draft graph and return its UI handle, or ``None`` if Dry run is pending.
+
+        The draft applies to the Plant as it is when the save happens.
+        """
         entry = self._get_entry()
-        subentry = self._get_reconfigure_subentry() if self._reconfigure else None
-        if not await async_persist_entry_data(
-            self, entry, self._entry_data_with_draft(entry.data, self._draft)
-        ):
-            return None
-        if subentry is not None:
+        draft = self._draft
+        reconfigure = self._reconfigure
+
+        def build(data: Mapping[str, Any]) -> dict[str, Any]:
+            if reconfigure:
+                # A handle deleted meanwhile must not come back.
+                self._handle_subentry()
+            return self._entry_data_with_draft(data, draft)
+
+        try:
+            if not await async_persist_entry_data(self, entry, build):
+                return None
+        except GRAPH_EDIT_ERRORS:
+            step = self.async_step_reconfigure if reconfigure else self.async_step_user
+            return await step(self._origin_input)
+        if reconfigure:
             return self.async_update_and_abort(
                 entry,
-                subentry,
-                title=self._draft[CONF_NAME],
-                data=subentry_handle(self._draft),
+                self._handle_subentry(),
+                title=draft[CONF_NAME],
+                data=subentry_handle(draft),
             )
         return self.async_create_entry(
-            title=self._draft[CONF_NAME],
-            data=subentry_handle(self._draft),
-            unique_id=self._draft["id"],
+            title=draft[CONF_NAME],
+            data=subentry_handle(draft),
+            unique_id=draft["id"],
         )
 
     async def async_step_review(

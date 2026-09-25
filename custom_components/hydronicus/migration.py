@@ -441,7 +441,9 @@ def async_complete_version_2_removals(hass: HomeAssistant, entry: ConfigEntry) -
     removes the object from the stored graph, and migration must not bring it back as
     a room or as Plant equipment. This runs before step 2 and writes version 2 data,
     so a restart finds nothing left to remove. Once step 2 has run it does nothing,
-    because after step 6 every legacy handle is gone and would look deleted.
+    because after step 6 every legacy handle is gone and would look deleted. A
+    Plant without zones has no room to show that step 2 ran, so step 6 drops the
+    legacy records from ``subentry_objects`` before it removes their handles.
     """
     if _migration_started(entry):
         return
@@ -593,7 +595,23 @@ def _step_move_devices(hass: HomeAssistant, entry: ConfigEntry, plan: RoomMigrat
 def _step_remove_legacy_subentries(
     hass: HomeAssistant, entry: ConfigEntry, plan: RoomMigrationPlan
 ) -> None:
-    """Step 6: remove the legacy handles, which by now own no entities or devices."""
+    """Step 6: remove the legacy handles, which by now own no entities or devices.
+
+    Their records leave ``subentry_objects`` first, in the same synchronous block.
+    A Plant whose every zone was deleted has no room, so after this step nothing
+    marks the migration as started; with no legacy record left, a rerun of the
+    version 2 removals then finds no deleted handle and removes nothing.
+    """
+    handles = _version_2_handles(entry.data)
+    kept = {
+        object_id: subentry_type
+        for object_id, subentry_type in handles.items()
+        if subentry_type not in LEGACY_SUBENTRY_TYPES
+    }
+    if kept != handles:
+        data = deepcopy(dict(entry.data))
+        data[CONF_SUBENTRY_OBJECTS] = kept
+        hass.config_entries.async_update_entry(entry, data=data)
     for subentry in _legacy_subentries(entry):
         hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
 
