@@ -741,3 +741,55 @@ describe("C10 double loading", () => {
     expect(entries).toHaveLength(1);
   });
 });
+
+describe("Shared Plant subscription", () => {
+  it("shares one subscription between cards for the same Plant", async () => {
+    const hass = makeHass();
+    const first = await mount(hass);
+    const second = await mount(hass);
+    expect(hass.connection.subscriptions).toHaveLength(1);
+
+    await deliver(first, hass.connection);
+    await settle(second);
+    expect(text(first)).toContain("Test plant");
+    expect(root(second).querySelector(".zone")).not.toBeNull();
+
+    first.remove();
+    await settle();
+    expect(hass.connection.last.unsubscribed).toBe(false);
+    second.remove();
+    await settle();
+    expect(hass.connection.last.unsubscribed).toBe(true);
+  });
+
+  it("keeps the subscription when a card moves within the page", async () => {
+    const hass = makeHass();
+    const card = await mount(hass);
+    await deliver(card, hass.connection);
+    const other = document.createElement("div");
+    document.body.append(other);
+
+    other.append(card);
+    await settle(card);
+
+    expect(hass.connection.subscriptions).toHaveLength(1);
+    expect(hass.connection.last.unsubscribed).toBe(false);
+    expect(text(card)).toContain("Test plant");
+  });
+
+  it("keeps an action error on the card whose control failed", async () => {
+    const hass = makeHass();
+    const first = await mount(hass);
+    const second = await mount(hass);
+    await deliver(first, hass.connection);
+    await settle(second);
+    hass.failNextCall = "Entity is unavailable.";
+
+    root(first).querySelector<HTMLButtonElement>(".zone-actions button")?.click();
+    await settle(first);
+    await settle(second);
+
+    expect(root(first).querySelector(".action-error")).not.toBeNull();
+    expect(root(second).querySelector(".action-error")).toBeNull();
+  });
+});
