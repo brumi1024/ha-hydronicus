@@ -189,10 +189,6 @@ async def test_permission_filter_hides_zone_equipment_but_keeps_plant_source_sta
     snapshot = runtime.presentation_snapshot(hass)
     hidden_actuator_id = "00000000-0000-4000-8000-000000000199"
     snapshot["actuators"].append({"id": hidden_actuator_id, "active_consumers": []})
-    snapshot["execution"]["boundary"]["forced_shadow_actuators"] = [
-        VALVE_ID,
-        hidden_actuator_id,
-    ]
     snapshot["execution"]["operations"]["proposed"] = [
         {"actuator_id": VALVE_ID},
         {"actuator_id": hidden_actuator_id},
@@ -204,7 +200,6 @@ async def test_permission_filter_hides_zone_equipment_but_keeps_plant_source_sta
 
     filtered = _filter_snapshot_for_user(snapshot, entities, allowed)
 
-    assert filtered["execution"]["boundary"]["forced_shadow_actuators"] == [VALVE_ID]
     assert [
         operation["actuator_id"] for operation in filtered["execution"]["operations"]["proposed"]
     ] == [VALVE_ID, "source:plant"]

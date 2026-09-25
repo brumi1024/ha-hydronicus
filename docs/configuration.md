@@ -44,7 +44,8 @@ Guided setup takes one menu, one Plant form, one form per room, and a review.
 
 1. Choose **Guided setup**.
 2. In **Name the Plant**, enter the **Plant name** and choose the **Pump entity** that the loops of every room share.
-   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after the last valve closes.
+   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after the last loop stops heating, before its valves close.
+   Cooling stops the pump without overrun.
 3. In **Add a room**, describe one room:
    - **Room name** names the room's thermostat and entities.
    - **Temperature sensors** are combined into the room temperature.
@@ -131,7 +132,7 @@ An unusable optional sensor is excluded and reported, but the room still blocks 
 - **Mean** calculates the arithmetic mean.
 - **Median** selects the middle value after sorting the readings.
 - **Heating-oriented minimum** uses the lowest reading.
-- **Cooling-oriented maximum** supports cooling shadow evaluation, but physical cooling starts are not supported or authorized in this release.
+- **Cooling-oriented maximum** uses the highest reading, which suits rooms that cool.
 - **Designated reference** uses the one sensor marked as the reference.
 - **Weighted mean** applies the positive weights set in the sensor metadata.
 
@@ -175,7 +176,7 @@ Open the Plant entry's **Reconfigure** action to reach **Plant settings**, a men
   **Review plant file changes** lists what the file adds, removes, renames, moves, and changes before anything is saved.
 
 Every change to rooms, loops, valves, or pumps returns the Plant to Dry run.
-Leaving Dry run requires **I understand these heating outputs may be controlled** for the exact output list shown.
+Leaving Dry run requires **I understand these outputs may be controlled** for the exact output list shown.
 
 The `hydronicus.export_plant` action returns the same plant file as **Show the plant file**.
 
@@ -224,8 +225,8 @@ The pump enters virtual overrun before it becomes idle, and the valve closes aft
 No physical service call is dispatched while Dry run remains enabled.
 
 Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
-Cooling starts and source-selector operations remain Dry run only.
-When Dry run is off, heating valves, pumps, and a configured direct source-demand output can execute after the required confirmation and pump-path checks.
+Source-selector operations remain Dry run only.
+When Dry run is off, valves and pumps in heating and cooling, and a configured direct source-demand output, can execute after the required confirmation and pump-path checks.
 
 Every relationship is stored by a generated identifier rather than by a display name.
 Renaming an object keeps its relationships, so always open the topology preview after a change rather than relying on names.

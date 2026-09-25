@@ -1591,7 +1591,6 @@ class HydronicRuntime:
                 self._unavailable_actuator_ids()
                 | self._actuator_ids_blocked_by_failed_valve_starts()
             ),
-            force_dry_run_start_actuator_ids=result.control_plan.cooling_actuator_ids,
             force_dry_run_actuator_ids=(
                 frozenset({self.plant.source_selector.id})
                 if self.plant.source_selector is not None

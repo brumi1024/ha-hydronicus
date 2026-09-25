@@ -3085,7 +3085,6 @@ class _PumpPlan:
     feedback_diagnostics: dict[str, ActuatorDiagnostic]
     blocked_circuit_ids: set[str]
     ready_circuit_ids: set[str]
-    cooling_actuator_ids: set[str]
     pumps: dict[str, PumpRuntime]
     commands: tuple[ActuatorCommand, ...]
     actuator_reasons: dict[str, str]
@@ -3097,7 +3096,6 @@ def _plan_pumps(
     runtime: RuntimeState,
     now: datetime,
     *,
-    target_mode: PlantMode,
     requested_circuits: set[str],
     cooling_routes: tuple[DeliveryRoute, ...],
     valve_plan: _ValvePlan,
@@ -3145,31 +3143,6 @@ def _plan_pumps(
     for circuit_id in sorted(ready_cooling_circuits):
         cooling_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
 
-    cooling_actuator_ids = {
-        valve_id
-        for route in cooling_routes
-        for valve_id in plant.circuits[route.circuit_id].valve_ids
-    }
-    cooling_actuator_ids.update(
-        plant.circuits[circuit_id].pump_id for circuit_id in ready_cooling_circuits
-    )
-    if (
-        target_mode is PlantMode.COOLING
-        or runtime.plant_mode is PlantMode.COOLING
-        or runtime.changeover_target_mode is PlantMode.COOLING
-    ):
-        cooling_circuit_ids = {
-            circuit.id for circuit in plant.circuits.values() if circuit.cooling_enabled
-        }
-        cooling_actuator_ids.update(
-            valve_id
-            for circuit_id in cooling_circuit_ids
-            for valve_id in plant.circuits[circuit_id].valve_ids
-        )
-        cooling_actuator_ids.update(
-            plant.circuits[circuit_id].pump_id for circuit_id in cooling_circuit_ids
-        )
-
     pumps: dict[str, PumpRuntime] = {}
     commands: list[ActuatorCommand] = []
     actuator_reasons = dict(valve_plan.actuator_reasons)
@@ -3211,6 +3184,18 @@ def _plan_pumps(
                 )
             )
             actuator_reasons[pump.id] = "Stopping an unconfirmed pump start."
+        elif previous.state is PumpState.RUNNING and runtime.plant_mode is PlantMode.COOLING:
+            # Overrun only dissipates residual heat. Chilled water keeps nothing to
+            # dissipate, and circulating it after a condensation block is the hazard.
+            current = PumpRuntime(PumpState.OFF, now)
+            commands.append(
+                ActuatorCommand(
+                    pump.id,
+                    ActuatorAction.TURN_OFF,
+                    "Stop immediately after cooling released; cooling has no overrun.",
+                )
+            )
+            actuator_reasons[pump.id] = "Stopped without overrun because the plant was cooling."
         elif previous.state is PumpState.RUNNING:
             current = PumpRuntime(PumpState.OVERRUN, now)
             actuator_reasons[pump.id] = "Overrunning after the final ready circuit released demand."
@@ -3241,7 +3226,6 @@ def _plan_pumps(
         feedback_diagnostics=feedback_diagnostics,
         blocked_circuit_ids=blocked_circuits,
         ready_circuit_ids=ready_circuits,
-        cooling_actuator_ids=cooling_actuator_ids,
         pumps=pumps,
         commands=tuple(commands),
         actuator_reasons=actuator_reasons,
@@ -3430,7 +3414,6 @@ def _assemble_evaluation(
             cooling_pump_consumers={
                 key: frozenset(value) for key, value in sorted(pump_plan.cooling_consumers.items())
             },
-            cooling_actuator_ids=frozenset(sorted(pump_plan.cooling_actuator_ids)),
             mode_conflicts=mode_conflicts,
             interlocks=cooling.interlocks,
             source_selection=source.selection,
@@ -3517,7 +3500,6 @@ def evaluate(
         snapshot,
         runtime,
         now,
-        target_mode=mode_routing.target_mode,
         requested_circuits=requested_circuits,
         cooling_routes=mode_routing.cooling_routes,
         valve_plan=valve_plan,

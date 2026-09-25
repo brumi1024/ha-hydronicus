@@ -57,7 +57,7 @@
       },
       "review": {
         "title": "Review the Plant",
-        "description": "Rooms:\n{rooms}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its heating outputs.",
+        "description": "Rooms:\n{rooms}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -77,7 +77,7 @@
       },
       "import_review": {
         "title": "Review the imported Plant",
-        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its heating outputs.",
+        "description": "Plant {name}\n\nRooms:\n{rooms}\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}\n\nThe Plant starts in Dry run. Leave Dry run in Plant settings after reviewing its outputs.",
         "data": {
           "confirm": "I understand these warnings"
         },
@@ -96,7 +96,7 @@
           "edit_plant": "Edit plant file"
         },
         "menu_option_descriptions": {
-          "dry_run": "Turn Dry run on, or leave it after confirming the heating outputs.",
+          "dry_run": "Turn Dry run on, or leave it after confirming the outputs.",
           "add_pump": "Add a circulation pump that loops can use.",
           "edit_pump": "Change a pump's entity, overrun, or feedback, or remove an unused pump.",
           "export_plant": "Show this Plant as a plant file to back it up or rebuild it elsewhere.",
@@ -105,7 +105,7 @@
       },
       "dry_run": {
         "title": "Dry run",
-        "description": "Dry run calculates the real heating plan without service calls. Turn it off only after reviewing the configured heating outputs.",
+        "description": "Dry run calculates the real heating and cooling plan without service calls. Turn it off only after reviewing the configured outputs.",
         "data": {
           "dry_run": "Dry run"
         },
@@ -115,9 +115,9 @@
       },
       "dry_run_confirmation": {
         "title": "Confirm heating control",
-        "description": "Hydronicus will be allowed to control only these exact heating outputs when the plan permits them:\n{outputs}",
+        "description": "Hydronicus will be allowed to control only these exact heating and cooling outputs when the plan permits them:\n{outputs}",
         "data": {
-          "dry_run_confirmation": "I understand these heating outputs may be controlled"
+          "dry_run_confirmation": "I understand these outputs may be controlled"
         },
         "data_description": {
           "dry_run_confirmation": "Required before leaving Dry run. Hydronicus may then switch only the outputs listed above."
@@ -204,8 +204,8 @@
     },
     "error": {
       "name_required": "A name is required.",
-      "dry_run_confirmation_required": "Confirm that the configured heating outputs may be controlled.",
-      "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit Dry run again after the shutdown finishes.",
+      "dry_run_confirmation_required": "Confirm that the configured outputs may be controlled.",
+      "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit Dry run again after the shutdown finishes.",
       "dry_run_runtime_unavailable": "Hydronicus must be loaded before Dry run can be turned off.",
       "thermostat_loop": "Choose a climate entity that is not owned by Hydronicus.",
       "temperature_sensors_required": "Select at least one temperature sensor for a room that Hydronicus controls.",
@@ -468,7 +468,7 @@
         "cooling_reference_required": "Cooling needs a supply or surface temperature reference. Set one in the Cooling section, or turn cooling off.",
         "cooling_requires_zone_observations": "Cooling needs at least one temperature sensor and one humidity sensor in every room this loop serves. Add them first, or turn cooling off.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit again after the shutdown finishes.",
         "invalid_room": "The room cannot be saved: {error}"
       },
       "abort": {
@@ -552,7 +552,7 @@
         "name_required": "A source name is required.",
         "invalid_source": "The source configuration is not valid.",
         "confirm_required": "Confirm that you understand these warnings before saving.",
-        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit again after the shutdown finishes.",
+        "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered shutdown. Submit again after the shutdown finishes.",
         "own_entity": "Choose an entity from another integration. Hydronicus entities would feed the Plant back into itself.",
         "buffer_temperature_required": "A temperature-qualified buffer needs a temperature entity."
       },

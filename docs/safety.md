@@ -43,8 +43,8 @@ Externally actuated or valve-less delivery routes are unsupported.
 Every new Plant starts in Dry run.
 The Home Assistant UI exposes one Plant-level setting for changing that boundary.
 
-Dry run can be turned off for heating valves, pumps, and an optional direct source-demand output.
-Dry run remains the default, and cooling starts and automatic source selection remain Dry run only.
+Dry run can be turned off for valves and pumps, in heating and cooling, and for an optional direct source-demand output.
+Dry run remains the default, and automatic source selection remains Dry run only.
 
 The release calculates and publishes:
 
@@ -59,8 +59,8 @@ The release calculates and publishes:
 - Safe-shutdown plans, Repairs, and redacted diagnostics.
 
 The codebase also contains a generic actuator executor and safe-shutdown dispatcher tested with synthetic and intercepted Home Assistant services.
-The executor records proposed operations in Dry run and dispatches only the allowed heating operations when Dry run is off.
-Cooling starts and source-selector operations are forcibly kept in Dry run by the runtime.
+The executor records proposed operations in Dry run and dispatches the allowed valve, pump, and source-demand operations when Dry run is off.
+Source-selector operations are forcibly kept in Dry run by the runtime.
 Direct source-demand output requires a valid running pump path.
 Changing Dry run back on performs the ordered safe shutdown before further commands are suppressed.
 
@@ -88,10 +88,11 @@ Cooling requires different evidence from heating.
 Room temperature alone cannot establish a safe cooling request.
 
 Condensation risk depends on humidity, dew point, supply or surface temperature, sensor freshness, circuit compatibility, and physical protection.
-Hydronicus calculates these conditions and exposes the resulting shadow decisions, but it does not start physical cooling equipment in the current release.
+Hydronicus calculates these conditions and, outside Dry run, opens cooling valves and starts pumps only while every one of them is satisfied.
+When the margin to the dew point becomes unsafe, it stops the pump immediately and closes the valves, without pump overrun.
 
-Do not operate a real cooling plant from the current integration.
-Keep any cooling experiment outside the physical actuator path until a later release explicitly supports, tests, stages, and documents activation.
+Hydronicus does not command the chilled-water source, so the source's own supply temperature limits stay in charge of how cold the water gets.
+Keep an independent condensation or dew-point protection on every cooled emitter, because a stale sensor or a lost Home Assistant connection leaves the last commanded state in place.
 
 ## Shared equipment
 

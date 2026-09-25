@@ -132,9 +132,7 @@ def build_plant_summary(runtime: Any) -> dict[str, object]:
     recommended_source = (
         runtime.plant.sources.get(recommended_source_id) if recommended_source_id else None
     )
-    forced_shadow = ["cooling", "source_selection"]
-    if runtime.plant.source_selector is None:
-        forced_shadow.remove("source_selection")
+    forced_shadow = ["source_selection"] if runtime.plant.source_selector is not None else []
     return {
         "id": runtime.plant_id,
         "name": runtime.name,
@@ -176,11 +174,9 @@ def _boundary_message(runtime: Any, forced_shadow: list[str]) -> str:
         return "Dry run - operations are proposed and no actuator calls are sent."
     if forced_shadow:
         return (
-            "Mixed control - heating may execute; "
-            + ", ".join(forced_shadow)
-            + " remain shadow-only."
+            "Mixed control - heating and cooling may execute; source selection remains shadow-only."
         )
-    return "Heating control enabled - review each operation boundary before use."
+    return "Control enabled - heating and cooling outputs may execute."
 
 
 def _zone_snapshots(
@@ -710,7 +706,7 @@ def _execution_snapshot(runtime: Any, evaluation: Any) -> dict[str, object]:
     report = runtime.last_execution
     if report is None:
         return {
-            "boundary": _execution_boundary(runtime, evaluation),
+            "boundary": _execution_boundary(runtime),
             "operations": {
                 "proposed": [],
                 "executed": [],
@@ -734,17 +730,13 @@ def _execution_snapshot(runtime: Any, evaluation: Any) -> dict[str, object]:
             if failure.kind.value == "timeout"
         ],
     }
-    return {"boundary": _execution_boundary(runtime, evaluation), "operations": operations}
+    return {"boundary": _execution_boundary(runtime), "operations": operations}
 
 
-def _execution_boundary(runtime: Any, evaluation: Any) -> dict[str, object]:
+def _execution_boundary(runtime: Any) -> dict[str, object]:
     return {
         "dry_run": runtime.dry_run,
-        "cooling_shadow": True,
         "source_selection_shadow": bool(runtime.plant.source_selector),
-        "forced_shadow_actuators": sorted(
-            evaluation.control_plan.cooling_actuator_ids if evaluation else ()
-        ),
     }
 
 

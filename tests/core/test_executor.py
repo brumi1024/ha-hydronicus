@@ -571,31 +571,6 @@ async def test_forced_shadow_preserves_commands_without_dispatching() -> None:
     assert executor.actuator_state("valve") is ActuatorObservedState.UNKNOWN
 
 
-@pytest.mark.asyncio
-async def test_cooling_shadow_suppresses_starts_but_allows_safe_shutdowns() -> None:
-    """Cooling starts stay synthetic while shutdown commands can make paths safe."""
-    executor = ActuatorExecutor(
-        {"pump": ActuatorBinding("pump", "switch.floor_pump")},
-        dry_run=False,
-    )
-    dispatched: list[ActuatorOperation] = []
-
-    async def dispatch(operation: ActuatorOperation) -> None:
-        dispatched.append(operation)
-
-    report = await executor.async_execute(
-        _plan(
-            ActuatorCommand("pump", ActuatorAction.TURN_OFF, "safe shutdown"),
-            ActuatorCommand("pump", ActuatorAction.TURN_ON, "cooling demand"),
-        ),
-        dispatch,
-        force_dry_run_start_actuator_ids=frozenset({"pump"}),
-    )
-
-    assert [operation.service for operation in dispatched] == ["turn_off"]
-    assert [operation.service for operation in report.proposed] == ["turn_on"]
-
-
 def test_configured_readiness_feedback_can_satisfy_a_valve_without_waiting_for_timer() -> None:
     """A synthetic end-switch is observed separately from the actuator command state."""
     plant = CompiledPlant(

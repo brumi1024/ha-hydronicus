@@ -4,8 +4,8 @@ Hydronicus turns a Home Assistant configuration into an explicit hydronic Plant 
 It observes sensors, calculates demand, coordinates shared hydraulic paths, and publishes every decision back to Home Assistant.
 
 Every new Plant starts in Dry run.
-The Plant UI exposes one setting that can turn Dry run off for heating valves, pumps, and an explicitly configured direct source-demand output.
-Cooling starts and automatic source selection remain Dry run only.
+The Plant UI exposes one setting that can turn Dry run off for valves and pumps, in heating and cooling, and for an explicitly configured direct source-demand output.
+Automatic source selection remains Dry run only.
 Re-enabling Dry run performs an ordered safe shutdown before further commands are suppressed.
 
 ## The model
@@ -119,9 +119,12 @@ Turning Dry run back on will perform the ordered safe shutdown before suppressin
 Cooling demand uses room temperature, humidity, dew point, supply or surface temperature, sensor freshness, and explicit loop cooling compatibility.
 It blocks unsafe or incomplete paths and explains condensation and shared-equipment conflicts.
 
-Cooling activation is more restricted than heating execution.
-Cooling start operations are explicitly forced into Dry run by the runtime even when heating execution is enabled.
-Hydronicus does not start physical cooling equipment in this release.
+When Dry run is off, Hydronicus opens the valves and starts the pumps of loops that deliver cooling, in the same order as for heating.
+It does not command the source: the chilled water must come from a source that is already in cooling mode.
+Direct source demand is only ever requested while the Plant is heating.
+
+A pump that served cooling stops as soon as its last cooling loop releases, without overrun, and its valves close right after it.
+Overrun only dissipates residual heat, and circulating chilled water after a condensation block is exactly what the block must prevent.
 
 ## Source behavior
 

@@ -797,7 +797,6 @@ class ControlPlan:
     interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
     cooling_valve_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
     cooling_pump_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    cooling_actuator_ids: frozenset[str] = frozenset()
     mode_conflicts: tuple[ModeConflict, ...] = ()
     source_selection: SourceSelectionDiagnostic | None = None
     source_selection_actuator_ids: frozenset[str] = frozenset()

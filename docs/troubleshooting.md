@@ -166,8 +166,8 @@ If the external entity is missing, the room appears in Repairs as an unresolved 
 
 This is expected while the Plant is in Dry run.
 The valve and pump request entities describe what Hydronicus would request without sending the service call.
-If Dry run is off, verify that the configured entity is an allowed heating actuator and that the confirmation completed successfully.
-Cooling starts and source-selector operations remain proposed even when Dry run is off.
+If Dry run is off, verify that the configured entity is one of the confirmed outputs and that the confirmation completed successfully.
+Source-selector operations remain proposed even when Dry run is off.
 
 Do not edit Home Assistant config-entry storage to bypass the UI control or its safe-shutdown path.
 The internal executor tests are not a supported rollout procedure.

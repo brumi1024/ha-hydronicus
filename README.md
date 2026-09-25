@@ -23,7 +23,7 @@ HACS-installed evidence from the exact committed candidate remains pending.
 | Capability | Current candidate | `v0.1.0` release target |
 | --- | --- | --- |
 | Heating valves and pumps | Proposed in Dry run; controlled when off | Same behavior |
-| Cooling and condensation protection | Starts remain Dry run | Starts remain Dry run |
+| Cooling valves and pumps, with condensation protection | Proposed in Dry run; controlled when off | Same behavior |
 | Source recommendation | Visible in both modes; selection remains Dry run | Same behavior |
 | Direct source demand | Proposed in Dry run; controlled when off after a valid pump path | Same behavior |
 
@@ -210,7 +210,7 @@ Do not use the integration to bypass a hardware interlock or to decide whether e
 
 The software calculates heating, cooling, and source decisions while every new Plant starts in Dry run.
 Cooling interlocks, dew-point checks, source selection, and the internal actuator executor are implemented and tested.
-The Dry run setting controls heating valves, pumps, and configured direct source demand, while cooling starts and source selectors remain Dry run only.
+The Dry run setting controls valves and pumps in heating and cooling, and configured direct source demand, while source selectors remain Dry run only.
 These are not production safety controls or authorization to operate physical equipment.
 
 Read [safety limits](docs/safety.md) before using any real sensor data.
