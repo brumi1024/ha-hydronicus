@@ -31,7 +31,7 @@ from custom_components.hydronicus.issues import (
 from custom_components.hydronicus.sensor import STATUSES
 from tests.integration.helpers import REFERENCE_PLANT, SOURCE_REQUEST
 
-COMPONENT = Path(__file__).parents[2] / "custom_components" / "hydronicus"
+COMPONENT = Path(__file__).parents[1] / "custom_components" / "hydronicus"
 STRINGS = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
 ICONS = json.loads((COMPONENT / "icons.json").read_text(encoding="utf-8"))
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")

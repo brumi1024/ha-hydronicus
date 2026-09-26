@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.json import json_bytes
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -108,6 +108,22 @@ async def test_a_home_assistant_restart_with_slow_actuators_sends_no_command(
 
     assert actuators.calls == []
     assert {e for e in REFERENCE_OUTPUTS if hass.states.get(e).state == "on"} == RUNNING
+
+
+async def test_the_first_evaluation_waits_until_home_assistant_has_started(
+    hass: HomeAssistant, actuators: Actuators
+) -> None:
+    hass.set_state(CoreState.starting)
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    assert entry.runtime_data.desired is None
+    assert hass.states.get("sensor.home_status").state == "unavailable"
+
+    await hass.async_start()
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.desired is not None
+    assert hass.states.get("sensor.home_status").state == "off"
 
 
 async def test_the_first_evaluation_sees_restored_thermostats_and_persisted_state(
