@@ -87,16 +87,18 @@ from .dispatch import Dispatcher
 from .entity import zone_unique_id
 from .flow_history import FlowHistory
 from .issues import (
-    BlockingSensors,
     Issue,
     IssueKind,
+    UnusableInputs,
     async_sync_issues,
+    condensation_inputs_unusable,
     evaluation_failed,
     invalid_plant,
     missing_area_sensor,
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
+    unusable_condensation_inputs,
     zone_area_issue,
     zone_sensor_unusable,
 )
@@ -155,7 +157,7 @@ class PlantRuntime:
         self.reconcile_state = ReconcileState()
         self.requested_mode = Mode.OFF
         self.memory = OutputMemory()
-        self.blocking = BlockingSensors()
+        self.unusable = UnusableInputs()
         self.thermostats: dict[str, DigitalThermostatState] = {}
         self.areas = AreaResolution()
         self.flow = FlowHistory()
@@ -206,7 +208,7 @@ class PlantRuntime:
             self.state = State.from_dict(data.get("state", {}))
             self.reconcile_state = ReconcileState.from_dict(data.get("reconcile", {}))
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
-            self.blocking = BlockingSensors.from_dict(data.get("blocking_sensors", {}))
+            self.unusable = UnusableInputs.from_dict(data.get("unusable_inputs", {}))
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
@@ -217,7 +219,7 @@ class PlantRuntime:
             )
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
-            self.blocking, self.flow = BlockingSensors(), FlowHistory()
+            self.unusable, self.flow = UnusableInputs(), FlowHistory()
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -439,7 +441,15 @@ class PlantRuntime:
             live=state.live,
         )
         self.state, self.reconcile_state = state, result.state
-        self.blocking.update(desired.blocking_sensors, now)
+        self.unusable.update(
+            {
+                IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
+                IssueKind.CONDENSATION_INPUT_UNUSABLE: unusable_condensation_inputs(
+                    plant, observations, now
+                ),
+            },
+            now,
+        )
         # Only flow observed while the Plant is live counts, never a Dry run proposal.
         loops, zones = (
             observed_flow(self.plant, observations) if state.live else (frozenset(), frozenset())
@@ -453,7 +463,7 @@ class PlantRuntime:
         if result.send:
             self._dispatcher.send(result.send, now)
         self._schedule(
-            None if due is None else now + due, result.retry_at, self.blocking.next_report(now)
+            None if due is None else now + due, result.retry_at, self.unusable.next_report(now)
         )
         self._schedule_refresh(now)
         missing = self._sync_issues(result, plant, now)
@@ -664,7 +674,7 @@ class PlantRuntime:
             "state": self.state.to_dict(),
             "reconcile": self.reconcile_state.to_dict(),
             "outputs": self.memory.to_dict(),
-            "blocking_sensors": self.blocking.to_dict(),
+            "unusable_inputs": self.unusable.to_dict(),
             "flow": self.flow.to_dict(),
             "mode": self.requested_mode.value,
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
@@ -722,11 +732,23 @@ class PlantRuntime:
             zone_area_issue(plant, problem, self.areas)
             for problem in zone_area_problems(plant, self.areas)
         )
-        # A sensor that does not exist already has its own Repair.
+        # An input that does not exist already has its own Repair.
         issues.extend(
             zone_sensor_unusable(reconciled, zone, entity)
-            for zone, entity in self.blocking.reported(now)
+            for zone, entity in self.unusable.reported(IssueKind.ZONE_SENSOR_UNUSABLE, now)
             if entity not in missing
+        )
+        issues.extend(
+            condensation_inputs_unusable(
+                reconciled,
+                (
+                    (loop, entity)
+                    for loop, entity in self.unusable.reported(
+                        IssueKind.CONDENSATION_INPUT_UNUSABLE, now
+                    )
+                    if entity not in missing
+                ),
+            )
         )
         current = tuple(issues)
         if current != self.issues or not self._issues_synced:

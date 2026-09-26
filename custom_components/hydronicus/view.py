@@ -19,8 +19,9 @@ from .core.step import Observations, OutputState, Reading, SwitchState
 from .previous import Commanding
 
 # A zone whose demand is off for one of these reasons cannot get what it asks for.
+# Frost protection overrides an open window, so a zone it heats has another reason.
 _BLOCKING_REASONS: Final = frozenset(
-    {"thermostat unavailable", "thermostat not restored", "no usable temperature"}
+    {"thermostat unavailable", "thermostat not restored", "no usable temperature", "window open"}
 )
 
 

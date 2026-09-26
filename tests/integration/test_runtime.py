@@ -106,7 +106,7 @@ async def test_a_stored_state_of_the_wrong_shape_starts_over(
     stored["state"] = ["not", "a", "mapping"]
     stored["outputs"] = {"switch.a": "not a mapping"}
     stored["commanding"] = {"plant": {"zones": "not a mapping"}, "outputs": []}
-    stored["blocking_sensors"] = {"living_area": "not a mapping"}
+    stored["unusable_inputs"] = {"zone_sensor_unusable": {"living_area": "not a mapping"}}
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -189,7 +189,8 @@ async def test_a_required_sensor_that_blocks_its_zone_for_ten_minutes_raises_a_r
     assert issue.severity is ir.IssueSeverity.ERROR and not issue.is_fixable
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert diagnostics["desired"]["blocking_sensors"] == {"study": ["sensor.study"]}
-    assert list(diagnostics["blocking_sensors"]["study"]) == ["sensor.study"]
+    unusable = diagnostics["unusable_inputs"]
+    assert list(unusable["zone_sensor_unusable"]["study"]) == ["sensor.study"]
     assert "zone_sensor_unusable" in diagnostics["issues"]
 
     set_temperature(hass, "sensor.study", 19.0)

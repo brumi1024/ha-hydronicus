@@ -34,6 +34,10 @@ from ..areas import (
 from ..bindings import output_bound_elsewhere, own_entity
 from ..const import DOMAIN
 from ..core.model import (
+    DEFAULT_EXERCISE,
+    DEFAULT_FROST_PROTECTION,
+    DEFAULT_MAX_HUMIDITY,
+    DEFAULT_SURFACE_MINIMUM,
     ExternalThermostat,
     OutputRole,
     Plant,
@@ -572,8 +576,14 @@ def output_labels(plant: Plant) -> dict[str, str]:
 
 
 def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
-    """Describe a Plant for a review: its source, pumps, zones, and plant loops."""
+    """Describe a Plant for a review: its source, pumps, zones, and plant loops.
+
+    Entities are always named, while a setting with a default is named only
+    when it differs from its default.
+    """
     lines = [f"Plant {plant.name}"]
+    if protection := _protection(plant):
+        lines.append(f"- Protection: {protection}")
     source = plant.source
     if source is None:
         lines.append("- No source: valves open and switched pumps run on demand.")
@@ -592,7 +602,10 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             flow = "a separator guarantees its flow"
         else:
             flow = "runs only with a ready loop"
-        lines.append(f"- Pump {pump.title}: {how}, {flow}")
+        switch = (
+            f", condensation switch {pump.condensation_switch}" if pump.condensation_switch else ""
+        )
+        lines.append(f"- Pump {pump.title}: {how}, {flow}{switch}")
     resolution = resolve_area_sensors(hass, covered_area_ids(plant))
     for zone in plant.zones:
         areas = [resolution.name(area.area) for area in zone.areas]
@@ -604,9 +617,16 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             if isinstance(zone.thermostat, ExternalThermostat)
             else "digital thermostat"
         )
+        windows = f", windows {listed(zone.windows)}" if zone.windows else ""
+        if zone.max_humidity == DEFAULT_MAX_HUMIDITY:
+            humidity = ""
+        elif zone.max_humidity is None:
+            humidity = ", no humidity limit"
+        else:
+            humidity = f", humidity limit {zone.max_humidity:g} %"
         loops = [_loop_line(plant, loop.ref) for loop in zone.loops]
         lines.append(
-            f"- Zone {zone.title}{covering}, {thermostat}"
+            f"- Zone {zone.title}{covering}, {thermostat}{windows}{humidity}"
             + (f"; loops: {'; '.join(loops)}" if loops else "; no loop of its own")
         )
     for loop in plant.loops:
@@ -631,8 +651,37 @@ def _loop_line(plant: Plant, ref: Any) -> str:
         mode.value for mode in sorted(loop.modes, key=lambda mode: mode.value != "heat")
     )
     valves = len(loop.valves)
-    valve_words = "no valve" if valves == 0 else f"{valves} valve" + ("s" if valves > 1 else "")
-    return f"{loop.title} ({modes}, pump {plant.pump(loop.pump).title}, {valve_words})"
+    words = [
+        modes,
+        f"pump {plant.pump(loop.pump).title}",
+        "no valve" if valves == 0 else f"{valves} valve" + ("s" if valves > 1 else ""),
+    ]
+    # A surface minimum reads the surface sensor, so without one it has no effect.
+    if loop.surface_temperature is not None and loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        words.append(
+            "no surface minimum"
+            if loop.surface_minimum is None
+            else f"surface minimum {loop.surface_minimum:g} °C"
+        )
+    if loop.condensation_switch is not None:
+        words.append(f"condensation switch {loop.condensation_switch}")
+    return f"{loop.title} ({', '.join(words)})"
+
+
+def _protection(plant: Plant) -> str:
+    """The exercise and frost protection of a Plant where they differ from their defaults."""
+    parts = []
+    exercise = plant.exercise
+    if exercise is None:
+        parts.append("no exercise")
+    elif exercise != DEFAULT_EXERCISE:
+        parts.append(f"exercise interval {exercise.interval:g} s, pump run {exercise.run:g} s")
+    frost = plant.frost_protection
+    if frost is None:
+        parts.append("no frost protection")
+    elif frost != DEFAULT_FROST_PROTECTION:
+        parts.append(f"frost protection at {frost:g} °C")
+    return "; ".join(parts)
 
 
 def review_warnings(hass: HomeAssistant, plant: Plant) -> str:

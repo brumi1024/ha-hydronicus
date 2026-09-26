@@ -44,6 +44,7 @@ Common reasons:
 | `idle: thermostat not restored` | The zone's digital thermostat has not loaded, or its entity is disabled. |
 | `idle: no usable temperature` | A required sensor of the zone is missing or stale, or the zone has no usable reading at all. |
 | `idle: thermostat unavailable` | The zone's external thermostat is unavailable or reports an action Hydronicus does not know. |
+| `idle: window open` | A window of the zone has read open for its open delay, so the zone's demand is off until every window has read closed for its close delay. |
 | `demands: ..., held for its minimum on time` | The zone's digital thermostat keeps its demand for its minimum on time, 600 seconds by default, although the zone has reached its target; `idle: ..., held for its minimum off time` is the same after a demand ends. |
 | `dropped: ... unarmed or unavailable` | The loop needs an output that is not armed or not available. |
 | `dropped: condensation guard blocks` | The loop cools and its condensation guard blocks; the loop's `.guard` reason gives the reference and the threshold. |
@@ -60,7 +61,8 @@ Common reasons:
 | `stopping heat before cool` | The mode is changing, and the old mode is still stopping. |
 | `waiting for the mode dwell before cool` | The mode is changing, and the dwell has not passed. |
 
-`blocked_zones` lists each zone that cannot get what its thermostat asks for, such as `thermostat asks to cool while the Plant runs heat`.
+`blocked_zones` lists each zone that cannot get what its thermostat asks for, such as `thermostat asks to cool while the Plant runs heat`, or `window open` while its windows turn its demand off.
+A zone that frost protection heats is not blocked, even with a window open.
 
 ## Repairs
 
@@ -79,6 +81,7 @@ Diagnostics list the current Repairs by the key in the second column.
 | A zone has no temperature sensor | `zone_without_temperature_source` | Error |
 | An area names a Hydronicus sensor | `zone_area_self_feed` | Warning |
 | A sensor blocks its zone | `zone_sensor_unusable` | Error |
+| A condensation input blocks cooling | `condensation_input_unusable` | Error |
 
 ### Plant is not valid
 
@@ -151,6 +154,17 @@ An extra sensor is required unless the plant file makes it optional, while an ar
 The 10 minutes keep a restart or a short dropout from raising the Repair, and they count across a restart, because the Plant stores when each block began.
 A sensor that does not exist raises [An entity does not exist](#an-entity-does-not-exist) or [An area names a missing sensor](#an-area-names-a-missing-sensor) instead.
 
+### A condensation input blocks cooling
+
+A condensation input of a loop that cools has had no usable state for at least 10 minutes, so the loop's condensation guard blocks and the loop cannot cool.
+The inputs are the condensation switches of the loop and of its pump, which are unusable while unavailable or unknown, and its pump's supply temperature and its own surface temperature, which are unusable while unavailable, not reported for 1800 seconds, in an unsupported unit, or outside their plausible range.
+The Repair names the Plant, the input, and every loop that cools with it, and clears once the input reports a usable state again.
+It shows whatever the Plant mode is, because cooling cannot start without the input.
+Check the device, its battery, and its connection.
+
+The 10 minutes count as for [A sensor blocks its zone](#a-sensor-blocks-its-zone), across a restart too.
+An input that does not exist raises [An entity does not exist](#an-entity-does-not-exist) instead.
+
 ## Setup and forms
 
 ### Hydronicus is not listed
@@ -218,6 +232,7 @@ If the area names a sensor that does not exist, a Repair says so.
 The loop's condensation guard blocks when its coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
 The **Dew point** sensor shows the zone's worst-case dew point, and the `.guard` reason in the **Status** sensor's `reasons` shows the reference and the threshold.
 A missing reference, one that has not reported for 1800 seconds, or a zone without a usable humidity reading, also blocks.
+A condensation switch that is on, unavailable, or unknown blocks too, and after 10 minutes the [A condensation input blocks cooling](#a-condensation-input-blocks-cooling) Repair names an input that is unusable.
 For a plant loop that cools, the dew points of the zones it runs with count, or of every zone when it runs with the source, so each of those zones needs a humidity reading.
 
 ## Balancing
@@ -247,7 +262,7 @@ They hold:
 | `observations` | What the last evaluation read: outputs, readiness sensors, sensors, areas, and thermostats. |
 | `desired` | What the last evaluation decided, with its reasons, each zone's demand, and the required sensors that block each zone. |
 | `state` and `reconcile` | The stored timers and the commands waiting for a result. |
-| `blocking_sensors` | When each required sensor that blocks its zone began to, which starts the 10 minutes before its Repair. |
+| `unusable_inputs` | By Repair key, when each required sensor that blocks its zone and each condensation input that blocks a loop became unusable, which starts the 10 minutes before its Repair. |
 | `flow` | Each loop's runtime in seconds under `runtimes`, and each zone's seconds of flow in each hour of the duty cycle's window under `hours`, keyed by the hour's number since 1970 in UTC. |
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |

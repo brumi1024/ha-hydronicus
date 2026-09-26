@@ -713,6 +713,10 @@
     "zone_sensor_unusable": {
       "title": "{plant}, zone {zone}: sensor {entity_id} blocks the zone",
       "description": "In Plant {plant}, zone {zone} requires {entity_id}, and for at least 10 minutes its reading has been unavailable, stale, in an unsupported unit, or outside its plausible range. A zone without a required reading fails closed: while this lasts, its digital thermostat does not call, and the loops that cool by its dew point do not cool. Check the sensor, its battery, and its connection. A battery sensor that reports only on change may need a longer max_age in the plant file, and an area's sensors block the zone only when the area is marked required. The repair clears automatically once the sensor reports a usable reading."
+    },
+    "condensation_input_unusable": {
+      "title": "{plant}: {entity_id} blocks cooling",
+      "description": "In Plant {plant}, the {input} {entity_id} has had no usable state for at least 10 minutes, so {loops} cannot cool: the condensation guard blocks without it. A condensation switch is unusable while it is unavailable or unknown, and a supply or surface temperature sensor while it is unavailable, has not reported for 30 minutes, is in an unsupported unit, or is outside its plausible range. This repair shows whatever the Plant mode is, because cooling cannot start without it. Check the device, its battery, and its connection. The repair clears automatically once it reports a usable state."
     }
   },
   "exceptions": {
