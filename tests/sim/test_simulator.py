@@ -92,6 +92,27 @@ def test_a_valve_passes_flow_only_once_fully_open_and_until_fully_closed() -> No
     assert not world.valve_passes(valve)
 
 
+def test_a_valve_entity_shows_its_travel_and_may_stall_on_its_way() -> None:
+    world = _world(SMALL.replace("switch.room_floor_valve", "valve.room_floor"))
+    valve = "valve.room_floor"
+    _send(world, valve, ON)
+    world.advance_to(LATENCY)
+    version = world.version
+    assert world.observe().outputs[valve] == SwitchState(True, world.wall(), moving=True)
+    world.advance_to(LATENCY + 180.0)
+    assert world.observe().outputs[valve] == SwitchState(True, world.wall(), moving=False)
+    assert world.version > version, "arriving is a change of state"
+    assert world.valve_passes(valve)
+
+    world.faults.append(Fault(valve, world.t, world.t + 100.0, FaultKind.STALL))
+    _send(world, valve, OFF)
+    world.advance_to(world.t + 1000.0)
+    assert world.moving(valve) and world.valve_passes(valve), "a stalled closing valve passes flow"
+    _send(world, valve, OFF)
+    world.advance_to(world.t + LATENCY + 180.0)
+    assert not world.moving(valve) and not world.valve_passes(valve), "asked again, it closes"
+
+
 def test_a_readiness_sensor_confirms_a_fully_open_valve() -> None:
     world = _world()
     valve, readiness = "switch.room_ceiling_valve", "binary_sensor.room_ceiling_open"

@@ -19,6 +19,7 @@ from custom_components.hydronicus.core.reconcile import (
     BACKOFF_MAX,
     CALL_TIMEOUT,
     REPAIR_AFTER,
+    TRAVEL_GRACE,
     Action,
     Attempt,
     Reconciled,
@@ -198,6 +199,48 @@ def test_unarmed_and_unavailable_outputs_are_never_sent_anything(plant: Plant) -
     assert result.send == ()
     assert result.state.attempts == failing.attempts, "the count survives the outage"
     assert _run(plant, {"switch.floor_valve": ON}, {}, None).send == ()
+
+
+def test_a_valve_on_its_way_is_not_sent_again_until_it_is_overdue(plant: Plant) -> None:
+    opening = {**_observed(), "switch.floor_valve": SwitchState(True, NOW, moving=True)}
+    targets = {"switch.floor_valve": ON}
+    sent = ReconcileState(attempts={"switch.floor_valve": Attempt(ON, 1, NOW - 1)})
+    overdue = NOW + 180 + TRAVEL_GRACE
+    assert sum(backoff(count) for count in range(1, REPAIR_AFTER + 1)) == TRAVEL_GRACE
+
+    waiting = _run(plant, targets, opening, sent, NOW + CALL_TIMEOUT)
+    assert waiting.send == () and waiting.repairs == frozenset()
+    assert waiting.state.attempts == sent.attempts
+    assert waiting.retry_at == pytest.approx(overdue + TICK)
+
+    late = _run(plant, targets, opening, waiting.state, overdue)
+    assert late.send == (Action("switch.floor_valve", ON),)
+    assert late.repairs == {"switch.floor_valve"}
+    in_flight = _run(plant, targets, opening, late.state, overdue + 1)
+    assert in_flight.send == () and in_flight.repairs == {"switch.floor_valve"}, (
+        "the Repair stays while the retry is in flight"
+    )
+
+    arrived = {**opening, "switch.floor_valve": SwitchState(True, overdue + 2)}
+    done = _run(plant, targets, arrived, in_flight.state, overdue + 3)
+    assert done.state.attempts == {} and done.repairs == frozenset()
+
+
+def test_a_valve_moving_away_from_its_target_is_sent_it(plant: Plant) -> None:
+    closing = {**_observed(), "switch.floor_valve": SwitchState(False, NOW, moving=True)}
+    assert _run(plant, {"switch.floor_valve": ON}, closing).send == (
+        Action("switch.floor_valve", ON),
+    )
+    unarmed = _run(plant, {"switch.floor_valve": OFF}, closing, now=NOW + 1000, armed=())
+    assert unarmed.repairs == frozenset(), "an unarmed valve is never reported"
+
+
+def test_dry_run_keeps_a_proposal_while_the_valve_still_moves(plant: Plant) -> None:
+    opening = {**_observed(), "switch.floor_valve": SwitchState(True, NOW, moving=True)}
+    first = _run(plant, {"switch.floor_valve": ON}, opening, live=False)
+    assert first.proposed == (Action("switch.floor_valve", ON),)
+    again = _run(plant, {"switch.floor_valve": ON}, opening, first.state, NOW + 1, live=False)
+    assert again.proposed == (), "the proposal stands; proposing it again would never settle"
 
 
 def test_dry_run_proposes_and_counts_each_proposal_as_observed(plant: Plant) -> None:

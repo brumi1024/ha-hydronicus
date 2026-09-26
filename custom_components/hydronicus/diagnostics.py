@@ -18,7 +18,7 @@ from . import HydronicusConfigEntry
 from .core.model import Desired
 from .core.plant_file import export_plant
 from .core.reconcile import target_to_dict
-from .core.step import Observations, value_of
+from .core.step import Observations, SwitchState, value_of
 from .storage import stored_document
 
 
@@ -43,7 +43,11 @@ def _observations(observations: Observations) -> dict[str, Any]:
         "control": observations.control,
         "armed": sorted(observations.armed),
         "outputs": {
-            entity: {"value": value_of(state), "since": state.since}
+            entity: {
+                "value": value_of(state),
+                "since": state.since,
+                "moving": isinstance(state, SwitchState) and state.moving,
+            }
             for entity, state in observations.outputs.items()
         },
         "readiness": _plain(dict(observations.readiness)),

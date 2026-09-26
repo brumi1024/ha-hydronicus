@@ -13,14 +13,19 @@ Valve model: a valve moves linearly between closed and open over its opening
 time, in both directions. It passes flow only once it has opened fully and
 keeps passing flow until it has closed fully, so opening is judged
 pessimistically and closing realistically, and a controller that waits for a
-valve's opening time after observing it on always finds it passing flow.
+valve's opening time after observing it on always finds it passing flow. A
+switch valve shows on or off at once. A ``valve.*`` entity reports its travel,
+as a motorized valve does: it shows opening or closing until it arrives, and
+then open or closed.
 
 Service call model: a call normally takes effect ``LATENCY`` seconds after it
 is sent. A fault window makes calls to one entity take effect after a longer
-delay, fail at once (rejected), or never take effect (timed out). A delayed
-call always takes effect before ``CALL_TIMEOUT``, and calls to one entity take
-effect in the order they were sent. An unavailable entity rejects calls and
-keeps its physical state.
+delay, fail at once (rejected), or never take effect (timed out), or makes a
+valve that reports its travel stall on its way (stalled): it goes on showing
+opening or closing until a later call, outside the window, starts it again. A
+delayed call always takes effect before ``CALL_TIMEOUT``, and calls to one
+entity take effect in the order they were sent. An unavailable entity rejects
+calls and keeps its physical state.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from __future__ import annotations
 import heapq
 import itertools
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
@@ -73,6 +78,7 @@ class FaultKind(StrEnum):
     DELAY = "delay"
     REJECT = "reject"
     TIMEOUT = "timeout"
+    STALL = "stall"
 
 
 class Outcome(StrEnum):
@@ -104,6 +110,8 @@ class Call:
     target: OutputTarget
     outcome: Outcome
     lands_at: float | None
+    # A valve that reports its travel stalls on its way when the call lands.
+    stalls: bool = False
 
     @property
     def failed(self) -> bool:
@@ -145,23 +153,39 @@ class ValveBody:
     opening: bool = False
     # Passes flow: set when fully open, cleared when fully closed.
     passes: bool = False
-    # Invalidates scheduled end-of-travel events after a reversal.
+    # Invalidates scheduled end-of-travel events after a reversal or a stall.
     version: int = 0
+    # Stopped on its way at ``p0`` by a stall fault.
+    stalled: bool = False
 
     @property
     def travel(self) -> float:
         return self.valve.opening_time
 
+    @property
+    def reports_travel(self) -> bool:
+        """A ``valve.*`` entity shows opening and closing; a switch shows on or off at once."""
+        return self.valve.entity.startswith("valve.")
+
     def position(self, t: float) -> float:
+        if self.stalled:
+            return self.p0
         moved = (t - self.t0) / self.travel
         return min(1.0, self.p0 + moved) if self.opening else max(0.0, self.p0 - moved)
 
     def end_time(self) -> float | None:
+        if self.stalled:
+            return None
         if self.opening and self.p0 < 1.0:
             return self.t0 + (1.0 - self.p0) * self.travel
         if not self.opening and self.p0 > 0.0:
             return self.t0 + self.p0 * self.travel
         return None
+
+    @property
+    def moving(self) -> bool:
+        """On its way, stalled or not, as a valve that reports its travel shows."""
+        return self.stalled or self.end_time() is not None
 
     @property
     def fully_open(self) -> bool:
@@ -313,6 +337,11 @@ class World:
     def valve_passes(self, entity: str) -> bool:
         return self.valves[entity].passes
 
+    def moving(self, entity: str) -> bool:
+        """Whether an output shows that it is still on its way: a valve reporting its travel."""
+        body = self.valves.get(entity)
+        return body is not None and body.reports_travel and body.moving
+
     def path_open(self, loop: Loop) -> bool:
         """A loop with no valve is always open; otherwise every valve passes flow."""
         return all(self.valves[valve.entity].passes for valve in loop.valves)
@@ -363,6 +392,7 @@ class World:
         body.p0 = body.position(self.t)
         body.t0 = self.t
         body.opening = opening
+        body.stalled = False
         body.version += 1
         self._set_readiness(body)
         end = body.end_time()
@@ -378,6 +408,24 @@ class World:
         body.t0 = self.t
         body.passes = body.opening
         self._set_readiness(body)
+        self._show_travel(entity)
+
+    def _stall(self, entity: str) -> None:
+        """Stop a valve that reports its travel where it is, still showing that it moves."""
+        body = self.valves[entity]
+        if not body.moving:
+            return
+        body.p0 = body.position(self.t)
+        body.t0 = self.t
+        body.stalled = True
+        body.version += 1
+
+    def _show_travel(self, entity: str) -> None:
+        """A valve that reports its travel shows its arrival as a change of state."""
+        switch = self.switches[entity]
+        if self.valves[entity].reports_travel and switch.available:
+            switch.changed = self.wall()
+            self.changed()
 
     def _set_readiness(self, body: ValveBody) -> None:
         if body.valve.readiness is None:
@@ -478,6 +526,7 @@ class World:
         if fault is not None and fault.kind is FaultKind.TIMEOUT:
             call.outcome = Outcome.TIMED_OUT
             return call
+        call.stalls = fault is not None and fault.kind is FaultKind.STALL
         delay = LATENCY
         if fault is not None and fault.kind is FaultKind.DELAY:
             delay = min(max(fault.delay, LATENCY), CALL_TIMEOUT - LATENCY)
@@ -507,7 +556,13 @@ class World:
                 return
             assert isinstance(call.target, SwitchTarget)
             call.outcome = Outcome.LANDED
+            body = self.valves.get(entity)
+            if body is not None and body.stalled and self.switches[entity].on is call.target.on:
+                # A stalled valve asked again for where it was going sets off again.
+                self._move_valve(entity, call.target.on)
             self.set_switch(entity, call.target.on)
+            if call.stalls and body is not None and body.reports_travel:
+                self._stall(entity)
             return
         select = self.selects[entity]
         if not select.available:
@@ -530,7 +585,10 @@ class World:
             if role is OutputRole.SOURCE_MODE:
                 outputs[entity] = self.selects[entity].observe()
             else:
-                outputs[entity] = self.switches[entity].observe()
+                observed = self.switches[entity].observe()
+                if observed.on is not None and self.moving(entity):
+                    observed = replace(observed, moving=True)
+                outputs[entity] = observed
         return Observations(
             mode=self.mode,
             control=self.control,

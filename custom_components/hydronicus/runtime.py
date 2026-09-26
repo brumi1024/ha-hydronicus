@@ -100,6 +100,8 @@ from .observe import (
     external_thermostat,
     option_value,
     reading,
+    switch_memory_value,
+    switch_moving,
     switch_value,
 )
 from .previous import PreviousConfiguration
@@ -452,8 +454,8 @@ class PlantRuntime:
                 option = option_value(state)
                 outputs[entity] = OptionState(option, self.memory.since(entity, option, changed))
             else:
-                on = switch_value(state)
-                outputs[entity] = SwitchState(on, self.memory.since(entity, on, changed))
+                since = self.memory.since(entity, switch_memory_value(state), changed)
+                outputs[entity] = SwitchState(switch_value(state), since, switch_moving(state))
         readiness: dict[str, SwitchState] = {}
         for loop in plant.all_loops:
             for valve in loop.valves:
@@ -560,7 +562,7 @@ class PlantRuntime:
             value: bool | str | None = (
                 option_value(new_state)
                 if role is OutputRole.SOURCE_MODE
-                else switch_value(new_state)
+                else switch_memory_value(new_state)
             )
             self.memory.since(entity, value, new_state.last_changed_timestamp)
         self.request_evaluation()

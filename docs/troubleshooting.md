@@ -96,7 +96,7 @@ If the equipment must not stay as it is meanwhile, stop it by hand or with its o
 
 ### An output does not respond
 
-Hydronicus asked an output to change three times and never saw the change.
+Hydronicus asked an output to change three times and never saw the change, or a `valve` entity still shows opening or closing 70 seconds after its opening time.
 It keeps retrying, up to every 5 minutes, and the Repair clears once the output shows what the Plant asks for.
 Check that the device is powered and reachable, and that its state in Home Assistant follows it.
 Meanwhile a pump whose stop is not seen keeps its path open, and a valve whose opening is not seen keeps its loop from counting as ready.

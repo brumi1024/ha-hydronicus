@@ -30,10 +30,11 @@ from .core.demand import external_action
 from .core.step import ExternalThermostatState, Reading
 
 # A switch or valve is on while it shows one of these, and off while it shows one
-# of the others. A valve that is opening was commanded open and one that is
-# closing was commanded closed, as a switch would show.
+# of the others. A valve that is opening is on its way to open, and one that is
+# closing on its way to closed; it moves until it shows open or closed.
 _ON_STATES: Final = frozenset({"on", "open", "opening"})
 _OFF_STATES: Final = frozenset({"off", "closed", "closing"})
+_MOVING_STATES: Final = frozenset({"opening", "closing"})
 _MISSING: Final = frozenset({STATE_UNAVAILABLE, STATE_UNKNOWN})
 
 
@@ -73,6 +74,20 @@ def switch_value(state: State | None) -> bool | None:
     if state.state in _OFF_STATES:
         return False
     return None
+
+
+def switch_moving(state: State | None) -> bool:
+    """Return whether a valve reports that it is still opening or closing."""
+    return state is not None and state.state in _MOVING_STATES
+
+
+def switch_memory_value(state: State | None) -> bool | str | None:
+    """Return the value the output memory keeps for a switch or valve.
+
+    A valve's travel is a value of its own, so arriving open or closed is a
+    change, and its opening time counts from when it shows open.
+    """
+    return state.state if state is not None and switch_moving(state) else switch_value(state)
 
 
 def option_value(state: State | None) -> str | None:

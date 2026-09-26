@@ -116,8 +116,12 @@ class SwitchState:
     # None while the entity is unavailable or unknown.
     on: bool | None
     # When the observed state last changed (``last_changed``), including a
-    # change to or from unavailable.
+    # change to or from unavailable, and from moving to arrived.
     since: float
+    # The entity reports that it is still on its way to ``on``, as a valve entity
+    # does while it is opening or closing. A moving valve does not show its
+    # target yet and may pass flow either way.
+    moving: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +172,8 @@ class Observations:
 def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
     """Whether an observed output shows a target."""
     match target, state:
-        case SwitchTarget(on=on), SwitchState(on=observed):
-            return observed is on
+        case SwitchTarget(on=on), SwitchState(on=observed, moving=moving):
+            return observed is on and not moving
         case OptionTarget(option=option), OptionState(option=observed):
             return observed == option
         case _:
@@ -330,8 +334,11 @@ class _Evaluation:
     # Outputs as observed, with the calls that may still act
 
     def switch(self, entity: str) -> bool | None:
+        """Whether an output is observed on; None while it is unknown or still moving."""
         observed = self.obs.outputs.get(entity)
-        return observed.on if isinstance(observed, SwitchState) else None
+        if not isinstance(observed, SwitchState) or observed.moving:
+            return None
+        return observed.on
 
     def since(self, entity: str) -> float:
         observed = self.obs.outputs.get(entity)

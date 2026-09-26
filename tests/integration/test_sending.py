@@ -239,6 +239,46 @@ async def test_a_call_that_fails_is_retried_and_raises_a_repair(
     assert hass.states.get("sensor.flat_status").state == "degraded"
 
 
+def not_responding(hass: HomeAssistant) -> list[str]:
+    return [
+        issue.translation_placeholders["entity_id"]
+        for (domain, _), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue.translation_key == IssueKind.OUTPUT_NOT_RESPONDING
+    ]
+
+
+async def test_a_valve_that_shows_opening_is_waited_for_and_reported_if_it_never_arrives(
+    hass: HomeAssistant, actuators: Actuators, valves: ValveServices, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await async_flat(hass, "den", "study")
+    actuators.ignoring.update({"valve.den", "valve.study"})
+    await async_set_options(hass, entry, control=True)
+    assert sorted(actuators.shorts()) == ["valve.den:on", "valve.study:on"]
+    hass.states.async_set("valve.den", "opening")
+    hass.states.async_set("valve.study", "opening")
+    await hass.async_block_till_done()
+    actuators.clear()
+
+    await async_advance(hass, freezer, 150, step=5)
+    hass.states.async_set("valve.study", "open")
+    await async_advance(hass, freezer, 90, step=5)
+    assert actuators.calls == [], "no valve is asked again while it opens"
+    assert not_responding(hass) == [], "nor reported while its opening time and retries last"
+
+    await async_advance(hass, freezer, 20, step=5)
+    assert actuators.shorts() == ["valve.den:on"], "the valve that never arrives is retried"
+    assert not_responding(hass) == ["valve.den"]
+    assert hass.states.get("switch.pump").state == "off", (
+        "the pump waits for the opening time after the study valve shows open"
+    )
+    await async_advance(hass, freezer, 100, step=5)
+    assert "switch.pump:on" in actuators.shorts()
+
+    hass.states.async_set("valve.den", "open")
+    await hass.async_block_till_done()
+    assert not_responding(hass) == [], "the Repair clears once the valve arrives"
+
+
 async def test_a_changeover_sets_the_source_mode_before_the_request(
     hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
 ) -> None:

@@ -234,6 +234,32 @@ def test_the_desired_state_reports_each_zone_demand() -> None:
     assert not desired.demands["room"].on
 
 
+def test_a_valve_that_shows_opening_is_not_ready_and_one_closing_may_pass_flow() -> None:
+    plant = _plant(RADIATOR)
+    cold = observe(plant, temperatures={"room": 19.0}, on=["switch.valve"])
+    opening = replace(
+        cold, outputs={**cold.outputs, "switch.valve": SwitchState(True, LONG_AGO, moving=True)}
+    )
+    state, desired, _ = run(plant, opening)
+    assert targets(desired, "switch.valve", "switch.pump") == [ON, OFF], "opening is not ready"
+    assert "switch.valve" not in state.ready
+    arrived = replace(cold, outputs={**cold.outputs, "switch.valve": SwitchState(True, NOW)})
+    state, desired, due = run(plant, arrived, state)
+    assert targets(desired, "switch.pump") == [OFF]
+    assert due == pytest.approx(180.0 + TICK), "the opening time counts from open"
+
+    warm = observe(plant, on=["switch.pump"])
+    closing = replace(
+        warm, outputs={**warm.outputs, "switch.valve": SwitchState(False, NOW, moving=True)}
+    )
+    state, desired, _ = run(plant, closing)
+    assert targets(desired, "switch.valve", "switch.pump") == [ON, OFF], (
+        "a closing valve is held open as the path of a pump that runs"
+    )
+    assert "switch.valve" in state.winding
+    assert not satisfies(SwitchState(True, NOW, moving=True), ON)
+
+
 def test_the_desired_state_names_the_required_sensors_that_block_each_zone() -> None:
     plant = _plant(HEAT_PUMP)
     unusable = {entity: Reading(None, NOW) for entity in ("sensor.a_rh", "sensor.c", "sensor.c_rh")}

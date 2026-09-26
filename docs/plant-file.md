@@ -203,6 +203,7 @@ A loop's `valves` list holds entity IDs of `switch` or `valve` entities, or mapp
 
 `valves: [switch.floor_valve]` is the short form of `valves: [{entity: switch.floor_valve}]`.
 Every valve of a loop opens together, and the loop is ready once each of them is.
+A `valve` entity may show opening or closing while it moves: it is not ready while it shows opening, its opening time counts from when it shows open, and it counts as possibly open until it shows closed.
 
 An output entity has exactly one role in a Plant: a valve of one loop, a pump's switch, or a source output.
 A valve entity is never shared by two loops, and a pump's switch is never also a valve or the source request.

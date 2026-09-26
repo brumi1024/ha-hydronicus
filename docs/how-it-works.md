@@ -67,6 +67,7 @@ A wanted loop is dropped when an output it needs is not armed or not available, 
 ### 5. Readiness
 
 A loop is ready once each of its valves has been seen open for its opening time, 180 seconds by default, or its readiness sensor reports it open.
+A `valve` entity that shows opening is not open yet, so its opening time counts from when it shows open.
 A loop with no valve is ready at once.
 Readiness comes only from what Home Assistant shows, never from a command having been sent.
 
@@ -127,6 +128,9 @@ At most one command per output is outstanding at a time.
 
 A command whose result is not seen is sent again after a wait that starts at 10 seconds and doubles up to 5 minutes, for as long as the difference remains.
 After three attempts without a result, Hydronicus raises a Repair saying that the output does not respond, and keeps retrying; the Repair clears once the output shows what is asked.
+A `valve` entity that shows opening or closing is on its way, so it is not sent the command again while it moves.
+It still may pass water, so a closing valve counts as open until it shows closed.
+One that still moves 70 seconds after its opening time, the time three attempts would take, raises the same Repair and is sent the command again.
 Meanwhile a pump whose stop is not seen keeps its last path open, and a valve whose opening is not seen keeps its loop from counting as ready.
 An output that is unavailable gets no command until it returns.
 

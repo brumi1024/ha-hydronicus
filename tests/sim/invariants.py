@@ -35,7 +35,10 @@ Exemptions and bounds, all in physical seconds:
   evaluations can run.
 - Invariant 7 requires an output whose target is unmet after
   ``REPAIR_AFTER`` failed calls to be reported ``REPAIR_GRACE`` after the last
-  one, and every armed output to match its target once the trace has settled.
+  one, and a valve that has shown for its opening time and ``TRAVEL_GRACE``
+  that it moves to its target without arriving to be reported
+  ``REPAIR_GRACE`` after that, in wall time and while evaluations can run.
+  Every armed output must match its target, arrived, once the trace has settled.
 """
 
 from __future__ import annotations
@@ -60,7 +63,7 @@ from custom_components.hydronicus.core.model import (
     SwitchTarget,
     Zone,
 )
-from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, REPAIR_AFTER
+from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, REPAIR_AFTER, TRAVEL_GRACE
 from custom_components.hydronicus.core.step import (
     CONDENSATION_MARGIN,
     GUARD_REFERENCE_MAX_AGE,
@@ -402,16 +405,34 @@ class Checker:
     def _check_repairs(self, t: float) -> None:
         """Invariant 7 during a trace: a persistent failure is reported as a Repair."""
         for entity, unmet in self.unmet.items():
-            if unmet.failed < REPAIR_AFTER or t < unmet.last_failed + REPAIR_GRACE:
-                continue
             if self.matches(entity, unmet.target) or entity in self._repairs():
                 continue
-            raise InvariantViolation(
-                7,
-                t,
-                f"{entity} missed {unmet.target} after {unmet.failed} failed calls "
-                "and is not reported as a Repair",
-            )
+            if unmet.failed >= REPAIR_AFTER and t >= unmet.last_failed + REPAIR_GRACE:
+                raise InvariantViolation(
+                    7,
+                    t,
+                    f"{entity} missed {unmet.target} after {unmet.failed} failed calls "
+                    "and is not reported as a Repair",
+                )
+            due = self._travel_report_due(entity, unmet.target)
+            if due is not None and self.world.wall() >= due and t >= self.paused_until:
+                raise InvariantViolation(
+                    7,
+                    t,
+                    f"{entity} has moved to {unmet.target} for longer than its opening time "
+                    "and the retries allow, and is not reported as a Repair",
+                )
+
+    def _travel_report_due(self, entity: str, target: OutputTarget) -> float | None:
+        """The wall time by which a valve on its way to ``target`` must be reported, if it is."""
+        world = self.world
+        if not isinstance(target, SwitchTarget) or not world.moving(entity):
+            return None
+        switch = world.switches[entity]
+        if not switch.available or switch.on is not target.on:
+            return None
+        travel = world.valves[entity].travel
+        return switch.changed + travel + TRAVEL_GRACE + REPAIR_GRACE
 
     def next_check_time(self) -> float | None:
         """The next deadline at which a check can fail without any event."""
@@ -429,6 +450,10 @@ class Checker:
             for unmet in self.unmet.values()
             if unmet.failed >= REPAIR_AFTER
         )
+        for entity, unmet in self.unmet.items():
+            due = self._travel_report_due(entity, unmet.target)
+            if due is not None:
+                times.append(due - WALL_BASE - self.world.wall_offset + EPSILON)
         for entity, max_age in self.max_ages().items():
             sensor = self.world.sensors[entity]
             if sensor.stale:
@@ -498,7 +523,7 @@ class Checker:
     def matches(self, entity: str, target: OutputTarget) -> bool:
         if isinstance(target, SwitchTarget):
             body = self.world.switches[entity]
-            return body.available and body.on == target.on
+            return body.available and body.on == target.on and not self.world.moving(entity)
         if isinstance(target, OptionTarget):
             select = self.world.selects[entity]
             return select.available and select.option == target.option

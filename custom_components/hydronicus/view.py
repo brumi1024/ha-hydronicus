@@ -132,7 +132,7 @@ class PlantView:
             entity
             for entity in self.stopping.outputs
             if isinstance(state := self.observations.outputs.get(entity), SwitchState)
-            and state.on is not False
+            and (state.on is not False or state.moving)
         )
 
     def blocked_zones(self) -> dict[str, str]:
@@ -200,7 +200,7 @@ def zone_readings(
 
 
 def _on(state: OutputState | None) -> bool:
-    return isinstance(state, SwitchState) and state.on is True
+    return isinstance(state, SwitchState) and state.on is True and not state.moving
 
 
 def _value(reading: Reading | None) -> float | None:
