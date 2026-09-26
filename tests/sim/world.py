@@ -367,11 +367,15 @@ class World:
         return bool(self._in_flight)
 
     def all_stopped(self) -> bool:
-        """Every armed switch output is off, the source is not post-running, and no call waits."""
+        """Armed switch outputs are off and not moving, and no post-run or call is waiting."""
         return (
             not self.in_flight()
             and not self.post_running
-            and not any(body.on for entity, body in self.switches.items() if entity in self.armed)
+            and not any(
+                body.on or self.moving(entity)
+                for entity, body in self.switches.items()
+                if entity in self.armed
+            )
         )
 
     # Physical changes

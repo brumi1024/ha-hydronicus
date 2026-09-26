@@ -626,12 +626,12 @@ class Checker:
     def demands_heat(self, zone: Zone) -> bool:
         """Whether the zone surely demands heat, beyond any hysteresis."""
         state = self.world.thermostats.get(zone.slug)
+        if any(self._contact(window) for window in zone.windows):
+            # An open window turns the demand off; the trace has settled past its delays.
+            return False
         if isinstance(state, ExternalThermostatState):
             return state.action is Mode.HEAT
         if not isinstance(state, DigitalThermostatState) or state.hvac_mode is not Mode.HEAT:
-            return False
-        if any(self._contact(window) for window in zone.windows):
-            # An open window turns the demand off; the trace has settled past its delays.
             return False
         thermostat = zone.thermostat
         assert isinstance(thermostat, DigitalThermostat)
