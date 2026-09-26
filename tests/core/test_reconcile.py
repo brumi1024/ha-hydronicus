@@ -56,9 +56,7 @@ def plant() -> Plant:
 
 
 def _desired(targets: Mapping[str, OutputTarget]) -> Desired:
-    return Desired(
-        outputs=targets, source_request=False, mode=Mode.HEAT, flow_setpoint=None, reasons={}
-    )
+    return Desired(outputs=targets, source_request=False, mode=Mode.HEAT, reasons={})
 
 
 def _observed(on: Iterable[str] = (), option: str | None = "Heat") -> dict[str, OutputState]:

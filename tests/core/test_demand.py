@@ -160,23 +160,21 @@ def _demand(
         NOW,
         clock or Clock(),
     )
-    return state, demand.on, demand.level
+    return state, demand.on
 
 
-def test_heating_demand_has_hysteresis_and_a_level() -> None:
-    zone = _digital(proportional_band=2.0)
-    state, on, level = _demand(zone, 20.7)
+def test_heating_demand_has_hysteresis() -> None:
+    zone = _digital()
+    state, on = _demand(zone, 20.7)
     assert on and state == DemandState(Mode.HEAT, True, NOW)
-    assert level == pytest.approx(0.15)
     assert _demand(zone, 20.8)[1] is False, "inside the band a zone that was off stays off"
     assert _demand(zone, 21.05, state)[1] is True, "inside the band a zone that was on stays on"
-    assert _demand(zone, 21.1, state)[1:] == (False, 0.0)
-    assert _demand(zone, 17.0)[2] == 1.0
+    assert _demand(zone, 21.1, state)[1] is False
 
 
 def test_cooling_demand_mirrors_heating() -> None:
     zone = _digital()
-    state, on, _ = _demand(zone, 21.3, mode=Mode.COOL)
+    state, on = _demand(zone, 21.3, mode=Mode.COOL)
     assert on and state.mode is Mode.COOL
     assert _demand(zone, 20.95, state, mode=Mode.COOL)[1] is True
     assert _demand(zone, 20.9, state, mode=Mode.COOL)[1] is False
@@ -195,7 +193,7 @@ def test_minimum_on_and_off_times_hold_a_decision() -> None:
     zone = _digital(min_on=300.0, min_off=120.0)
     clock = Clock()
     on = DemandState(Mode.HEAT, True, NOW - 100)
-    state, demand_on, _ = _demand(zone, 22.0, on, clock=clock)
+    state, demand_on = _demand(zone, 22.0, on, clock=clock)
     assert demand_on and state == on
     assert clock.deadlines == [NOW + 200]
     assert _demand(zone, 22.0, DemandState(Mode.HEAT, True, NOW - 300))[1] is False
@@ -207,7 +205,7 @@ def test_minimum_on_and_off_times_hold_a_decision() -> None:
 def test_demand_fails_closed_without_temperature_or_thermostat() -> None:
     zone = _digital(min_on=600.0)
     on = DemandState(Mode.HEAT, True, NOW - 10)
-    state, on_now, _ = _demand(zone, None, on)
+    state, on_now = _demand(zone, None, on)
     assert not on_now and state == DemandState(Mode.HEAT, False, NOW), "no minimum on time applies"
     assert _demand(zone, 18.0, mode=Mode.OFF)[1] is False
     state, demand = zone_demand(zone, None, 18.0, None, NOW, Clock())
@@ -222,5 +220,4 @@ def test_an_external_thermostat_demands_from_its_action_only() -> None:
     for action, on in [(Mode.HEAT, True), (Mode.COOL, True), (Mode.OFF, False), (None, False)]:
         state, demand = zone_demand(zone, ExternalThermostatState(action), 30.0, None, NOW, Clock())
         assert demand.on is on
-        assert demand.level == (1.0 if on else 0.0)
         assert state.mode is (action or Mode.OFF)

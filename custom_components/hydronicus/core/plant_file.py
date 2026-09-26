@@ -54,7 +54,6 @@ from .model import (
     Sensor,
     Source,
     SourceModeSelect,
-    SourceStrategy,
     Thermostat,
     Valve,
     Zone,
@@ -66,7 +65,7 @@ PLANT_FILE_FORMAT: Final = 2
 
 # Keys in canonical order.
 _TOP_KEYS: Final = ("hydronicus", "id", "name", "mode_dwell", "source", "pumps", "loops", "zones")
-_SOURCE_KEYS: Final = ("name", "strategy", "request", "mode", "post_run", "min_on", "min_off")
+_SOURCE_KEYS: Final = ("name", "request", "mode", "post_run", "min_on", "min_off")
 _SOURCE_MODE_KEYS: Final = ("entity", "heat", "cool")
 _PUMP_KEYS: Final = (
     "name",
@@ -101,7 +100,6 @@ _DIGITAL_KEYS: Final = (
     "cool_stop_delta",
     "min_on",
     "min_off",
-    "proportional_band",
 )
 _RUNS_KEYS: Final = ("with_zones",)
 _LOOP_MODES: Final = (Mode.HEAT, Mode.COOL)
@@ -200,11 +198,6 @@ def _source(value: object, path: str) -> Source:
     return Source(
         request=_entity(
             _required(source, "request", path), _join(path, "request"), _SWITCH_DOMAINS
-        ),
-        strategy=_choice(
-            source.get("strategy", SourceStrategy.REQUEST),
-            _join(path, "strategy"),
-            tuple(SourceStrategy),
         ),
         mode=_source_mode(source["mode"], _join(path, "mode")) if "mode" in source else None,
         post_run=_number(source.get("post_run", DEFAULT_POST_RUN), _join(path, "post_run")),
@@ -423,9 +416,9 @@ def _thermostat(value: object, path: str) -> Thermostat:
     digital = _mapping(thermostat["digital"], path, _DIGITAL_KEYS)
     defaults = _DEFAULT_THERMOSTAT
 
-    def setting(key: str, *, signed: bool = False, positive: bool = False) -> float:
+    def setting(key: str, *, signed: bool = False) -> float:
         value = digital.get(key, getattr(defaults, key))
-        return _number(value, _join(path, key), signed=signed, positive=positive)
+        return _number(value, _join(path, key), signed=signed)
 
     presets_path = _join(path, "presets")
     presets = _mapping(digital.get("presets", {}), presets_path, tuple(Preset))
@@ -442,7 +435,6 @@ def _thermostat(value: object, path: str) -> Thermostat:
         cool_stop_delta=setting("cool_stop_delta"),
         min_on=setting("min_on"),
         min_off=setting("min_off"),
-        proportional_band=setting("proportional_band", positive=True),
     )
 
 
@@ -567,11 +559,6 @@ def validate_plant(plant: Plant) -> None:
     """
     _plant_id(plant.id, "id")
     _text(plant.name, "name")
-    if plant.source is not None and plant.source.strategy is SourceStrategy.SETPOINT:
-        raise PlantFileError(
-            "source.strategy",
-            "The setpoint strategy arrives with weather compensation; use request.",
-        )
     _check_unique("pumps", (pump.slug for pump in plant.pumps), "Pump")
     _check_unique("loops", (loop.slug for loop in plant.loops), "Loop")
     _check_unique("zones", (zone.slug for zone in plant.zones), "Zone")
@@ -928,7 +915,6 @@ def _export_number(value: float) -> int | float:
 
 def _export_source(source: Source) -> dict[str, Any]:
     document = _named(source.name)
-    document["strategy"] = str(source.strategy)
     document["request"] = source.request
     if source.mode is not None:
         document["mode"] = {

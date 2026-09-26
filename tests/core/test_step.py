@@ -16,7 +16,6 @@ from custom_components.hydronicus.core.model import (
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
 )
 from custom_components.hydronicus.core.plant_file import read_plant_file
 from custom_components.hydronicus.core.step import (
@@ -33,7 +32,6 @@ from custom_components.hydronicus.core.step import (
     Sent,
     State,
     SwitchState,
-    ValueState,
     satisfies,
     step,
     value_of,
@@ -159,11 +157,10 @@ def test_observed_outputs_satisfy_their_targets() -> None:
     assert satisfies(SwitchState(True, NOW), ON)
     assert not satisfies(SwitchState(None, NOW), OFF)
     assert satisfies(OptionState("Heat", NOW), OptionTarget("Heat"))
-    assert satisfies(ValueState(35.0, NOW), ValueTarget(35.0))
     assert not satisfies(OptionState("Heat", NOW), ON)
     assert not satisfies(None, ON)
     assert [value_of(SwitchState(True, 0)), value_of(OptionState("x", 0))] == [True, "x"]
-    assert value_of(ValueState(None, 0)) is None
+    assert value_of(SwitchState(None, 0)) is None
 
 
 def test_state_round_trips_through_json_and_defaults_every_field() -> None:
@@ -221,14 +218,13 @@ def test_a_calling_zone_opens_its_valve_then_runs_its_pump_then_asks_the_source(
     assert desired.outputs["switch.boiler"] == ON and state.source_changed == NOW
 
 
-def test_the_desired_state_reports_each_zone_demand_with_its_level() -> None:
+def test_the_desired_state_reports_each_zone_demand() -> None:
     plant = _plant(RADIATOR)
     _, desired, _ = run(plant, observe(plant, temperatures={"room": 20.5}))
     demand = desired.demands["room"]
     assert demand.on and demand.mode is Mode.HEAT
-    assert demand.level == pytest.approx(0.5)
     _, desired, _ = run(plant, observe(plant))
-    assert not desired.demands["room"].on and desired.demands["room"].level == 0.0
+    assert not desired.demands["room"].on
 
 
 def test_readiness_is_confirmed_by_a_sensor_and_kept_across_a_backward_clock_step() -> None:

@@ -197,7 +197,7 @@ def zone_demand(
             return _settle(previous, Mode.OFF, False, now), _off(Mode.OFF, "thermostat unavailable")
         on = action is not Mode.OFF
         reason = f"thermostat {action.value}" if on else "thermostat idle"
-        return _settle(previous, action, on, now), Demand(action, on, 1.0 if on else 0.0, reason)
+        return _settle(previous, action, on, now), Demand(action, on, reason)
     config = zone.thermostat
     if not isinstance(thermostat, DigitalThermostatState) or not isinstance(
         config, DigitalThermostat
@@ -221,12 +221,11 @@ def zone_demand(
     was_on = previous is not None and previous.mode is mode and previous.on
     requested = below >= start or (was_on and below > -stop)
     state = _apply_timing(previous, mode, requested, config, now, reached)
-    level = min(1.0, max(0.0, below / config.proportional_band)) if state.on else 0.0
     verb = "heat" if mode is Mode.HEAT else "cool"
     reason = f"{verb} to {target:.1f} °C from {temperature:.1f} °C"
     if state.on != requested:
         reason += ", held for its minimum " + ("on" if state.on else "off") + " time"
-    return state, Demand(mode, state.on, level, reason)
+    return state, Demand(mode, state.on, reason)
 
 
 def _apply_timing(
@@ -256,4 +255,4 @@ def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> D
 
 
 def _off(mode: Mode, reason: str) -> Demand:
-    return Demand(mode, False, 0.0, reason)
+    return Demand(mode, False, reason)

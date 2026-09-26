@@ -36,7 +36,6 @@ from .model import (
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
 )
 from .step import (
     CALL_TIMEOUT,
@@ -46,7 +45,6 @@ from .step import (
     OutputState,
     Sent,
     SwitchState,
-    ValueState,
     satisfies,
     value_of,
 )
@@ -264,7 +262,7 @@ def _dry_run(
     )
 
 
-def _observed_value(state: OutputState | None) -> bool | str | float | None:
+def _observed_value(state: OutputState | None) -> bool | str | None:
     return None if state is None else value_of(state)
 
 
@@ -274,8 +272,6 @@ def _as_observed(target: OutputTarget, now: float) -> OutputState:
             return SwitchState(on, now)
         case OptionTarget(option=option):
             return OptionState(option, now)
-        case ValueTarget(value=value):
-            return ValueState(value, now)
 
 
 def step_view(observations: Observations, state: ReconcileState) -> Observations:
@@ -305,16 +301,12 @@ def target_to_dict(target: OutputTarget) -> dict[str, Any]:
             return {"on": on}
         case OptionTarget(option=option):
             return {"option": option}
-        case ValueTarget(value=value):
-            return {"value": value}
 
 
 def target_from_dict(data: Mapping[str, Any]) -> OutputTarget:
     if "on" in data:
         return SwitchTarget(bool(data["on"]))
-    if "option" in data:
-        return OptionTarget(str(data["option"]))
-    return ValueTarget(float(data["value"]))
+    return OptionTarget(str(data["option"]))
 
 
 def _output_to_dict(state: OutputState) -> dict[str, Any]:
@@ -323,14 +315,10 @@ def _output_to_dict(state: OutputState) -> dict[str, Any]:
             return {"on": on, "since": since}
         case OptionState(option=option, since=since):
             return {"option": option, "since": since}
-        case ValueState(value=value, since=since):
-            return {"value": value, "since": since}
 
 
 def _output_from_dict(data: Mapping[str, Any]) -> OutputState:
     since = float(data["since"])
     if "on" in data:
         return SwitchState(None if data["on"] is None else bool(data["on"]), since)
-    if "option" in data:
-        return OptionState(None if data["option"] is None else str(data["option"]), since)
-    return ValueState(None if data["value"] is None else float(data["value"]), since)
+    return OptionState(None if data["option"] is None else str(data["option"]), since)

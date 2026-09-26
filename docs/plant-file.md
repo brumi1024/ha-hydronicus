@@ -38,7 +38,6 @@ name: Home
 mode_dwell: 3600
 source:
   name: Heat pump
-  strategy: request
   request: switch.heat_pump_heat_request
   mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}
   post_run: 180
@@ -142,7 +141,6 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |
 | `name` | no | `Heat source` | The source's name, which names its device. |
-| `strategy` | no | `request` | How Hydronicus asks for heat: `request` switches the request and lets the source choose its own flow temperature. `setpoint` is reserved for weather compensation and is refused for now. |
 | `request` | yes | | The `switch` that asks the source for heat or cooling. |
 | `mode` | no | | The `select` that switches the source between heating and cooling, as a mapping of `entity`, the select, `heat`, its option for heating, and `cool`, its option for cooling, such as `{entity: select.heat_pump_mode, heat: Heat, cool: Cool}`. The two options must differ. |
 | `post_run` | no | `180` | How long the source keeps its own pumps running after the request ends. Hydronicus keeps their loops open for that long. |
@@ -329,7 +327,6 @@ A digital thermostat accepts these keys:
 | `cool_stop_delta` | `0.1` | Cooling demand stops this far below the target. |
 | `min_on` | `0` | The shortest time demand stays on, in seconds. |
 | `min_off` | `0` | The shortest time demand stays off, in seconds. |
-| `proportional_band` | `1` | The distance to target, in kelvin, over which the demand level rises from 0 to 1. Must be positive. |
 
 This zone has an external thermostat, and a radiator loop with no valve whose pump is its only control:
 
@@ -459,7 +456,6 @@ These are problems in variations of the reference plant, with the path, the word
 | `zones.bedroom_area` | Zone Bedroom area | A digital thermostat needs a temperature sensor or an area. |
 | `zones.living_area.humidity` | Zone Living area, humidity sensors | A zone that cools needs a humidity sensor or an area for its dew point. |
 | `loops.towel_dryer.runs` | Plant loop Towel dryer, runs with | This key is required. |
-| `source.strategy` | Source, strategy | The setpoint strategy arrives with weather compensation; use request. |
 
 A file that is empty, or is not valid YAML, is reported for the whole file, and so is a mapping that repeats a key.
 

@@ -90,7 +90,7 @@ async def test_an_external_thermostat_demands_through_its_hvac_action(
     await hass.async_block_till_done()
     assert actuators.shorts() == ["switch.den_valve:on"]
     demand = hass.states.get("binary_sensor.den_heating_demand")
-    assert demand.state == "on" and demand.attributes["level"] == 1.0
+    assert demand.state == "on" and demand.attributes["reason"] == "thermostat heat"
 
     hass.states.async_set("climate.den_thermostat", "unavailable")
     await hass.async_block_till_done()

@@ -180,7 +180,6 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     name = str(values.get("source_name") or "").strip()
     if name and name != DEFAULT_SOURCE_TITLE:
         source["name"] = name
-    source["strategy"] = old.get("strategy", "request")
     source["request"] = request
     if isinstance(mode := old.get("mode"), Mapping) and mode.get("entity") == values.get(
         "mode_select"
@@ -207,7 +206,7 @@ def with_mode(document: Mapping[str, Any], entity: str, heat: str, cool: str) ->
     # Keep the canonical key order: the mode follows the request.
     result["source"] = {
         key: source[key]
-        for key in ("name", "strategy", "request", "mode", "post_run", "min_on", "min_off")
+        for key in ("name", "request", "mode", "post_run", "min_on", "min_off")
         if key in source
     }
     return result

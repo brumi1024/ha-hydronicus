@@ -193,7 +193,7 @@ A zone has exactly one thermostat.
 A digital thermostat is the zone's climate entity, which Hydronicus provides.
 It restores its target, preset, and mode after a restart, starts off with a target of 21 °C when new, and offers heating, plus cooling when a loop of the zone cools.
 It demands heating 0.3 K below its target and stops 0.1 K above it, and cooling the same way the other side.
-The [plant file](plant-file.md#thermostats) can change these deltas, add minimum on and off times, and change the proportional band of the demand level.
+The [plant file](plant-file.md#thermostats) can change these deltas and add minimum on and off times.
 
 An existing thermostat is an existing Home Assistant climate entity that owns the zone's demand.
 Hydronicus reads only its `hvac_action`: heating or preheating calls for heat, cooling calls for cooling, and idle or off calls for nothing.

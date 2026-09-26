@@ -496,9 +496,6 @@
       "heating_demand": {
         "name": "Heating demand",
         "state_attributes": {
-          "level": {
-            "name": "Level"
-          },
           "reason": {
             "name": "Reason"
           }
@@ -507,9 +504,6 @@
       "cooling_demand": {
         "name": "Cooling demand",
         "state_attributes": {
-          "level": {
-            "name": "Level"
-          },
           "reason": {
             "name": "Reason"
           }

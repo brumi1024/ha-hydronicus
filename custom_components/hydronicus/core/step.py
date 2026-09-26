@@ -58,7 +58,6 @@ from .model import (
     Pump,
     RunKind,
     SwitchTarget,
-    ValueTarget,
     Valve,
 )
 
@@ -81,7 +80,6 @@ __all__ = [
     "State",
     "SwitchState",
     "ThermostatState",
-    "ValueState",
     "satisfies",
     "step",
     "value_of",
@@ -124,15 +122,7 @@ class OptionState:
     since: float
 
 
-@dataclass(frozen=True, slots=True)
-class ValueState:
-    """A number as observed; used by the setpoint strategy from iteration 2."""
-
-    value: float | None
-    since: float
-
-
-type OutputState = SwitchState | OptionState | ValueState
+type OutputState = SwitchState | OptionState
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,21 +166,17 @@ def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
             return observed is on
         case OptionTarget(option=option), OptionState(option=observed):
             return observed == option
-        case ValueTarget(value=value), ValueState(value=observed):
-            return observed == value
         case _:
             return False
 
 
-def value_of(state: OutputState) -> bool | str | float | None:
+def value_of(state: OutputState) -> bool | str | None:
     """The observed value of an output, None while it is unavailable."""
     match state:
         case SwitchState(on=on):
             return on
         case OptionState(option=option):
             return option
-        case ValueState(value=value):
-            return value
 
 
 # State
@@ -480,7 +466,6 @@ class _Evaluation:
             outputs=outputs,
             source_request=plan.request,
             mode=mode,
-            flow_setpoint=None,
             reasons=self.reasons,
             demands=demands,
         )

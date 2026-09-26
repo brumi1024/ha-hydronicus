@@ -56,7 +56,6 @@ id: 00000000-0000-4000-8000-000000000001
 name: Workshop
 mode_dwell: 1800
 source:
-  strategy: request
   request: switch.boiler_request
   post_run: 60
   min_on: 300
@@ -87,8 +86,7 @@ zones:
     humidity: [sensor.office_humidity]
     aggregation: max
     thermostat: {digital: {target: 20.5, presets: {eco: 18}, heat_start_delta: 0.5, \
-heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, min_off: 600, \
-proportional_band: 2}}
+heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, min_off: 900}}
     loops:
       radiators:
         valves: [switch.office_valve_a, {entity: switch.office_valve_b, opening_time: 240}]
@@ -174,7 +172,7 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
     assert office.aggregation is Aggregation.MAX
     assert isinstance(office.thermostat, DigitalThermostat)
     assert office.thermostat.target == 20.5
-    assert office.thermostat.proportional_band == 2
+    assert (office.thermostat.min_on, office.thermostat.min_off) == (300, 900)
     radiators = plant.loop(LoopRef("office", "radiators"))
     assert radiators.runs == LoopRun(RunKind.ZONE)
     assert radiators.valves[1] == Valve("switch.office_valve_b", opening_time=240)
@@ -369,8 +367,7 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
     ("source without request", _delete("source.request"), "source.request", "required"),
     ("request in the wrong domain", _set("source.request", "light.x"), "source.request", "switch"),
     ("malformed request", _set("source.request", "switch"), "source.request", "entity ID"),
-    ("setpoint strategy", _set("source.strategy", "setpoint"), "source.strategy", "setpoint"),
-    ("unknown strategy", _set("source.strategy", "curve"), "source.strategy", "request"),
+    ("strategy is not a key", _set("source.strategy", "request"), "source.strategy", "Unknown key"),
     ("mode without cool", _delete("source.mode.cool"), "source.mode.cool", "required"),
     ("same mode options", _set("source.mode.cool", "Heat"), "source.mode.cool", "differ"),
     ("mode option as bool", _set("source.mode.heat", True), "source.mode.heat", "text"),
@@ -724,10 +721,10 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         "number",
     ),
     (
-        "zero proportional band",
-        _set("zones.basement.thermostat", {"digital": {"proportional_band": 0}}),
+        "proportional band is not a key",
+        _set("zones.basement.thermostat", {"digital": {"proportional_band": 1}}),
         "zones.basement.thermostat.digital.proportional_band",
-        "positive",
+        "Unknown key",
     ),
     (
         "negative target is allowed but not NaN",

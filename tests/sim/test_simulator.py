@@ -20,7 +20,6 @@ from custom_components.hydronicus.core.model import (
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
 )
 from custom_components.hydronicus.core.reconcile import (
     CALL_TIMEOUT,
@@ -39,7 +38,6 @@ from custom_components.hydronicus.core.step import (
     Sent,
     State,
     SwitchState,
-    ValueState,
 )
 from tests.sim import harness
 from tests.sim.harness import Sim
@@ -211,14 +209,11 @@ def test_step_and_reconcile_states_round_trip_through_json() -> None:
         "switch.b": SwitchState(None, 2.0),
         "select.c": OptionState("Heat", 3.0),
         "select.d": OptionState(None, 3.5),
-        "number.e": ValueState(35.0, 4.0),
-        "number.f": ValueState(None, 5.0),
     }
     reconciled = ReconcileState(
         attempts={
             "switch.a": Attempt(ON, 2, 6.0),
             "select.c": Attempt(OptionTarget("Cool"), 1, 7.0),
-            "number.e": Attempt(ValueTarget(35.0), 1, 8.0),
         },
         dry_run=dry,
     )
@@ -265,7 +260,6 @@ class Scripted:
             outputs=dict(self.outputs),
             source_request=False,
             mode=self.mode,
-            flow_setpoint=None,
             reasons={},
         )
         return replace(state, live=self.live), desired, None

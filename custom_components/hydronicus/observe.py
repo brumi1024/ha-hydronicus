@@ -82,17 +82,6 @@ def option_value(state: State | None) -> str | None:
     return state.state
 
 
-def number_value(state: State | None) -> float | None:
-    """Return a number entity's finite value, or None."""
-    if state is None:
-        return None
-    try:
-        value = float(state.state)
-    except ValueError:
-        return None
-    return value if isfinite(value) else None
-
-
 def celsius_from_unit(value: float, unit: object) -> float | None:
     """Return a temperature in Celsius, or None in a unit that is not a temperature.
 
@@ -152,7 +141,7 @@ def external_thermostat(state: State | None) -> ExternalThermostatState:
 class Remembered:
     """An output's last known value and when it took that value."""
 
-    value: bool | str | float
+    value: bool | str
     since: float
 
 
@@ -170,7 +159,7 @@ class OutputMemory:
     def __init__(self, remembered: Mapping[str, Remembered] | None = None) -> None:
         self._remembered: dict[str, Remembered] = dict(remembered or {})
 
-    def since(self, entity: str, value: bool | str | float | None, changed: float) -> float:
+    def since(self, entity: str, value: bool | str | None, changed: float) -> float:
         """Record an observed value and return when the output took it.
 
         ``changed`` is Home Assistant's ``last_changed`` of the state. An unknown
@@ -202,6 +191,6 @@ class OutputMemory:
             if not isinstance(known, Mapping):
                 continue
             value, since = known.get("value"), known.get("since")
-            if isinstance(value, bool | str | int | float) and isinstance(since, int | float):
+            if isinstance(value, bool | str) and isinstance(since, int | float):
                 remembered[entity] = Remembered(value, float(since))
         return cls(remembered)

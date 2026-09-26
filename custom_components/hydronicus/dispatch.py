@@ -23,7 +23,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
-from .core.model import OptionTarget, SwitchTarget, ValueTarget
+from .core.model import OptionTarget, SwitchTarget
 from .core.reconcile import Action
 from .core.step import CALL_TIMEOUT
 
@@ -46,8 +46,6 @@ def service_call(action: Action) -> tuple[str, str, dict[str, Any]]:
             return domain, "turn_on" if on else "turn_off", data
         case OptionTarget(option=option):
             return domain, "select_option", {**data, "option": option}
-        case ValueTarget(value=value):
-            return domain, "set_value", {**data, "value": value}
 
 
 class Dispatcher:

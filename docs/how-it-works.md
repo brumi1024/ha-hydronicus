@@ -48,7 +48,7 @@ It re-reads which sensors each covered area names, so a change in the area setti
 Each zone combines its usable temperatures by its aggregation: mean, minimum, or maximum.
 A required sensor that is missing blocks the zone, and an optional one is left out.
 A digital thermostat demands heating once the temperature is `heat_start_delta` (0.3 K) below the target, and stops once it is `heat_stop_delta` (0.1 K) above; cooling works the same way the other side of the target.
-It can hold a decision for a minimum on or off time, and it reports a demand level from 0 to 1 from the distance to target over its proportional band.
+It can hold a decision for a minimum on or off time.
 An external thermostat demands heating while its `hvac_action` is heating or preheating, cooling while it is cooling, and nothing while it is idle or off; anything else, or an unavailable thermostat, blocks the zone.
 A zone's demand counts only when its thermostat's mode matches the Plant mode; a zone that asks to cool while the Plant heats is shown as blocked.
 

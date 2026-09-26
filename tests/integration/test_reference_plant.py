@@ -104,7 +104,8 @@ async def test_the_reference_plant_heats_a_zone_end_to_end(
     await hass.async_block_till_done()
     assert sorted(actuators.shorts()) == [f"{LIVING_CEILING}:on", f"{LIVING_FLOOR}:on"]
     demand = hass.states.get("binary_sensor.living_area_heating_demand")
-    assert demand.state == "on" and demand.attributes["level"] == 1.0
+    assert demand.state == "on"
+    assert demand.attributes["reason"] == "heat to 22.0 °C from 20.0 °C"
     assert hass.states.get("climate.living_area").attributes["hvac_action"] == "preheating"
     actuators.clear()
 

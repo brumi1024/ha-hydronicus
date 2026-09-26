@@ -32,15 +32,6 @@ class MinFlow(StrEnum):
     GUARANTEED = "guaranteed"
 
 
-class SourceStrategy(StrEnum):
-    """How Hydronicus asks the source for heat or cooling."""
-
-    # Ask for heat or cooling and let the source choose its flow temperature.
-    REQUEST = "request"
-    # Also write a flow setpoint; reserved for iteration 2.
-    SETPOINT = "setpoint"
-
-
 class Aggregation(StrEnum):
     """How a zone combines its temperature readings."""
 
@@ -204,7 +195,6 @@ class Source:
     """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
 
     request: str
-    strategy: SourceStrategy = SourceStrategy.REQUEST
     mode: SourceModeSelect | None = None
     post_run: float = DEFAULT_POST_RUN
     min_on: float = DEFAULT_MIN_ON
@@ -247,8 +237,6 @@ class DigitalThermostat:
     cool_stop_delta: float = 0.1
     min_on: float = 0.0
     min_off: float = 0.0
-    # The distance to target, in kelvin, over which the demand level rises from 0 to 1.
-    proportional_band: float = 1.0
 
     @property
     def preset_targets(self) -> Mapping[Preset, float]:
@@ -372,23 +360,15 @@ class OptionTarget:
     option: str
 
 
-@dataclass(frozen=True, slots=True)
-class ValueTarget:
-    """A number that should hold a value."""
-
-    value: float
-
-
-type OutputTarget = SwitchTarget | OptionTarget | ValueTarget
+type OutputTarget = SwitchTarget | OptionTarget
 
 
 @dataclass(frozen=True, slots=True)
 class Demand:
-    """A zone's request: on or off in a thermostat mode, with a level from 0 to 1."""
+    """A zone's request: on or off in a thermostat mode."""
 
     mode: Mode
     on: bool
-    level: float
     reason: str
 
 
@@ -401,9 +381,7 @@ class Desired:
     # The mode the outputs run in now: during a changeover it stays the old mode
     # until the old mode's loops have stopped, and it is off during the dwell.
     mode: Mode
-    # Always None until the setpoint strategy arrives in iteration 2.
-    flow_setpoint: float | None
     # Why, per zone, loop, and output.
     reasons: Mapping[str, str]
-    # Each zone's demand, by zone slug, which the entities publish with its level.
+    # Each zone's demand, by zone slug, which the entities publish.
     demands: Mapping[str, Demand] = field(default_factory=dict)

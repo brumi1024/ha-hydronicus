@@ -10,7 +10,6 @@ name: Home
 mode_dwell: 3600
 source:
   name: Heat pump
-  strategy: request
   request: switch.heat_pump_heat_request
   mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}
   post_run: 180
