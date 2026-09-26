@@ -213,7 +213,7 @@ They hold:
 
 | Key | Content |
 | --- | --- |
-| `plant` | The Plant as its plant file. |
+| `plant` | The Plant as its plant file, or, while the configuration is not valid, the plant file as it is stored. |
 | `options` | The armed outputs and **Control equipment**. |
 | `requested_mode` and `status` | The **Mode** select and the **Status** sensor. |
 | `observations` | What the last evaluation read: outputs, readiness sensors, sensors, areas, and thermostats. |
@@ -225,7 +225,7 @@ They hold:
 | `configuration_problem` | Why the stored configuration is not valid, or none. |
 | `stopping` | While the previous configuration stops: that configuration, the outputs it stops, and those not yet seen off. |
 
-Diagnostics leave out the Plant ID and every name, but they keep entity IDs, area IDs, and slugs.
+Diagnostics hold no secrets, and nothing in them is redacted: they include the Plant ID, entity IDs, area IDs, and the names of the Plant, its zones, and its other objects.
 Review them before you share them, and remove anything that identifies your household.
 Use the [diagnostic bug report template](../.github/ISSUE_TEMPLATE/diagnostic-bug-report.md) to report a problem.
 

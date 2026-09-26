@@ -1,17 +1,17 @@
 """Diagnostics of one Plant (contract K5).
 
 They hold the configuration as its plant file, the last observations, the
-desired state, the reconciler state, and the recent Dry run proposals, with
-names and IDs redacted by ``async_redact_data``.
+desired state, the reconciler state, and the recent Dry run proposals. A Plant
+holds no secret, and its names and entity IDs are what makes a report
+readable, so nothing is redacted; the troubleshooting guide says so.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from enum import Enum
-from typing import Any, Final
+from typing import Any
 
-from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
 from . import HydronicusConfigEntry
@@ -19,8 +19,7 @@ from .core.model import Desired
 from .core.plant_file import export_plant
 from .core.reconcile import target_to_dict
 from .core.step import Observations, value_of
-
-TO_REDACT: Final = {"id", "name", "title"}
+from .storage import stored_document
 
 
 def _plain(value: Any) -> Any:
@@ -69,8 +68,9 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     runtime = entry.runtime_data
     view = runtime.view
-    data: dict[str, Any] = {
-        "plant": export_plant(runtime.plant),
+    return {
+        # A configuration that is not valid has no Plant to export, only what is stored.
+        "plant": export_plant(runtime.plant) if runtime.problem is None else stored_document(entry),
         "options": dict(entry.options),
         "requested_mode": runtime.requested_mode.value,
         "status": None if view is None else view.status(),
@@ -100,4 +100,3 @@ async def async_get_config_entry_diagnostics(
         },
         "issues": [issue.kind.value for issue in runtime.issues],
     }
-    return async_redact_data(data, TO_REDACT)

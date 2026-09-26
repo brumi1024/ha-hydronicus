@@ -17,13 +17,16 @@ from custom_components.hydronicus.core.step import DigitalThermostatState
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.issues import IssueKind
 from tests.integration.helpers import (
+    REFERENCE_PLANT,
     Actuators,
     async_advance,
     async_call,
     async_import,
     async_set_options,
+    reference_world,
     set_humidity,
     set_temperature,
+    zone_subentry_id,
 )
 
 EXTERNAL = """
@@ -254,7 +257,7 @@ async def test_a_missing_output_blocks_its_loop_and_raises_a_repair(
     }
 
 
-async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation_redacted(
+async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation(
     hass: HomeAssistant, actuators: Actuators
 ) -> None:
     outputs_off(hass, "switch.pump", "switch.study_valve")
@@ -268,8 +271,8 @@ async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation_redacted(
 
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert diagnostics["plant"]["id"] == "**REDACTED**"
-    assert diagnostics["plant"]["name"] == "**REDACTED**"
+    assert diagnostics["plant"]["id"] == entry.unique_id
+    assert diagnostics["plant"]["name"] == "Flat"
     assert diagnostics["plant"]["zones"]["study"]["loops"]["ceiling"]["valves"] == [
         "switch.study_valve"
     ]
@@ -317,3 +320,18 @@ async def test_a_device_the_plant_no_longer_has_is_removed(hass: HomeAssistant) 
         config_entry_id=entry.entry_id, identifiers={(DOMAIN, f"{entry.unique_id}:zone:gone")}
     )
     assert await async_remove_config_entry_device(hass, entry, stale)
+
+
+async def test_diagnostics_of_an_invalid_plant_hold_what_is_stored(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    hass.config_entries.async_remove_subentry(entry, zone_subentry_id(entry, "living_area"))
+    await hass.async_block_till_done()
+    assert entry.runtime_data.problem is not None
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diagnostics["configuration_problem"] == entry.runtime_data.problem
+    assert diagnostics["plant"]["name"] == "Home"
+    assert diagnostics["plant"]["pumps"]["heat_pump"]["min_flow_loops"] == []
+    assert set(diagnostics["plant"]["zones"]) == {"basement", "bedroom_area"}

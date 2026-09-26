@@ -84,7 +84,7 @@ The Home Assistant adapter lives beside the core:
   What the code writes into a form stays English: labels of options whose values are slugs or entity IDs, such as `Living area / Ceiling` or a pump driven by the source, and description placeholders, such as the reviews, the change summary, and the reconfigure status, because Home Assistant translates neither.
 - `issues.py` computes the Repairs of a Plant, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
 - `entity.py` and the platforms publish the [entity contract](entities.md) from the view; unique IDs and device identifiers derive from the Plant ID and object slugs.
-- `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` redacts the configuration, the last observations, the desired state, and the reconciler state.
+- `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` returns the configuration, the last observations, the desired state, and the reconciler state, unredacted, since a Plant holds no secret.
 
 Reload, unload, removal, and Home Assistant stop are command-free lifecycle boundaries and must never claim that physical shutdown occurred.
 
