@@ -6,9 +6,11 @@ import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import mock_restore_cache_with_extra_data
 
+from custom_components.hydronicus import async_remove_config_entry_device
 from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.core.model import Mode, Preset
 from custom_components.hydronicus.core.step import DigitalThermostatState
@@ -48,6 +50,20 @@ zones:
     thermostat: {digital: {target: 20.5, presets: {comfort: 22, eco: 19}}}
     loops:
       ceiling: {valves: [switch.study_valve], pump: pump, modes: [heat, cool]}
+"""
+
+
+SOURCED = """
+hydronicus: 2
+name: Flat
+source: {request: switch.boiler}
+pumps:
+  pump: {switch: switch.pump}
+zones:
+  den:
+    temperature: [sensor.den]
+    loops:
+      radiator: {valves: [switch.den_valve], pump: pump}
 """
 
 
@@ -265,3 +281,39 @@ async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation_redacted(
     assert diagnostics["proposals"][0]["entity"] == "switch.study_valve"
     assert diagnostics["status"] == "heating"
     assert actuators.calls == []
+
+
+async def test_a_device_the_plant_no_longer_has_is_removed(hass: HomeAssistant) -> None:
+    outputs_off(hass, "switch.boiler", "switch.pump", "switch.den_valve")
+    set_temperature(hass, "sensor.den", 20.0)
+    entry = await async_import(hass, SOURCED)
+    devices = dr.async_get(hass)
+    source = devices.async_get_device_by_identifier(
+        (DOMAIN, f"{entry.unique_id}:source"), entry.entry_id
+    )
+    assert source is not None
+    assert hass.states.get("binary_sensor.boiler_requested") is None
+    assert hass.states.get("binary_sensor.heat_source_requested") is not None
+    plant = devices.async_get_device_by_identifier((DOMAIN, str(entry.unique_id)), entry.entry_id)
+    assert plant is not None
+    assert not await async_remove_config_entry_device(hass, entry, plant)
+    assert not await async_remove_config_entry_device(hass, entry, source)
+
+    data = dict(entry.data)
+    del data["source"]
+    hass.config_entries.async_update_entry(entry, data=data)
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.plant.source is None
+    assert hass.states.get("binary_sensor.heat_source_requested") is None
+    assert (
+        devices.async_get_device_by_identifier(
+            (DOMAIN, f"{entry.unique_id}:source"), entry.entry_id
+        )
+        is None
+    )
+    assert devices.async_get(plant.id) is not None
+    stale = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, f"{entry.unique_id}:zone:gone")}
+    )
+    assert await async_remove_config_entry_device(hass, entry, stale)

@@ -14,6 +14,9 @@ A Plant rebuilt from its [plant file](plant-file.md) therefore gets the same ent
 | Zone | The zone name | The zone's thermostat, demand, temperature, dew point, and loops. It sits under the Plant device and belongs to the zone's subentry. |
 | Source | The source name | Whether the source is requested. It sits under the Plant device. |
 
+A device goes with its object: removing the source removes the source device, and removing a zone removes the zone device.
+Home Assistant lets you delete a Hydronicus device by hand only when the Plant no longer has its object.
+
 Home Assistant makes each entity ID from the device name and the entity name when the entity is created, so the patterns below assume names that have not been changed since.
 
 ## The Plant

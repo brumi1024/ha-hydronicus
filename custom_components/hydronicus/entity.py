@@ -1,9 +1,10 @@
 """The entity contract's shared parts: unique IDs, devices, and publication (contract K7).
 
-Unique IDs derive from the Plant ID and object slugs (decision 1), so a Plant
-rebuilt from its plant file gets the same unique IDs, and Home Assistant gives
-it the same entity IDs. Zone entities belong to their zone's subentry and its
-device, and Plant, plant loop, and source entities to the Plant entry.
+Unique IDs and device identifiers derive from the Plant ID and object slugs
+(decision 1), so a Plant rebuilt from its plant file gets the same unique IDs,
+and Home Assistant gives it the same entity IDs. Zone entities belong to their
+zone's subentry and its device, and Plant, plant loop, and source entities to
+the Plant entry.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
@@ -41,9 +43,30 @@ def loop_unique_id(plant_id: str, ref: LoopRef, suffix: str) -> str:
     return f"{plant_id}_loop_{ref}_{suffix}"
 
 
+def _plant_identifier(plant_id: str) -> tuple[str, str]:
+    return (DOMAIN, plant_id)
+
+
+def _zone_identifier(plant_id: str, zone: str) -> tuple[str, str]:
+    return (DOMAIN, f"{plant_id}:zone:{zone}")
+
+
+def _source_identifier(plant_id: str) -> tuple[str, str]:
+    return (DOMAIN, f"{plant_id}:source")
+
+
+def device_identifiers(plant: Plant) -> frozenset[tuple[str, str]]:
+    """The identifiers of every device a Plant has: its own, its source's, and its zones'."""
+    identifiers = {_plant_identifier(plant.id)}
+    if plant.source is not None:
+        identifiers.add(_source_identifier(plant.id))
+    identifiers.update(_zone_identifier(plant.id, zone.slug) for zone in plant.zones)
+    return frozenset(identifiers)
+
+
 def plant_device(plant: Plant) -> DeviceInfo:
     return DeviceInfo(
-        identifiers={(DOMAIN, plant.id)},
+        identifiers={_plant_identifier(plant.id)},
         name=plant.name,
         manufacturer=_MANUFACTURER,
         model="Hydronicus Plant",
@@ -53,7 +76,7 @@ def plant_device(plant: Plant) -> DeviceInfo:
 def zone_device(runtime: PlantRuntime, zone: Zone) -> DeviceInfo:
     """The device of a zone, named after the zone alone, under the Plant device."""
     return DeviceInfo(
-        identifiers={(DOMAIN, f"{runtime.plant.id}:zone:{zone.slug}")},
+        identifiers={_zone_identifier(runtime.plant.id, zone.slug)},
         name=zone.title,
         manufacturer=_MANUFACTURER,
         model="Hydronicus Zone",
@@ -65,7 +88,7 @@ def source_device(runtime: PlantRuntime) -> DeviceInfo:
     plant = runtime.plant
     assert plant.source is not None
     return DeviceInfo(
-        identifiers={(DOMAIN, f"{plant.id}:source")},
+        identifiers={_source_identifier(plant.id)},
         name=plant.source.title,
         manufacturer=_MANUFACTURER,
         model="Hydronicus Source",
@@ -132,14 +155,14 @@ def async_add_plant_entities(
 
 
 @callback
-def async_remove_unprovided_entities(
-    hass: HomeAssistant, entry: ConfigEntry, runtime: PlantRuntime
-) -> None:
-    """Remove this Plant's registry entries that no platform provides any more.
+def async_remove_unprovided(hass: HomeAssistant, entry: ConfigEntry, runtime: PlantRuntime) -> None:
+    """Remove this Plant's entities and devices that it no longer provides.
 
     Which entities exist depends on the Plant: cooling entities only for zones
     that cool, and the source entity only with a source. Only platforms that
-    recorded their entities in this setup are cleaned.
+    recorded their entities in this setup are cleaned. A device goes when the
+    Plant no longer has its object, such as the source device once the source
+    is removed; Home Assistant removes a removed zone's device with its subentry.
     """
     registry = er.async_get(hass)
     for registry_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
@@ -148,3 +171,13 @@ def async_remove_unprovided_entities(
         provided = runtime.provided.get(registry_entry.domain)
         if provided is not None and registry_entry.unique_id not in provided:
             registry.async_remove(registry_entry.entity_id)
+    devices = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+        if is_stale_device(runtime.plant, device):
+            devices.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
+
+
+def is_stale_device(plant: Plant, device: dr.DeviceEntry) -> bool:
+    """Whether a device is one of this integration's that the Plant no longer has."""
+    ours = {identifier for identifier in device.identifiers if identifier[0] == DOMAIN}
+    return bool(ours) and not ours & device_identifiers(plant)
