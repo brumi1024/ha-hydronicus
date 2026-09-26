@@ -10,6 +10,7 @@ import pytest
 
 from custom_components.hydronicus.core.model import (
     DEFAULT_MAX_AGE,
+    Demand,
     Desired,
     Mode,
     OptionTarget,
@@ -23,6 +24,7 @@ from custom_components.hydronicus.core.step import (
     CALL_TIMEOUT,
     GUARD_MIN_BLOCKED,
     GUARD_REFERENCE_MAX_AGE,
+    HUMIDITY_RELEASE,
     TICK,
     DemandState,
     DigitalThermostatState,
@@ -184,6 +186,7 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         overruns={"pump": NOW},
         ready={"switch.valve": LONG_AGO},
         winding=frozenset({"switch.valve", "switch.boiler"}),
+        windows_open=frozenset({"room"}),
     )
     assert State.from_dict(json.loads(json.dumps(state.to_dict()))) == state
     assert State.from_dict({}) == State()
@@ -616,6 +619,196 @@ def test_cooling_pumps_have_no_overrun() -> None:
     assert state.overruns == {}
 
 
+# A switched circulator cooling a ceiling with a surface sensor, and a condensation
+# switch on the pump's supply pipe and another on the ceiling.
+COOLED_CEILING = """
+hydronicus: 2
+name: Office
+pumps:
+  pump:
+    switch: switch.pump
+    overrun: 0
+    supply_temperature: sensor.supply
+    condensation_switch: binary_sensor.supply_dew
+zones:
+  room:
+    temperature: [sensor.room]
+    humidity: [sensor.room_rh]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
+    loops:
+      ceiling:
+        valves: [switch.ceiling]
+        pump: pump
+        modes: [heat, cool]
+        surface_temperature: sensor.surface
+        condensation_switch: binary_sensor.ceiling_dew
+"""
+DRY = {"binary_sensor.supply_dew": False, "binary_sensor.ceiling_dew": False}
+
+
+def cooling(
+    plant: Plant,
+    *,
+    switches: Mapping[str, bool | None] = DRY,
+    switched: float = LONG_AGO,
+    sensors: Mapping[str, float] | None = None,
+    mode: Mode = Mode.COOL,
+) -> Observations:
+    """A room at 26 °C calling for cooling, with its switches as given since ``switched``."""
+    readings = {"sensor.surface": 24.0, "sensor.supply": 24.0, "sensor.room_rh": 50.0}
+    base = observe(plant, mode=mode, temperatures={"room": 26.0 if mode is Mode.COOL else 19.0})
+    return replace(
+        base,
+        readiness={entity: SwitchState(on, switched) for entity, on in switches.items()},
+        sensors={
+            **base.sensors,
+            **{entity: Reading(value, NOW) for entity, value in (sensors or readings).items()},
+        },
+    )
+
+
+def test_a_condensation_switch_blocks_cooling_at_once_and_releases_once_off_long_enough() -> None:
+    plant = _plant(COOLED_CEILING)
+    state, desired, _ = run(plant, cooling(plant))
+    assert not state.guards["room.ceiling"].blocked
+    assert desired.outputs["switch.ceiling"] == ON
+
+    wet = cooling(plant, switches={**DRY, "binary_sensor.ceiling_dew": True}, switched=NOW)
+    blocked, desired, _ = run(plant, wet, state)
+    assert blocked.guards["room.ceiling"] == GuardState(True, NOW)
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: condensation switch binary_sensor.ceiling_dew on"
+    )
+    assert desired.reasons["room.ceiling"] == "dropped: condensation guard blocks"
+    assert desired.outputs["switch.ceiling"] == OFF
+
+    # Off again, the switch holds the guard for the minimum blocked time from when it
+    # turned off, even when the guard itself has blocked longer.
+    dried = cooling(plant)
+    dried = replace(
+        dried,
+        readiness={**dried.readiness, "binary_sensor.ceiling_dew": SwitchState(False, NOW + 100)},
+    )
+    later = NOW + GUARD_MIN_BLOCKED + 50
+    held, desired, due = run(plant, dried, blocked, later)
+    assert held.guards["room.ceiling"].blocked
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: condensation switch binary_sensor.ceiling_dew off for "
+        "less than 300 s"
+    )
+    assert due == pytest.approx(NOW + 100 + GUARD_MIN_BLOCKED - later + TICK)
+    released, desired, _ = run(plant, dried, held, NOW + 100 + GUARD_MIN_BLOCKED)
+    assert not released.guards["room.ceiling"].blocked
+    assert desired.outputs["switch.ceiling"] == ON
+
+
+def test_a_pump_condensation_switch_that_is_unavailable_blocks_every_loop_of_the_pump() -> None:
+    plant = _plant(COOLED_CEILING)
+    for switches in (
+        {"binary_sensor.ceiling_dew": False},
+        {**DRY, "binary_sensor.supply_dew": None},
+    ):
+        state, desired, _ = run(plant, cooling(plant, switches=switches))
+        assert state.guards["room.ceiling"].blocked
+        assert desired.reasons["room.ceiling.guard"] == (
+            "condensation guard blocks: condensation switch binary_sensor.supply_dew unavailable"
+        )
+
+
+def test_a_condensation_switch_does_not_stop_heating() -> None:
+    plant = _plant(COOLED_CEILING)
+    wet = cooling(plant, switches={**DRY, "binary_sensor.supply_dew": True}, mode=Mode.HEAT)
+    state, desired, _ = run(plant, wet)
+    assert state.guards["room.ceiling"].blocked, "ready for a change to cooling"
+    assert desired.outputs["switch.ceiling"] == ON
+    assert "room.ceiling.guard" not in desired.reasons
+
+
+def test_a_cooled_surface_stays_above_its_minimum() -> None:
+    plant = _plant(COOLED_CEILING)
+    # 26 °C at 30 % has a dew point of 7.0 °C, so only the surface minimum blocks.
+    dry_air = {"sensor.supply": 24.0, "sensor.room_rh": 30.0}
+    cold = cooling(plant, sensors={**dry_air, "sensor.surface": 19.5})
+    blocked, desired, _ = run(plant, cold)
+    assert blocked.guards["room.ceiling"] == GuardState(True, NOW)
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: surface 19.5 °C below its minimum 20 °C"
+    )
+
+    later = NOW + GUARD_MIN_BLOCKED
+    near = cooling(plant, sensors={**dry_air, "sensor.surface": 20.5})
+    held, desired, _ = run(plant, near, blocked, later)
+    assert held.guards["room.ceiling"].blocked
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: surface 20.5 °C, releases at 21 °C"
+    )
+    clear = cooling(plant, sensors={**dry_air, "sensor.surface": 21.0})
+    assert not run(plant, clear, held, later)[0].guards["room.ceiling"].blocked
+
+    lower = _plant(
+        COOLED_CEILING.replace(
+            "surface_temperature: sensor.surface",
+            "surface_temperature: sensor.surface\n        surface_minimum: 17",
+        )
+    )
+    assert not run(lower, cold)[0].guards["room.ceiling"].blocked
+    off = _plant(
+        COOLED_CEILING.replace(
+            "surface_temperature: sensor.surface",
+            "surface_temperature: sensor.surface\n        surface_minimum: null",
+        )
+    )
+    very_cold = cooling(off, sensors={**dry_air, "sensor.surface": 12.0})
+    assert not run(off, very_cold)[0].guards["room.ceiling"].blocked
+
+
+def test_a_humid_zone_blocks_cooling_even_above_its_dew_point() -> None:
+    plant = _plant(COOLED_CEILING)
+    # 26 °C at 72 % has a dew point of 20.6 °C, which 25 °C references clear with the margin.
+    warm = {"sensor.supply": 25.0, "sensor.surface": 25.0}
+    humid = cooling(plant, sensors={**warm, "sensor.room_rh": 72.0})
+    blocked, desired, _ = run(plant, humid)
+    assert blocked.guards["room.ceiling"].blocked
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: humidity 72.0 % in zone room above 70 %"
+    )
+
+    later = NOW + GUARD_MIN_BLOCKED
+    drier = cooling(plant, sensors={**warm, "sensor.room_rh": 68.0})
+    held, desired, _ = run(plant, drier, blocked, later)
+    assert held.guards["room.ceiling"].blocked
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: humidity 68.0 % in zone room, releases at 65 %"
+    )
+    dry = cooling(plant, sensors={**warm, "sensor.room_rh": 70.0 - HUMIDITY_RELEASE})
+    assert not run(plant, dry, held, later)[0].guards["room.ceiling"].blocked
+
+    off = _plant(
+        COOLED_CEILING.replace(
+            "thermostat: {digital", "max_humidity: null\n    thermostat: {digital"
+        )
+    )
+    assert not run(off, humid)[0].guards["room.ceiling"].blocked
+    # Several checks that block are all named.
+    both = cooling(plant, sensors={**warm, "sensor.room_rh": 72.0, "sensor.surface": 19.0})
+    assert run(plant, both)[1].reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: reference 19.0 °C below 22.6 °C; surface 19.0 °C below its "
+        "minimum 20 °C; humidity 72.0 % in zone room above 70 %"
+    )
+
+
+def test_a_plant_loop_reads_the_humidity_of_the_zones_it_runs_with() -> None:
+    plant = _plant(HALL)
+    humid = observe(plant, mode=Mode.COOL, temperatures={"a": 20.0, "b": 20.0})
+    # 20 °C at 75 % has a dew point of 15.4 °C, which the 20 °C supply clears, but 75 % is humid.
+    humid = replace(humid, sensors={**humid.sensors, "sensor.a_rh": Reading(75.0, NOW)})
+    state, desired, _ = run(plant, humid)
+    assert state.guards["hall"].blocked
+    assert desired.reasons["hall.guard"] == (
+        "condensation guard blocks: humidity 75.0 % in zone a above 70 %"
+    )
+
+
 # Stage 3: the mode and its changeover
 
 
@@ -727,3 +920,101 @@ def test_control_off_runs_the_off_sequence_then_dry_runs_the_requested_mode() ->
         plant, control=False, on=["switch.boiler"], armed=["switch.valve", "switch.pump"]
     )
     assert not run(plant, unarmed_on, replace(live, flowing=False), NOW + 200)[0].live
+
+
+# Windows
+
+
+WINDOWED = RADIATOR.replace(
+    "    thermostat: {digital: {min_on: 0, min_off: 0}}",
+    "    thermostat: {digital: {min_on: 600, min_off: 600}}\n"
+    "    windows: [binary_sensor.window, binary_sensor.door]",
+)
+
+
+def windows(
+    plant: Plant, temperature: float, *, window: bool | None = False, since: float = LONG_AGO
+) -> Observations:
+    """The room at ``temperature`` with its window as given since ``since``, and its door closed."""
+    base = observe(plant, temperatures={"room": temperature})
+    return replace(
+        base,
+        readiness={
+            "binary_sensor.window": SwitchState(window, since),
+            "binary_sensor.door": SwitchState(False, LONG_AGO),
+        },
+    )
+
+
+def test_an_open_window_turns_the_demand_off_after_its_delay_and_back_on_after_closing() -> None:
+    plant = _plant(WINDOWED)
+    calling = State(
+        live=True, mode=Mode.HEAT, demands={"room": DemandState(Mode.HEAT, True, LONG_AGO)}
+    )
+    opened = windows(plant, 19.0, window=True, since=NOW - 30)
+    state, desired, due = run(plant, opened, calling)
+    assert desired.demands["room"].on and not state.windows_open
+    assert due == pytest.approx(30 + TICK)
+
+    inhibited, desired, _ = run(plant, opened, state, NOW + 30)
+    assert inhibited.windows_open == {"room"}
+    assert desired.demands["room"] == Demand(Mode.HEAT, False, "window open")
+    assert desired.reasons["room"] == "idle: window open"
+    assert desired.outputs["switch.valve"] == OFF
+    assert inhibited.demands["room"].on, "the thermostat's own decision goes on underneath"
+
+    # A window that closes holds the inhibit for the close delay.
+    closed = windows(plant, 19.0, since=NOW + 100)
+    held, desired, due = run(plant, closed, inhibited, NOW + 130)
+    assert held.windows_open == {"room"} and not desired.demands["room"].on
+    assert due == pytest.approx(30 + TICK)
+    resumed, desired, _ = run(plant, closed, held, NOW + 160)
+    assert not resumed.windows_open and desired.demands["room"].on
+    assert resumed.demands["room"] == DemandState(Mode.HEAT, True, NOW + 160)
+
+    # Warm enough right after it resumed, the demand keeps its minimum on time from the
+    # end of the inhibit, so the valve that just opened again does not close at once.
+    warm = windows(plant, 21.5, since=NOW + 100)
+    state, desired, _ = run(plant, warm, resumed, NOW + 190)
+    assert desired.demands["room"].on
+    assert desired.demands["room"].reason.endswith("held for its minimum on time")
+    assert not run(plant, warm, calling, NOW + 190)[1].demands["room"].on, "without a window"
+
+
+def test_a_window_turns_cooling_off_too_and_an_external_thermostat_is_inhibited_alike() -> None:
+    plant = _plant(
+        WINDOWED.replace("pump: pump}", "pump: pump, modes: [heat, cool]}").replace(
+            "overrun: 120}", "overrun: 120, supply_temperature: sensor.supply}"
+        )
+    )
+    opened = replace(
+        windows(plant, 26.0, window=True),
+        mode=Mode.COOL,
+        thermostats={"room": DigitalThermostatState(Mode.COOL, 21.0)},
+    )
+    assert run(plant, opened)[1].demands["room"] == Demand(Mode.COOL, False, "window open")
+
+    external = _plant(
+        WINDOWED.replace("{digital: {min_on: 600, min_off: 600}}", "{external: climate.room}")
+    )
+    heating = replace(
+        windows(external, 19.0, window=True),
+        thermostats={"room": ExternalThermostatState(Mode.HEAT)},
+    )
+    assert run(external, heating)[1].demands["room"].reason == "window open"
+
+
+def test_an_unavailable_window_counts_as_closed() -> None:
+    plant = _plant(WINDOWED)
+    lost = windows(plant, 19.0, window=None)
+    state, desired, _ = run(plant, lost)
+    assert desired.demands["room"].on and not state.windows_open
+    missing = replace(lost, readiness={})
+    assert run(plant, missing)[1].demands["room"].on
+
+    # While the inhibit holds, a window that becomes unavailable closes after the delay.
+    inhibited = State(live=True, mode=Mode.HEAT, windows_open=frozenset({"room"}))
+    lost_since = windows(plant, 19.0, window=None, since=NOW - 10)
+    state, desired, _ = run(plant, lost_since, inhibited)
+    assert state.windows_open == {"room"} and desired.demands["room"].reason == "window open"
+    assert not run(plant, lost_since, state, NOW + 50)[0].windows_open

@@ -83,6 +83,15 @@ DEFAULT_OPENING_TIME: Final = 180.0
 # battery sensors report only on change, with a heartbeat about once an hour.
 DEFAULT_MAX_AGE: Final = 3600.0
 DEFAULT_SOURCE_TITLE: Final = "Heat source"
+# While cooling, a loop's surface stays at or above this, in °C: the comfortable
+# floor minimum of ISO 7730 and REHVA. A ceiling may run colder.
+DEFAULT_SURFACE_MINIMUM: Final = 20.0
+# While cooling, a zone's highest humidity stays at or below this, in percent.
+DEFAULT_MAX_HUMIDITY: Final = 70.0
+# A window counts as open once it has read open this long, and as closed once
+# every window of the zone has read closed this long, in seconds.
+DEFAULT_WINDOW_OPEN_DELAY: Final = 60.0
+DEFAULT_WINDOW_CLOSE_DELAY: Final = 60.0
 
 
 def title_from_slug(slug: str) -> str:
@@ -144,6 +153,9 @@ class Pump:
     min_flow_loops: tuple[LoopRef, ...] = ()
     supply_temperature: str | None = None
     name: str | None = None
+    # A binary sensor on the pump's supply pipe that reads on at condensation; it
+    # blocks the cooling of every loop of the pump.
+    condensation_switch: str | None = None
 
     @property
     def driven_by_source(self) -> bool:
@@ -166,6 +178,11 @@ class Loop:
     # The loop's own condensation reference, besides its pump's supply sensor.
     surface_temperature: str | None = None
     name: str | None = None
+    # A binary sensor that reads on at condensation, besides its pump's.
+    condensation_switch: str | None = None
+    # The lowest surface temperature while cooling, in °C; None turns it off. It
+    # needs ``surface_temperature``.
+    surface_minimum: float | None = DEFAULT_SURFACE_MINIMUM
 
     @property
     def slug(self) -> str:
@@ -272,6 +289,14 @@ class Zone:
     aggregation: Aggregation = Aggregation.MEAN
     thermostat: Thermostat = DigitalThermostat()
     name: str | None = None
+    # Binary sensors that read on while a window is open; an open window turns
+    # the zone's demand off.
+    windows: tuple[str, ...] = ()
+    window_open_delay: float = DEFAULT_WINDOW_OPEN_DELAY
+    window_close_delay: float = DEFAULT_WINDOW_CLOSE_DELAY
+    # The highest humidity at which the loops that read the zone's dew point may
+    # cool, in percent; None turns the cutoff off.
+    max_humidity: float | None = DEFAULT_MAX_HUMIDITY
 
     @property
     def cools(self) -> bool:

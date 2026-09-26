@@ -66,6 +66,7 @@ pumps:
     driven_by: source
     min_flow: guaranteed
     supply_temperature: sensor.primary_supply
+    condensation_switch: binary_sensor.primary_dew
   secondary:
     switch: switch.secondary_pump
     overrun: 0
@@ -78,6 +79,8 @@ loops:
     runs: {with_zones: [office, lab]}
     modes: [heat, cool]
     surface_temperature: sensor.garage_floor
+    surface_minimum: 18.5
+    condensation_switch: binary_sensor.garage_dew
 zones:
   office:
     name: Front office
@@ -87,6 +90,10 @@ zones:
     aggregation: max
     thermostat: {digital: {target: 20.5, presets: {eco: 18}, heat_start_delta: 0.5, \
 heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, min_off: 900}}
+    windows: [binary_sensor.office_window, binary_sensor.office_door]
+    window_open_delay: 30
+    window_close_delay: 120
+    max_humidity: 65
     loops:
       radiators:
         valves: [switch.office_valve_a, {entity: switch.office_valve_b, opening_time: 240}]
@@ -96,6 +103,7 @@ heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, 
     temperature: [sensor.lab]
     humidity: [sensor.lab_humidity]
     thermostat: {external: climate.lab}
+    max_humidity: null
     loops:
       bench:
         pump: secondary
@@ -152,6 +160,7 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
         min_flow=MinFlow.GUARANTEED,
         supply_temperature="sensor.primary_supply",
         name="Primary circulator",
+        condensation_switch="binary_sensor.primary_dew",
     )
     assert plant.pump("secondary").overrun == 0
     garage = plant.loop(LoopRef(None, "garage"))
@@ -161,6 +170,8 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
     assert garage.runs == LoopRun(RunKind.WITH_ZONES, ("office", "lab"))
     assert garage.modes == frozenset({Mode.HEAT, Mode.COOL})
     assert garage.surface_temperature == "sensor.garage_floor"
+    assert garage.surface_minimum == 18.5
+    assert garage.condensation_switch == "binary_sensor.garage_dew"
     office = plant.zone("office")
     assert office.title == "Front office"
     assert office.areas == (ZoneArea("office"), ZoneArea("hall", required=True, max_age=600))
@@ -173,6 +184,10 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
     assert isinstance(office.thermostat, DigitalThermostat)
     assert office.thermostat.target == 20.5
     assert (office.thermostat.min_on, office.thermostat.min_off) == (300, 900)
+    assert office.windows == ("binary_sensor.office_window", "binary_sensor.office_door")
+    assert (office.window_open_delay, office.window_close_delay) == (30, 120)
+    assert office.max_humidity == 65
+    assert plant.zone("lab").max_humidity is None, "null turns the humidity cutoff off"
     radiators = plant.loop(LoopRef("office", "radiators"))
     assert radiators.runs == LoopRun(RunKind.ZONE)
     assert radiators.valves[1] == Valve("switch.office_valve_b", opening_time=240)
@@ -207,6 +222,10 @@ def test_defaults() -> None:
     room = plant.zone("room")
     assert room.thermostat == DigitalThermostat()
     assert room.aggregation is Aggregation.MEAN
+    assert room.windows == ()
+    assert (room.window_open_delay, room.window_close_delay, room.max_humidity) == (60, 60, 70)
+    assert room.loops[0].surface_minimum == 20
+    assert room.loops[0].condensation_switch is None
     assert room.loops[0].modes == frozenset({Mode.HEAT})
     assert room.loops[0].valves == ()
     assert export_plant(plant) == {
@@ -524,6 +543,39 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         f"{HEAT_PUMP}.supply_temperature",
         "sensor",
     ),
+    (
+        "condensation switch in the wrong domain",
+        _set(f"{HEAT_PUMP}.condensation_switch", "sensor.dew"),
+        f"{HEAT_PUMP}.condensation_switch",
+        "binary_sensor",
+    ),
+    (
+        "loop condensation switch in the wrong domain",
+        _set(f"{CEILING}.condensation_switch", "switch.dew"),
+        f"{CEILING}.condensation_switch",
+        "binary_sensor",
+    ),
+    (
+        "surface minimum without a surface sensor",
+        _set(f"{CEILING}.surface_minimum", 18),
+        f"{CEILING}.surface_minimum",
+        "surface_temperature",
+    ),
+    (
+        "surface minimum turned off without a surface sensor",
+        _set(f"{CEILING}.surface_minimum", None),
+        f"{CEILING}.surface_minimum",
+        "surface_temperature",
+    ),
+    (
+        "surface minimum as text",
+        _both(
+            _set(f"{CEILING}.surface_temperature", "sensor.ceiling"),
+            _set(f"{CEILING}.surface_minimum", "low"),
+        ),
+        f"{CEILING}.surface_minimum",
+        "number",
+    ),
     # Valves and roles
     ("valves as text", _set(f"{FLOOR}.valves", "switch.x"), f"{FLOOR}.valves", "list"),
     (
@@ -615,6 +667,36 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         _set("zones.basement.aggregation", "median"),
         "zones.basement.aggregation",
         "mean",
+    ),
+    (
+        "window in the wrong domain",
+        _set("zones.basement.windows", ["sensor.window"]),
+        "zones.basement.windows.0",
+        "binary_sensor",
+    ),
+    (
+        "window twice",
+        _set("zones.basement.windows", ["binary_sensor.a", "binary_sensor.a"]),
+        "zones.basement.windows.1",
+        "twice",
+    ),
+    (
+        "negative window delay",
+        _set("zones.basement.window_open_delay", -1),
+        "zones.basement.window_open_delay",
+        "negative",
+    ),
+    (
+        "window close delay turned off",
+        _set("zones.basement.window_close_delay", None),
+        "zones.basement.window_close_delay",
+        "number",
+    ),
+    (
+        "humidity limit above 100",
+        _set("zones.basement.max_humidity", 101),
+        "zones.basement.max_humidity",
+        "at most 100",
     ),
     (
         "digital thermostat without a temperature source",
@@ -989,13 +1071,17 @@ def test_entity_paths_name_where_each_entity_is_bound() -> None:
         "switch.boiler_request": "source.request",
         "select.boiler_mode": "source.mode.entity",
         "sensor.primary_supply": "pumps.primary.supply_temperature",
+        "binary_sensor.primary_dew": "pumps.primary.condensation_switch",
         "switch.secondary_pump": "pumps.secondary.switch",
         "valve.garage": "loops.garage.valves.0",
         "binary_sensor.garage_open": "loops.garage.valves.0.readiness",
         "sensor.garage_floor": "loops.garage.surface_temperature",
+        "binary_sensor.garage_dew": "loops.garage.condensation_switch",
         "sensor.office": "zones.office.temperature.0",
         "sensor.office_desk": "zones.office.temperature.1",
         "sensor.office_humidity": "zones.office.humidity.0",
+        "binary_sensor.office_window": "zones.office.windows.0",
+        "binary_sensor.office_door": "zones.office.windows.1",
         "switch.office_valve_a": "zones.office.loops.radiators.valves.0",
         "switch.office_valve_b": "zones.office.loops.radiators.valves.1",
         "sensor.lab": "zones.lab.temperature.0",
@@ -1078,6 +1164,17 @@ def test_a_source_without_a_mode_select_binds_only_its_request() -> None:
         ("zones.basement.areas.1", "Zone Basement, area 2"),
         ("zones.basement.temperature.0", "Zone Basement, temperature sensor 1"),
         ("zones.basement.humidity", "Zone Basement, humidity sensors"),
+        ("zones.basement.windows.0", "Zone Basement, window 1"),
+        ("zones.basement.max_humidity", "Zone Basement, maximum humidity"),
+        ("zones.basement.window_close_delay", "Zone Basement, window close delay"),
+        (
+            "zones.basement.loops.ceiling.condensation_switch",
+            "Zone Basement, loop Ceiling, condensation switch",
+        ),
+        (
+            "zones.basement.loops.ceiling.surface_minimum",
+            "Zone Basement, loop Ceiling, surface minimum",
+        ),
         (
             "zones.basement.thermostat.digital.presets.eco",
             "Zone Basement, thermostat, digital, presets, eco",
