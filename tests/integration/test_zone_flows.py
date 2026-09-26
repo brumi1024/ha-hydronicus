@@ -257,6 +257,42 @@ async def test_removing_a_zone_subentry_removes_exactly_its_objects(hass: HomeAs
     assert [zone.slug for zone in entry.runtime_data.plant.zones] == ["basement", "living_area"]
 
 
+async def test_a_zone_is_not_saved_over_a_plant_changed_meanwhile(hass: HomeAssistant) -> None:
+    """The zone's loop uses a pump that the Plant's reconfigure removed while the form was open."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    zones = hass.config_entries.subentries
+    zone = await async_open(hass, entry)
+    zone = await async_submit(zones, zone, {"name": "Laundry", "temperature": ["sensor.laundry"]})
+    zone = await async_submit(
+        zones, zone, {"name": "Rail", "valves": ["switch.laundry_valve"], "pump": "towel_dryer"}
+    )
+
+    flow = hass.config_entries.flow
+    plant = await flow.async_init(
+        entry.domain, context={"source": "reconfigure", "entry_id": entry.entry_id}
+    )
+    plant = await async_choose(flow, plant, "plant_loop_pick")
+    plant = await async_submit(flow, plant, {"loop": "towel_dryer"})
+    plant = await async_submit(
+        flow, plant, {"name": "Towel dryer", "pump": "towel_dryer", "remove": True}
+    )
+    plant = await async_choose(flow, plant, "pump_pick")
+    plant = await async_submit(flow, plant, {"pump": "towel_dryer"})
+    plant = await async_submit(flow, plant, {"name": "Towel dryer", "remove": True})
+    plant = await async_choose(flow, plant, "save")
+    plant = await async_submit(flow, plant)
+    assert plant["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    zone = await async_choose(zones, zone, "save")
+
+    assert zone["type"] is FlowResultType.ABORT and zone["reason"] == "plant_changed"
+    await hass.async_block_till_done()
+    assert "laundry" not in stored(entry)[1]
+    assert [pump.slug for pump in entry.runtime_data.plant.pumps] == ["heat_pump", "floor"]
+
+
 def _options(result: dict[str, Any], field: str) -> list[dict[str, str]]:
     for key, value in result["data_schema"].schema.items():
         if str(key) == field:

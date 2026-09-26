@@ -317,7 +317,8 @@
     "abort": {
       "already_configured": "This Plant is already set up. Remove it first to import its plant file again.",
       "already_in_progress": "A setup flow for this Plant is already in progress.",
-      "reconfigure_successful": "The Plant is saved."
+      "reconfigure_successful": "The Plant is saved.",
+      "plant_changed": "The Plant changed while this form was open, so nothing was saved. Start again from the stored Plant."
     }
   },
   "config_subentries": {
@@ -413,7 +414,8 @@
       },
       "abort": {
         "reconfigure_successful": "The zone is saved.",
-        "invalid_plant": "The Plant is not valid, so the zone cannot be saved. {where}: {problem}"
+        "invalid_plant": "The Plant is not valid, so the zone cannot be saved. {where}: {problem}",
+        "plant_changed": "The Plant changed while this form was open, so nothing was saved. Start again from the stored Plant."
       }
     }
   },

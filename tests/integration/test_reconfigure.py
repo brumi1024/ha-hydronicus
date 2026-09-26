@@ -442,3 +442,52 @@ async def test_a_new_source_driven_pump_without_a_loop_is_explained_at_save(
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "guaranteed"})
     result = await async_save(hass, result)
     assert entry.runtime_data.plant.pump("primary").min_flow is MinFlow.GUARANTEED
+
+
+async def test_a_zone_deleted_while_reconfiguring_stops_the_save(hass: HomeAssistant) -> None:
+    """Saving the Plant as the flow read it would bring the deleted zone back."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "save")
+    assert result["step_id"] == "save"
+
+    hass.config_entries.async_remove_subentry(entry, zone_subentry_id(entry, "bedroom_area"))
+    await hass.async_block_till_done()
+    result = await async_submit(flow, result)
+
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "plant_changed"
+    await hass.async_block_till_done()
+    _data, zones = stored(entry)
+    assert set(zones) == {"basement", "living_area"}
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_a_zone_saved_while_reconfiguring_stops_the_save(hass: HomeAssistant) -> None:
+    """Saving the Plant as the flow read it would undo the zone's change."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "plant_loop_pick")
+    result = await async_submit(flow, result, {"loop": "towel_dryer"})
+    result = await async_submit(
+        flow, result, {"name": "Towels", "pump": "towel_dryer", "runs": "with_source"}
+    )
+
+    zones = hass.config_entries.subentries
+    zone = await zones.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone_subentry_id(entry, "living_area")},
+    )
+    zone = await async_submit(zones, zone, {"name": "Living", "areas": ["living_room"]})
+    zone = await async_choose(zones, zone, "save")
+    assert zone["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+    result = await async_choose(flow, result, "save")
+
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "plant_changed"
+    await hass.async_block_till_done()
+    assert entry.subentries[zone_subentry_id(entry, "living_area")].title == "Living"
+    assert [loop.title for loop in entry.runtime_data.plant.loops] == ["Towel dryer"]

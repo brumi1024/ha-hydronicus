@@ -1,29 +1,47 @@
-"""The zone and loop forms' rules, which the config flow and the zone subentry flow share.
+"""What the config flow and the zone subentry flow share as they edit a Plant.
 
-A submitted form's change is kept in the flow's document only once the whole
-Plant it makes is valid; otherwise the problem goes back to the form.
+A submitted zone or loop form's change is kept in the flow's document only once
+the whole Plant it makes is valid; otherwise the problem goes back to the form.
+
+A flow that edits a stored Plant saves only over the Plant it started from, so
+it never undoes what another flow stored meanwhile, such as a zone saved or
+deleted while the entry's reconfigure flow was open.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from ..core.model import RunKind
+from ..storage import stored_document
 from . import documents as docs
 from . import forms
 
 
 class DocumentEdits:
-    """Keep a submitted zone or loop form in a flow's plant file document."""
+    """Edit a flow's plant file document with the zone and loop forms."""
 
     hass: HomeAssistant
     _document: docs.Document
+    # The stored Plant the flow started from, when it edits one.
+    _stored: docs.Document | None
     # The zone being added or edited.
     _zone: str | None
+
+    def _start(self, entry: ConfigEntry) -> None:
+        """Start editing the Plant that ``entry`` stores."""
+        self._stored = stored_document(entry)
+        self._document = deepcopy(self._stored)
+
+    def _changed(self, entry: ConfigEntry) -> bool:
+        """Return whether another flow stored a change to the Plant since this one started."""
+        return stored_document(entry) != self._stored
 
     def _check(
         self, document: docs.Document, prefix: str = "", fields: dict[str, str] | None = None

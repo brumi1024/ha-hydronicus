@@ -70,7 +70,7 @@ class HydronicusConfigFlow(DocumentEdits, ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._document: docs.Document = docs.new_document()
-        self._loaded = False
+        self._stored: docs.Document | None = None
         # The source's mode select, whose options the source mode form asks for.
         self._mode_entity: str | None = None
         # Whether the zone form offers areas, and in one zone per area the areas
@@ -513,8 +513,8 @@ class HydronicusConfigFlow(DocumentEdits, ConfigFlow, domain=DOMAIN):
         which opens the form that binds it instead.
         """
         entry = self._get_reconfigure_entry()
-        if not self._loaded:
-            self._loaded, self._document = True, stored_document(entry)
+        if self._stored is None:
+            self._start(entry)
             path = (user_input or {}).get(INIT_PATH)
             if isinstance(path, str) and (opened := await self._open_path(path)) is not None:
                 return opened
@@ -589,10 +589,16 @@ class HydronicusConfigFlow(DocumentEdits, ConfigFlow, domain=DOMAIN):
         return self._form("replace", forms.plant_file_schema(text), checked)
 
     async def async_step_save(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Ask for the min-flow loops still missing, show what changes, then store it."""
+        """Ask for the min-flow loops still missing, show what changes, then store it.
+
+        A Plant changed meanwhile, such as a zone saved or deleted in its own flow,
+        stops the save, since storing this Plant would undo that change.
+        """
+        entry = self._get_reconfigure_entry()
+        if self._changed(entry):
+            return self.async_abort(reason="plant_changed")
         if docs.unresolved_min_flow(self._document):
             return await self.async_step_min_flow()
-        entry = self._get_reconfigure_entry()
         checked = forms.check(self.hass, self._document, entry_id=entry.entry_id)
         if (plant := checked.plant) is None:
             if user_input is not None:

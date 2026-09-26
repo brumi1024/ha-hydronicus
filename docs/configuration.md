@@ -123,6 +123,7 @@ The menu says whether the stored Plant is valid, and offers:
 
 Nothing is stored until you submit **Save the changes**.
 The Plant then reloads.
+If the Plant changed while the flow was open, such as a zone saved or deleted meanwhile, the flow stops without storing anything, because saving would undo that change; open **Reconfigure** again.
 Removed outputs are disarmed, and new outputs wait for you to arm them.
 If a removed output was running, the Plant first stops the equipment of its previous configuration, as [safety limits](safety.md#reloads-restarts-and-changes) describe.
 
@@ -144,6 +145,7 @@ Each zone is a subentry of the Plant, listed under the Plant's entry.
 - **Delete** on a zone removes it with exactly its own loops and valves.
 
 A zone is saved only as part of a valid Plant, checked with the same rules as setup, and saving it reloads the Plant.
+If the Plant changed while the zone's form was open, such as a pump removed in the Plant's **Reconfigure**, the zone is not saved; open the form again.
 A new zone's valves are new outputs, so its loops wait until you arm them, while the rest of the Plant keeps running.
 Editing a thermostat, a sensor, a name, or a timing never changes what is armed.
 

@@ -15,7 +15,7 @@ from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigSubentryFlow,
 
 from ..const import INIT_PATH
 from ..core.plant_file import to_storage
-from ..storage import async_reload_if_failed, stored_document
+from ..storage import async_reload_if_failed
 from . import documents as docs
 from . import forms
 from .edits import DocumentEdits
@@ -26,6 +26,7 @@ class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
 
     def __init__(self) -> None:
         self._document: docs.Document = {}
+        self._stored: docs.Document | None = None
         self._zone: str | None = None
         # The loop being edited, or None for a new one.
         self._editing: str | None = None
@@ -55,7 +56,7 @@ class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Add a zone."""
-        self._document = stored_document(self._get_entry())
+        self._start(self._get_entry())
         return await self.async_step_zone()
 
     async def async_step_reconfigure(
@@ -66,7 +67,7 @@ class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
         Only a Repair passes a path, as the flow's init data; the settings of the
         zone come first otherwise.
         """
-        self._document = stored_document(self._get_entry())
+        self._start(self._get_entry())
         self._zone = zone = self._get_reconfigure_subentry().unique_id
         path = (user_input or {}).get(INIT_PATH)
         keys = path.split(".") if isinstance(path, str) else []
@@ -127,9 +128,12 @@ class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
         return self._form("loop", schema, checked)
 
     async def async_step_save(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
-        """Store the zone as part of the whole Plant."""
+        """Store the zone as part of the whole Plant, unless the Plant changed meanwhile."""
         zone = self._zone
         assert zone is not None
+        entry = self._get_entry()
+        if self._changed(entry):
+            return self.async_abort(reason="plant_changed")
         checked = self._check(self._document)
         if (plant := checked.plant) is None:
             return self.async_abort(
@@ -139,7 +143,6 @@ class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
         title = plant.zone(zone).title
         if self.source != SOURCE_RECONFIGURE:
             return self.async_create_entry(title=title, data=data, unique_id=zone)
-        entry = self._get_entry()
         result = self.async_update_and_abort(
             entry, self._get_reconfigure_subentry(), title=title, data=data
         )
