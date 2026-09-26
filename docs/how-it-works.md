@@ -53,6 +53,12 @@ A zone that has not called since its thermostat started or changed mode may call
 An external thermostat demands heating while its `hvac_action` is heating or preheating, cooling while it is cooling, and nothing while it is idle or off; anything else, or an unavailable thermostat, blocks the zone.
 A zone's demand counts only when its thermostat's mode matches the Plant mode; a zone that asks to cool while the Plant heats is shown as blocked.
 
+A zone's windows act after its thermostat has decided.
+Once any of them has read open for its open delay, 60 seconds by default, the zone's demand is off, in heating and in cooling, with the reason `window open`.
+It comes back once every window has read closed for its close delay, also 60 seconds.
+The thermostat's own decision goes on underneath, so its hysteresis is where it was when the window closes, and a demand that comes back holds for its minimum on time from then, because the zone's valves have closed meanwhile.
+A window sensor that is unavailable or unknown reads as closed, so a lost sensor never stops the heating.
+
 ### 3. Mode
 
 The Plant mode is off, heat, or cool, chosen with the **Mode** select, and heating and cooling never run at the same time.
@@ -182,6 +188,20 @@ Each loop that cools has a condensation guard, checked on every evaluation:
 - The guard blocks when the coldest reference is below that dew point plus a 2 K margin.
 - It releases only once the coldest reference is at least 1 K above that threshold, and only after it has blocked for at least 5 minutes.
 - A missing reference, or one that has not reported for 1800 seconds, blocks the guard, and so does a zone without a usable dew point.
+
+Three optional inputs add to the dew point check, which stays the primary one and which none of them relaxes:
+
+- A condensation switch, such as a dew point switch on a cooling supply pipe, on the loop's pump or on the loop itself.
+  While any switch that covers the loop reads on, unavailable, or unknown, the guard blocks at once, and it releases only once every such switch has read off for 5 minutes.
+  A loop still needs a supply or surface temperature sensor to cool at all.
+- A loop's surface minimum, 20 °C by default, which needs its surface temperature sensor.
+  The guard blocks while the surface is below it and releases 1 K above it; 20 °C keeps a cooled floor comfortable, and a ceiling may use a lower value.
+- A zone's maximum humidity, 70 % by default.
+  The guard blocks while the highest humidity of a zone whose dew point it reads is above that zone's limit, and releases 5 points below it.
+  A humidity limit alone does not protect water at 16 to 18 °C, so it only adds to the dew point check.
+
+The guard releases only once every check releases, and only after it has blocked for at least 5 minutes.
+Its reason names each check that blocks.
 
 A blocked guard drops the loop, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 Pumps have no overrun in cooling, so a pump stops as soon as its last cooling loop releases.

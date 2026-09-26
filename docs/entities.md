@@ -91,6 +91,7 @@ Its `hvac_action` shows what the equipment does for the zone, not what the zone 
 
 In Dry run it follows the proposed states, as the loop flowing sensors do.
 It shows the zone's combined temperature, and its humidity when the zone has a humidity sensor or an area.
+Its `reason` attribute is the zone's demand reason, the same as on the demand binary sensors, such as `window open`; it is not recorded in history.
 A zone with an external thermostat gets no thermostat entity, because the existing climate entity is the thermostat.
 A zone that covers exactly one area gets its thermostat placed in that area when it is first created, so it appears on the area's page and answers voice commands for the area.
 
@@ -98,7 +99,7 @@ The demand binary sensors are on while the zone demands heating or cooling, and 
 
 | Attribute | Value |
 | --- | --- |
-| `reason` | Why the zone demands or not, such as `heat to 21.0 °C from 19.5 °C` or `thermostat off`. It is not recorded in history. |
+| `reason` | Why the zone demands or not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, or `window open` while one of the zone's windows turns its demand off. It is not recorded in history. |
 
 The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors by its aggregation.
 Its attributes show where the readings come from, and are not recorded in history:

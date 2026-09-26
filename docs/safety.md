@@ -63,6 +63,8 @@ A required sensor that is unavailable, stale, in an unsupported unit, or physica
 An optional sensor in the same state is left out.
 Sensors named by a zone's areas are optional unless the [plant file](plant-file.md#areas) makes them required, so a zone with several areas keeps working when one area's sensor is missing.
 For a zone that cools, consider making the humidity of each area required, because a room whose humidity is not observed is where a cooled surface condenses.
+A condensation switch that is unavailable or unknown blocks cooling too.
+A window sensor is the one exception: an unavailable or unknown window reads as closed, because a lost window sensor should not leave a home unheated.
 
 ## Cooling and condensation
 
@@ -70,6 +72,16 @@ A loop may cool only with a condensation reference: its pump's supply temperatur
 Its condensation guard blocks when the coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
 A missing or stale reference, or a zone without a usable dew point, blocks cooling.
 Pumps stop without overrun in cooling, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
+
+Three secondary inputs only add to that guard:
+
+- A condensation switch on a pump's supply pipe or on a loop blocks cooling at once while it reads on, unavailable, or unknown, and cooling resumes only once it has read off for 5 minutes.
+  A condensation switch that Home Assistant reads works only while Home Assistant runs; wire one to the pump or valves as well, as described below.
+- A loop's surface minimum, 20 °C by default, stops cooling while its surface sensor reads colder.
+- A zone's maximum humidity, 70 % by default, stops cooling while the zone is more humid, whatever its dew point.
+  A humidity limit such as 75 % alone does not protect a surface cooled with 16 to 18 °C water, which is why it never replaces the dew point check.
+
+Turning the surface minimum or the humidity limit off in the plant file removes only that input; the dew point check stays.
 
 The guard is only as good as its sensors.
 A supply temperature measures the water, not the coldest point of a ceiling or floor, and a humidity sensor measures the room it is in.
