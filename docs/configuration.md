@@ -137,7 +137,8 @@ A zone loop can use the pump only once it is saved, so add it in the zone's **Re
 
 Each zone is a subentry of the Plant, listed under the Plant's entry.
 
-- **Add zone** adds a zone: the zone form of step 5, then a loop form, which you may leave empty, then the zone's menu.
+- **Add zone** adds a zone: the zone form of step 5, then a loop form, then the zone's menu.
+  Leave **Valves** and **Pump** empty in a new loop's form to add no loop, as in guided setup.
 - **Reconfigure** on a zone opens its zone form, then its menu: **Zone settings** for the name, areas, sensors, and thermostat, **Loops** to choose a loop to change or `Add a loop`, and **Save**.
   A loop's form also shows **Remove this loop**.
 - **Delete** on a zone removes it with exactly its own loops and valves.

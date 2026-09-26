@@ -75,7 +75,7 @@
         "data_description": {
           "name": "Names the pump in the forms and the plant file.",
           "switch": "The switch that runs the pump. Leave it empty for a pump that the source runs, such as the heat pump's own circulator; Hydronicus never commands that one.",
-          "overrun": "How long a switched pump keeps running after heating demand ends, before its loops close. Cooling stops a pump without overrun.",
+          "overrun": "Only for a pump with a switch: how long it keeps running after heating demand ends, before its loops close. Cooling stops a pump without overrun, and the source's post-run covers a pump the source runs.",
           "min_flow": "Whether the pump needs an open loop while it runs, or a hydraulic separator, buffer, or bypass guarantees its flow.",
           "supply_temperature": "Optional. The water temperature this pump supplies. It is the condensation reference that lets its loops cool.",
           "add_another": "Show this form again for the next pump.",
@@ -155,7 +155,7 @@
           "pump": "The Plant pump that moves water through this loop.",
           "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
           "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
-          "opening_time": "How long every valve of the loop takes to open, before its pump may start."
+          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait."
         }
       },
       "zone_menu": {
@@ -204,9 +204,9 @@
           "pump": "The Plant pump that moves water through this loop.",
           "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
           "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
-          "opening_time": "How long every valve of the loop takes to open, before its pump may start.",
+          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
           "runs": "With the source runs the loop whenever the source is requested. With zones runs it while any of the chosen zones demands.",
-          "with_zones": "The zones this loop runs with.",
+          "with_zones": "Only for With zones: the zones this loop runs with.",
           "remove": "Remove the loop from the Plant."
         }
       },
@@ -382,7 +382,7 @@
         },
         "loop": {
           "title": "Loop of {zone}",
-          "description": "A loop is a flow path of the zone: the valves that open together and the Plant pump that moves its water.",
+          "description": "A loop is a flow path of the zone: the valves that open together and the Plant pump that moves its water. Leave Valves and Pump empty to add no loop, for a zone that only a plant loop serves.",
           "data": {
             "name": "Loop name",
             "valves": "Valves",
@@ -398,7 +398,7 @@
             "pump": "The Plant pump that moves water through this loop.",
             "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
             "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
-            "opening_time": "How long every valve of the loop takes to open, before its pump may start.",
+            "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
             "remove": "Remove the loop from the zone."
           }
         }
@@ -421,6 +421,7 @@
     "step": {
       "init": {
         "title": "Plant settings",
+        "description": "Arm the outputs Hydronicus may command, or copy the plant file that describes the whole Plant. Reconfigure changes the Plant, its source, pumps, and plant loops, and each zone's own entry changes that zone.",
         "menu_options": {
           "arm": "Arm outputs",
           "plant_file": "Show the plant file"

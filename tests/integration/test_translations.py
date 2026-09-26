@@ -206,3 +206,22 @@ def test_the_add_option_of_each_pick_form_is_translated() -> None:
         config = field.serialize()["selector"]["select"]
         assert config["translation_key"] == key
         assert config["options"][-1] == {"value": NEW, "label": selectors[key]["options"][NEW]}
+
+
+def test_every_menu_says_what_it_is_for() -> None:
+    flows = [
+        STRINGS["config"]["step"],
+        STRINGS["config_subentries"]["zone"]["step"],
+        STRINGS["options"]["step"],
+    ]
+    for steps in flows:
+        for step_id, step in steps.items():
+            if "menu_options" in step:
+                assert step.get("description"), step_id
+
+
+def test_the_zone_loop_forms_say_that_empty_valves_and_pump_add_no_loop() -> None:
+    subentry_loop = STRINGS["config_subentries"]["zone"]["step"]["loop"]["description"]
+    guided_loop = STRINGS["config"]["step"]["zone_loop"]["description"]
+    assert "Leave Valves and Pump empty" in subentry_loop
+    assert "Leave Valves and Pump empty" in guided_loop
