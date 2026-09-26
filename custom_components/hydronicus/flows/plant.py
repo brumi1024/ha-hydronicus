@@ -1,807 +1,662 @@
-"""Plant settings: the Plant entry's options menu, pumps, and the plant file."""
+"""The config flow: guided setup or import of a new Plant, and the entry's reconfigure flow.
+
+Guided setup asks for the Plant and its source, its pumps, how the home is
+zoned, one zone at a time with its loops, the plant loops, and each
+source-driven pump's min-flow loops once the loops exist, then shows a review
+whose warnings never block. Import reads a whole plant file into the same
+review.
+
+Reconfigure edits what the entry's data holds (the Plant, its source, pumps,
+and plant loops) or replaces the whole Plant from a plant file, and stores it
+after a summary of what changes: zone subentries are created, updated, and
+removed by slug. A pump that a loop still uses cannot be removed (decision 13).
+
+Both check each form without the min-flow loops that a source-driven pump
+does not name yet, such as a new pump's, and ask for them at the end, once
+the pump's loops exist: after the plant loops in guided setup, and in Review
+and save when reconfiguring.
+"""
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterable, Mapping
-from copy import deepcopy
-from types import MappingProxyType
 from typing import Any, Final
-from uuid import UUID, uuid4
 
 import voluptuous as vol
-from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import selector
+from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    ConfigSubentryFlow,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 
-from ..areas import area_review_warnings, area_warnings_to_confirm
+from ..areas import areas_with_temperature_sensor, listed, zone_name_for_areas
 from ..const import (
-    CONF_CIRCUITS,
-    CONF_DRY_RUN,
-    CONF_DRY_RUN_CONFIRMATION,
-    CONF_ENTITY_ID,
-    CONF_FAULT_FEEDBACK_ENTITY,
-    CONF_FAULT_FEEDBACK_MAX_AGE,
-    CONF_FLOW_FEEDBACK_ENTITY,
-    CONF_FLOW_FEEDBACK_MAX_AGE,
-    CONF_NAME,
-    CONF_OVERRUN,
-    CONF_PLANT_ID,
-    CONF_POWER_FEEDBACK_ENTITY,
-    CONF_POWER_FEEDBACK_MAX_AGE,
-    CONF_PUMPS,
-    CONF_ROUTES,
-    CONF_SOURCES,
-    CONF_VALVES,
-    CONF_ZONES,
-    DEFAULT_PUMP_OVERRUN,
-    SUBENTRY_TYPE_SOURCE,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+    INIT_PATH,
     SUBENTRY_TYPE_ZONE,
 )
-from ..core.configuration import StoredTopologyError
-from ..core.model import CompiledPlant
-from ..core.plant_document import ImportedPlant, PlantDocumentError, import_plant_document
-from ..core.topology import DuplicateActuatorBindingError
-from ..entry_configuration import (
-    GRAPH_EDIT_ERRORS,
-    EquipmentInUseError,
-    authorization_output_lines,
-    canonical_id,
-    data_with_plant,
-    data_with_pump,
-    effective_plant,
-    effective_plant_from_data,
-    invalidate_output_authorization,
-    object_ids,
-    output_authorization,
-    subentry_sync,
-    topology_copy,
-    zone_objects,
+from ..core.plant_file import (
+    PlantFileError,
+    describe_path,
+    export_plant,
+    load_yaml,
+    parse_plant,
 )
-from ..plant_file import first_own_entity, parsed_plant_file, plant_file, plant_file_yaml
-from ..registrations import async_move_object_registrations, async_remove_object_registrations
-from .common import (
-    DEFAULT_FEEDBACK_MAX_AGE,
-    SECTION_FEEDBACK,
-    OwnEntityPickerMixin,
-    async_persist_entry_data,
-    collapsed_section,
-    dry_run_confirmation_schema,
-    flatten_sections,
-    max_age_selector,
-    name_selector,
-    optional_entity,
-    own_entity_errors,
-    seconds_selector,
-    sensor_selector,
-    shared_outputs,
-    sharing_messages,
-    sharing_to_confirm,
-    topology_select,
-    warning_review_schema,
-    warning_text,
-    warnings_to_confirm,
-    with_submitted_values,
+from ..storage import (
+    async_store_plant,
+    new_entry,
+    new_options,
+    plant_from_entry,
+    stored_document,
 )
+from . import documents as docs
+from . import forms
+from .settings import PlantSettingsFlow
+from .zone import ZoneSubentryFlow
 
-CONF_DOCUMENT: Final = "document"
-CONF_PUMP: Final = "pump"
-CONF_REMOVE_PUMP: Final = "remove_pump"
-CONF_CONFIRM: Final = "confirm"
-MENU_OPTIONS: Final = ("dry_run", "add_pump", "edit_pump", "export_plant", "edit_plant")
-# The path shown for a plant file error that no single key causes.
-_TOP_LEVEL: Final = "the top level"
-_PUMP_FEEDBACK: Final = (
-    (CONF_POWER_FEEDBACK_ENTITY, CONF_POWER_FEEDBACK_MAX_AGE),
-    (CONF_FLOW_FEEDBACK_ENTITY, CONF_FLOW_FEEDBACK_MAX_AGE),
-    (CONF_FAULT_FEEDBACK_ENTITY, CONF_FAULT_FEEDBACK_MAX_AGE),
-)
-# Graph collections and the word the review's change list uses for their objects.
-_CHANGE_KINDS: Final = (
-    (CONF_ZONES, "zone"),
-    (CONF_CIRCUITS, "loop"),
-    (CONF_VALVES, "valve"),
-    (CONF_PUMPS, "pump"),
-    (CONF_SOURCES, "source"),
-)
-_SOURCE_SELECTOR: Final = "source_selector"
+ZONING_PER_AREA: Final = "zoning_per_area"
+ZONING_GROUPED: Final = "zoning_grouped"
+ZONING_SCRATCH: Final = "zoning_scratch"
 
 
-class _PlantChangedError(Exception):
-    """The Plant changed after the plant file review listed its changes."""
+class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Set up a Plant by guided setup or from a plant file, and reconfigure it."""
 
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
-def _dry_run_schema(default: bool) -> vol.Schema:
-    """Return the Plant Dry run form schema."""
-    return vol.Schema(
-        {
-            vol.Required(CONF_DRY_RUN, default=default): selector.BooleanSelector(),
-        }
-    )
+    def __init__(self) -> None:
+        self._document: docs.Document = docs.new_document()
+        self._loaded = False
+        self._mode_entity: str | None = None
+        self._zoning = ZONING_GROUPED
+        # The areas still to get a zone each, in one zone per area.
+        self._areas: list[str] = []
+        self._zone: str | None = None
+        # The pump or plant loop being edited, or None for a new one.
+        self._editing: str | None = None
+        # The source-driven pump that drives no loop yet, when Review and save explains it.
+        self._min_flow_pump: str | None = None
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return PlantSettingsFlow()
 
-def _pump_schema(defaults: Mapping[str, Any], *, editing: bool) -> vol.Schema:
-    """Return the pump form, prefilled from a stored pump when editing."""
-    feedback: dict[Any, Any] = {}
-    for entity_key, age_key in _PUMP_FEEDBACK:
-        entity_selector = (
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
-            )
-            if entity_key == CONF_FAULT_FEEDBACK_ENTITY
-            else sensor_selector()
-        )
-        feedback[optional_entity(entity_key, defaults)] = entity_selector
-        feedback[vol.Optional(age_key, default=defaults.get(age_key, DEFAULT_FEEDBACK_MAX_AGE))] = (
-            max_age_selector()
-        )
-    fields: dict[Any, Any] = {
-        vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): name_selector(),
-        vol.Required(
-            CONF_ENTITY_ID, default=defaults.get(CONF_ENTITY_ID, vol.UNDEFINED)
-        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")),
-        vol.Required(
-            CONF_OVERRUN, default=defaults.get(CONF_OVERRUN, DEFAULT_PUMP_OVERRUN)
-        ): seconds_selector(),
-        vol.Optional(SECTION_FEEDBACK): collapsed_section(feedback),
-    }
-    if editing:
-        fields[vol.Optional(CONF_REMOVE_PUMP, default=False)] = selector.BooleanSelector()
-    return vol.Schema(fields)
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        return {SUBENTRY_TYPE_ZONE: ZoneSubentryFlow}
 
+    @property
+    def _reconfiguring(self) -> bool:
+        return self.source == SOURCE_RECONFIGURE
 
-def _pump_record(
-    pump_id: str, existing: Mapping[str, Any], user_input: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Build a stored pump record, keeping stored fields the form does not show."""
-    fields = flatten_sections(user_input)
-    record = deepcopy(dict(existing))
-    record.update(
-        {
-            "id": pump_id,
-            CONF_NAME: str(fields[CONF_NAME]).strip(),
-            CONF_ENTITY_ID: str(fields[CONF_ENTITY_ID]),
-            CONF_OVERRUN: fields[CONF_OVERRUN],
-        }
-    )
-    # An edit that never opened the section keeps the stored feedback bindings.
-    if SECTION_FEEDBACK in user_input:
-        for entity_key, age_key in _PUMP_FEEDBACK:
-            if entity_id := fields.get(entity_key):
-                record[entity_key] = str(entity_id)
-            else:
-                record.pop(entity_key, None)
-            record[age_key] = fields.get(age_key, DEFAULT_FEEDBACK_MAX_AGE)
-    return record
+    @property
+    def _entry_id(self) -> str | None:
+        return self._reconfigure_entry_id if self._reconfiguring else None
 
-
-# Every error a pump change can raise against the graph.
-_PUMP_EDIT_ERRORS: Final = (EquipmentInUseError, *GRAPH_EDIT_ERRORS)
-
-
-def _pump_edit_errors(error: Exception) -> tuple[dict[str, str], dict[str, str]]:
-    """Map a rejected pump change to the pump form field that can fix it."""
-    if isinstance(error, EquipmentInUseError):
-        return {CONF_REMOVE_PUMP: "equipment_in_use"}, {"users": ", ".join(error.users)}
-    if isinstance(error, DuplicateActuatorBindingError):
-        return {CONF_ENTITY_ID: "actuator_entity_in_use"}, {}
-    return {"base": "invalid_pump"}, {"error": str(error)}
-
-
-def _signature(data: Mapping[str, Any]) -> tuple[Any, ...]:
-    """Describe a Plant graph independent of record order, for change detection."""
-    topology = topology_copy(data)
-    collections = {
-        collection: sorted(json.dumps(record, sort_keys=True) for record in records)
-        for collection, records in topology.items()
-        if isinstance(records, list)
-    }
-    return (
-        data.get(CONF_NAME),
-        json.dumps(collections, sort_keys=True),
-        json.dumps(topology.get(_SOURCE_SELECTOR), sort_keys=True),
-        zone_objects(data),
-    )
-
-
-def _owner_label(object_id: str, owners: Mapping[str, str], zones: Mapping[str, Any]) -> str:
-    zone_id = owners.get(object_id)
-    if zone_id is None:
-        return "the Plant"
-    return str(zones.get(zone_id, {}).get(CONF_NAME, zone_id))
-
-
-def _plant_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
-    """List what applying ``after`` changes in the Plant stored as ``before``."""
-    lines: list[str] = []
-    if before.get(CONF_NAME) != after.get(CONF_NAME):
-        lines.append(f"Renames the Plant from {before.get(CONF_NAME)} to {after.get(CONF_NAME)}")
-    old_topology, new_topology = topology_copy(before), topology_copy(after)
-    old_owners, new_owners = zone_objects(before), zone_objects(after)
-    old_zones = {canonical_id(zone.get("id")): zone for zone in old_topology[CONF_ZONES]}
-    new_zones = {canonical_id(zone.get("id")): zone for zone in new_topology[CONF_ZONES]}
-    for collection, kind in _CHANGE_KINDS:
-        old = {canonical_id(record.get("id")): record for record in old_topology[collection]}
-        new = {canonical_id(record.get("id")): record for record in new_topology[collection]}
-        for object_id, record in new.items():
-            if object_id not in old:
-                lines.append(f"Adds {kind} {record.get(CONF_NAME)}")
-        for object_id, record in old.items():
-            if object_id not in new:
-                lines.append(f"Removes {kind} {record.get(CONF_NAME)}")
-        for object_id in old.keys() & new.keys():
-            old_record, new_record = old[object_id], new[object_id]
-            old_name, new_name = old_record.get(CONF_NAME), new_record.get(CONF_NAME)
-            if old_name != new_name:
-                lines.append(f"Renames {kind} {old_name} to {new_name}")
-            if {key: value for key, value in old_record.items() if key != CONF_NAME} != {
-                key: value for key, value in new_record.items() if key != CONF_NAME
-            }:
-                lines.append(f"Changes {kind} {new_name}")
-            if old_owners.get(object_id) != new_owners.get(object_id):
-                old_owner = _owner_label(object_id, old_owners, old_zones)
-                new_owner = _owner_label(object_id, new_owners, new_zones)
-                lines.append(f"Moves {kind} {new_name} from {old_owner} to {new_owner}")
-    for zone_id in old_zones.keys() & new_zones.keys():
-        if _routes_of(old_topology, zone_id) != _routes_of(new_topology, zone_id):
-            lines.append(f"Changes the loops of zone {new_zones[zone_id].get(CONF_NAME)}")
-    old_selector = old_topology.get(_SOURCE_SELECTOR)
-    new_selector = new_topology.get(_SOURCE_SELECTOR)
-    if old_selector is None and new_selector is not None:
-        lines.append("Adds the source selector")
-    elif old_selector is not None and new_selector is None:
-        lines.append("Removes the source selector")
-    elif old_selector != new_selector:
-        lines.append("Changes the source selector")
-    return "\n".join(f"- {line}" for line in lines) or "- None"
-
-
-def _routes_of(topology: Mapping[str, Any], zone_id: str) -> list[str]:
-    return sorted(
-        json.dumps(route, sort_keys=True)
-        for route in topology[CONF_ROUTES]
-        if str(route.get("zone_id")) == zone_id
-    )
-
-
-def _handle_owners(
-    entry: config_entries.ConfigEntry, data: Mapping[str, Any], kept: Iterable[str]
-) -> dict[str, str | None]:
-    """Return the subentry, or ``None`` for the Plant, that owns every object of ``data``."""
-    handles = {
-        (subentry.subentry_type, subentry.unique_id): subentry.subentry_id
-        for subentry_id, subentry in entry.subentries.items()
-        if subentry_id in kept
-    }
-    topology = topology_copy(data)
-    owners: dict[str, str | None] = {}
-    for zone in topology[CONF_ZONES]:
-        zone_id = canonical_id(zone.get("id"))
-        owners[zone_id] = handles.get((SUBENTRY_TYPE_ZONE, zone_id))
-    for collection in (CONF_CIRCUITS, CONF_VALVES, CONF_PUMPS):
-        for record in topology[collection]:
-            owners[canonical_id(record.get("id"))] = None
-    for source in topology[CONF_SOURCES]:
-        source_id = canonical_id(source.get("id"))
-        owners[source_id] = handles.get((SUBENTRY_TYPE_SOURCE, source_id))
-    for object_id, zone_id in zone_objects(data).items():
-        owners[object_id] = handles.get((SUBENTRY_TYPE_ZONE, zone_id))
-    return owners
-
-
-@callback
-def async_apply_plant_handles(
-    hass: HomeAssistant,
-    entry: config_entries.ConfigEntry,
-    data: Mapping[str, Any],
-    removed_object_ids: set[str],
-) -> None:
-    """Make the subentries and registrations of an entry match its new parent data.
-
-    Everything here is synchronous: together with the parent data update that
-    precedes it, the reload listener sees one consistent graph. New handles are
-    added first, so objects can move into them; then every object's entities and
-    devices move to their owner; then removed objects lose their registrations,
-    and only then are vanished handles removed, which deletes nothing that moved.
-    """
-    sync = subentry_sync(entry, data)
-    for handle in sync.add:
-        hass.config_entries.async_add_subentry(
-            entry,
-            config_entries.ConfigSubentry(
-                data=MappingProxyType(dict(handle["data"])),
-                subentry_type=handle["subentry_type"],
-                title=handle["title"],
-                unique_id=handle["unique_id"],
-            ),
-        )
-    kept = set(entry.subentries) - set(sync.remove)
-    async_move_object_registrations(hass, entry, _handle_owners(entry, data, kept))
-    async_remove_object_registrations(hass, entry, removed_object_ids)
-    for subentry_id in sync.remove:
-        hass.config_entries.async_remove_subentry(entry, subentry_id)
-    for subentry_id, title in sync.retitle:
-        hass.config_entries.async_update_subentry(entry, entry.subentries[subentry_id], title=title)
-    if (name := str(data.get(CONF_NAME, ""))) and entry.title != name:
-        hass.config_entries.async_update_entry(entry, title=name)
-
-
-class PlantSettingsOptionsFlow(OwnEntityPickerMixin, config_entries.OptionsFlow):
-    """Change Plant settings from the Plant entry's Configure button.
-
-    Plant settings edit the Plant graph, which lives in the entry data, so every
-    save stores entry data through ``async_persist_entry_data`` and ends with an
-    abort. The entry's update listener then reloads the Plant, and the entry
-    options stay unused.
-    """
-
-    _requested_dry_run: bool
-    _shown_authorization: dict[str, Any]
-    _pump_id: str | None
-    _pump_input: dict[str, Any]  # the submitted pump form
-    _pump_edit: tuple[str, dict[str, Any] | None]  # pump id, new record or None to remove
-    _pump_review_warnings: str
-    _imported: ImportedPlant
-    _document: Any  # the submitted plant file
-    _reviewed: tuple[Any, ...]  # the signature of the Plant the review showed
-    _review_blocking: bool
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Show the Plant settings menu."""
-        entry = self.config_entry
-        options = [
-            option for option in MENU_OPTIONS if option != "edit_pump" or self._pump_options(entry)
-        ]
-        # A repair opens this menu directly, so it names the Plant it edits.
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=options,
-            description_placeholders={"plant": entry.title},
-        )
-
-    # Dry run
-
-    async def async_step_dry_run(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Change the Plant Dry run setting."""
-        entry = self.config_entry
-        # A Plant held in Dry run by an output conflict is stored live but is
-        # not live, so the form offers its effective setting. Leaving Dry run then
-        # takes the confirmed, conflict-checked path; choosing Dry run stores it.
-        runtime = getattr(entry, "runtime_data", None)
-        current_dry_run = (
-            bool(runtime.dry_run)
-            if runtime is not None
-            else bool(entry.data.get(CONF_DRY_RUN, True))
-        )
-        if user_input is not None:
-            requested_dry_run = bool(user_input[CONF_DRY_RUN])
-            if requested_dry_run is False and current_dry_run:
-                self._requested_dry_run = False
-                return await self.async_step_dry_run_confirmation()
-            return await self._async_apply_dry_run(entry, requested_dry_run)
-        return self.async_show_form(
-            step_id="dry_run",
-            data_schema=_dry_run_schema(current_dry_run),
-        )
-
-    async def async_step_dry_run_confirmation(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Confirm the exact heating outputs before leaving Dry run."""
-        entry = self.config_entry
-        if user_input is None:
-            return self._dry_run_confirmation_form(entry)
-        if not user_input.get(CONF_DRY_RUN_CONFIRMATION, False):
-            return self._dry_run_confirmation_form(
-                entry, errors={"base": "dry_run_confirmation_required"}
-            )
-        try:
-            # Authorize exactly the outputs the form showed, never a later graph.
-            return await self._async_apply_dry_run(
-                entry, self._requested_dry_run, authorization=self._shown_authorization
-            )
-        except ServiceValidationError as error:
-            if error.translation_key == "output_authorization_mismatch":
-                return self._dry_run_confirmation_form(entry, errors={"base": "outputs_changed"})
-            if error.translation_key == "output_conflict":
-                placeholders = dict(error.translation_placeholders or {})
-                placeholders.pop("plant", None)
-                return self._dry_run_confirmation_form(
-                    entry, errors={"base": "output_conflict"}, placeholders=placeholders
-                )
-            raise
-
-    def _dry_run_confirmation_form(
+    def _check(
         self,
-        entry: config_entries.ConfigEntry,
-        *,
-        errors: dict[str, str] | None = None,
-        placeholders: Mapping[str, str] | None = None,
-    ) -> config_entries.ConfigFlowResult:
-        """Show the current outputs and remember exactly what the user confirms."""
-        data = entry.data
-        self._shown_authorization = output_authorization(data)
+        document: docs.Document,
+        prefix: str = "",
+        fields: dict[str, str] | None = None,
+        asked: str | None = None,
+    ) -> forms.Checked:
+        """Check a draft without the min-flow loops still to ask for, except pump ``asked``'s."""
+        pending = [slug for slug in docs.unresolved_min_flow(document) if slug != asked]
+        draft = docs.pending_min_flow(document, pending) if pending else document
+        return forms.check(self.hass, draft, prefix=prefix, fields=fields, entry_id=self._entry_id)
+
+    def _form(
+        self,
+        step_id: str,
+        schema: vol.Schema,
+        checked: forms.Checked | None = None,
+        placeholders: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
         return self.async_show_form(
-            step_id="dry_run_confirmation",
-            data_schema=dry_run_confirmation_schema(),
-            errors=errors,
+            step_id=step_id,
+            data_schema=schema,
+            errors=checked.errors if checked is not None else None,
             description_placeholders={
-                "outputs": authorization_output_lines(data),
                 **(placeholders or {}),
+                **(checked.placeholders if checked is not None else {}),
             },
         )
 
-    async def _async_apply_dry_run(
-        self,
-        entry: config_entries.ConfigEntry,
-        dry_run: bool,
-        *,
-        authorization: Mapping[str, Any] | None = None,
-    ) -> config_entries.ConfigFlowResult:
-        """Apply Dry run, completing any active heating shutdown first."""
-        runtime = getattr(entry, "runtime_data", None)
-        if runtime is not None:
-            if not await runtime.async_set_dry_run(
-                dry_run,
-                hass=self.hass,
-                authorization=authorization,
-            ):
-                return self.async_show_form(
-                    step_id="dry_run",
-                    data_schema=_dry_run_schema(dry_run),
-                    errors={"base": "dry_run_shutdown_in_progress"},
-                )
-        else:
-            if not dry_run:
-                return self.async_show_form(
-                    step_id="dry_run",
-                    data_schema=_dry_run_schema(bool(entry.data.get(CONF_DRY_RUN, True))),
-                    errors={"base": "dry_run_runtime_unavailable"},
-                )
-            data = invalidate_output_authorization(entry.data)
-            self.hass.config_entries.async_update_entry(entry, data=data)
-        return self.async_abort(reason="settings_saved")
+    # Creating a Plant
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Choose guided setup or a plant file."""
+        return self.async_show_menu(step_id="user", menu_options=["guided", "import_plant"])
+
+    async def async_step_guided(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        self._document = docs.new_document()
+        return await self.async_step_plant()
+
+    async def async_step_import_plant(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Read a whole Plant from a plant file; a file without an ID gets a new one."""
+        text = "" if user_input is None else str(user_input.get("plant_file", ""))
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            checked, document = self._read_file(text, None)
+            if checked.plant is not None:
+                # The same Plant set up already aborts before any binding is compared.
+                await self.async_set_unique_id(checked.plant.id)
+                self._abort_if_unique_id_configured()
+                checked = forms.check(self.hass, document)
+            if checked.plant is not None:
+                self._document = document
+                return await self.async_step_review()
+        return self._form("import_plant", forms.plant_file_schema(text), checked)
+
+    def _read_file(self, text: str, plant_id: str | None) -> tuple[forms.Checked, docs.Document]:
+        """Read plant file text, for an import or for the replace of Plant ``plant_id``.
+
+        Only the file itself is checked here; the caller checks its bindings.
+        """
+        document: Any = None
+        try:
+            document = load_yaml(text)
+            if isinstance(document, dict) and "id" not in document:
+                document["id"] = plant_id or docs.new_document()["id"]
+            parse_plant(document)
+        except PlantFileError as error:
+            where = describe_path(document if isinstance(document, dict) else {}, error.path)
+            problem = {"where": where, "problem": error.message}
+            return forms.Checked(None, {"base": "invalid_plant_file"}, problem), {}
+        if plant_id is not None and document["id"] != plant_id:
+            return forms.Checked(None, {"base": "different_plant"}, {"id": str(document["id"])}), {}
+        return forms.Checked(parse_plant(document)), document
+
+    async def async_step_review(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Show the Plant and its warnings, then create it; warnings never block."""
+        checked = forms.check(self.hass, self._document)
+        if (plant := checked.plant) is None:
+            # Every step checked the Plant, so only a change elsewhere, such as another
+            # Plant binding an output meanwhile, gets here.
+            return self._form("review", vol.Schema({}), checked, {"summary": "", "warnings": ""})
+        if user_input is not None:
+            await self.async_set_unique_id(plant.id)
+            self._abort_if_unique_id_configured()
+            data, subentries = new_entry(plant)
+            return self.async_create_entry(
+                title=plant.name, data=data, options=new_options(), subentries=subentries
+            )
+        return self._form(
+            "review",
+            vol.Schema({}),
+            placeholders={
+                "summary": forms.plant_summary(self.hass, plant),
+                "warnings": forms.review_warnings(self.hass, plant),
+            },
+        )
+
+    # The Plant and its source
+
+    async def async_step_plant(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Name the Plant, and choose its source's request switch and mode select."""
+        values = docs.plant_values(self._document) if user_input is None else user_input
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            if not str(user_input.get("name") or "").strip():
+                checked = forms.Checked(None, {"name": "name_required"})
+            elif user_input.get("mode_select") and not user_input.get("request"):
+                checked = forms.Checked(None, {"request": "mode_needs_request"})
+            else:
+                document = docs.with_plant(self._document, user_input)
+                checked = self._check(document, fields=forms.PLANT_FIELDS)
+                if checked.plant is not None:
+                    self._document = document
+                    self._mode_entity = user_input.get("mode_select")
+                    if self._mode_entity:
+                        return await self.async_step_source_mode()
+                    return await self._after_plant()
+        return self._form("plant", forms.plant_schema(self.hass, values), checked)
+
+    async def async_step_source_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the options of the source's mode select for heating and cooling."""
+        entity_id = self._mode_entity
+        assert entity_id is not None
+        values = docs.mode_values(self._document, entity_id) if user_input is None else user_input
+        if not values:
+            values = forms.mode_suggestions(self.hass, entity_id)
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            heat, cool = str(user_input.get("heat") or ""), str(user_input.get("cool") or "")
+            document = docs.with_mode(self._document, entity_id, heat, cool)
+            checked = self._check(document, fields=forms.MODE_FIELDS)
+            offered = forms.mode_options(self.hass, entity_id)
+            if checked.plant is not None and offered:
+                for key, option in (("heat", heat), ("cool", cool)):
+                    if option not in offered:
+                        checked = forms.Checked(
+                            None, {key: "option_not_offered"}, {"options": ", ".join(offered)}
+                        )
+                        break
+            if checked.plant is not None:
+                self._document = document
+                return await self._after_plant()
+        return self._form(
+            "source_mode",
+            forms.mode_schema(self.hass, entity_id, values),
+            checked,
+            {"select": forms.entity_label(self.hass, entity_id)},
+        )
+
+    async def _after_plant(self) -> ConfigFlowResult:
+        if self._reconfiguring:
+            return await self.async_step_reconfigure()
+        self._editing = None
+        return await self.async_step_pump()
 
     # Pumps
 
-    @staticmethod
-    def _pump_options(entry: config_entries.ConfigEntry) -> list[selector.SelectOptionDict]:
-        """Return the Plant pumps as select options, or none when the graph is unreadable."""
-        try:
-            pumps = topology_copy(entry.data)[CONF_PUMPS]
-        except GRAPH_EDIT_ERRORS:
-            return []
-        return [
-            selector.SelectOptionDict(
-                value=canonical_id(pump.get("id")),
-                label=str(pump.get(CONF_NAME, canonical_id(pump.get("id")))),
-            )
-            for pump in pumps
-        ]
-
-    def _stored_pump(self, entry: config_entries.ConfigEntry) -> dict[str, Any]:
-        if self._pump_id is None:
-            return {}
-        for pump in topology_copy(entry.data)[CONF_PUMPS]:
-            if canonical_id(pump.get("id")) == self._pump_id:
-                return pump
-        return {}
-
-    async def async_step_add_pump(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Open an empty pump form."""
-        self._pump_id = None
-        return await self.async_step_pump()
-
-    async def async_step_edit_pump(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Choose the Plant pump to edit."""
-        entry = self.config_entry
-        options = self._pump_options(entry)
-        if user_input is not None:
-            self._pump_id = str(user_input[CONF_PUMP])
-            return await self.async_step_pump()
-        return self.async_show_form(
-            step_id="edit_pump",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_PUMP): topology_select(options, multiple=False)}
-            ),
+    async def async_step_pump(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Add a pump, or edit or remove one when reconfiguring."""
+        slug = self._editing
+        values = docs.pump_values(self._document, slug) if user_input is None else user_input
+        # Only a pump the source drives holds loops open; the form offers them once
+        # the pump has no switch.
+        driven = not values.get("switch")
+        loops = (
+            docs.loop_refs(self._document, slug) if self._reconfiguring and slug and driven else {}
         )
-
-    async def async_step_pump(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Add, edit, or remove one Plant pump, reviewing the warnings it introduces."""
-        entry = self.config_entry
-        existing = self._stored_pump(entry)
-        editing = self._pump_id is not None
-        errors: dict[str, str] = {}
-        placeholders: dict[str, str] = {}
+        schema = forms.pump_schema(
+            self.hass,
+            values,
+            loops=loops,
+            add_another=not self._reconfiguring,
+            removable=self._reconfiguring and slug is not None,
+        )
+        checked: forms.Checked | None = None
         if user_input is not None:
-            errors.update(own_entity_errors(self.hass, user_input))
-            if not str(user_input.get(CONF_NAME, "")).strip():
-                errors[CONF_NAME] = "name_required"
-            if not errors:
-                pump_id = self._pump_id or str(uuid4())
-                removing = editing and bool(user_input.get(CONF_REMOVE_PUMP, False))
-                self._pump_input = dict(user_input)
-                self._pump_edit = (
-                    pump_id,
-                    None if removing else _pump_record(pump_id, existing, user_input),
-                )
-                try:
-                    # Check the current Plant first, then save against the Plant as it
-                    # is once the safe shutdown completes.
-                    if warnings := self._pump_warnings(entry, self._pump_data(entry.data)):
-                        self._pump_review_warnings = warnings
-                        return self._pump_review_form()
-                    stored = await self._async_save_pump(entry)
-                except _PUMP_EDIT_ERRORS as error:
-                    graph, placeholders = _pump_edit_errors(error)
-                    errors.update(graph)
+            if user_input.get("remove") and slug is not None:
+                if using := docs.loops_using(self._document, slug):
+                    checked = forms.Checked(
+                        None, {"remove": "pump_in_use"}, {"loops": ", ".join(using)}
+                    )
                 else:
-                    if stored:
-                        return self.async_abort(reason="settings_saved")
-                    errors["base"] = "dry_run_shutdown_in_progress"
-        return self.async_show_form(
-            step_id="pump",
-            data_schema=with_submitted_values(
-                self, _pump_schema(existing, editing=editing), user_input
-            ),
-            errors=errors,
-            description_placeholders=placeholders,
-        )
-
-    def _pump_data(self, data: Mapping[str, Any]) -> dict[str, Any]:
-        """Apply the drafted pump change to Plant data, raising a graph edit error."""
-        pump_id, record = self._pump_edit
-        if self._pump_id is not None and not any(
-            canonical_id(pump.get("id")) == pump_id for pump in topology_copy(data)[CONF_PUMPS]
-        ):
-            # A pump deleted meanwhile must not come back.
-            raise StoredTopologyError("The pump was removed meanwhile.")
-        return data_with_pump(data, pump_id, record)
-
-    def _pump_warnings(self, entry: config_entries.ConfigEntry, proposed: Mapping[str, Any]) -> str:
-        """Describe what the pump change needs confirmed, or return an empty string.
-
-        That is a compiler warning the change introduces (Decision 11), or an
-        output the change newly shares with another Plant.
-        """
-        compiled = effective_plant_from_data(proposed).compiled
-        sharing = shared_outputs(self.hass, entry.entry_id, proposed)
-        try:
-            before: CompiledPlant | None = effective_plant(entry).compiled
-        except GRAPH_EDIT_ERRORS:
-            before = None
-        if sharing_to_confirm(
-            sharing, shared_outputs(self.hass, entry.entry_id, entry.data)
-        ) or warnings_to_confirm(compiled, before):
-            return warning_text(compiled, sharing_messages(sharing))
-        return ""
-
-    async def _async_save_pump(self, entry: config_entries.ConfigEntry) -> bool:
-        """Store the drafted pump change once the Plant reached Dry run.
-
-        A removed pump leaves no entities or devices behind. A graph edit error
-        against a Plant that changed meanwhile stores nothing and is raised.
-        """
-        hass = self.hass
-
-        def on_stored(previous: Mapping[str, Any], stored: Mapping[str, Any]) -> None:
-            async_remove_object_registrations(
-                hass, entry, object_ids(previous) - object_ids(stored)
-            )
-
-        return await async_persist_entry_data(self, entry, self._pump_data, on_stored=on_stored)
-
-    def _pump_review_form(
-        self, errors: dict[str, str] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self.async_show_form(
-            step_id="pump_review",
-            data_schema=warning_review_schema(),
-            errors=errors,
-            description_placeholders={"warnings": self._pump_review_warnings},
-        )
-
-    async def async_step_pump_review(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Confirm the listed warnings before saving the pump.
-
-        A Plant that changed meanwhile so that the pump no longer fits sends the
-        user back to the pump form, which explains why.
-        """
-        entry = self.config_entry
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            if not user_input.get(CONF_CONFIRM, False):
-                errors["base"] = "confirm_required"
+                    self._document = docs.without_pump(self._document, slug)
+                    return await self.async_step_reconfigure()
+            elif not str(user_input.get("name") or "").strip():
+                checked = forms.Checked(None, {"name": "name_required"})
             else:
-                try:
-                    stored = await self._async_save_pump(entry)
-                except _PUMP_EDIT_ERRORS:
-                    return await self.async_step_pump(self._pump_input)
-                if stored:
-                    return self.async_abort(reason="settings_saved")
-                errors["base"] = "dry_run_shutdown_in_progress"
-        return self._pump_review_form(errors)
+                document, slug = docs.with_pump(self._document, slug, user_input)
+                # Without the min-flow loops field, their problem shows on the minimum flow.
+                fields = {"min_flow_loops": "min_flow", **forms.shown(forms.PUMP_FIELDS, schema)}
+                checked = self._check(document, f"pumps.{slug}", fields)
+                if checked.plant is not None:
+                    self._document = document
+                    if self._reconfiguring:
+                        return await self.async_step_reconfigure()
+                    self._editing = None
+                    if user_input.get("add_another"):
+                        return await self.async_step_pump()
+                    return await self.async_step_zoning()
+        names = [docs.title(pump, key) for key, pump in docs.pumps(self._document).items()]
+        return self._form("pump", schema, checked, {"pumps": ", ".join(names) or "none yet"})
 
-    # Plant file
+    # Zoning and zones
 
-    async def async_step_export_plant(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Show the plant file of this Plant."""
-        entry = self.config_entry
-        try:
-            document = plant_file_yaml(plant_file(entry.data))
-        except ValueError as error:
-            # A stored graph that does not decode has no faithful plant file.
-            return self.async_abort(
-                reason="plant_file_unavailable", description_placeholders={"error": str(error)}
-            )
-        return self.async_abort(
-            reason="plant_exported",
-            description_placeholders={"document": f"```yaml\n{document}```"},
+    async def async_step_zoning(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask how the home is zoned; every answer leads to the zone form."""
+        return self.async_show_menu(
+            step_id="zoning", menu_options=[ZONING_PER_AREA, ZONING_GROUPED, ZONING_SCRATCH]
         )
 
-    async def async_step_edit_plant(
+    async def async_step_zoning_per_area(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Edit the whole Plant as a plant file."""
-        entry = self.config_entry
-        errors: dict[str, str] = {}
-        placeholders: dict[str, str] = {}
+    ) -> ConfigFlowResult:
+        """Choose the areas that each get a zone of their own."""
+        values: dict[str, Any] = {"areas": areas_with_temperature_sensor(self.hass)}
+        checked: forms.Checked | None = None
         if user_input is not None:
-            plant_id = str(UUID(str(entry.data[CONF_PLANT_ID])))
-            try:
-                imported = import_plant_document(
-                    parsed_plant_file(user_input.get(CONF_DOCUMENT)), plant_id=plant_id
-                )
-                data = data_with_plant(entry.data, imported)
-            except PlantDocumentError as error:
-                errors["base"] = "invalid_document"
-                placeholders = {"path": error.path or _TOP_LEVEL, "error": str(error)}
-            except GRAPH_EDIT_ERRORS as error:
-                errors["base"] = "invalid_document"
-                placeholders = {"path": _TOP_LEVEL, "error": str(error)}
+            values = user_input
+            if areas := list(dict.fromkeys(user_input.get("areas") or [])):
+                self._zoning, self._areas = ZONING_PER_AREA, areas
+                return await self.async_step_zone()
+            checked = forms.Checked(None, {"areas": "areas_required"})
+        return self._form("zoning_per_area", forms.areas_schema(self.hass, values), checked)
+
+    async def async_step_zoning_grouped(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._zoning = ZONING_GROUPED
+        return await self.async_step_zone()
+
+    async def async_step_zoning_scratch(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._zoning = ZONING_SCRATCH
+        return await self.async_step_zone()
+
+    async def async_step_zone(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Add one zone: its name, areas, sensors, and thermostat."""
+        per_area = self._zoning == ZONING_PER_AREA and bool(self._areas)
+        values = docs.zone_values(self._document, None)
+        progress = ""
+        if per_area:
+            values["areas"] = self._areas[:1]
+            name = zone_name_for_areas(self.hass, self._areas[:1]) or self._areas[0]
+            progress = f"This zone covers {name}; {len(self._areas) - 1} more to come.\n\n"
+        if user_input is not None:
+            values = user_input
+        schema = forms.zone_schema(self.hass, values, areas=self._zoning != ZONING_SCRATCH)
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            if (name := forms.zone_name(self.hass, user_input)) is None:
+                checked = forms.Checked(None, {"name": "zone_name_required"})
             else:
-                if imported.plant_id != plant_id:
-                    errors["base"] = "plant_id_mismatch"
-                elif own := first_own_entity(self.hass, imported):
-                    errors["base"] = "document_own_entity"
-                    placeholders = {"path": own[0], "entity_id": own[1]}
-                elif _signature(data) == _signature(entry.data):
-                    return self.async_abort(reason="no_changes")
-                else:
-                    self._imported = imported
-                    self._document = user_input.get(CONF_DOCUMENT)
-                    return await self.async_step_edit_plant_review()
-        return self.async_show_form(
-            step_id="edit_plant",
-            data_schema=with_submitted_values(self, self._edit_plant_schema(entry), user_input),
-            errors=errors,
-            description_placeholders=placeholders,
-        )
+                document, slug = docs.with_zone(self._document, None, user_input, name)
+                checked = self._check(
+                    document, f"zones.{slug}", forms.shown(forms.ZONE_FIELDS, schema)
+                )
+                if checked.plant is not None:
+                    self._document, self._zone = document, slug
+                    if per_area:
+                        self._areas.pop(0)
+                    return await self.async_step_zone_loop()
+        zones = ", ".join(forms.zone_names(self._document).values()) or "none yet"
+        return self._form("zone", schema, checked, {"progress": progress, "zones": zones})
 
-    def _edit_plant_schema(self, entry: config_entries.ConfigEntry) -> vol.Schema:
-        """Return the plant file editor, prefilled with the current export when it has one.
-
-        The document is optional, like on import, so that an emptied or
-        unparseable file reaches the flow and is explained there.
-        """
-        try:
-            current: dict[str, Any] | None = plant_file(entry.data)
-        except ValueError:
-            # A stored graph without a faithful plant file can still be replaced.
-            current = None
-        key = (
-            vol.Optional(CONF_DOCUMENT)
-            if current is None
-            else vol.Optional(CONF_DOCUMENT, description={"suggested_value": current})
-        )
-        return vol.Schema({key: selector.ObjectSelector()})
-
-    async def async_step_edit_plant_review(
+    async def async_step_zone_loop(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        """Review the changes of an edited plant file, then apply them.
-
-        The review lists the changes against the Plant as it was shown. A Plant
-        that another flow changed meanwhile is reviewed again before anything is
-        applied, and a file that no longer fits it returns to the editor.
-        """
-        entry = self.config_entry
-        errors: dict[str, str] = {}
+    ) -> ConfigFlowResult:
+        """Add a loop to the zone; with no valve and no pump the zone gets no loop."""
+        zone = self._zone
+        assert zone is not None
+        values = docs.loop_values(self._document, zone, None) if user_input is None else user_input
+        schema = forms.loop_schema(self.hass, values, forms.pump_labels(self._document))
+        checked: forms.Checked | None = None
         if user_input is not None:
-            try:
-                if self._reviewed != _signature(entry.data):
-                    raise _PlantChangedError
-                if self._review_blocking and not user_input.get(CONF_CONFIRM, False):
-                    errors["base"] = "confirm_required"
-                elif await self._async_apply_plant(entry):
-                    return self.async_abort(reason="settings_saved")
-                else:
-                    errors["base"] = "dry_run_shutdown_in_progress"
-            except _PlantChangedError:
-                errors["base"] = "plant_changed"
-            except GRAPH_EDIT_ERRORS:
-                return await self._async_edit_plant_again()
-        try:
-            return self._edit_plant_review_form(entry, errors)
-        except GRAPH_EDIT_ERRORS:
-            return await self._async_edit_plant_again()
+            if not user_input.get("pump"):
+                if not user_input.get("valves"):
+                    return await self.async_step_zone_menu()
+                checked = forms.Checked(None, {"pump": "pump_required"})
+            else:
+                document, slug = docs.with_loop(self._document, zone, None, user_input)
+                checked = self._check(
+                    document, forms.loop_path(zone, slug), forms.shown(forms.LOOP_FIELDS, schema)
+                )
+                if checked.plant is not None:
+                    self._document = document
+                    return await self.async_step_zone_menu()
+        name = forms.zone_names(self._document)[zone]
+        return self._form("zone_loop", schema, checked, {"zone": name})
 
-    async def _async_edit_plant_again(self) -> config_entries.ConfigFlowResult:
-        """Submit the file to the editor again, which explains why it no longer fits."""
-        return await self.async_step_edit_plant({CONF_DOCUMENT: self._document})
-
-    def _edit_plant_review_form(
-        self, entry: config_entries.ConfigEntry, errors: dict[str, str]
-    ) -> config_entries.ConfigFlowResult:
-        """Show the changes against the current Plant, and remember which Plant was shown."""
-        data = data_with_plant(entry.data, self._imported)
-        compiled: CompiledPlant = self._imported.compiled
-        sharing = shared_outputs(self.hass, entry.entry_id, data)
-        try:
-            before: CompiledPlant | None = effective_plant(entry).compiled
-        except GRAPH_EDIT_ERRORS:
-            # An unreadable stored graph can still be replaced by a plant file.
-            before = None
-        areas = area_review_warnings(self.hass, data)
-        self._review_blocking = (
-            bool(sharing_to_confirm(sharing, shared_outputs(self.hass, entry.entry_id, entry.data)))
-            or bool(warnings_to_confirm(compiled, before))
-            or bool(area_warnings_to_confirm(areas, area_review_warnings(self.hass, entry.data)))
-        )
-        self._reviewed = _signature(entry.data)
-        blocking = self._review_blocking
-        return self.async_show_form(
-            step_id="edit_plant_review",
-            data_schema=warning_review_schema() if blocking else vol.Schema({}),
-            errors=errors,
+    async def async_step_zone_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add another loop to the zone, add another zone, or go on to the plant loops."""
+        zone_slug = self._zone
+        assert zone_slug is not None
+        zone = docs.zones(self._document)[zone_slug]
+        loops = [docs.title(loop, slug) for slug, loop in zone.get("loops", {}).items()]
+        options = ["zone_loop", "zone"]
+        following = ""
+        if self._zoning == ZONING_PER_AREA and self._areas:
+            area = zone_name_for_areas(self.hass, self._areas[:1]) or self._areas[0]
+            following = f" The next zone covers {area}."
+        else:
+            options.append("zones_done")
+        return self.async_show_menu(
+            step_id="zone_menu",
+            menu_options=options,
             description_placeholders={
-                "changes": _plant_changes(entry.data, data),
-                "logic": "\n".join(f"- {line}" for line in compiled.logic_summary) or "- None",
-                "warnings": warning_text(
-                    compiled,
-                    (
-                        *(warning.message for warning in areas),
-                        *sharing_messages(sharing),
-                    ),
-                )
-                or "- None",
+                "zone": docs.title(zone, zone_slug),
+                "loops": ", ".join(loops) or "none",
+                "next": following,
             },
         )
 
-    async def _async_apply_plant(self, entry: config_entries.ConfigEntry) -> bool:
-        """Store the edited graph and bring subentries and registrations in line with it.
+    async def async_step_zones_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_plant_loops()
 
-        The Plant must still be the one the review showed once the safe shutdown
-        completes. The parent data and every handle and registration change are
-        then applied with no await in between, so the reload listener sees one
-        consistent graph.
+    # Plant loops and min-flow loops
+
+    async def async_step_plant_loops(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a plant loop, which runs with the source or with zones, or go on."""
+        loops = [docs.title(loop, slug) for slug, loop in docs.plant_loops(self._document).items()]
+        self._editing = None
+        return self.async_show_menu(
+            step_id="plant_loops",
+            menu_options=["plant_loop", "loops_done"],
+            description_placeholders={"loops": ", ".join(loops) or "none"},
+        )
+
+    async def async_step_plant_loop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a plant loop, or edit or remove one when reconfiguring."""
+        slug = self._editing
+        values = docs.loop_values(self._document, None, slug) if user_input is None else user_input
+        schema = forms.loop_schema(
+            self.hass,
+            values,
+            forms.pump_labels(self._document),
+            zones=forms.zone_names(self._document),
+            removable=slug is not None,
+        )
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            document = self._document
+            if slug is not None and user_input.get("remove"):
+                document = docs.without_loop(self._document, None, slug)
+                checked = self._check(document)
+            elif not user_input.get("pump"):
+                checked = forms.Checked(None, {"pump": "pump_required"})
+            elif user_input.get("runs") == "with_zones" and not user_input.get("with_zones"):
+                checked = forms.Checked(None, {"with_zones": "zones_required"})
+            else:
+                document, slug = docs.with_loop(self._document, None, slug, user_input)
+                checked = self._check(
+                    document, forms.loop_path(None, slug), forms.shown(forms.LOOP_FIELDS, schema)
+                )
+            if checked.plant is not None:
+                self._document = document
+                if self._reconfiguring:
+                    return await self.async_step_reconfigure()
+                return await self.async_step_plant_loops()
+        return self._form("plant_loop", schema, checked)
+
+    async def async_step_loops_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_min_flow()
+
+    async def async_step_min_flow(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the loops held open for each source-driven pump that needs a path."""
+        unresolved = docs.unresolved_min_flow(self._document)
+        if not unresolved:
+            if self._reconfiguring:
+                return await self.async_step_save()
+            return await self.async_step_review()
+        slug = unresolved[0]
+        pump = docs.pumps(self._document)[slug]
+        loops = docs.loop_refs(self._document, slug)
+        if not loops and self._reconfiguring:
+            self._min_flow_pump = slug
+            return await self.async_step_min_flow_no_loop()
+        values = (
+            {"min_flow_loops": docs.own_min_flow_loops(self._document, slug)}
+            if user_input is None
+            else user_input
+        )
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            chosen = list(user_input.get("min_flow_loops") or [])
+            guaranteed = bool(user_input.get("guaranteed"))
+            if not chosen and not guaranteed:
+                checked = forms.Checked(None, {"min_flow_loops": "min_flow_loops_required"})
+            else:
+                document = docs.with_min_flow(self._document, slug, chosen, guaranteed=guaranteed)
+                checked = self._check(
+                    document,
+                    f"pumps.{slug}",
+                    {"min_flow_loops": "min_flow_loops", "min_flow": "min_flow_loops"},
+                    asked=slug,
+                )
+                if checked.plant is not None:
+                    self._document = document
+                    return await self.async_step_min_flow()
+        return self._form(
+            "min_flow",
+            forms.min_flow_schema(loops, values),
+            checked,
+            {"pump": docs.title(pump, slug)},
+        )
+
+    async def async_step_min_flow_no_loop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Explain that a source-driven pump needs a loop before it has min-flow loops."""
+        slug = self._min_flow_pump
+        assert slug is not None
+        return self.async_show_menu(
+            step_id="min_flow_no_loop",
+            menu_options=["min_flow_add_loop", "min_flow_edit_pump", "reconfigure"],
+            description_placeholders={"pump": docs.title(docs.pumps(self._document)[slug], slug)},
+        )
+
+    async def async_step_min_flow_add_loop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._editing = None
+        return await self.async_step_plant_loop()
+
+    async def async_step_min_flow_edit_pump(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        self._editing = self._min_flow_pump
+        return await self.async_step_pump()
+
+    # Reconfigure
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose what to change: the Plant, a pump, a plant loop, or all of it from a file.
+
+        A Repair passes the path of a missing binding as the flow's init data,
+        which opens the form that binds it instead.
         """
-        reviewed = self._reviewed
-        imported = self._imported
-        hass = self.hass
+        entry = self._get_reconfigure_entry()
+        if not self._loaded:
+            self._loaded, self._document = True, stored_document(entry)
+            path = (user_input or {}).get(INIT_PATH)
+            if isinstance(path, str) and (opened := await self._open_path(path)) is not None:
+                return opened
+        checked = self._check(self._document)
+        status = "The Plant is valid."
+        if pending := docs.unresolved_min_flow(self._document):
+            names = listed([docs.title(docs.pumps(self._document)[slug], slug) for slug in pending])
+            which = f"Pump {names} needs" if len(pending) == 1 else f"Pumps {names} need"
+            status = f"{which} min-flow loops, which Review and save asks for."
+        if checked.plant is None:
+            where = checked.placeholders.get("where", "")
+            problem = checked.placeholders.get("problem") or checked.placeholders.get(
+                "entity_id", ""
+            )
+            status = f"The Plant is not valid, so it does not run. {where}: {problem}"
+        self._editing = None
+        return self.async_show_menu(
+            step_id="reconfigure",
+            menu_options=["plant", "pump_pick", "plant_loop_pick", "replace", "save"],
+            description_placeholders={"plant": entry.title, "status": status},
+        )
 
-        def build(current: Mapping[str, Any]) -> dict[str, Any]:
-            if _signature(current) != reviewed:
-                raise _PlantChangedError
-            return data_with_plant(current, imported)
+    async def _open_path(self, path: str) -> ConfigFlowResult | None:
+        """Open the form of a plant file path: a pump, a plant loop, or the Plant and source."""
+        keys = path.split(".")
+        if len(keys) > 1 and keys[0] == "pumps" and keys[1] in docs.pumps(self._document):
+            self._editing = keys[1]
+            return await self.async_step_pump()
+        if len(keys) > 1 and keys[0] == "loops" and keys[1] in docs.plant_loops(self._document):
+            self._editing = keys[1]
+            return await self.async_step_plant_loop()
+        if keys[0] == "source":
+            return await self.async_step_plant()
+        return None
 
-        def on_stored(previous: Mapping[str, Any], stored: Mapping[str, Any]) -> None:
-            removed = object_ids(previous) - object_ids(stored)
-            async_apply_plant_handles(hass, entry, stored, removed)
+    async def async_step_pump_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose a pump to edit or remove, or add one."""
+        if user_input is not None:
+            self._editing = None if user_input["pump"] == docs.NEW else user_input["pump"]
+            return await self.async_step_pump()
+        names = {slug: docs.title(pump, slug) for slug, pump in docs.pumps(self._document).items()}
+        return self._form("pump_pick", forms.pick_schema("pump_pick", "pump", names))
 
-        return await async_persist_entry_data(self, entry, build, on_stored=on_stored)
+    async def async_step_plant_loop_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose a plant loop to edit or remove, or add one."""
+        if user_input is not None:
+            self._editing = None if user_input["loop"] == docs.NEW else user_input["loop"]
+            return await self.async_step_plant_loop()
+        names = {
+            slug: docs.title(loop, slug) for slug, loop in docs.plant_loops(self._document).items()
+        }
+        return self._form("plant_loop_pick", forms.pick_schema("plant_loop_pick", "loop", names))
+
+    async def async_step_replace(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Replace the whole Plant from a plant file of the same Plant."""
+        entry = self._get_reconfigure_entry()
+        text = "" if user_input is None else str(user_input.get("plant_file", ""))
+        checked: forms.Checked | None = None
+        if user_input is not None:
+            checked, document = self._read_file(text, str(entry.unique_id))
+            if checked.plant is not None:
+                checked = forms.check(self.hass, document, entry_id=entry.entry_id)
+            if checked.plant is not None:
+                self._document = export_plant(checked.plant)
+                return await self.async_step_save()
+        return self._form("replace", forms.plant_file_schema(text), checked)
+
+    async def async_step_save(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask for the min-flow loops still missing, show what changes, then store it."""
+        if docs.unresolved_min_flow(self._document):
+            return await self.async_step_min_flow()
+        entry = self._get_reconfigure_entry()
+        checked = forms.check(self.hass, self._document, entry_id=entry.entry_id)
+        if (plant := checked.plant) is None:
+            if user_input is not None:
+                return await self.async_step_reconfigure()
+            return self._form("save", vol.Schema({}), checked, {"summary": "", "warnings": ""})
+        if user_input is not None:
+            async_store_plant(self.hass, entry, plant)
+            return self.async_abort(reason="reconfigure_successful")
+        try:
+            old_outputs: set[str] | None = set(plant_from_entry(entry).outputs())
+        except PlantFileError:
+            old_outputs = None
+        return self._form(
+            "save",
+            vol.Schema({}),
+            placeholders={
+                "summary": docs.change_summary(stored_document(entry), old_outputs, plant),
+                "warnings": forms.review_warnings(self.hass, plant),
+            },
+        )

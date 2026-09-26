@@ -3,28 +3,25 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
-from .runtime import HydronicRuntime
+from .core.model import Plant
+from .entity import zone_unique_id
 
 _CLIMATE = "climate"
 
 
-def zone_climate_unique_id(plant_id: str, zone_id: str) -> str:
-    """Return the unique ID of a zone's climate entity."""
-    return f"{plant_id}_{zone_id}_climate"
-
-
 @callback
-def zones_without_climate(hass: HomeAssistant, runtime: HydronicRuntime) -> tuple[str, ...]:
+def zones_without_climate(hass: HomeAssistant, plant: Plant) -> tuple[str, ...]:
     """Return the zones whose climate entity is not registered yet, before entities load."""
     registry = er.async_get(hass)
     return tuple(
-        zone_id
-        for zone_id in sorted(runtime.plant.zones)
+        zone.slug
+        for zone in plant.zones
         if registry.async_get_entity_id(
-            _CLIMATE, DOMAIN, zone_climate_unique_id(runtime.plant_id, zone_id)
+            _CLIMATE, DOMAIN, zone_unique_id(plant.id, zone.slug, _CLIMATE)
         )
         is None
     )
@@ -32,7 +29,7 @@ def zones_without_climate(hass: HomeAssistant, runtime: HydronicRuntime) -> tupl
 
 @callback
 def async_place_new_zone_climates(
-    hass: HomeAssistant, runtime: HydronicRuntime, zone_ids: tuple[str, ...]
+    hass: HomeAssistant, plant: Plant, zones: tuple[str, ...]
 ) -> None:
     """Put each newly created zone climate entity in the one existing area its zone covers.
 
@@ -47,27 +44,17 @@ def async_place_new_zone_climates(
     places nothing, because an entity has one area.
     """
     registry = er.async_get(hass)
-    for zone_id in zone_ids:
-        if (area_id := _single_area_id(runtime, zone_id)) is None:
+    areas = ar.async_get(hass)
+    for slug in zones:
+        zone = plant.zone(slug)
+        if len(zone.areas) != 1 or areas.async_get_area(zone.areas[0].area) is None:
             continue
         entity_id = registry.async_get_entity_id(
-            _CLIMATE, DOMAIN, zone_climate_unique_id(runtime.plant_id, zone_id)
+            _CLIMATE, DOMAIN, zone_unique_id(plant.id, slug, _CLIMATE)
         )
         if entity_id is None:
-            # A zone with an existing climate thermostat has no Hydronicus one.
+            # A zone with an external thermostat has no Hydronicus one.
             continue
         entity = registry.async_get(entity_id)
         if entity is not None and entity.area_id is None:
-            registry.async_update_entity(entity_id, area_id=area_id)
-
-
-def _single_area_id(runtime: HydronicRuntime, zone_id: str) -> str | None:
-    """Return the one existing area a zone covers, or None."""
-    zone = runtime.plant.zones.get(zone_id)
-    if zone is None or len(zone.areas) != 1:
-        return None
-    area_id = zone.areas[0].area_id
-    resolution = runtime.area_resolution
-    if area_id in resolution.missing_area_ids or area_id not in resolution.area_names:
-        return None
-    return area_id
+            registry.async_update_entity(entity_id, area_id=zone.areas[0].area)

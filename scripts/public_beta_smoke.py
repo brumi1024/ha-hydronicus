@@ -23,7 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         validate_repository,
     )
 
-PUBLIC_BETA_VERSION = "0.1.0"
+PUBLIC_BETA_VERSION = "0.2.0"
 
 
 def _validate_documentation(root: Path) -> None:

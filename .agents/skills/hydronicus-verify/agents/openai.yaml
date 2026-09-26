@@ -1,4 +1,4 @@
 interface:
   display_name: "Hydronicus Verify"
-  short_description: "Verify safe milestone delivery evidence"
-  default_prompt: "Use $hydronicus-verify to verify this implementation chunk against its milestone acceptance criteria."
+  short_description: "Verify a change against its done criteria"
+  default_prompt: "Use $hydronicus-verify to verify this change against the done criteria of its phase."

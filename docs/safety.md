@@ -1,124 +1,104 @@
 # Safety limits
 
-Hydronicus is a topology and coordination layer inside Home Assistant.
-It is not a safety-rated controller.
+Hydronicus is software coordination for a hydronic plant.
+It decides when valves open, when pumps run, and when the source is asked for heat or cooling, but it does not make the plant safe.
 
-## Two separate safety layers
+## Two separate layers
 
-Physical protection and software coordination have different responsibilities.
+Physical protection keeps the plant safe whatever software does: the source's own controls and interlocks, pressure relief, high-limit thermostats, frost and condensation protection, flow proving, and the electrical protection of pumps and valves.
+Keep all of it independent of Home Assistant, as the equipment and local regulations require.
 
-| Layer | What it can do | What it cannot guarantee |
-| --- | --- | --- |
-| Physical protection | Enforce limits when Home Assistant, the network, or the integration is unavailable | Understand Hydronicus topology or explain a software decision |
-| Hydronicus software | Describe topology, calculate demand, sequence requests, explain the calculation, and record or dispatch explicit commands behind the Dry run boundary | Prove flow, pressure, temperature, condensation safety, electrical safety, or equipment capacity |
+Hydronicus is the second layer.
+It coordinates the equipment in a sensible order and refuses to do what it can see is wrong, such as running a pump without an open loop, or cooling a ceiling below the dew point.
+It is not a boiler safety controller, pressure relief, a flow proving device, a condensation sensor, a high-limit thermostat, or an emergency stop.
+Never use it to bypass a hardware interlock, or to decide whether equipment is safe to run.
 
-Keep appropriate independent hardware protection in service.
-Depending on the plant, this can include high-limit controls, pressure relief, flow protection, freeze protection, condensation protection, pump protection, source interlocks, and emergency isolation.
-The correct protection set depends on the equipment design and local requirements.
+## What Hydronicus commands
 
-Never remove or bypass a physical interlock because Hydronicus reports that a route is ready.
+Hydronicus commands an output only when you have armed it and **Control equipment** is on.
 
-## Thermostat ownership
+- A new Plant starts with no output armed and **Control equipment** off.
+- **Arm outputs** in the Plant settings lists every output with its role; confirm each one against the device it controls.
+- A loop runs only when every output it needs is armed and available, and the rest of the Plant runs meanwhile.
+- A new output, such as the valve of a new zone, starts unarmed, and editing a thermostat, a sensor, a name, or a timing never changes what is armed.
+- An output belongs to one Plant, and has exactly one role in it: a form or a plant file that binds an output another Plant uses is refused.
 
-Every Zone receives demand from exactly one thermostat.
+Hydronicus never commands:
 
-The Hydronicus thermostat owns its target, presets, HVAC mode, hysteresis, and duration timing.
-
-An external thermostat owns those decisions and Hydronicus consumes only its normalized `hvac_action`.
-
-External heating and preheating request heating.
-
-External cooling is accepted only through the existing explicit cooling and condensation safety observations.
-
-External idle, off, unavailable, unknown, malformed, contradictory, or unsupported input cannot create actuator demand.
-
-Hydronicus never calls a service on an external thermostat.
-
-An external thermostat must not independently command an actuator also configured as Hydronicus-owned.
-
-Externally actuated or valve-less delivery routes are unsupported.
-
-## Current release boundary
-
-Every new Plant starts in Dry run.
-The Home Assistant UI exposes one Plant-level setting for changing that boundary.
-
-Dry run can be turned off for valves and pumps, in heating and cooling, and for an optional direct source-demand output.
-Dry run remains the default, and automatic source selection remains Dry run only.
-
-The release calculates and publishes:
-
-- Heating and cooling demand.
-- Required and optional observation handling.
-- The worst-case zone dew point and condensation margins.
-- Supply or surface-temperature interlocks.
-- Valve readiness, pump sequencing, and pump overrun.
-- Minimum active and idle durations.
-- Actuator feedback and mismatch diagnostics.
-- Source eligibility, recommendation, demand permission, and changeover reasoning.
-- Safe-shutdown plans, Repairs, and redacted diagnostics.
-
-The codebase also contains a generic actuator executor and safe-shutdown dispatcher tested with synthetic and intercepted Home Assistant services.
-The executor records proposed operations in Dry run and dispatches the allowed valve, pump, and source-demand operations when Dry run is off.
-Source-selector operations are forcibly kept in Dry run by the runtime.
-Direct source-demand output requires a valid running pump path.
-Changing Dry run back on performs the ordered safe shutdown before further commands are suppressed.
+- An external thermostat, which it only reads.
+- A pump the source drives, which it only reasons about.
+- An output that is not armed, including in Dry run.
+- Any entity that is not an output of the Plant, such as a sensor.
 
 ## Dry run is not a safety proof
 
-Dry run is safe for observing the software decision path because the runtime does not issue equipment service calls while it is enabled.
-It still cannot prove that the configured topology matches the water circuit.
+While **Control equipment** is off, the Plant runs in Dry run: it evaluates everything against the real states of your entities and records each command as proposed instead of sending it.
+Dry run shows whether the configuration and the sequence are what you intend.
+It does not simulate water, pressure, or temperature, and it cannot prove that a valve opens, that a pump produces flow, or that the source delivers water at a safe temperature.
 
-A passing topology validation means that the configured graph is internally consistent.
-It does not mean that:
+## Stopping
 
-- A valve is installed on the expected pipe.
-- A pump can serve all of its consumers.
-- A sensor is calibrated or located correctly.
-- A source can produce the requested water conditions.
-- A circuit is protected against condensation or overheating.
-- A hardware interlock will trip when required.
+Turning **Control equipment** off stops the armed equipment in order: the source is released, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
+Only then does the Plant go to Dry run; the switch's `live` attribute shows when it has.
+Switching the **Mode** select to off stops the equipment the same way and keeps it stopped, except that the source's request stays on until it has been on for its minimum on time, as at the end of demand.
+**Control equipment** off, a blocking condensation guard, a lost pump or path, and stopping a previous configuration release the request at once.
 
-Use synthetic entities first, then shadow observation of real sensors if the staging contract and rollout decision permit it.
-Do not use a Dry run result to authorize physical control.
+## Failures are retried and surfaced
+
+A command counts as done only when Home Assistant shows its result.
+A command whose result is not seen is sent again, after 10 seconds at first and then after twice the previous wait, up to 5 minutes, for as long as the difference remains.
+After three attempts, a Repair names the output that does not respond, and the Plant's **Status** reads `degraded`.
+
+While a command has not taken effect, Hydronicus assumes the worst of it:
+
+- A pump whose stop is not seen counts as running, so its last open path stays open.
+- A valve whose opening is not seen keeps its loop from counting as ready, so no pump starts on it and the source is not asked for it.
+- A source request whose release is not seen keeps the source's pumps' loops open for its post-run.
+
+An output that is unavailable gets no command, and the loops that need it do not run until it returns.
+A bound entity that does not exist is a Repair, and whatever needs it is blocked.
+
+## Sensors fail closed
+
+A required sensor that is unavailable, stale, in an unsupported unit, or physically implausible blocks its zone, and the zone does not call.
+An optional sensor in the same state is left out.
+Sensors named by a zone's areas are optional unless the [plant file](plant-file.md#areas) makes them required, so a zone with several areas keeps working when one area's sensor is missing.
+For a zone that cools, consider making the humidity of each area required, because a room whose humidity is not observed is where a cooled surface condenses.
 
 ## Cooling and condensation
 
-Cooling requires different evidence from heating.
-Zone temperature alone cannot establish a safe cooling request.
+A loop may cool only with a condensation reference: its pump's supply temperature sensor or its own surface temperature sensor.
+Its condensation guard blocks when the coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
+A missing or stale reference, or a zone without a usable dew point, blocks cooling.
+Pumps stop without overrun in cooling, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 
-Condensation risk depends on humidity, dew point, supply or surface temperature, sensor freshness, circuit compatibility, and physical protection.
+The guard is only as good as its sensors.
+A supply temperature measures the water, not the coldest point of a ceiling or floor, and a humidity sensor measures the room it is in.
+Keep physical condensation protection where the emitters require it.
+A pump the source drives with `min_flow: path` may carry chilled water through its min-flow loop during the source's post-run, even when that loop's guard blocks; a separator, buffer, or bypass with `min_flow: guaranteed` avoids that.
 
-Hydronicus calculates these conditions and, outside Dry run, opens cooling valves and starts pumps only while every one of them is satisfied.
-When the margin to the dew point becomes unsafe, it stops the pump immediately and closes the valves, without pump overrun.
+## Reloads, restarts, and changes
 
-Hydronicus checks condensation against one worst-case dew point per zone, calculated from the highest usable zone temperature and the highest usable zone humidity, including the sensors of its areas.
-Dew point rises with both temperature and humidity, so this bound covers every area and space a zone spans without knowing which temperature and humidity sensors share a space.
-A zone's temperature aggregation, such as a heating-oriented minimum or a designated reference, decides demand only and never lowers the dew point.
-One humid space, such as a bathroom after a shower, therefore blocks cooling for the whole room even when the average humidity looks safe.
-Cooling stays blocked while a required zone temperature or humidity sensor is unusable, or while no usable reading remains.
-The worst case covers only the spaces that have sensors, so give every cooled space that can turn humid its own humidity sensor.
+A reload, an unload, and a Home Assistant restart never send a command, so the equipment stays exactly as it was while Hydronicus is not running.
+Hydronicus stores its timers, the Plant mode, and its retry state, and restores them before the first evaluation, which waits for Home Assistant to start and for every digital thermostat to restore.
+With unchanged observations, the first evaluation after a reload or restart sends no command.
 
-Hydronicus does not command the chilled-water source, so the source's own supply temperature limits stay in charge of how cold the water gets.
-Keep an independent condensation or dew-point protection on every cooled emitter, because a stale sensor or a lost Home Assistant connection leaves the last commanded state in place.
+Hydronicus also stores the last valid configuration with the outputs it was commanding.
+When an output leaves the Plant while it may be running, because you delete a zone, remove a loop, a valve, a pump, or the source, or replace the Plant from a plant file, the first evaluation of the new configuration stops the old one first.
+It runs the same off sequence as **Control equipment** off, with the old configuration: the source is released at once, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
+The sequence stops every output of the old configuration, including the ones the new configuration keeps, so a zone deleted while it heats briefly stops the whole Plant, and the source then waits for its minimum off time.
+Once every output of the old configuration is seen off, the new configuration runs, and the **Status** sensor reads `stopping` until then.
+Removing an output that is already off, or that was never armed, or while the Plant is in Dry run, sends nothing.
+An output that is unavailable when the stop begins cannot be reached and is left as it is, and one that becomes unavailable while it stops keeps the old configuration waiting until it is seen off.
+A restart in the middle of the stop continues it.
 
-## Shared equipment
+A Plant whose stored configuration is not valid, for example after a zone its pump needed was deleted, stops the equipment of its last valid configuration in the same way, and then only observes.
+It commands nothing more, its **Status** reads `invalid`, and a Repair opens the Plant's **Reconfigure** to fix it; saving a valid Plant runs it again.
 
-Shared equipment is owned by the complete active-consumer set in the model.
-That ownership prevents one virtual Zone release from stopping an actuator still needed by another virtual Circuit.
-
-This software rule does not validate hydraulic balancing or manufacturer limits.
-An actuator can be logically shared and still be physically unsuitable for the combined load.
-
-Review shared valves, pumps, sources, and interlocks with the person responsible for the physical installation.
+Removing the whole Plant, like a reload or an unload, sends no command, so stop its equipment first with **Control equipment**.
 
 ## Safe operating rule
 
-For the current release, the safe operating rule is simple:
-
-1. Use a disposable or isolated Home Assistant instance for initial setup.
-2. Use synthetic entities for functional tests.
-3. Confirm that requests and explanations change while the bound actuator entities do not.
-4. Keep physical protection independent.
-5. Stop the test if the topology, sensor state, or explanation is unexpected.
-6. Report the issue with redacted diagnostics before changing the physical installation.
+Try a Plant on synthetic entities first, then on real sensors with **Control equipment** off, and check the proposals.
+Arm real outputs only when every one is the entity of the device its role names, and the physical protections work without Home Assistant.
+Stay near the plant the first time **Control equipment** is on, and keep a way to stop the equipment by hand.

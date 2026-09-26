@@ -1,63 +1,51 @@
-"""Operator selections for the shared Hydronicus plant."""
+"""The Plant mode select: off, heat, or cool (decision 7)."""
 
 from __future__ import annotations
-
-from typing import cast
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import HydronicConfigEntry
-from .core.model import PlantMode
-from .entity_device import plant_device_info
-from .entity_registration import async_add_plant_entities
-from .runtime import HydronicRuntime
+from . import HydronicusConfigEntry
+from .core.model import Mode
+from .entity import HydronicusEntity, async_add_plant_entities, plant_device, plant_unique_id
 
-# The runtime serializes mode requests under its own operation lock.
 PARALLEL_UPDATES = 0
 
 
-class PlantModeSelect(SelectEntity):
-    """Select the requested operating mode without directly controlling cooling."""
+class PlantModeSelect(HydronicusEntity, SelectEntity):
+    """The mode the Plant runs in; cool is offered only when a loop cools."""
 
-    _attr_translation_key = "requested_mode"
-    _attr_has_entity_name = True
-    _attr_should_poll = False
-    _attr_options = [mode.value for mode in PlantMode]
+    _attr_translation_key = "mode"
 
-    def __init__(self, entry: HydronicConfigEntry) -> None:
-        """Bind the selection to the plant runtime."""
-        self._entry = entry
+    def __init__(self, entry: HydronicusConfigEntry) -> None:
         runtime = entry.runtime_data
-        self._attr_unique_id = f"{runtime.plant_id}_requested_mode"
-        self._attr_device_info = plant_device_info(runtime)
-
-    @property
-    def _runtime(self) -> HydronicRuntime:
-        """Resolve the current runtime after an entry reload."""
-        return cast(HydronicRuntime, self._entry.runtime_data)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to atomic controller evaluations."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "mode"), plant_device(runtime.plant)
+        )
+        # Cool stays offered while it is chosen, as when the configuration is not valid.
+        cools = runtime.requested_mode is Mode.COOL or any(
+            loop.cools for loop in runtime.plant.all_loops
+        )
+        self._attr_options = [
+            mode.value
+            for mode in (Mode.OFF, Mode.HEAT, Mode.COOL)
+            if cools or mode is not Mode.COOL
+        ]
 
     @property
     def current_option(self) -> str:
-        """Return the requested mode, not the transient active mode."""
-        return self._runtime.requested_mode().value
+        return self.runtime.requested_mode.value
 
     async def async_select_option(self, option: str) -> None:
-        """Persist the request and let the controller perform safe changeover."""
-        await self._runtime.async_set_requested_mode(option, hass=self.hass)
+        self.runtime.set_mode(Mode(option))
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: HydronicConfigEntry,
+    entry: HydronicusConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add the one plant-level requested-mode selector."""
     async_add_plant_entities(
-        entry.runtime_data, "select", async_add_entities, [PlantModeSelect(entry)]
+        entry.runtime_data, "select", async_add_entities, [(None, PlantModeSelect(entry))]
     )

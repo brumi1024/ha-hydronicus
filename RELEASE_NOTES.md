@@ -1,97 +1,61 @@
 # Hydronicus {{VERSION}}
 
-This is the first stable release of Hydronicus.
-It describes a hydronic heating and cooling Plant as rooms, loops, valves, pumps, and sources, and coordinates them from Home Assistant.
-Every new Plant starts in Dry run, so Hydronicus shows what it would do before it controls any equipment.
-
-## Changes since rc.6
-
-### Home Assistant 2026.9
-
-- Require Home Assistant 2026.9.0 or newer.
-- Convert temperature observations reported in Fahrenheit or kelvin, so a sensor that reports in °F drives demand correctly, and fail closed on unknown units.
-- Reject implausible observations, such as 0 K or -127 °C, instead of acting on them.
-- Report the cooling condensation margin as a temperature difference, so it converts correctly under US customary units.
-- Modernize entity names, icons, device classes, entity categories, and translations while keeping every entity ID, unique ID, and raw state value.
-- Let the climate turn off, turn on, and toggle actions restore the last HVAC mode.
-- Modernize the setup forms with selectors, sections, filtered entity pickers, and translated labels.
-- Let an unresolved binding repair open the flow that fixes it.
-- Load the Lovelace cards automatically, without a dashboard resource.
-- Allow each actuator entity to belong to only one live Plant: leaving Dry run is refused on overlap, and a Plant that finds its outputs already owned at startup is held in Dry run with a repair until the conflict ends.
-- Authorize exactly the output list that the Dry run confirmation displayed.
-
-### Setup redesign
-
-- Replace the Zone, Circuit, and Actuator entries with one Room entry per room, which owns its thermostat, its sensors, and its private loops and valves.
-- Keep every object owned by the Plant or by exactly one room, so removing a room always leaves a valid Plant.
-- Replace the initial flow with guided setup: a Plant form with its pump, one form per room, and a review that says how each room connects.
-- Add a room edit menu for room basics, the thermostat, sensors, private loops, and valve feedback.
-- Add Plant settings for Dry run, pumps, showing the plant file, and editing the whole Plant as a plant file with a change review.
-- Add the plant file, a YAML format that imports, exports, and rebuilds a Plant with the same entity IDs, including shared loops, shared valves, sources, and the source selector.
-- Add the `hydronicus.export_plant` action, which returns the plant file of a Plant.
-- Report Plant equipment that no enabled route reaches as unused, and never request it.
-- Ask for confirmation only of the warnings a save introduces, and always of outputs that another Plant binds.
-- Add a trial kit in `docs/examples/trial` with a Home Assistant package and a plant file for a two-room simulated manifold.
-- Migrate config entries from version 2.0, and from version 1.1 through 2.0, to version 3.0.
-
-### Cooling and the UI pass
-
-- Let cooling valves and pumps follow the Plant Dry run setting like heating, instead of always staying proposed.
-- Stop a pump that served cooling as soon as its last cooling loop releases, without overrun, and close its valves right after, so a condensation block no longer leaves chilled water circulating.
-- Add an optional Cooling section to guided setup and **Add room** for humidity sensors, a supply or surface reference, and a condensation margin.
-- Move Plant settings to the **Configure** action of the Plant entry.
-- Name room, valve, pump, and source devices after the object alone, so new setups get entity IDs such as `climate.living`.
-- Create cooling entities only for rooms that can cool, and source entities only when the Plant has a source, and remove entities that are no longer provided.
-- Never read a Hydronicus entity as an observation or an actuator.
-- Use Room and Loop wording throughout the cards, explanations, and errors.
-- Add an HVAC mode control to each room tile with exactly the modes its thermostat offers.
-
-### Composable and themable cards
-
-- Add the Room card, `custom:hydronicus-room-card`, which shows one room with its own editor.
-- Add an optional, ordered `sections` list to the Plant card: `header`, `alerts`, `rooms`, `paths`, `equipment`, `explanations`, and `operations`.
-- Share one Plant subscription between every card on a dashboard.
-- Let themes restyle the cards through public `--hydronicus-*` tokens that fall back to Home Assistant tokens, and through documented `part` names, without card_mod.
-- Match the stock Home Assistant card look by default.
+This release rebuilds Hydronicus around a model that fits heat pump plants: an optional source, its pumps, zones, and the loops that connect them.
+Control is now one pure evaluation that computes the desired state of every output, and a reconciler that drives each output there and retries until Home Assistant shows the result.
+It is a breaking release: Plants set up with 0.1.0 are not migrated and must be set up again.
 
 ## Highlights
 
-- Guided setup, room editing, and Plant settings in the Home Assistant UI, plus a plant file for the complete topology.
-- Rooms with a Hydronicus thermostat or an existing climate entity, comfort, eco, and away presets, hysteresis, and minimum active and idle durations.
-- Required and optional temperature observations with calibration, freshness limits, and mean, median, minimum, maximum, designated-reference, and weighted-mean aggregation.
-- Shared valves and pumps with active-consumer tracking, valve readiness before pump start, and pump overrun.
-- Cooling with humidity, dew point, and condensation margin checks.
-- Deterministic source recommendations and changeover reasoning.
-- One Plant-level Dry run setting, proposed versus executed operations, and an ordered safe shutdown when Dry run is turned back on.
-- Repairs, redacted downloadable diagnostics, startup reconciliation, and bounded command-failure recovery.
-- Plant and Room cards that compose into dashboards and follow the active theme.
+- Describe a plant without placeholder entities: a loop may have no valve, a pump may be driven by the source itself, and a heat pump can be asked for heating and for cooling.
+- A pump that needs an open loop always has one while it may run, through its own min-flow loops or a separator, buffer, or bypass that guarantees its flow.
+- Plant loops that no zone owns, such as a towel dryer, run with the source or with a set of zones.
+- The Plant mode (off, heat, cool) is a select, and a mode change is sequenced: the old mode's source is released after its minimum on time, its pumps finish overrun and post-run, its loops close, and the dwell passes before the new mode starts.
+- Heating and cooling never run at the same time, and every loop that cools is guarded against condensation with the worst-case dew point of its zones.
+- Zone demand has a level from 0 to 1 besides on and off, ready for proportional valves and flow setpoints.
+- Arming is per output: you confirm each output entity, and **Control equipment** turns control on for the armed outputs.
+  Editing a thermostat, a sensor, a name, or a timing never disarms the Plant, and a new zone's outputs get a Repair that confirms them while the rest keeps running.
+- Failed commands are retried with backoff from 10 seconds to 5 minutes, and a Repair names an output that does not respond after three attempts.
+- Reloads and Home Assistant restarts send no command and continue every timer, including a valve that was still opening.
+- Removing a zone, a loop, a pump, or the source first stops the equipment it removes, and a Plant left invalid by a removal stops in order and then only observes until it is fixed.
+
+## Setup
+
+- Guided setup asks for the Plant and its source, the pumps, how the home is zoned, one form per zone with its loops, plant loops, and the min-flow loops of each source-driven pump, then shows a review whose warnings never block.
+- Each zone is its own entry under the Plant, with **Add zone** and **Reconfigure** for its areas, sensors, thermostat, and loops.
+- **Reconfigure** on the Plant edits the Plant and its source, the pumps, and the plant loops, or replaces the whole Plant from a plant file after a summary of what changes.
+- **Plant settings** arm outputs and show the plant file.
+- The plant file is now format 2, the same schema Home Assistant stores, and exporting and importing a Plant reproduces its entity IDs.
+- Repairs open the form that fixes them.
+
+## Entities
+
+- A Plant has a mode select, a **Control equipment** switch, and a status sensor.
+- A zone has its climate entity when Hydronicus provides the thermostat, heating and cooling demand with their level, its combined temperature, and its dew point when it cools.
+- A loop has a flowing sensor, and the source has a requested sensor.
+- The reference plant gets 24 entities instead of about 60.
+- The entity contract in `docs/entities.md` is the interface for dashboards.
+
+## Removed
+
+- The bundled Lovelace cards and their theming contract; build dashboards on the entity contract instead.
+- Source recommendation and selection, per-equipment mode arbitration, simultaneous heating and cooling, shared valves, per-actuator entities, and the reconciliation counters.
+- Sensor weights, calibration offsets, the designated reference, the median, and the weighted mean; calibrate a sensor at its source.
 
 ## Upgrade
 
-Create a Home Assistant backup before upgrading, because the migration is one way.
-
 Hydronicus requires Home Assistant 2026.9.0 or newer.
-Install this release through HACS, restart Home Assistant, and confirm that every Hydronicus Plant loads without errors.
 
-On the first start, Hydronicus migrates each Plant to config-entry version 3.0 before runtime setup.
-The migration gives every Zone its own Room entry, makes loops and valves that only one room uses private to that room, and keeps pumps, sources, the source selector, and every other loop and valve as Plant equipment.
-It moves every entity and device to its new owner, so entity IDs, customizations, devices, and history stay the same.
-A restart during the migration resumes to the same result.
+A Plant set up with 0.1.0 is refused at startup with a log message saying it must be set up again.
+Plant files of format 1 are not read.
+Remove the old Plant, install this release through HACS, restart Home Assistant, and set the Plant up again through guided setup or by importing a format 2 plant file.
+If you added the Hydronicus cards to a dashboard, remove them.
 
-The migration returns every Plant to Dry run and clears the confirmed output list.
-Review each room's loops and valves and the topology preview, then turn Dry run off again in **Plant settings** if you want Hydronicus to control the equipment.
-Plant settings now open from the **Configure** action of the Plant entry.
-
-Hydronicus removes entities that a Plant no longer provides, such as cooling entities of a room that cannot cool.
-If you added `/hydronicus/hydronicus-plant-card.js` as a dashboard resource for an earlier release, remove it as described in the Lovelace guide.
-
-Do not edit Home Assistant config-entry storage by hand to bypass migration or output confirmation.
+A new Plant starts with nothing armed and **Control equipment** off, so it runs in Dry run until you arm its outputs and turn control on.
 
 ## Rollback
 
-A release before this one cannot load a migrated Plant, and there is no downgrade migration.
-To roll back, restore the Home Assistant backup taken before the upgrade, which also restores each Plant as it was.
-Changes made after the upgrade are lost by that restore, so export each Plant's plant file first if you want a record of them.
+This release cannot load a Plant from 0.1.0, and 0.1.0 cannot load a Plant from this release.
+To roll back, restore the Home Assistant backup taken before the upgrade.
 
 Keep physical temperature, condensation, pressure, and flow safeguards independently active during any rollback.
 
@@ -100,17 +64,9 @@ Keep physical temperature, condensation, pressure, and flow safeguards independe
 Hydronicus is a coordination layer, not a safety-rated controller.
 Keep independent physical safeguards, such as high-limit, pressure, flow, freeze, and condensation protection, in service on every Plant.
 
-Dry run Plants do not issue physical actuator service calls.
-When Dry run is off, Hydronicus controls the confirmed heating and cooling valves and pumps, and a configured direct source-demand output.
-Source selection remains Dry run only.
-Direct source demand is requested only while the Plant is heating, and only after a loop with a running pump is ready.
-Hydronicus does not command a chilled-water source, so the source's own supply temperature limits stay in charge.
-
-Reload, unload, removal, and Home Assistant stop do not issue equipment commands.
-Use Safe shutdown or turn Dry run on before planned maintenance.
-
-Shared loops, shared valves, and the source selector are edited through the plant file rather than in dedicated UI forms.
-If a valid plant file in the editor is edited into invalid YAML, the frontend submits the last valid version, and the review step still shows the changes before anything is saved.
+The source is reached through a request switch and an optional mode select; writing a flow temperature setpoint arrives with heat pump control over Modbus in a later release.
+There is no automatic season selection yet; an automation can set the Plant mode.
+A plant loop that cools with zones that have no cooling loop of their own does not yet get a cooling thermostat for those zones.
 
 ## Hydronicus rename boundary
 

@@ -8,9 +8,9 @@ assignees: ""
 
 ## Before submitting
 
-- [ ] I reproduced this with a synthetic or shadow-mode Plant.
+- [ ] I reproduced this with synthetic entities, or with Control equipment off.
 - [ ] I removed credentials, tokens, private addresses, hostnames, and household-specific entity details.
-- [ ] I confirmed that the Plant was not intended to issue physical actuator service calls.
+- [ ] I reviewed the diagnostics, which keep entity IDs and area IDs, before attaching any part of them.
 - [ ] I searched existing issues for the same symptom.
 
 ## Summary
@@ -26,8 +26,8 @@ Describe the observed problem in one or two sentences.
 
 ## Reproduction
 
-Describe the smallest topology that reproduces the problem.
-Use logical names such as `Zone A`, `Circuit A`, `Valve A`, and `Pump A`.
+Describe the smallest Plant that reproduces the problem, ideally as a redacted plant file.
+Use logical names such as `zone_a`, `loop_a`, `switch.valve_a`, and `switch.pump_a`.
 
 1.
 2.
@@ -35,33 +35,42 @@ Use logical names such as `Zone A`, `Circuit A`, `Valve A`, and `Pump A`.
 
 ## Expected behavior
 
-Describe what Hydronicus should calculate or show.
+Describe what Hydronicus should decide or show.
 
 ## Actual behavior
 
-Describe what Hydronicus calculated or showed instead.
-Include the relevant Zone, Circuit, actuator, topology-preview, or explanation state.
+Describe what Hydronicus decided or showed instead.
+Include the relevant state and attributes of the Status sensor, such as `reasons`, `blocked_zones`, and `proposed`, and any Repair.
 
-## Topology shape
+## Plant file
 
-```text
-Zone A -> Circuit A -> Valve A -> Pump A
+```yaml
+hydronicus: 2
+name: Example
+pumps:
+  pump_a:
+    switch: switch.pump_a
+zones:
+  zone_a:
+    temperature: [sensor.zone_a_temperature]
+    loops:
+      loop_a:
+        valves: [switch.valve_a]
+        pump: pump_a
 ```
 
-List any shared component or route that matters to the problem.
-
-## Sensor and virtual state
+## Sensor and output states
 
 Provide only generic, redacted values.
 
 ```text
-temperature: 18.0 °C
-target: 21.0 °C
-aggregation: mean
-zone demand: on
-valve request: opening
-pump request: off
-shadow mode: on
+Plant mode: heat
+Control equipment: off
+zone_a temperature: 18.0 °C, target 21.0 °C, thermostat heat
+zone_a heating demand: on
+switch.valve_a: on
+switch.pump_a: off
+Status: heating
 ```
 
 ## Logs
@@ -75,5 +84,5 @@ Paste redacted logs here.
 
 ## Additional context
 
-Mention whether the problem survived a config-entry reload and whether it reproduces with a clean synthetic Plant.
-Do not attach full backups, raw diagnostics, private configuration files, or unredacted screenshots.
+Mention whether the problem survived a reload, and whether it reproduces with a clean synthetic Plant.
+Do not attach full backups, unreviewed diagnostics, private configuration files, or unredacted screenshots.

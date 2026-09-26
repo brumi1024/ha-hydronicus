@@ -1,0 +1,19 @@
+# The trial kit's plant file (docs/examples/trial/plant.yaml) in format 2.
+hydronicus: 2
+name: Trial plant
+pumps:
+  circulation_pump:
+    switch: switch.hydronicus_trial_pump
+zones:
+  living_room:
+    temperature: [sensor.hydronicus_trial_living_room_temperature]
+    loops:
+      floor:
+        valves: [switch.hydronicus_trial_living_room_valve]
+        pump: circulation_pump
+  bedroom:
+    temperature: [sensor.hydronicus_trial_bedroom_temperature]
+    loops:
+      floor:
+        valves: [switch.hydronicus_trial_bedroom_valve]
+        pump: circulation_pump

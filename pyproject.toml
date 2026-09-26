@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha-hydronicus"
-version = "0.1.0"
+version = "0.2.0"
 description = "A safe, topology-aware Home Assistant integration for hydronic heating and cooling plants."
 readme = "README.md"
 requires-python = ">=3.14.2"
@@ -19,7 +19,6 @@ classifiers = [
 
 [project.optional-dependencies]
 test = [
-  "home-assistant-frontend==20260826.7",
   "hypothesis>=6.135,<7",
   "mypy>=1.16,<2",
   "pre-commit>=4.2,<5",
@@ -57,6 +56,11 @@ warn_unused_ignores = true
 warn_return_any = true
 warn_unreachable = true
 
+[[tool.mypy.overrides]]
+# PyYAML ships no type information; the core reads and writes plant files with it.
+module = ["yaml", "yaml.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 branch = true
 source = ["custom_components/hydronicus/core"]
@@ -68,3 +72,8 @@ exclude_also = [
 ]
 fail_under = 90
 show_missing = true
+
+[[tool.mypy.overrides]]
+# The adapter is checked against Home Assistant's own type information.
+module = ["homeassistant", "homeassistant.*"]
+follow_imports = "silent"

@@ -1,36 +1,45 @@
 # Hydronicus domain glossary
 
-## Delivery Route
+## Plant
 
-A Delivery Route is an explicit connection from one Zone to one Hydraulic Circuit.
+A Plant is one config entry: an optional Source, its Pumps, its Zones, and its Plant loops.
 
-## Eligible Delivery Route
+Objects are addressed by slugs, which are chosen at creation, never change, and form unique IDs with the Plant ID.
+Names are separate and editable, and a missing name reads as the slug in words.
 
-An Eligible Delivery Route is an enabled Delivery Route whose Zone currently has heating demand.
+## Source
 
-## Route Arbitration
+A Source is the generator Hydronicus asks for heat or cooling, such as a heat pump, and a Plant has at most one.
 
-Route Arbitration determines the Hydraulic Circuits requested by Eligible Delivery Routes.
+Hydronicus reaches it only through generic entities: a request switch, an optional mode select, and later a flow setpoint number.
 
-## Any Demand
+A Plant without a Source still opens valves and runs switched Pumps, which suits a boiler with its own controls.
 
-Any Demand requests every Hydraulic Circuit reached by an Eligible Delivery Route.
+## Pump
 
-## Thermostat ownership
+A Pump is a circulator that Hydronicus switches, or that the Source drives and Hydronicus never commands.
 
-Every Zone receives demand from exactly one thermostat.
+Every Pump has a minimum flow: `guaranteed` when a Separator gives it a path whatever the Loops do, or `path` when it needs an open Loop while it runs.
 
-The thermostat can be a Hydronicus-owned digital thermostat or one existing external Home Assistant climate entity.
+## Loop
 
-The Zone owns observations and topology relationships, while the thermostat owns target and demand state.
+A Loop is a flow path: zero or more valves that open together, and exactly one Pump.
 
-External thermostat demand is accepted from normalized `hvac_action` only.
+A Loop with no valve is always an open path, and its Pump is its only control.
+
+A Loop runs in heating, cooling, or both, and it may cool only with a condensation reference: its Pump's supply temperature sensor or its own surface sensor.
 
 ## Zone
 
-A Zone is the space one thermostat controls, together with its Areas, its sensors, its Delivery Routes, and its private Loops and valves.
+A Zone is the space one thermostat controls; it covers zero or more Areas, owns its Loops, and is one `zone` config subentry of its Plant.
 
-Each Zone is one `zone` config subentry of its Plant.
+Zones reference only Plant-level Pumps and the Source, so removing a Zone removes exactly its own Loops and valves.
+
+## Plant loop
+
+A Plant loop is a Loop that no Zone owns, which runs with the Source or with a set of Zones.
+
+A Loop that several Zones use is a Plant loop that runs with those Zones.
 
 ## Area
 
@@ -42,26 +51,51 @@ A Zone follows the temperature sensor and the humidity sensor that each of its A
 
 An Area that is missing or names no sensor contributes no reading, and never makes the Plant fail to load.
 
-## Loop
+## Thermostat ownership
 
-A Loop is the UI name of one Hydraulic Circuit: a water path through one or more valves and one pump.
+Every Zone receives Demand from exactly one thermostat.
 
-A private Loop belongs to one Zone, and a shared Loop is Plant equipment that several Zones can route to.
+The thermostat can be a digital thermostat that Hydronicus provides or one existing external Home Assistant climate entity.
 
-## Plant equipment
+The Zone owns observations and Loops, while the thermostat owns target and Demand state.
 
-Plant equipment is every graph object that the Plant owns rather than a Zone: every pump, every source, the source selector, and the shared valves and shared Loops.
+External thermostat Demand is accepted from normalized `hvac_action` only, and an external thermostat is never commanded.
 
-Plant equipment that no enabled Delivery Route reaches is unused equipment, which compiles with a warning and is never requested.
+## Mode
 
-## Deletion-closed ownership
+The Mode is Plant-wide: off, heat, or cool.
 
-Deletion-closed ownership assigns every graph object to the Plant or to exactly one Zone, with references pointing only from a Zone toward the Plant.
+Heating and cooling never run at the same time, and a change of Mode is sequenced through the old Mode's shutdown and a minimum dwell.
 
-Removing a Zone therefore removes exactly its own objects and always leaves a graph that validates and compiles.
+## Demand
+
+Demand is a Zone's request in the current Mode, with an on or off decision and a level from 0 to 1.
+
+## Min-flow path
+
+A Min-flow path is the set of Loops held open so that a Pump without guaranteed flow always has a path while it may run.
+
+A Source-driven Pump with minimum flow `path` names its Min-flow path loops.
+
+## Separator
+
+A Separator is a hydraulic separator, low-loss header, buffer, or bypass that gives a Pump a path whatever the Loops do.
+
+## Desired state
+
+The Desired state is what every output should be now, computed by each evaluation.
+
+## Armed output
+
+An Armed output is an output entity the owner has confirmed Hydronicus may command.
+
+An output entity has exactly one role in one Plant: a valve of one Loop, a Pump switch, or a Source output.
 
 ## Plant file
 
-A Plant file is the YAML document that describes one whole Plant, with objects addressed by slugs and optional explicit IDs.
+A Plant file is the YAML document that describes one whole Plant, and it uses the same schema as storage.
 
-It is used only for import, export, and whole-Plant editing, and importing an exported Plant file rebuilds the Plant with the same object IDs and entity IDs.
+The config entry's data holds everything except `zones`, and each Zone subentry's data holds that Zone's mapping plus its slug.
+Storage lists Pumps and Loops as objects that carry their slugs, so their order survives Home Assistant sorting stored keys.
+
+Importing an exported Plant file rebuilds the Plant with the same Plant ID, object slugs, and entity IDs.

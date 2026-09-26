@@ -1,402 +1,237 @@
-# Configuration and simulation
+# Configuration
 
-This guide describes how to create a Plant, add and edit zones and loops, and change the Plant settings.
-It uses synthetic Home Assistant entities so that a first test cannot operate real equipment.
+This page walks through every Hydronicus form: creating a Plant, arming its outputs, changing the Plant, and adding and changing zones.
+[How Hydronicus works](how-it-works.md) explains what the settings do, and [the plant file](plant-file.md) describes the same Plant as YAML.
 
-The UI and this guide speak of zones, areas, and loops.
-A zone is the space one thermostat controls, with its areas, its sensors, and its private loops and valves.
-An area is a Home Assistant area, usually one room, and a zone covers zero or more of them.
-A loop is one Hydraulic Circuit: a water path through one or more valves and one pump.
-Pumps, shared valves, shared loops, sources, and the source selector are Plant equipment, owned by the Plant rather than by a zone.
+## Before you start
 
-## Prepare synthetic entities
+Try a new Plant on a disposable or staging Home Assistant instance first, or with synthetic entities such as the [trial kit](../README.md#first-simulated-plant).
 
-Create the test entities in a disposable Home Assistant instance or a separate staging configuration.
-Do not use a production valve or pump entity for a first test.
+Have these entities ready:
 
-Hydronicus needs these entity types:
+- A `switch` or `valve` entity for every valve Hydronicus opens and closes.
+- A `switch` entity for every pump Hydronicus switches.
+- Optionally, a `switch` that asks the heat pump or boiler for heat or cooling, and a `select` that switches it between heating and cooling.
+- A temperature sensor for every zone, either named in the settings of the zone's Home Assistant areas, as described in [Areas](#areas), or chosen in the zone form.
+- For cooling: a humidity sensor for every zone that cools, and a supply temperature or surface temperature sensor as the condensation reference of every loop that cools.
 
-| Purpose | Accepted entity type | Trial kit entity |
-| --- | --- | --- |
-| Zone temperature | `sensor` with the `temperature` device class, named by an area or chosen directly | `sensor.hydronicus_trial_bedroom_temperature` |
-| Zone humidity, for cooling | `sensor` with the `humidity` device class, named by an area or chosen directly | None |
-| Valve actuator | `switch` or `valve` | `switch.hydronicus_trial_bedroom_valve` |
-| Pump actuator | `switch` | `switch.hydronicus_trial_pump` |
-
-The quickest start is the [trial kit](examples/trial): a Home Assistant package with synthetic entities for two zones and one pump, a plant file bound to them, and a variant whose zones follow two Home Assistant areas.
-The README's [first simulated Plant](../README.md#first-simulated-plant) shows how to load the package and create the Plant from it.
-
-Home Assistant Template helpers can also create sensors and switches through the UI.
-See the [Home Assistant Template documentation](https://www.home-assistant.io/integrations/template/) for the current helper and YAML syntax.
-Use the entity pickers in the flows rather than copying entity IDs from this guide into a production configuration.
-
-Every new Plant starts in Dry run, so Hydronicus observes the actuator entities but does not switch them until the Plant setting is deliberately changed.
+Hydronicus never offers its own entities in these forms, because a Plant that reads its own output would feed back into itself.
 
 ## Create a Plant
 
 Open **Settings > Devices & services > Add integration** and search for **Hydronicus**.
-The first menu offers two ways to create a Plant:
-
-- **Guided setup** asks for the Plant and its pump, then how the home is zoned, then one form per zone.
-- **Import a plant file** rebuilds a Plant from a [plant file](plant-file.md), with the same entity IDs.
+Choose **Guided setup** to build the Plant form by form, or **Import a plant file** to paste a [plant file](plant-file.md).
+Both end with **Review the Plant**, and nothing is created before you submit it.
 
 ### Guided setup
 
-Guided setup takes one menu, one Plant form, a zoning menu, one form per zone, and a review.
+Guided setup asks for the Plant and its source, then its pumps, then its zones one by one with their loops, then the loops no zone owns.
 
-1. Choose **Guided setup**.
-2. In **Name the Plant**, enter the **Plant name** and choose the **Pump entity** that the loops of every zone share.
-   **Pump options** holds the **Pump overrun**, which is how long the pump keeps running after heating demand ends, before the valves close.
-   Cooling stops the pump without overrun.
-3. **How is your home zoned?** offers three answers, and every answer ends in the zone form:
-   - **One zone for the whole home** opens one zone form named `Home` with every area that names a temperature sensor.
-   - **One zone per area** first asks which areas, starting with every area that names a temperature sensor, then opens one prefilled zone form per area.
-   - **Group areas into zones** opens the zone form with **Add another zone**.
-4. In **Add a zone**, describe one zone:
-   - **Zone name** names the zone's thermostat and entities.
-     Left empty, it takes the name of the one chosen area, or of the floor that every chosen area is on.
-     When the areas give no name, the form says `Enter a Zone name.` just above the field, where Home Assistant shows every field's error.
-   - **Areas** lists every Home Assistant area with a checkbox; the checked areas are the ones the zone covers, and the zone follows the temperature and humidity sensors that each area names in its area settings.
-   - **Extra temperature sensors** are sensors outside the areas, such as a floor probe, and are combined with the areas into the zone temperature.
-     A zone that Hydronicus controls needs a temperature reading from an area or an extra sensor.
-   - **Existing climate thermostat** is optional; when set, that climate entity owns the zone's demand, and the temperature sensors become optional.
-   - **Loop valves** are the switches or valves of the zone's own loop.
-     Hydronicus creates the loop, names it after the zone, such as `Bedroom loop`, and names its valves after the loop, such as `Bedroom loop valve`.
-   - **Cooling** is an optional, collapsed section that lets the zone's own loop cool too.
-     Turn on **Cool this zone**, choose **Extra humidity sensors** when the areas name none, and choose a **Supply temperature sensor** or a **Surface temperature sensor**, or both, as the loop's condensation reference.
-     **Condensation margin** defaults to 2.0 °C, as in the loop form.
-     Cooling also needs a temperature sensor or an area, even when an existing climate thermostat owns the zone.
-   - **Add another zone** shows the form again for the next zone.
-     Leave it off after the last zone.
-   From the second zone on, the form lists the zones added so far, with their areas.
-5. **Review the Plant** lists the zones, how they connect, and the warnings, including area warnings such as an area that several zones cover.
+1. **The Plant and its source**.
+   Enter the **Plant name**, which names the Plant's device and its Plant-wide entities.
+   If Hydronicus asks a heat pump or boiler for heat, choose its **Source request switch** and give it a **Source name**, such as `Heat pump`.
+   Leave the request switch empty for a source that runs on its own controls; valves and switched pumps still run on demand.
+   If the source switches between heating and cooling through a select, choose it as the **Source mode select**; it needs a request switch.
+   The collapsed **Timing** section holds the **Mode dwell** (3600 seconds), the **Source post-run** (180 seconds), and the **Source minimum on time** and **Source minimum off time** (600 seconds each).
+2. **Source modes**, only with a mode select.
+   Choose the **Heating option** and the **Cooling option** of the select.
+   The form lists the options the select offers now.
+3. **Pump**.
+   Enter the **Pump name**.
+   Choose the **Pump switch** for a pump Hydronicus switches, or leave it empty for a pump the source runs by itself, such as a heat pump's own circulator; Hydronicus never commands that one, and it needs a source.
+   Set the **Overrun**, how long a switched pump keeps running after heating ends (180 seconds).
+   Set the **Minimum flow** to **Needs an open loop**, or to **A separator guarantees its flow** when a hydraulic separator, buffer, or bypass gives the pump a path whatever the loops do.
+   Optionally choose the **Supply temperature sensor**, the water temperature this pump supplies, which lets its loops cool.
+   Turn on **Add another pump** to add the next one.
+4. **How is your home zoned?**
+   Choose **One zone per area** to give each chosen Home Assistant area a zone of its own, **Zones that cover several areas** to group areas into zones, such as one zone per floor, or **Zones without areas** for zones with their own sensors or an existing thermostat.
+   With **One zone per area**, **Choose the areas** lists every area and starts with the ones that name a temperature sensor.
+5. **Add a zone**.
+   Enter the **Zone name**, or leave it empty to use the name of the one chosen area, or of the floor every chosen area is on.
+   Choose the **Areas** the zone covers; with one zone per area the form is filled in with the next area.
+   Add **Extra temperature sensors** and **Extra humidity sensors** that are not named by the chosen areas, such as a floor probe.
+   Choose how to **Combine temperatures by**: **Mean**, **Minimum**, or **Maximum**.
+   Choose an **Existing thermostat** to let an existing climate entity own the zone's demand, or leave it empty for a digital thermostat that Hydronicus provides.
+   The collapsed **Digital thermostat presets** section sets the **Comfort**, **Eco**, and **Away** targets; leave a preset empty to leave it out.
+6. The loop form.
+   Enter the **Loop name**, such as `Ceiling` or `Floor`.
+   Choose the **Valves** that open together for the loop, or none for a loop whose pump is its only control.
+   Choose the **Pump** that moves the loop's water.
+   Choose the **Modes**: **Heating**, **Cooling**, or both; cooling needs the pump's supply temperature sensor or the loop's **Surface temperature sensor**.
+   Set the **Valve opening time**, how long every valve of the loop takes to open before its pump may start (180 seconds).
+   Leave **Valves** and **Pump** empty to give the zone no loop of its own, for a zone that only a plant loop serves.
+7. The zone's menu.
+   Choose **Add another loop to this zone**, such as an underfloor loop next to a ceiling loop, **Add another zone**, or **Continue** once every zone is added.
+   With one zone per area, **Add another zone** moves to the next chosen area, and **Continue** appears after the last one.
+8. **Plant loops**.
+   Choose **Add a plant loop** for a loop that no zone owns, or **Continue**.
+   A plant loop has the same fields as a zone loop, plus **Runs**: **With the source** runs it whenever the source is requested, such as a towel dryer, and **With zones** runs it while any of the chosen **Zones** demands, such as a loop that several zones share.
+9. **Min-flow loops**, once for every pump the source runs that needs an open loop.
+   Choose the **Loops to hold open** whenever no other loop of that pump is ready while the pump may run; a ceiling loop is a good choice.
+   Or turn on **A separator guarantees its flow** when a separator, buffer, or bypass protects the pump.
+10. **Review the Plant**.
+    The review lists the source, the pumps, the zones with their areas, thermostats, and loops, the plant loops, and the number of outputs.
+    Its warnings point at what may not work as intended, such as an area without a temperature sensor, a zone that no loop serves, or a pump that drives no loop.
+    Warnings never block; submit to create the Plant.
 
-Under Zones, the review shows each zone with the areas it covers, such as `Ground floor, covering areas Kitchen and Hall`, and a zone without areas by its name alone.
-Under How it connects, the review shows one line per loop and one per zone, such as `Bedroom loop opens Bedroom loop valve, then starts Circulation pump.` and `Bedroom is heated by Bedroom loop.`
-A zone whose loop cools reads `Bedroom is heated and cooled by Bedroom loop.`
-When the zones share the pump, the review warns that the shared pump limits independent control, and lists it under Warnings only.
-A warning other than unused equipment must be confirmed with **I understand these warnings** before the Plant is created.
-Later zone, loop, and plant file edits ask only about warnings that the edit introduces.
+Every form checks the whole Plant as it would be stored, with the same rules as a plant file, and shows a problem on the field it belongs to.
 
-The Plant is created in Dry run, with one zone entry per zone.
-Guided setup names the pump `Circulation pump`; rename it, add more pumps, or change its options later in the Plant settings.
+Hydronicus makes each object's slug from its name when it is created, such as `living_area` for `Living area`, and the slug never changes.
+Entity IDs come from the names, such as `climate.living_area`, so choose names you want to keep.
 
 ### Import a plant file
 
-1. Choose **Import a plant file**.
-2. Paste the file into **Plant file** and submit.
-   An empty editor, or YAML that the editor cannot read, is reported at the top level, and the editor marks the line with the YAML problem.
-3. **Review the imported Plant** lists the Plant name, the zones, how they connect, and the warnings.
-   Confirm a warning other than unused equipment with **I understand these warnings**, and submit.
+Choose **Import a plant file** and paste the file into **Plant file**.
+The [plant file reference](plant-file.md) describes the format, and **Review the Plant** shows the Plant before it is created.
+A file that carries the ID of a Plant that is already set up is refused; remove that Plant first, or replace it from the file instead.
 
-The Plant is created in Dry run, with one zone entry per zone and one source entry per source.
-An invalid file keeps the form open and names the path of the problem, such as `zones.bedroom.loops.bedroom_loop.pump`.
-See [the plant file reference](plant-file.md) for the format, the IDs, and the errors.
+## Arm the outputs and start
+
+A new Plant commands nothing: no output is armed and **Control equipment** is off, so it runs in Dry run.
+
+1. Open **Configure** on the Plant's entry, which opens the Plant settings, and choose **Arm outputs**.
+   **Armed outputs** lists every output with its role, such as `Valve of Living area / Ceiling: switch.living_area_ceiling_valve` or `Pump Floor: switch.floor_pump`.
+   Check each entity against the device it controls, then check it here and submit.
+   A loop runs only when every output it needs is armed, and unchecking an output disarms it.
+2. Set the Plant's **Mode** select to heat or cool.
+3. Set each zone's thermostat to the same mode.
+   A new digital thermostat starts off with a target of 21 °C.
+4. Watch the Plant in Dry run: the **Status** sensor's `proposed` attribute shows the state Hydronicus would give each output, and its `reasons` attribute explains each decision.
+5. Turn on the **Control equipment** switch when the proposals are right, and Hydronicus starts commanding the armed outputs.
+
+Turning **Control equipment** off stops the armed equipment in order, and then the Plant returns to Dry run.
+Arming and **Control equipment** are kept in the Plant's settings, so they survive restarts, and changing them never reloads the Plant.
+See [safety limits](safety.md) before you turn **Control equipment** on for real equipment.
+
+**Show the plant file** in the Plant settings shows the Plant's [plant file](plant-file.md), which imports as the same Plant with the same entity IDs.
+
+## Change the Plant
+
+Open **Reconfigure** on the Plant's entry.
+The menu says whether the stored Plant is valid, and offers:
+
+- **Plant and source**: the forms of steps 1 and 2 of guided setup.
+- **Pumps**: choose a pump to change, or `Add a pump`.
+  The pump form also shows **Min-flow loops** for a pump the source runs, once loops use it, and **Remove this pump**.
+  A pump that a loop still uses cannot be removed; move or remove those loops first.
+- **Plant loops**: choose a plant loop to change, or `Add a plant loop`.
+  The loop form also shows **Remove this loop**.
+- **Replace from a plant file**: paste a plant file of this Plant to replace the whole Plant, zones included.
+  Zones are added, changed, and removed by their slugs.
+  The file must carry this Plant's ID, or no ID.
+- **Review and save**: first asks for any min-flow loops still missing, then **Save the changes** lists the zones added, removed, and changed, the Plant settings that change, and the outputs added and removed, with the warnings of the new Plant.
+
+Nothing is stored until you submit **Save the changes**.
+The Plant then reloads.
+Removed outputs are disarmed, and new outputs wait for you to arm them.
+If a removed output was running, the Plant first stops the equipment of its previous configuration, as [safety limits](safety.md#reloads-restarts-and-changes) describe.
+
+A pump the source runs that needs an open loop may have no loops yet to hold open, such as a new pump, one that the source now runs instead of a switch, or one whose min-flow loop you removed.
+The menu then says so, and **Review and save** asks for its **Loops to hold open** first, as guided setup does, once a loop uses the pump.
+A plant loop added in the same session counts, and so does a zone loop that already uses the pump.
+If no loop uses the pump yet, **Review and save** opens **A pump without a loop** instead:
+**Add a plant loop** for the pump now, or, for a zone loop, **Change the pump** to **A separator guarantees its flow** for now, or remove it.
+A zone loop can use the pump only once it is saved, so add it in the zone's **Reconfigure**, then change the pump's **Minimum flow** back and choose its **Min-flow loops**.
+
+## Zones
+
+Each zone is a subentry of the Plant, listed under the Plant's entry.
+
+- **Add zone** adds a zone: the zone form of step 5, then a loop form, then the zone's menu.
+  Leave **Valves** and **Pump** empty in a new loop's form to add no loop, as in guided setup.
+- **Reconfigure** on a zone opens its zone form, then its menu: **Zone settings** for the name, areas, sensors, and thermostat, **Loops** to choose a loop to change or `Add a loop`, and **Save**.
+  A loop's form also shows **Remove this loop**.
+- **Delete** on a zone removes it with exactly its own loops and valves.
+
+A zone is saved only as part of a valid Plant, checked with the same rules as setup, and saving it reloads the Plant.
+A new zone's valves are new outputs, so its loops wait until you arm them, while the rest of the Plant keeps running.
+Editing a thermostat, a sensor, a name, or a timing never changes what is armed.
+
+Deleting a zone also removes it from any plant loop that runs with it and drops its loops from any pump's min-flow loops.
+Deleting a zone whose loops are running first stops the equipment of the previous configuration, then runs the Plant without the zone.
+If that leaves a pump the source runs without a min-flow loop, the Plant is no longer valid: it stops its equipment in order, then only observes, and a Repair opens its **Reconfigure** to fix it.
 
 ## Areas
 
 Home Assistant lets each area name the sensor that represents its temperature and the one that represents its humidity.
-Set them in **Settings > Areas, labels & zones**: open the area, choose **Area settings** in its three-dot menu, and choose the **Temperature sensor** and the **Humidity sensor**.
+Set them in **Settings > Areas, labels & zones**: open the area, choose **Area settings** in its menu, and choose the **Temperature sensor** and the **Humidity sensor**.
 The area settings offer only the sensors that belong to the area, so first set the sensor's **Area** in its entity settings, or put its device in the area.
 
-A zone that covers an area follows the sensors the area names, as long as the area names them:
+A zone that covers an area follows the sensors the area names:
 
-- When the Plant loads, each zone takes the temperature sensor and the humidity sensor that each of its areas names, after the extra sensors of the zone.
-- Choosing another sensor in an area's settings, clearing one, removing a covered area, or creating an area whose name gives a covered ID reloads every Plant that covers the area, once, and the Plant then follows the new choice.
-  A change to an area that no zone covers, or one that leaves the named sensors as they were, such as a new name or icon, reloads nothing.
-- Renaming an area changes no sensor, so it does not reload the Plant; Repairs and the cards keep the old name until the Plant reloads for another reason.
-- Renaming a sensor's entity ID does not update the area, because Home Assistant keeps the old ID in the area settings.
-  The zone then misses that sensor, and a repair asks you to choose the sensor again in the area settings.
-- An area that is missing or names no sensor adds no reading, and a Plant always loads whatever the areas name.
-- An area sensor that Hydronicus itself provides, such as a zone's **Combined temperature**, is ignored, because it would feed the Plant back into itself, and a repair names it.
-- When an extra sensor of the zone is the same entity as an area's sensor, it counts once, with the settings of the extra sensor, and as the designated reference if either of them is marked as one.
+- The zone uses its extra sensors first, then the temperature sensor and the humidity sensor that each of its areas names.
+- Hydronicus re-reads the areas on every evaluation, so choosing another sensor in an area's settings, clearing one, or removing a covered area takes effect at once, without a reload.
+- An area that is missing or names no sensor adds no reading, and it never stops the Plant from loading; a Repair reports it instead.
+- Renaming a sensor's entity ID does not update the area, because Home Assistant keeps the old ID in the area settings; a Repair then asks you to choose the sensor again.
+- An area sensor that Hydronicus itself provides, such as a zone's **Combined temperature**, is ignored, and a Repair names it.
 
-The **Combined temperature** sensor of a zone lists its areas with the temperature and humidity sensors they resolve to in its `areas` attribute, and its `usable_sensor_ids` attribute shows which readings the zone used.
+By default an area's sensors are optional: a stale or unavailable one is left out, so one flat battery in a zone of five rooms does not stop the other four.
+A reading is stale after 1800 seconds without a report.
+The [plant file](plant-file.md#areas) can make an area's sensors required or change their maximum age; the forms keep those settings when you edit the zone.
 
-An area has four settings in each zone that covers it.
-In the zone's **Areas, sensor aggregation, and humidity** step, **Edit sensor metadata** opens one **Edit area settings** form per area, after the forms of the extra temperature sensors:
+A zone that covers exactly one area puts its thermostat in that area when the thermostat is first created, so it appears on the area's page and answers voice commands such as "set the bedroom to 21".
+Only the thermostat goes in the area; the zone's device stays unassigned, so its other entities are not offered as the area's sensors.
+A zone over several areas puts nothing in an area, and moving the thermostat later is your choice.
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| **Required sensor** | Off | A required area temperature that is stale or unavailable blocks the zone; an optional one is left out of the aggregate. |
-| **Aggregation weight** | 1 | The weight of the area's temperature in the weighted mean. |
-| **Maximum age** | 1800 seconds | A reading older than this is stale. |
-| **Designated reference area** | Off | The area's temperature is used alone by designated reference aggregation. |
+An area may be covered by several zones, such as a hall between two floors; its sensors then count in each of them, and the review mentions it.
 
-The settings apply to the area's temperature sensor.
-An area temperature is optional by default, so one flat battery in a zone of five rooms does not stop heating the other four.
-An area's humidity sensor is always required, with the area's maximum age, because an unobserved humid room is where a cooled floor condenses.
+The **Combined temperature** sensor of a zone lists its areas with the sensors they resolve to and their readings in its `areas` attribute.
 
-A zone that covers exactly one existing area puts its thermostat, the zone's climate entity, in that area when Hydronicus creates it, so the thermostat shows up on the area's page, on area dashboards, and in area voice commands such as "set the bedroom to 21".
-Only the climate entity goes in the area, and the zone device stays unassigned, so the zone's other entities, such as its **Combined temperature**, are not offered as the area's temperature sensor.
-The climate entity moves into the area after the entities are registered, so their entity IDs do not repeat the area name, such as `climate.bedroom` rather than `climate.bedroom_bedroom`.
-Moving the climate entity or the zone device later is your choice, and Hydronicus does not move them back.
-A zone over several areas puts nothing in an area, because an entity has one area.
+## Sensors and aggregation
 
-An area may be covered by several zones, for example a hall between two floors.
-Its sensors then count in each of them, and the review mentions it without asking for a confirmation.
+A zone combines its usable temperature readings by **Combine temperatures by**: **Mean**, **Minimum**, or **Maximum**.
+An extra sensor chosen in the zone form is required: when it is stale or unavailable, the zone is blocked and does not call.
+The plant file can make an extra sensor optional or change its maximum age, and the forms keep those settings.
+A zone that cools uses its highest humidity reading and its highest temperature for its worst-case dew point.
 
-## Zones
+## Thermostats
 
-Every zone appears as a **Zone** entry under the Plant, and **Add zone** adds another.
-A new zone needs the Plant to have a pump.
+A zone has exactly one thermostat.
 
-The **Add a zone** form has the same fields as in guided setup, plus two that appear only when they matter:
+A digital thermostat is the zone's climate entity, which Hydronicus provides.
+It restores its target, preset, and mode after a restart, starts off with a target of 21 °C when new, and offers heating, plus cooling when a loop of the zone cools.
+It demands heating 0.3 K below its target and stops 0.1 K above it, and cooling the same way the other side.
+The [plant file](plant-file.md#thermostats) can change these deltas, add minimum on and off times, and change the proportional band of the demand level.
 
-- **Pump** appears when the Plant has two or more pumps; with one pump, the zone's loop uses it.
-- **Shared loops** appears when the Plant has shared loops, which are Plant loops that also deliver heat to this zone.
+An existing thermostat is an existing Home Assistant climate entity that owns the zone's demand.
+Hydronicus reads only its `hvac_action`: heating or preheating calls for heat, cooling calls for cooling, and idle or off calls for nothing.
+Hydronicus never commands it, and an unavailable or unknown action blocks the zone.
+Make sure the existing thermostat does not itself switch a valve or pump that Hydronicus commands.
 
-A zone needs **Loop valves** or at least one of the **Shared loops**.
-The **Cooling** section applies to the zone's own loop, so turning on **Cool this zone** needs **Loop valves**.
-A zone served only by shared loops is refused with a message to choose Loop valves or leave cooling off, because a shared loop is Plant equipment that only the plant file edits.
-To make an existing zone cool, use **Areas, sensor aggregation, and humidity** for its areas and humidity sensors and the **Cooling** section of its loop.
-Saving a zone returns the Plant to Dry run.
-
-### Thermostat owner
-
-A zone has exactly one thermostat owner.
-
-Leave **Existing climate thermostat** empty when Hydronicus should own the target, presets, HVAC mode, hysteresis, and thermostat timing.
-Hydronicus then publishes a climate entity for the zone.
-
-Choose an **Existing climate thermostat** when another integration owns those thermostat decisions.
-Hydronicus consumes only its `hvac_action` as the demand signal, and never commands it.
-The external target and current temperature attributes are diagnostic only.
-External idle or off releases demand immediately.
-External cooling still requires explicit zone humidity and loop safety observations.
-
-An external thermostat must not independently command an actuator also configured as Hydronicus-owned.
-Hydronicus does not infer the external integration's actuator or support externally actuated or valve-less delivery routes.
-
-### Edit a zone
-
-Open the zone's **Reconfigure** action to reach the zone's edit menu, titled with the zone name, such as `Edit Bedroom`, with these options:
-
-- **Name, areas, thermostat owner, and sensors** changes the **Zone name**, the **Areas**, the **Existing climate thermostat**, the **Extra temperature sensors**, and the **Shared loops**.
-  An area that no longer exists stays listed by the name it last had, followed by `(no longer exists)`, and the form's description names it, so it can be cleared here.
-  Switching to an existing climate thermostat drops the Hydronicus thermostat settings, and switching back starts from defaults.
-- **Thermostat settings** appears for a Hydronicus thermostat and sets the **Heating start hysteresis**, **Heating stop hysteresis**, **Minimum active duration**, **Minimum idle duration**, the **Comfort preset target**, **Eco preset target**, and **Away preset target**, and the **Cooling** hysteresis.
-- **Areas, sensor aggregation, and humidity** sets the **Areas**, the **Extra humidity sensors**, and the **Temperature aggregation**, and **Edit sensor metadata** opens one form per extra temperature sensor, then one per area.
-- **Add a loop** adds another private loop to the zone.
-- **Edit or remove a loop** appears when the zone has a private loop.
-
-Deleting a zone entry removes the zone with its routes and its private loops and valves.
-Plant equipment stays, so deleting a zone always leaves a valid Plant; a pump or shared loop that no other zone uses remains as unused equipment.
-When the Plant is outside Dry run, Hydronicus completes the ordered transition to Dry run before the zone leaves the graph.
-
-### Sensors and aggregation
-
-Extra temperature sensors are required by default, and areas are optional by default.
-Turn on **Edit sensor metadata** to set each extra sensor's **Required sensor**, **Aggregation weight**, **Calibration offset**, **Maximum age**, and **Designated reference sensor** status, and then each area's settings described in [Areas](#areas).
-An unusable required sensor blocks the zone immediately.
-An unusable optional sensor is excluded and reported, but the zone still blocks if no usable observation remains.
-
-**Temperature aggregation** offers these policies:
-
-- **Mean** calculates the arithmetic mean.
-- **Median** selects the middle value after sorting the readings.
-- **Heating-oriented minimum** uses the lowest reading.
-- **Cooling-oriented maximum** uses the highest reading, which suits zones that cool.
-- **Designated reference** uses the one sensor or area marked as the reference.
-- **Weighted mean** applies the positive weights set in the sensor and area metadata.
-
-Designated reference and weighted mean depend on per-sensor metadata, so choose them in **Choose sensor aggregation** after completing **Edit sensor metadata**.
-
-**Temperature aggregation** decides demand, but never the dew point that protects a cooling zone.
-Cooling safety calculates one worst-case dew point per zone from its highest usable temperature and its highest usable humidity, even when different sensors report them.
-A room that covers a bathroom at 80 % and a bedroom at 50 % is protected at 80 %, although the 65 % average would permit colder water.
-Humidity sensors follow the same required, optional, calibration, and maximum age rules as temperature sensors, and aggregation weights do not apply to them.
-An unusable required temperature or humidity sensor blocks cooling, and an unusable optional one is left out of the worst case.
-The zone climate entity reports the highest usable humidity as its current humidity.
-
-Hydronicus starts a fresh thermostat at 21.0 °C and HVAC mode off.
-Use the zone's climate entity to change its target and mode after setup.
-The heating start and stop hysteresis define the band around the runtime target.
-Minimum active duration holds an already-requested zone until its deadline unless a required sensor blocks it.
-Minimum idle duration prevents a satisfied zone from requesting heat again until its deadline.
-Changing the target or preset reevaluates demand immediately without bypassing a remaining duration deadline.
-
-## Loops and valves
-
-A zone's first loop comes from **Loop valves** on the zone form, and the form's **Cooling** section can make that loop cool.
-**Add a loop** and **Edit or remove a loop** open **Configure a loop**:
-
-- **Loop name** names the loop.
-- **Valves** are the switches or valves that belong to this zone.
-  A new entity becomes a new valve, and a removed one is deleted unless another loop of the zone still uses it.
-- **Shared valves** appears when the Plant has shared valves, and adds Plant valves that this loop also needs open.
-- **Pump** is the pump that circulates water through the loop.
-- **Valve opening time** applies to every zone valve of the loop: the pump may start only after the valves had this long to open.
-- **Edit valve feedback** opens one **Edit valve feedback** form per zone valve, with **Valve readiness feedback**, **Valve position feedback**, and **Valve position feedback maximum age**.
-- **Cooling** enables cooling for the loop and sets its condensation protection.
-- **Remove this loop** appears when editing, and removes the loop and the zone valves that no other loop of the zone uses.
-
-A valve keeps its identity, its entities, and its feedback settings as long as its entity stays selected.
-Every chosen valve must open before the pump may run.
-
-## Plant settings
-
-Select **Configure** on the Plant entry to open **Plant settings**, a menu that names the Plant, with these options:
-
-- **Dry run** turns Dry run on, or leaves it after confirming the exact heating and cooling outputs.
-- **Add a pump** adds a pump with its **Pump name**, **Pump entity**, **Pump overrun**, and optional **Feedback** entities.
-- **Edit or remove a pump** changes a pump, and **Remove this pump** removes a pump that no loop uses.
-  Removing a pump that a loop still uses is refused with the names of those loops.
-- **Show the plant file** shows the Plant as a [plant file](plant-file.md), to back it up or rebuild it elsewhere.
-- **Edit plant file** edits the whole Plant as a plant file, including shared loops, shared valves, sources, and the source selector.
-  **Review plant file changes** lists what the file adds, removes, renames, moves, and changes before anything is saved.
-
-Every change to zones, loops, valves, or pumps returns the Plant to Dry run.
-Leaving Dry run requires **I understand these outputs may be controlled** for the exact output list shown.
-A repair for a missing pump entity opens the same **Plant settings** menu.
-
-The `hydronicus.export_plant` action returns the same plant file as **Show the plant file**.
-
-### What the UI edits and what the plant file edits
-
-| Object | Created and edited in |
-| --- | --- |
-| Zone, its thermostat and sensors | Guided setup, **Add zone**, and the zone's edit menu. |
-| Private loop and private valve | The zone form and the zone's loop steps. |
-| Pump | Guided setup and **Plant settings**. |
-| Source | **Add source**, the source entry, or the plant file. |
-| Shared loop, shared valve, source selector | The plant file only; zone and loop forms can select existing shared loops and shared valves. |
-| Dry run | **Plant settings** only. |
-
-### Sources
-
-**Add source** adds a heat source for recommendations, with its **Source type**, **Priority**, **Availability entity**, and optional **Source demand entity**.
-A **Temperature-qualified buffer** also needs a **Buffer temperature entity** and a **Minimum buffer temperature**.
-Direct source demand can execute only outside Dry run and after a valid pump path exists.
-
-## Observe the result
-
-After setup, Hydronicus exposes entities associated with the Plant.
-Each zone, valve, pump, and source is a device named after the object alone, under the Plant device that carries the Plant name.
-Entity IDs come from those device names, so the trial Plant has entities such as `climate.bedroom`, `binary_sensor.bedroom_heating_demand`, and `binary_sensor.bedroom_loop_valve_requested`, while Plant-wide entities such as `select.trial_plant_requested_mode` keep the Plant name.
-The zone's combined temperature is `sensor.bedroom_combined_temperature`, so it does not take the entity ID of a room sensor such as `sensor.bedroom_temperature`.
-A zone climate entity that Hydronicus puts in its area keeps the same entity ID, because the area is set after the entities are registered.
-If an entity ID is already taken, Home Assistant adds a suffix such as `_2`.
-
-The useful states for a first simulation are:
-
-- The zone climate entity, which reports the aggregate current temperature and target.
-- The zone **Heating demand** binary sensor, which reports the calculated virtual heat demand.
-- The zone **Combined temperature** sensor, which reports the aggregate the controller uses, identifies usable and excluded observations in its attributes, and lists the sensors its areas resolve to.
-- The valve requested and pump requested binary sensors, which report virtual requests.
-
-Explanations and reasons are diagnostic entities, listed under **Diagnostic** on the device page:
-
-- The zone **Blocked** binary sensor and **Blocked reason** sensor, which expose fail-closed sensor decisions without parsing prose.
-- The zone **Explanation** sensor, which reports why demand is requested, idle, or blocked.
-- The **Topology preview** sensor, which reports zone and loop counts, such as `2 zones, 2 loops`, and exposes compiled logic and structured warnings as separate attributes.
-
-Change the synthetic temperature below the target and wait for the configured virtual valve opening time.
-The virtual sequence is:
-
-```text
-zone demand -> loop request -> valve opening -> valve ready -> pump requested
-```
-
-Raise the synthetic temperature above the stop threshold.
-The pump enters virtual overrun before it becomes idle, and the valve closes after the pump no longer needs protection.
-
-No physical service call is dispatched while Dry run remains enabled.
-
-Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
-The zone **Cooling dew point** sensor reports the worst-case dew point, and its `dew_point_temperature` and `dew_point_humidity` attributes show the highest readings it combines.
-A zone has cooling entities only when it routes to a loop with cooling turned on, which is also when its thermostat offers cool modes.
-The Plant has source entities, such as **Recommended source** and **Source changeover**, only when it has at least one source.
-When a change removes an object's reason for an entity, such as turning off a loop's cooling, the reload removes that entity from Home Assistant.
-Source-selector operations remain Dry run only.
-When Dry run is off, valves and pumps in heating and cooling, and a configured direct source-demand output, can execute after the required confirmation and pump-path checks.
-
-Every relationship is stored by a generated identifier rather than by a display name.
-Renaming an object keeps its relationships, so always open the topology preview after a change rather than relying on names.
+A zone's thermostat mode counts only when it matches the Plant mode.
 
 ## Observation units
 
-Hydronicus evaluates every temperature in degrees Celsius and every humidity in percent, whatever unit system Home Assistant displays.
-It reads each observation's `unit_of_measurement` attribute and normalizes the value once, when the observation is read.
-The same rules apply to zone temperature sensors, zone humidity sensors, loop supply and surface temperature sensors, and source temperature inputs.
+Hydronicus evaluates every temperature in °C and every humidity in percent, whatever unit system Home Assistant displays.
+It reads each sensor's `unit_of_measurement` and converts the value when it reads it.
 
-| Observation | Accepted unit | Result |
+| Observation | Unit | Result |
 | --- | --- | --- |
 | Temperature | `°C` | Used as reported. |
-| Temperature | `°F` or `K` | Converted to Celsius. |
-| Temperature | No unit | Assumed to be Celsius. |
+| Temperature | `°F` or `K` | Converted to °C. |
+| Temperature | No unit | Taken as °C. |
 | Temperature | Any other unit | Unusable. |
-| Humidity | `%` or no unit | Used as relative humidity in percent. |
+| Humidity | `%` or no unit | Used as relative humidity. |
 | Humidity | Any other unit | Unusable. |
 
-A sensor without a unit is assumed to report Celsius, so give a unit-less template sensor a Celsius value or add the correct `unit_of_measurement`.
-An unusable observation takes the same path as an unavailable or non-numeric one, so a required sensor blocks its zone and the controller fails closed.
-An existing external climate entity reports its current and target temperatures in the Home Assistant unit system, and Hydronicus converts them to Celsius as well.
-Hydronicus-owned sensors, diagnostics, and the Plant card data carry Celsius values, and Home Assistant converts the entity values for display.
+After conversion, a reading must also be physically plausible.
+The ranges are inclusive and catch sensor faults, such as -127 °C from a disconnected probe; they are not comfort or safety limits.
 
-### Plausible observation ranges
+| Observation | Plausible range |
+| --- | --- |
+| Zone temperature and loop surface temperature | -50 to 100 °C |
+| Pump supply temperature | -50 to 150 °C |
+| Humidity | 0 to 100 % |
 
-After unit conversion, each reading must also fall inside a physically plausible range.
-A reading outside its range is unusable and takes the same fail-closed path as an unsupported unit.
-The ranges are inclusive and fixed; they catch sensor faults, not comfort or safety limits.
+An unusable reading counts like an unavailable one: a required sensor blocks its zone, an optional one is left out, and a condensation reference blocks its loop's cooling.
 
-| Observation | Plausible range | Why |
-| --- | --- | --- |
-| Zone temperature | -50 to 100 °C | Room air, from unheated spaces to saunas. |
-| Loop surface temperature | -50 to 100 °C | Heated or cooled floors, walls, and ceilings stay within room-air limits. |
-| Loop supply temperature | -50 to 150 °C | Pressurized boilers and district heating can supply water above 100 °C. |
-| Source temperature | -50 to 150 °C | Buffer and boiler water follows the same limits as supply water. |
-| Zone humidity | 0 to 100 % | Relative humidity cannot leave this range. |
+## Checklist
 
-The ranges reject common fault readings, such as 0 K (-273.15 °C) from a misconfigured template or -127 °C from a disconnected one-wire probe.
-The blocked reason names the rejected value, for example `implausible value -273.15 °C`.
+Before you turn **Control equipment** on:
 
-## Shared equipment
-
-Choose the same pump for several loops, or the same shared valve in several loops, when the equipment is physically shared.
-Hydronicus keeps the actuator requested while any active loop still consumes it.
-It warns when a shared valve or a shared pump prevents independent hydraulic control, so a manifold whose zones share one pump shows that warning when it is created.
-Later edits ask you to confirm only the warnings they introduce.
-Shared loops and shared valves are Plant equipment, created in the [plant file](plant-file.md).
-
-Read [how Hydronicus works](how-it-works.md) for diagrams and the complete ownership rules.
-
-## One live Plant per actuator entity
-
-One actuator entity belongs to one live Plant.
-Sharing equipment between loops happens inside one Plant, never across Plants.
-A valve, pump, or source-demand entity that two Plants bind can be commanded by only one of them at a time, because two live Plants would switch it against each other and either one's Safe shutdown could stop equipment the other needs.
-A Plant counts as live when it is loaded and not in Dry run.
-Plants in Dry run may bind the same entities, for example to compare a draft configuration with the live one.
-When you choose a valve, pump, or source-demand entity that another Plant already binds, the setup, import, zone, source, pump, and plant file reviews list it as a warning that names every other Plant that binds it, with one line for the entities that the same Plants bind.
-You confirm it with **I understand these warnings** before saving.
-Like the other warnings, sharing is confirmed when a change introduces it, so a later edit that leaves it unchanged does not ask again.
-Turning Dry run off is refused while another live Plant controls one of the same entities, and the error names that Plant and the shared entities.
-If two Plants that are both set to run outside Dry run share an entity, the first one to finish claiming its outputs during setup runs live.
-The other one is held in Dry run before it sends any command, and a repair explains the conflict.
-Which Plant claims first is decided when they set up, so it is usually the same at every start, but a Plant whose setup is delayed or retried can lose to a later one.
-Holding a Plant does not change its settings: its Dry run setting and its confirmed outputs are kept.
-The held Plant resumes by itself, through a normal reload, once the conflict is gone, for example when the live Plant enters Dry run, is unloaded, is removed, or fails to set up.
-If several held Plants share the same outputs, only the first of them in Home Assistant's entry order resumes, and the others stay held.
-While a Plant is held, its Dry run binary sensor is on, its `held_by_output_conflict` attribute is true, and its `held_by_plant` attribute names the live Plant.
-Turning Dry run on for a held Plant stores Dry run, so it no longer resumes by itself.
-
-## Configuration checklist
-
-Before accepting a simulated Plant, check all of the following:
-
-- Every temperature sensor is numeric and available.
-- Every temperature sensor reports `°C`, `°F`, `K`, or a Celsius value without a unit.
-- Every reading falls inside its [plausible range](#plausible-observation-ranges).
-- Every selected sensor, and every sensor a covered area names, belongs to the intended test configuration.
-- Every covered area names the temperature sensor you expect, and a zone that cools has a humidity sensor in each of its areas.
-- Each zone has at least one enabled loop.
-- Each loop has a valid valve path and pump.
-- Shared equipment is intentional and documented for the test.
-- The topology preview describes the expected route and sequence.
-- The Plant remains in Dry run for the first test.
-- No real equipment is being used as a test substitute.
-
-If validation rejects a proposed object, review the object references and ownership boundaries before trying a different name.
-Hydronicus rejects inconsistent topology, and a zone that no enabled Delivery Route leaves, rather than silently guessing the intended relationship.
-A loop, valve, or pump that no enabled Delivery Route reaches is accepted, reported as unused equipment, and never requested.
+- Every armed output is the entity of the device its role names.
+- Every zone shows the temperature you expect on its **Combined temperature** sensor.
+- Every loop that cools has a condensation reference, and every zone that cools shows a plausible **Dew point**.
+- Every pump the source runs has **A separator guarantees its flow** only if a separator, buffer, or bypass really protects it.
+- The Dry run proposals follow the order you expect: valves, then pumps, then the source.
+- The physical protections of the plant work without Home Assistant, as [safety limits](safety.md) describes.

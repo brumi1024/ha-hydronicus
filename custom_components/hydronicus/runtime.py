@@ -1,2218 +1,920 @@
-"""Home Assistant runtime boundary for a hydronic plant."""
+"""The Home Assistant runtime of one Plant (contract K5).
+
+Every evaluation snapshots the entities the Plant reads, calls ``step()`` on the
+view that ``step_view`` shows it, calls ``reconcile()``, persists both States,
+sends the actions, raises the Repairs, publishes the entities, and schedules the
+next evaluation at the earlier of ``step()``'s due time and the reconciler's
+next retry. Evaluations are coalesced: any number of state changes in one pass
+of the event loop cause one evaluation.
+
+The evaluation itself never awaits, so it needs no lock. Actions are sent
+afterwards by one chain of tasks, in the order the reconciler gave them, each
+limited to ``CALL_TIMEOUT`` after the evaluation that decided it, so calls to
+one entity act in the order they were decided and none acts later than
+``step()`` assumes. A returned call is not a confirmation; the next observation
+is.
+
+Setup loads the persisted State and the digital thermostats restore their
+entities before the first evaluation, which waits until Home Assistant has
+started. Stopping, as on unload and reload, only cancels timers, listeners, and
+unsent actions, and saves; it never sends a command.
+
+The persisted state also holds the last valid Plant with the outputs it was
+commanding. When a new configuration removes an output that is still on, or is
+not valid at all, the first evaluation runs the off sequence of that previous
+Plant, as Control equipment off would, until its outputs are observed off, and
+only then runs the new Plant; an invalid one is then only observed.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
-from contextlib import suppress
+from collections import deque
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
-from math import isfinite
-from typing import Any
+from datetime import datetime
+from typing import Any, Final
 
-from homeassistant.const import (
-    ATTR_UNIT_OF_MEASUREMENT,
-    EVENT_HOMEASSISTANT_STOP,
-    PERCENTAGE,
-    UnitOfTemperature,
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
 )
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.core import (
+    State as HassState,
+)
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
-from homeassistant.util.unit_conversion import TemperatureConverter
+from homeassistant.helpers.event import (
+    async_track_point_in_utc_time,
+    async_track_state_change_event,
+)
+from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
-from .areas import AreaResolution, ZoneAreaProblem, zone_area_problems
-from .const import (
-    ACTUATOR_COMMAND_TIMEOUT_SECONDS,
-    CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
-    CONF_DRY_RUN,
-    CONF_NAME,
-    CONF_OUTPUT_AUTHORIZATION,
-    CONF_PLANT_ID,
-    CONF_REQUESTED_MODE,
-    DOMAIN,
-    MAX_RECONCILIATION_INTERVAL_SECONDS,
-    MIN_RECONCILIATION_INTERVAL_SECONDS,
-    RECONCILIATION_INTERVAL_SECONDS,
+from .areas import (
+    AreaResolution,
+    async_track_area_changes,
+    covered_area_ids,
+    resolve_area_sensors,
+    zone_area_problems,
 )
-from .core.controller import evaluate
-from .core.entity_bindings import (
-    EntityBinding,
-    configured_entity_bindings,
-    degraded_actuator_ids,
-    unresolved_entity_bindings,
-)
-from .core.executor import (
-    ActuatorExecutionFailure,
-    ActuatorExecutor,
-    ActuatorObservedState,
-    ActuatorOperation,
-    ExecutionReport,
-    SafeShutdownReport,
-)
+from .const import DOMAIN, STORE_SAVE_DELAY, STORE_VERSION
+from .core.demand import aggregate, dew_point, zone_values
 from .core.model import (
-    MAX_ZONE_TARGET_TEMPERATURE,
-    MIN_ZONE_TARGET_TEMPERATURE,
-    ActuatorDiagnostic,
-    ActuatorFeedback,
-    AggregationResult,
-    AreaSensors,
-    CompiledPlant,
-    Evaluation,
-    ExternalClimateThermostatConfig,
-    ExternalClimateThermostatState,
-    ExternalHvacAction,
-    FeedbackObservation,
-    HydronicusThermostatConfig,
-    HydronicusThermostatState,
-    ModeChangeoverPhase,
-    NumericObservation,
-    PlantMode,
-    PlantSnapshot,
-    PumpRuntime,
-    PumpState,
-    RuntimeState,
-    SafeShutdownPhase,
-    SourceRecommendation,
-    TemperatureSensorMetadata,
-    ThermostatHvacMode,
-    ValveRuntime,
-    ValveState,
+    Desired,
+    DigitalThermostat,
+    ExternalThermostat,
+    Loop,
+    Mode,
+    OptionTarget,
+    OutputRole,
+    OutputTarget,
+    Plant,
+    SwitchTarget,
+    ValueTarget,
     Zone,
-    ZoneDecision,
-    ZoneDecisionStatus,
 )
-from .core.ownership import PlantOwnership
-from .entry_configuration import (
-    effective_plant,
-    output_authorization,
-    runtime_configuration_fingerprint,
+from .core.plant_file import PlantFileError, entity_paths, export_plant, parse_plant
+from .core.reconcile import Action, Reconciled, ReconcileState, reconcile, step_view
+from .core.step import (
+    CALL_TIMEOUT,
+    DigitalThermostatState,
+    Observations,
+    OptionState,
+    OutputState,
+    Reading,
+    State,
+    SwitchState,
+    ThermostatState,
+    step,
 )
-from .output_ownership import (
-    OutputConflict,
-    async_schedule_output_review,
-    live_output_conflict,
+from .entity import zone_unique_id
+from .issues import (
+    Issue,
+    async_sync_issues,
+    invalid_plant,
+    missing_area_sensor,
+    missing_binding,
+    output_not_responding,
+    outputs_awaiting_confirmation,
+    zone_area_issue,
 )
-from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
-from .repairs import async_sync_area_repairs, async_sync_repairs
+from .observe import (
+    OutputMemory,
+    SensorKind,
+    external_thermostat,
+    option_value,
+    reading,
+    switch_value,
+)
+from .storage import armed_outputs, control
 
 _LOGGER = logging.getLogger(__name__)
 
-
-@dataclass(slots=True, repr=False)
-class HydronicRuntime:
-    """Runtime data retained for one configured plant.
-
-    The repr names the Plant only. Home Assistant formats a listener's bound
-    method into its job name, and the runtime holds the removal partials of Home
-    Assistant's shared listener tables, so a generated repr would expand every
-    other Plant's runtime through them and grow without bound.
-    """
-
-    plant_id: str
-    name: str
-    dry_run: bool
-    plant: CompiledPlant
-    # Zone, zone-owned circuit and valve, and source ids -> owning config subentry id.
-    object_subentry_ids: Mapping[str, str] = field(default_factory=dict)
-    ownership: PlantOwnership = field(default_factory=lambda: PlantOwnership(zone_objects={}))
-    diagnostics_include_actuator_details: bool = False
-    plant_device_id: str | None = None
-    # Entity platform domain -> unique IDs that platform provided in this setup.
-    provided_entities: dict[str, frozenset[str]] = field(default_factory=dict)
-    configuration_fingerprint: str = ""
-    # What the covered areas named when this runtime was built; a change reloads the Plant.
-    area_resolution: AreaResolution = field(default_factory=AreaResolution)
-    # Zone and route ids in their stored order, which is the order they were set up.
-    # The compiled Plant indexes them by id, so the presentation lists them by this.
-    zone_order: tuple[str, ...] = ()
-    route_order: tuple[str, ...] = ()
-    runtime_state: RuntimeState = field(default_factory=RuntimeState)
-    zone_target_temperatures: dict[str, float] = field(default_factory=dict)
-    zone_preset_modes: dict[str, str] = field(default_factory=dict)
-    zone_hvac_modes: dict[str, ThermostatHvacMode] = field(default_factory=dict)
-    evaluation: Evaluation | None = None
-    snapshot: PlantSnapshot | None = None
-    last_execution: ExecutionReport | None = None
-    unresolved_bindings: tuple[EntityBinding, ...] = ()
-    unavailable_entity_ids: frozenset[str] = frozenset()
-    # Set while this Plant is stored live but held in Dry run because another
-    # live Plant owns a shared output. The hold lives only here, never in storage.
-    output_hold: OutputConflict | None = None
-    _hass: HomeAssistant | None = None
-    _entry: Any | None = None
-    _remove_state_listener: Callable[[], None] | None = None
-    _remove_transition_timer: Callable[[], None] | None = None
-    _remove_reconciliation_timer: Callable[[], None] | None = None
-    _remove_stop_listener: Callable[[], None] | None = None
-    _listeners: set[Callable[[], None]] = field(default_factory=set)
-    _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
-    _refresh_task: asyncio.Task[Any] | None = None
-    _operation_lock: asyncio.Lock = field(init=False, repr=False)
-    _stopping: bool = False
-    _initializing: bool = False
-    refresh_count: int = 0
-    evaluation_count: int = 0
-    coalesced_refresh_count: int = 0
-    reconciliation_count: int = 0
-    reconciliation_changed_count: int = 0
-    reconciliation_unchanged_count: int = 0
-    late_actuator_completion_count: int = 0
-    late_actuator_error_count: int = 0
-    last_reconciliation_status: str = "not_started"
-    last_reconciliation_changed_actuator_count: int = 0
-    _last_publication_signature: str | None = None
-    executor: ActuatorExecutor = field(init=False)
-
-    def __repr__(self) -> str:
-        """Name the Plant without expanding its state or listeners."""
-        return f"<HydronicRuntime {self.plant_id} {self.name!r}>"
-
-    def __post_init__(self) -> None:
-        """Create an executor whose state starts unknown until observed."""
-        self._operation_lock = asyncio.Lock()
-        self.executor = ActuatorExecutor.from_plant(
-            self.plant,
-            dry_run=self.dry_run,
-        )
-
-    @classmethod
-    def from_entry(
-        cls,
-        entry: Any,
-        *,
-        output_hold: OutputConflict | None = None,
-        area_resolution: AreaResolution | None = None,
-    ) -> HydronicRuntime:
-        """Construct safe runtime data from a config entry.
-
-        A runtime built with ``output_hold`` is in Dry run from construction,
-        whatever the stored setting says, so it can never send a command.
-        Zones follow the sensors that ``area_resolution`` resolves for their areas.
-        """
-        areas = area_resolution if area_resolution is not None else AreaResolution()
-        effective = effective_plant(entry, area_sensors=areas.area_sensors)
-        plant = effective.compiled
-        return cls(
-            plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
-            name=str(entry.data.get(CONF_NAME, getattr(entry, "title", "Hydronic plant"))),
-            dry_run=bool(entry.data.get(CONF_DRY_RUN, True)) or output_hold is not None,
-            output_hold=output_hold,
-            plant=plant,
-            object_subentry_ids=effective.object_subentry_ids,
-            ownership=effective.ownership,
-            diagnostics_include_actuator_details=bool(
-                entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
-            ),
-            configuration_fingerprint=runtime_configuration_fingerprint(entry, areas.fingerprint()),
-            area_resolution=areas,
-            zone_order=tuple(zone.id for zone in effective.configuration.zones),
-            route_order=tuple(route.id for route in effective.configuration.routes),
-            runtime_state=RuntimeState(
-                requested_mode=_stored_requested_mode(entry),
-            ),
-            zone_target_temperatures={
-                zone.id: zone.thermostat.initial_target_temperature
-                for zone in plant.zones.values()
-                if isinstance(zone.thermostat, HydronicusThermostatConfig)
-            },
-            zone_preset_modes={
-                zone.id: (
-                    zone.thermostat.initial_preset
-                    if isinstance(zone.thermostat, HydronicusThermostatConfig)
-                    else "none"
-                )
-                for zone in plant.zones.values()
-            },
-            zone_hvac_modes={
-                zone.id: ThermostatHvacMode.OFF
-                for zone in plant.zones.values()
-                if isinstance(zone.thermostat, HydronicusThermostatConfig)
-            },
-            _entry=entry,
-        )
-
-    def subentry_id_for(self, object_id: str) -> str | None:
-        """Return the config subentry owning an object, or ``None`` for the parent Plant."""
-        return self.object_subentry_ids.get(object_id)
-
-    def _not_started_error(self) -> HomeAssistantError:
-        """Describe an operation that reached a runtime without Home Assistant attached."""
-        return HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="runtime_not_started",
-            translation_placeholders={"plant": self.name},
-        )
-
-    def _require_started(self, hass: HomeAssistant | None) -> HomeAssistant:
-        """Return the Home Assistant instance, or raise if the runtime is not started."""
-        active_hass = hass or self._hass
-        if active_hass is None or self._entry is None:
-            raise self._not_started_error()
-        return active_hass
-
-    def _require_internal_zone(self, zone_id: str) -> Zone:
-        """Return a Zone with a Hydronicus-owned thermostat, or raise a validation error."""
-        zone = self.plant.zones.get(zone_id)
-        if zone is None or not isinstance(zone.thermostat, HydronicusThermostatConfig):
-            raise self._unknown_zone_error(zone_id)
-        return zone
-
-    def _unknown_zone_error(self, zone_id: str) -> ServiceValidationError:
-        """Describe a request for a Zone without a Hydronicus-owned thermostat."""
-        return ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="unknown_zone",
-            translation_placeholders={"zone_id": zone_id, "plant": self.name},
-        )
-
-    async def async_set_dry_run(
-        self,
-        dry_run: bool,
-        *,
-        hass: HomeAssistant | None = None,
-        authorization: Mapping[str, Any] | None = None,
-    ) -> bool:
-        """Apply Plant Dry run, safely releasing active heating before suppression.
-
-        A held Plant is already in Dry run at runtime, so requesting Dry run only
-        stores it, and leaving Dry run takes the same authorized, conflict-checked
-        path as any other Plant.
-        """
-        requested = bool(dry_run)
-        if requested == self.dry_run and not (requested and self.output_hold is not None):
-            return True
-        active_hass = hass or self._hass
-        if active_hass is None or self._entry is None:
-            raise self._not_started_error()
-
-        async with self._operation_lock:
-            if requested and not self.dry_run:
-                report = await self._async_safe_shutdown_locked(active_hass, force_dry_run=False)
-                while (
-                    not report.execution.failures
-                    and report.plan.next_deadline is None
-                    and report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
-                ):
-                    report = await self._async_safe_shutdown_locked(
-                        active_hass, force_dry_run=False
-                    )
-                if report.execution.failures or (
-                    report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
-                ):
-                    return False
-                self.runtime_state = replace(
-                    report.next_runtime,
-                    safe_shutdown_phase=SafeShutdownPhase.IDLE,
-                    safe_shutdown_started_at=None,
-                )
-
-            data = dict(self._entry.data)
-            data[CONF_DRY_RUN] = requested
-            if requested:
-                data.pop(CONF_OUTPUT_AUTHORIZATION, None)
-            else:
-                expected_authorization = output_authorization(data)
-                if authorization is None or dict(authorization) != expected_authorization:
-                    raise ServiceValidationError(
-                        translation_domain=DOMAIN,
-                        translation_key="output_authorization_mismatch",
-                        translation_placeholders={"plant": self.name},
-                    )
-                # No await separates this check from the flip below, so a Plant
-                # setting up concurrently either sees this Plant live or is seen.
-                if conflict := live_output_conflict(active_hass, self._entry.entry_id, data):
-                    raise ServiceValidationError(
-                        translation_domain=DOMAIN,
-                        translation_key="output_conflict",
-                        translation_placeholders={"plant": self.name, **conflict.placeholders},
-                    )
-                data[CONF_OUTPUT_AUTHORIZATION] = expected_authorization
-            active_hass.config_entries.async_update_entry(self._entry, data=data)
-            self.dry_run = requested
-            self.executor.dry_run = requested
-            self.output_hold = None
-            async_schedule_output_review(active_hass)
-            if requested:
-                self._notify_listeners_if_changed()
-            else:
-                await self._async_refresh_locked(active_hass)
-        return True
-
-    async def async_prepare_configuration_change(
-        self,
-        hass: HomeAssistant | None = None,
-    ) -> bool:
-        """Reach Dry run before an already-requested destructive graph change."""
-        active_hass = hass or self._hass
-        if active_hass is None:
-            return False
-        while not self.dry_run:
-            if self._stopping:
-                return False
-            if await self.async_set_dry_run(True, hass=active_hass):
-                return True
-            if self.last_execution is not None and self.last_execution.failures:
-                return False
-            delay = self._next_transition_delay(self._now())
-            if delay is None:
-                return False
-            await asyncio.sleep(max(0.01, delay))
-        return True
-
-    async def async_set_requested_mode(
-        self,
-        mode: PlantMode | str,
-        *,
-        hass: HomeAssistant | None = None,
-    ) -> None:
-        """Persist a requested plant mode and immediately reevaluate safely."""
-        try:
-            requested = PlantMode(mode)
-        except ValueError as error:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="unsupported_plant_mode",
-                translation_placeholders={"mode": str(mode)},
-            ) from error
-        active_hass = self._require_started(hass)
-        assert self._entry is not None
-        async with self._operation_lock:
-            data = dict(self._entry.data)
-            data[CONF_REQUESTED_MODE] = requested.value
-            active_hass.config_entries.async_update_entry(self._entry, data=data)
-            self.runtime_state = replace(self.runtime_state, requested_mode=requested)
-            await self._async_refresh_locked(active_hass)
-
-    def requested_mode(self) -> PlantMode:
-        """Return the persisted operator request."""
-        return self.runtime_state.requested_mode
-
-    def active_mode(self) -> PlantMode:
-        """Return the mode currently allowed to use the shared plant."""
-        return self.runtime_state.plant_mode
-
-    def mode_is_locked(self) -> bool:
-        """Return whether a mode transition is waiting for safe idle."""
-        return self.runtime_state.changeover_phase is not ModeChangeoverPhase.IDLE
-
-    def mode_explanation(self) -> str:
-        """Return the structured mode or lockout explanation."""
-        if self.evaluation is None:
-            return "The controller has not evaluated the plant yet."
-        return self.evaluation.diagnostics.mode_explanation
-
-    async def async_start(
-        self, hass: HomeAssistant, *, defer_initial_refresh: bool = False
-    ) -> None:
-        """Attach observations and optionally defer evaluation until entities restore."""
-        self._stopping = False
-        self._initializing = defer_initial_refresh
-        self._last_publication_signature = None
-        if self._remove_state_listener is not None:
-            self._remove_state_listener()
-            self._remove_state_listener = None
-        self._cancel_reconciliation_timer()
-        if self._remove_stop_listener is not None:
-            self._remove_stop_listener()
-            self._remove_stop_listener = None
-        self._hass = hass
-        # The resolution is fixed for this runtime; a change reloads the Plant.
-        async_sync_area_repairs(
-            hass,
-            self.plant_id,
-            self.area_problems,
-            plant_name=self.name,
-            areas=self.area_resolution,
-        )
-        self.executor.observe_entities(self._actuator_states(hass))
-        self._reconcile_actuator_runtime()
-        self._remove_state_listener = async_track_state_change_event(
-            hass, self._observed_entity_ids(), self._async_handle_state_change
-        )
-        self._remove_stop_listener = hass.bus.async_listen_once(
-            EVENT_HOMEASSISTANT_STOP, self._async_handle_homeassistant_stop
-        )
-        if not defer_initial_refresh:
-            await self.async_refresh(hass)
-            self._schedule_periodic_reconciliation(hass)
-
-    async def async_finish_start(self, hass: HomeAssistant) -> None:
-        """Evaluate once after all entity restoration callbacks have completed."""
-        self._initializing = False
-        await self.async_refresh(hass)
-        self._schedule_periodic_reconciliation(hass)
-
-    async def async_stop(self) -> None:
-        """Remove runtime listeners without changing any physical equipment."""
-        self._stopping = True
-        self._initializing = False
-        if self._hass is not None:
-            async_sync_repairs(self._hass, self.plant_id, (), plant_name=self.name)
-            async_sync_area_repairs(
-                self._hass, self.plant_id, (), plant_name=self.name, areas=self.area_resolution
-            )
-        async with self._operation_lock:
-            if self._remove_state_listener is not None:
-                with suppress(ValueError):
-                    self._remove_state_listener()
-                self._remove_state_listener = None
-            self._cancel_transition_timer()
-            self._cancel_reconciliation_timer()
-            if self._remove_stop_listener is not None:
-                with suppress(ValueError):
-                    self._remove_stop_listener()
-                self._remove_stop_listener = None
-            current_task = asyncio.current_task()
-            pending = [task for task in self._tasks if task is not current_task and not task.done()]
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            self._tasks.difference_update(pending)
-            # A cancelled periodic task can finish its finally block while the
-            # gather above is unwinding, so make the timer cancellation idempotent
-            # once more before detaching the Home Assistant instance.
-            self._cancel_transition_timer()
-            self._cancel_reconciliation_timer()
-            self._refresh_task = None
-            self._last_publication_signature = None
-            self._listeners.clear()
-            self._hass = None
-            self._entry = None
-
-    async def _async_handle_homeassistant_stop(self, _event: Event[Any]) -> None:
-        """Cancel runtime work without starting an incomplete shutdown sequence."""
-        # Home Assistant removes a one-shot listener before invoking it.
-        # Clear our stale remover so async_stop does not ask Core to remove it twice.
-        self._remove_stop_listener = None
-        if active_ids := self.active_equipment_ids():
-            _LOGGER.warning(
-                "Plant %s is stopping with active equipment %s; no equipment commands "
-                "are issued during Home Assistant shutdown, so independent safeguards "
-                "must return the plant to a safe state",
-                self.plant_id,
-                ", ".join(active_ids),
-            )
-        await self.async_stop()
-
-    def active_equipment_ids(self) -> tuple[str, ...]:
-        """Return positively observed or retained active physical outputs."""
-        active: set[str] = set()
-        if not self.dry_run:
-            active.update(
-                actuator_id
-                for actuator_id, state in self.runtime_state.valves.items()
-                if state.state is not ValveState.CLOSED
-            )
-            active.update(
-                actuator_id
-                for actuator_id, state in self.runtime_state.pumps.items()
-                if state.state is not PumpState.OFF
-            )
-        for actuator_id in self.executor.bindings:
-            observed = self.executor.actuator_state(actuator_id)
-            if observed in {ActuatorObservedState.ON, ActuatorObservedState.OPEN}:
-                active.add(actuator_id)
-        if not self.dry_run and self.runtime_state.selected_source_id is not None:
-            active.add(f"source:{self.runtime_state.selected_source_id}")
-        return tuple(sorted(active))
-
-    async def async_set_zone_target_temperature(
-        self, zone_id: str, temperature: float, *, hass: HomeAssistant | None = None
-    ) -> None:
-        """Persist and immediately apply a zone setpoint in the runtime."""
-        temperature = _validate_target_temperature(temperature)
-        self._require_internal_zone(zone_id)
-        active_hass = self._require_started(hass)
-
-        async with self._operation_lock:
-            self.zone_target_temperatures[zone_id] = temperature
-            self.zone_preset_modes[zone_id] = "none"
-            await self._async_refresh_locked(active_hass)
-
-    async def async_set_zone_preset_mode(
-        self, zone_id: str, preset_mode: str, *, hass: HomeAssistant | None = None
-    ) -> None:
-        """Persist a configured preset and immediately apply its target in the runtime."""
-        zone = self._require_internal_zone(zone_id)
-        normalized = str(preset_mode).lower()
-        if normalized == "none":
-            target = self.zone_target_temperatures[zone_id]
-        else:
-            if normalized not in _PRESET_MODES:
-                raise ServiceValidationError(
-                    translation_domain=DOMAIN,
-                    translation_key="unsupported_preset_mode",
-                    translation_placeholders={"preset_mode": str(preset_mode)},
-                )
-            try:
-                target = _validate_target_temperature(zone.preset_targets[normalized])
-            except KeyError as error:
-                raise ServiceValidationError(
-                    translation_domain=DOMAIN,
-                    translation_key="preset_not_configured",
-                    translation_placeholders={"preset_mode": normalized, "zone": zone.name},
-                ) from error
-
-        active_hass = self._require_started(hass)
-        async with self._operation_lock:
-            self.zone_target_temperatures[zone_id] = target
-            self.zone_preset_modes[zone_id] = normalized
-            await self._async_refresh_locked(active_hass)
-
-    async def async_set_zone_hvac_mode(
-        self,
-        zone_id: str,
-        hvac_mode: ThermostatHvacMode | str,
-        *,
-        hass: HomeAssistant | None = None,
-    ) -> None:
-        """Update one internal thermostat mode without changing the Plant constraint."""
-        self._require_internal_zone(zone_id)
-        try:
-            mode = ThermostatHvacMode(hvac_mode)
-        except ValueError as error:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="unsupported_hvac_mode",
-                translation_placeholders={"hvac_mode": str(hvac_mode)},
-            ) from error
-        active_hass = self._require_started(hass)
-        async with self._operation_lock:
-            self.zone_hvac_modes[zone_id] = mode
-            await self._async_refresh_locked(active_hass)
-
-    async def async_restore_zone_thermostat(
-        self,
-        zone_id: str,
-        *,
-        target_temperature: float,
-        preset: str,
-        hvac_mode: ThermostatHvacMode,
-        hass: HomeAssistant,
-    ) -> None:
-        """Apply one validated RestoreEntity state atomically and reevaluate."""
-        async with self._operation_lock:
-            self.zone_target_temperatures[zone_id] = _validate_target_temperature(
-                target_temperature
-            )
-            self.zone_preset_modes[zone_id] = preset
-            self.zone_hvac_modes[zone_id] = hvac_mode
-            if not self._initializing:
-                await self._async_refresh_locked(hass)
-
-    def zone_current_temperature(self, zone_id: str) -> float | None:
-        """Return the current aggregate temperature for one zone."""
-        if self.snapshot is None or zone_id not in self.plant.zones:
-            return None
-        aggregation = self.zone_aggregation(zone_id)
-        return aggregation.value if aggregation is not None else None
-
-    @property
-    def area_problems(self) -> tuple[ZoneAreaProblem, ...]:
-        """Return the area problems that the area repairs of this Plant report."""
-        return zone_area_problems(self.plant, self.area_resolution)
-
-    def zone_area_sensors(self, zone_id: str) -> list[dict[str, str | None]]:
-        """Return the sensors each area of a zone resolves to, in the zone's area order."""
-        zone = self.plant.zones.get(zone_id)
-        if zone is None:
-            return []
-        resolved = self.area_resolution.area_sensors
-        return [
-            {
-                "area_id": area.area_id,
-                "temperature_entity_id": (
-                    resolved[area.area_id].temperature_entity_id
-                    if area.area_id in resolved
-                    else None
-                ),
-                "humidity_entity_id": (
-                    resolved[area.area_id].humidity_entity_id if area.area_id in resolved else None
-                ),
-            }
-            for area in zone.areas
-        ]
-
-    def zone_areas(self, zone_id: str) -> list[dict[str, object]]:
-        """Return each area of a zone with its sensors and readings, in the zone's area order.
-
-        A reading is the value the controller used in its last evaluation, so a
-        sensor it judged unusable, such as a stale or unavailable one, reads None.
-        An area that no longer exists is marked ``missing`` and keeps its last name.
-        """
-        zone = self.plant.zones.get(zone_id)
-        if zone is None:
-            return []
-        heating = self.zone_decision(zone_id)
-        cooling = self.cooling_zone_decision(zone_id)
-        snapshot = self.snapshot
-        missing = set(self.area_resolution.missing_area_ids)
-        result: list[dict[str, object]] = []
-        for area in zone.areas:
-            sensors = self.area_resolution.area_sensors.get(area.area_id, AreaSensors())
-            result.append(
-                {
-                    "id": area.area_id,
-                    "name": self.area_resolution.name(area.area_id),
-                    "missing": area.area_id in missing,
-                    "temperature": _used_reading(
-                        sensors.temperature_entity_id,
-                        heating.aggregation if heating is not None else None,
-                        zone.temperature_sensor_metadata,
-                        snapshot.temperatures if snapshot is not None else {},
-                    ),
-                    "humidity": _used_reading(
-                        sensors.humidity_entity_id,
-                        cooling.humidity_aggregation if cooling is not None else None,
-                        zone.humidity_sensor_metadata,
-                        snapshot.humidities if snapshot is not None else {},
-                    ),
-                    "temperature_entity_id": sensors.temperature_entity_id,
-                    "humidity_entity_id": sensors.humidity_entity_id,
-                }
-            )
-        return result
-
-    def zone_aggregation(self, zone_id: str) -> AggregationResult | None:
-        """Return the structured aggregate for a zone from the last evaluation."""
-        if self.evaluation is None or zone_id not in self.plant.zones:
-            return None
-        decision = self.evaluation.diagnostics.zone_decisions.get(zone_id)
-        return decision.aggregation if decision is not None else None
-
-    def zone_decision(self, zone_id: str) -> ZoneDecision | None:
-        """Return the structured controller decision for one zone, when available."""
-        if self.evaluation is None:
-            return None
-        return self.evaluation.diagnostics.zone_decisions.get(zone_id)
-
-    def cooling_zone_decision(self, zone_id: str) -> ZoneDecision | None:
-        """Return the structured cooling decision for one zone."""
-        if self.evaluation is None:
-            return None
-        return self.evaluation.diagnostics.cooling_zone_decisions.get(zone_id)
-
-    def cooling_zone_is_blocked(self, zone_id: str) -> bool:
-        """Return whether cooling safety currently blocks one zone."""
-        decision = self.cooling_zone_decision(zone_id)
-        return decision is not None and decision.status in {
-            ZoneDecisionStatus.SENSOR_BLOCKED,
-            ZoneDecisionStatus.MODE_BLOCKED,
-        }
-
-    def cooling_zone_blocked_reason(self, zone_id: str) -> str | None:
-        """Return the structured cooling interlock explanation for one zone."""
-        decision = self.cooling_zone_decision(zone_id)
-        if decision is None or decision.status not in {
-            ZoneDecisionStatus.SENSOR_BLOCKED,
-            ZoneDecisionStatus.MODE_BLOCKED,
-        }:
-            return None
-        return decision.explanation
-
-    def actuator_diagnostic(self, actuator_id: str) -> ActuatorDiagnostic | None:
-        """Return structured feedback and manual-mismatch diagnostics."""
-        if self.evaluation is None:
-            return None
-        return self.evaluation.diagnostics.actuator_diagnostics.get(actuator_id)
-
-    def actuator_execution_failure(self, actuator_id: str) -> ActuatorExecutionFailure | None:
-        """Return the latest rejected or timed-out command explanation."""
-        return self.executor.failure_for(actuator_id)
-
-    def execution_summary(self) -> dict[str, object]:
-        """Return the latest bounded proposed, executed, and suppressed operations."""
-        report = self.last_execution
-
-        def operations(items: tuple[ActuatorOperation, ...]) -> list[dict[str, object]]:
-            return [
-                {
-                    "actuator_id": operation.actuator_id,
-                    "entity_id": operation.entity_id,
-                    "service": operation.service,
-                    "target_state": operation.target_state.value,
-                    "target_value": operation.target_value,
-                    "reason": operation.reason,
-                }
-                for operation in items
-            ]
-
-        if report is None:
-            return {
-                "dry_run": self.dry_run,
-                "proposed": [],
-                "executed": [],
-                "suppressed": [],
-                "failures": [],
-            }
-        return {
-            "dry_run": self.dry_run,
-            "proposed": operations(report.proposed),
-            "executed": operations(report.executed),
-            "suppressed": operations(report.suppressed),
-            "failures": [failure.explanation for failure in report.failures],
-        }
-
-    def presentation_snapshot(
-        self,
-        hass: HomeAssistant | None = None,
-        *,
-        control_entities: Mapping[str, str] | None = None,
-    ) -> dict[str, object]:
-        """Return the versioned, redacted Plant presentation contract."""
-        entities = (
-            self.presentation_entities(hass) if control_entities is None else control_entities
-        )
-        return build_plant_presentation(self, control_entities=entities)
-
-    def serialized_presentation(self, hass: HomeAssistant | None = None) -> str:
-        """Return deterministic JSON for a presentation snapshot."""
-        return serialize_presentation(self.presentation_snapshot(hass))
-
-    def presentation_entities(self, hass: HomeAssistant | None = None) -> dict[str, str]:
-        """Resolve Hydronicus-owned entities used by presentation and permissions."""
-        active_hass = hass or self._hass
-        if active_hass is None:
-            return {}
-        return presentation_entity_ids(
-            active_hass,
-            self._entry.entry_id if self._entry is not None else "",
-            self.plant_id,
-            tuple(self.plant.zones),
-        )
-
-    async def async_safe_shutdown(
-        self,
-        hass: HomeAssistant | None = None,
-        *,
-        now: datetime | None = None,
-        force_dry_run: bool | None = None,
-    ) -> SafeShutdownReport:
-        """Release source demand, observe overrun, then stop pumps and valves."""
-        active_hass = self._require_started(hass)
-        effective_now = now or self._now()
-        async with self._operation_lock:
-            return await self._async_safe_shutdown_locked(
-                active_hass,
-                now=effective_now,
-                force_dry_run=force_dry_run,
-            )
-
-    async def _async_safe_shutdown_locked(
-        self,
-        active_hass: HomeAssistant,
-        *,
-        now: datetime | None = None,
-        force_dry_run: bool | None = None,
-    ) -> SafeShutdownReport:
-        """Execute safe shutdown while the runtime mutation lock is held."""
-        effective_now = now or self._now()
-        report = await self.executor.async_safe_shutdown(
-            self.plant,
-            self.runtime_state,
-            effective_now,
-            lambda operation: self._async_dispatch_actuator(active_hass, operation),
-            force_dry_run=self.dry_run if force_dry_run is None else force_dry_run,
-            force_dry_run_actuator_ids=(
-                frozenset({self.plant.source_selector.id})
-                if self.plant.source_selector is not None
-                and self.plant.source_selector.entity_id is not None
-                else frozenset()
-            ),
-            unavailable_actuator_ids=self._unavailable_actuator_ids(),
-        )
-        self.runtime_state = report.next_runtime
-        self.last_execution = report.execution
-        self._apply_execution_contract(report.execution, effective_now)
-        if not report.execution.failures and report.plan.next_deadline is not None:
-            self._schedule_next_transition(active_hass, effective_now)
-        self._notify_listeners_if_changed()
-        return report
-
-    def zone_dew_point(self, zone_id: str) -> float | None:
-        """Return the last calculated dew point for one zone."""
-        decision = self.cooling_zone_decision(zone_id)
-        return decision.dew_point if decision is not None else None
-
-    def zone_condensation_margin(self, zone_id: str) -> float | None:
-        """Return the lowest configured reference margin for one zone."""
-        decision = self.cooling_zone_decision(zone_id)
-        return decision.condensation_margin if decision is not None else None
-
-    def zone_is_blocked(self, zone_id: str) -> bool:
-        """Return structured blocked state without parsing a reason string."""
-        decision = self.zone_decision(zone_id)
-        if decision is not None:
-            return decision.status in {
-                ZoneDecisionStatus.SENSOR_BLOCKED,
-                ZoneDecisionStatus.MODE_BLOCKED,
-            } or (decision.aggregation is not None and decision.aggregation.is_blocked)
-        aggregation = self.zone_aggregation(zone_id)
-        return aggregation.is_blocked if aggregation is not None else False
-
-    def zone_blocked_reason(self, zone_id: str) -> str | None:
-        """Return the structured blocking explanation for one zone."""
-        decision = self.zone_decision(zone_id)
-        if decision is not None and decision.status in {
-            ZoneDecisionStatus.SENSOR_BLOCKED,
-            ZoneDecisionStatus.MODE_BLOCKED,
-        }:
-            return decision.explanation or (
-                decision.aggregation.explanation if decision.aggregation is not None else None
-            )
-        aggregation = self.zone_aggregation(zone_id)
-        if aggregation is not None and aggregation.is_blocked:
-            return aggregation.explanation
-        return None
-
-    def source_recommendation(self) -> SourceRecommendation | None:
-        """Return the structured shadow source recommendation, when configured."""
-        if self.evaluation is None:
-            return None
-        return self.evaluation.diagnostics.source_recommendation
-
-    def source_diagnostic(self, source_id: str) -> object | None:
-        """Return one source result from the latest atomic evaluation."""
-        if self.evaluation is None:
-            return None
-        return self.evaluation.diagnostics.source_diagnostics.get(source_id)
-
-    def source_selection_diagnostic(self) -> object | None:
-        """Return the latest atomic source-selection result."""
-        if self.evaluation is None:
-            return None
-        return self.evaluation.diagnostics.source_selection
-
-    def operational_status(self) -> str:
-        """Return a bounded plant-level status suitable for Recorder telemetry."""
-        if self._stopping:
-            return "stopped"
-        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-            return "safe_shutdown"
-        if self.evaluation is None:
-            return "initializing"
-        if any(
-            decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
-            for decision in (
-                *self.evaluation.diagnostics.zone_decisions.values(),
-                *self.evaluation.diagnostics.cooling_zone_decisions.values(),
-            )
-        ):
-            return "blocked"
-        return self.evaluation.control_plan.plant_mode.value
-
-    def set_output_hold(self, hold: OutputConflict | None) -> None:
-        """Record which live Plant holds this one in Dry run, or clear a stale hold.
-
-        This never changes whether the runtime is in Dry run: releasing a hold
-        takes a reload through the normal authorized startup path.
-        """
-        if hold == self.output_hold:
-            return
-        self.output_hold = hold
-        self._notify_listeners_if_changed()
-
-    def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-        """Register an entity update callback."""
-        self._listeners.add(listener)
-
-        def remove_listener() -> None:
-            self._listeners.discard(listener)
-
-        return remove_listener
-
-    @callback
-    def _async_handle_state_change(self, event: Event[EventStateChangedData]) -> None:
-        """Observe actuator feedback and re-evaluate after a configured state changes."""
-        if self._stopping:
-            return
-        if self._hass is not None:
-            self._schedule_task(self._hass, self._async_handle_state_change_async(event))
-
-    async def _async_handle_state_change_async(self, event: Event[EventStateChangedData]) -> None:
-        """Apply one state change under the runtime mutation lock."""
-        if self._stopping:
-            return
-        entity_id = event.data.get("entity_id")
-        new_state = event.data.get("new_state")
-        if entity_id is None:
-            return
-        async with self._operation_lock:
-            self.executor.observe_entity_state(
-                entity_id,
-                getattr(new_state, "state", None),
-            )
-            actuator_ids = self._actuator_ids_for_entity(entity_id)
-            if actuator_ids:
-                self._reconcile_actuator_runtime(actuator_ids)
-            if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-                self._notify_listeners_if_changed()
-                return
-            if self._hass is not None and not self._stopping:
-                self._schedule_refresh(self._hass)
-
-    @callback
-    def _async_handle_transition_timer(self, _now: datetime) -> None:
-        """Re-evaluate when the earliest virtual deadline becomes due."""
-        self._remove_transition_timer = None
-        if self._hass is not None and not self._stopping:
-            if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-                self._schedule_task(self._hass, self.async_safe_shutdown(self._hass))
-            else:
-                self._schedule_refresh(self._hass)
-
-    @callback
-    def _async_handle_reconciliation_timer(self, _now: datetime) -> None:
-        """Periodically read all configured actuator entities to repair missed events."""
-        self._remove_reconciliation_timer = None
-        if self._hass is not None and not self._stopping:
-            self._schedule_task(self._hass, self._async_periodic_reconciliation(self._hass))
-
-    async def _async_periodic_reconciliation(self, hass: HomeAssistant) -> None:
-        """Re-read actuator state, then schedule the next periodic reconciliation."""
-        try:
-            if not self._stopping:
-                async with self._operation_lock:
-                    if self._stopping:
-                        return
-                    previous_status = self.last_reconciliation_status
-                    previous_observed = dict(self.executor.observed_states)
-                    previous_feedback = dict(self.executor.feedback_states)
-                    self.executor.observe_entities(self._actuator_states(hass))
-                    changed_actuators = {
-                        actuator_id
-                        for actuator_id in set(previous_observed)
-                        | set(self.executor.observed_states)
-                        if previous_observed.get(actuator_id)
-                        != self.executor.observed_states.get(actuator_id)
-                    }
-                    changed_actuators.update(
-                        f"feedback:{actuator_id}"
-                        for actuator_id in set(previous_feedback)
-                        | set(self.executor.feedback_states)
-                        if previous_feedback.get(actuator_id)
-                        != self.executor.feedback_states.get(actuator_id)
-                    )
-                    self.reconciliation_count += 1
-                    self.last_reconciliation_changed_actuator_count = len(changed_actuators)
-                    if changed_actuators:
-                        self.reconciliation_changed_count += 1
-                        self.last_reconciliation_status = "changed"
-                        self._reconcile_actuator_runtime()
-                        await self._async_refresh_locked(hass)
-                    else:
-                        self.reconciliation_unchanged_count += 1
-                        self.last_reconciliation_status = "unchanged"
-                        if self.last_reconciliation_status != previous_status:
-                            self._notify_listeners_if_changed()
-        finally:
-            if self._hass is hass and not self._stopping:
-                self._schedule_periodic_reconciliation(hass)
-
-    def _schedule_periodic_reconciliation(self, hass: HomeAssistant) -> None:
-        """Schedule the next periodic actuator read."""
-        self._cancel_reconciliation_timer()
-        interval = min(
-            max(float(RECONCILIATION_INTERVAL_SECONDS), MIN_RECONCILIATION_INTERVAL_SECONDS),
-            MAX_RECONCILIATION_INTERVAL_SECONDS,
-        )
-        self._remove_reconciliation_timer = async_call_later(
-            hass, interval, self._async_handle_reconciliation_timer
-        )
-
-    def _schedule_task(self, hass: HomeAssistant, coroutine: Any) -> asyncio.Task[Any]:
-        """Track an asynchronous runtime operation so unload can cancel it."""
-        task = hass.async_create_task(coroutine, eager_start=False)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-        return task
-
-    def _schedule_refresh(self, hass: HomeAssistant) -> None:
-        """Coalesce state-event refreshes into one tracked task."""
-        if self._refresh_task is not None and not self._refresh_task.done():
-            self.coalesced_refresh_count += 1
-            return
-        self._refresh_task = self._schedule_task(hass, self.async_refresh(hass))
-
-    @callback
-    def _async_handle_late_actuator_completion(self, task: asyncio.Task[Any]) -> None:
-        """Consume a timed-out service result and conservatively re-read HA state."""
-        try:
-            service_error = task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            self.late_actuator_error_count += 1
-        else:
-            if service_error is not None:
-                self.late_actuator_error_count += 1
-        self.late_actuator_completion_count += 1
-        if self._hass is not None and not self._stopping:
-            self._schedule_refresh(self._hass)
-
-    def _cancel_transition_timer(self) -> None:
-        """Cancel the pending one-shot transition timer, if any."""
-        if self._remove_transition_timer is not None:
-            self._remove_transition_timer()
-            self._remove_transition_timer = None
-
-    def _cancel_reconciliation_timer(self) -> None:
-        """Cancel the periodic reconciliation timer, if any."""
-        if self._remove_reconciliation_timer is not None:
-            self._remove_reconciliation_timer()
-            self._remove_reconciliation_timer = None
-
-    def _temperature_sensor_ids(self) -> tuple[str, ...]:
-        """Return every configured temperature sensor once."""
-        return tuple(
-            dict.fromkeys(
-                sensor_id
-                for zone in self.plant.zones.values()
-                for sensor_id in zone.temperature_sensors
-            )
-        )
-
-    def _actuator_states(self, hass: HomeAssistant) -> dict[str, str | None]:
-        """Read configured actuator states without deriving desired state."""
-        states = {
-            binding.entity_id: getattr(_bound_state(hass, binding.entity_id), "state", None)
-            for binding in self.executor.bindings.values()
-        }
-        states.update(
-            {
-                entity_id: getattr(_bound_state(hass, entity_id), "state", None)
-                for entity_id in self.executor.readiness_bindings.values()
-            }
-        )
-        return states
-
-    def _refresh_binding_health(self, hass: HomeAssistant) -> None:
-        """Resolve configured references and synchronize the public Repairs state."""
-        bindings = configured_entity_bindings(self.plant)
-        resolved_entity_ids = {
-            binding.entity_id
-            for binding in bindings
-            if _entity_reference_is_resolved(_bound_state(hass, binding.entity_id))
-        }
-        self.unresolved_bindings = unresolved_entity_bindings(self.plant, resolved_entity_ids)
-        self.unavailable_entity_ids = frozenset(
-            binding.entity_id for binding in self.unresolved_bindings
-        )
-        async_sync_repairs(hass, self.plant_id, self.unresolved_bindings, plant_name=self.name)
-
-    def _unavailable_actuator_ids(self) -> frozenset[str]:
-        """Return primary actuator IDs that must never receive a command."""
-        return degraded_actuator_ids(self.plant, self.unavailable_entity_ids)
-
-    def _actuator_ids_for_entity(self, entity_id: str) -> set[str]:
-        """Return actuators whose command or readiness feedback uses one entity."""
-        return {
-            *{
-                actuator_id
-                for actuator_id, binding in self.executor.bindings.items()
-                if binding.entity_id == entity_id
-            },
-            *{
-                actuator_id
-                for actuator_id, feedback_entity_id in self.executor.readiness_bindings.items()
-                if feedback_entity_id == entity_id
-            },
-        }
-
-    def _reconcile_actuator_runtime(self, actuator_ids: set[str] | None = None) -> None:
-        """Seed virtual actuator state from feedback without trusting commands as feedback."""
-        now = self._now()
-        valves = dict(self.runtime_state.valves)
-        selected = (
-            actuator_ids
-            if actuator_ids is not None
-            else set(self.plant.valves) | set(self.plant.pumps)
-        )
-        for actuator_id in sorted(set(self.plant.valves) & selected):
-            current = valves.get(actuator_id)
-            observed = self.executor.actuator_state(actuator_id)
-            readiness = self.executor.readiness_state(actuator_id)
-            retained = self.executor.requested_state(actuator_id)
-            failure = self.executor.failure_for(actuator_id)
-            if failure is not None and observed is not failure.operation.target_state:
-                valves[actuator_id] = ValveRuntime(ValveState.INDETERMINATE, now, False)
-                continue
-            if readiness is True:
-                valves[actuator_id] = ValveRuntime(
-                    ValveState.OPEN,
-                    current.changed_at if current is not None else now,
-                    True,
-                )
-            elif retained is ActuatorObservedState.ON and current is not None:
-                # A command is still pending.  Keep the timer contract instead
-                # of reissuing the command when a state event was missed.
-                if current.state is ValveState.OPENING:
-                    valves[actuator_id] = current
-                else:
-                    valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
-            elif (
-                self.dry_run
-                and current is not None
-                and current.state in {ValveState.OPENING, ValveState.OPEN}
-            ):
-                # Shadow execution does not change the physical entity.  Keep
-                # the proposed opening and open valve stable across identical
-                # reads, or the proposal would restart on every refresh.
-                valves[actuator_id] = current
-            elif readiness is False or observed is ActuatorObservedState.OFF:
-                valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
-            elif observed is ActuatorObservedState.ON:
-                if current is None or current.state is ValveState.CLOSED:
-                    valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
-                elif current.state is ValveState.OPENING:
-                    valves[actuator_id] = ValveRuntime(
-                        ValveState.OPENING,
-                        current.changed_at or now,
-                        False,
-                    )
-            elif current is not None:
-                # An unknown transition invalidates a previous ready assumption.
-                valves[actuator_id] = (
-                    current
-                    if self.dry_run or current.state is ValveState.OPENING
-                    else ValveRuntime(ValveState.OPENING, now, False)
-                )
-
-        pumps = dict(self.runtime_state.pumps)
-        for actuator_id in sorted(set(self.plant.pumps) & selected):
-            current = pumps.get(actuator_id)
-            observed = self.executor.actuator_state(actuator_id)
-            retained = self.executor.requested_state(actuator_id)
-            failure = self.executor.failure_for(actuator_id)
-            if (
-                failure is not None
-                and failure.operation.target_state is ActuatorObservedState.ON
-                and observed is not ActuatorObservedState.ON
-            ):
-                pumps[actuator_id] = PumpRuntime(PumpState.OFF, now)
-                continue
-            if observed is ActuatorObservedState.ON:
-                if current is not None and current.state is PumpState.OVERRUN:
-                    pumps[actuator_id] = current
-                else:
-                    pumps[actuator_id] = PumpRuntime(
-                        PumpState.RUNNING,
-                        current.changed_at if current is not None else now,
-                    )
-            elif (
-                self.dry_run
-                and current is not None
-                and current.state in {PumpState.RUNNING, PumpState.OVERRUN}
-            ):
-                # Shadow execution never starts the physical pump, so an idle
-                # entity must not undo the proposed run or overrun.
-                pumps[actuator_id] = current
-            elif retained is ActuatorObservedState.ON and current is not None:
-                if current.state is PumpState.STARTING:
-                    pumps[actuator_id] = current
-                else:
-                    pumps[actuator_id] = PumpRuntime(PumpState.STARTING, now)
-            elif observed is ActuatorObservedState.OFF:
-                pumps[actuator_id] = PumpRuntime(
-                    PumpState.OFF,
-                    current.changed_at if current is not None else now,
-                )
-            elif current is not None and current.state is PumpState.RUNNING:
-                pumps[actuator_id] = PumpRuntime(
-                    PumpState.STARTING
-                    if any(state.demand for state in self.runtime_state.zone_runtime.values())
-                    else PumpState.OVERRUN,
-                    current.changed_at or now,
-                )
-
-        observed_sources = [
-            source.id
-            for source in sorted(self.plant.sources.values(), key=lambda item: item.id)
-            if source.demand_entity_id is not None
-            and self.executor.actuator_state(f"source:{source.id}") is not ActuatorObservedState.OFF
-        ]
-        self.runtime_state = replace(
-            self.runtime_state,
-            valves=valves,
-            pumps=pumps,
-            selected_source_id=(
-                observed_sources[0] if observed_sources else self.runtime_state.selected_source_id
-            ),
-        )
-
-    def _humidity_sensor_ids(self) -> tuple[str, ...]:
-        """Return every configured humidity sensor once."""
-        return tuple(
-            dict.fromkeys(
-                sensor_id
-                for zone in self.plant.zones.values()
-                for sensor_id in zone.humidity_sensors
-            )
-        )
-
-    def _reference_sensor_ids(self) -> tuple[str, ...]:
-        """Return every configured supply and surface reference once."""
-        return tuple(
-            dict.fromkeys(
-                sensor_id
-                for circuit in self.plant.circuits.values()
-                for sensor_id in (
-                    circuit.supply_temperature_sensor,
-                    circuit.surface_temperature_sensor,
-                )
-                if sensor_id is not None
-            )
-        )
-
-    def _observation_sensor_ids(self) -> tuple[str, ...]:
-        """Return all configured observation entities for listeners and refresh."""
-        return tuple(
-            dict.fromkeys(
-                (
-                    *self._temperature_sensor_ids(),
-                    *self._humidity_sensor_ids(),
-                    *self._reference_sensor_ids(),
-                )
-            )
-        )
-
-    def _feedback_sensor_ids(self) -> tuple[str, ...]:
-        """Return every configured actuator feedback entity once."""
-        valve_feedback = tuple(
-            dict.fromkeys(
-                entity_id
-                for valve in self.plant.valves.values()
-                for entity_id in (valve.position_entity_id,)
-                if entity_id is not None
-            )
-        )
-        pump_feedback = tuple(
-            dict.fromkeys(
-                entity_id
-                for pump in self.plant.pumps.values()
-                for entity_id in (
-                    pump.power_entity_id,
-                    pump.flow_entity_id,
-                    pump.fault_entity_id,
-                )
-                if entity_id is not None
-            )
-        )
-        return valve_feedback + pump_feedback
-
-    def _observed_entity_ids(self) -> tuple[str, ...]:
-        """Return observations, source inputs, and actuators for one listener."""
-        return tuple(
-            dict.fromkeys(
-                (
-                    *self._observation_sensor_ids(),
-                    *self._feedback_sensor_ids(),
-                    *(
-                        zone.thermostat.entity_id
-                        for zone in self.plant.zones.values()
-                        if isinstance(zone.thermostat, ExternalClimateThermostatConfig)
-                    ),
-                    *(
-                        entity_id
-                        for source in self.plant.sources.values()
-                        for entity_id in (
-                            source.availability_entity_id,
-                            source.temperature_entity_id,
-                            source.demand_entity_id,
-                        )
-                        if entity_id is not None
-                    ),
-                    *self.executor.readiness_bindings.values(),
-                    *(binding.entity_id for binding in self.executor.bindings.values()),
-                )
-            )
-        )
-
-    async def _async_dispatch_actuator(
-        self, hass: HomeAssistant, operation: ActuatorOperation
-    ) -> None:
-        """Translate a generic operation into one explicit Home Assistant service call."""
-        service_data: dict[str, object] = {"entity_id": operation.entity_id}
-        if operation.service == "select_option":
-            if operation.target_value is None:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="selector_option_missing",
-                    translation_placeholders={"entity_id": operation.entity_id},
-                )
-            service_data["option"] = operation.target_value
-        service_task = self._schedule_task(
-            hass,
-            self._async_call_actuator_service(hass, operation, service_data),
-        )
-        try:
-            service_error = await asyncio.wait_for(
-                asyncio.shield(service_task),
-                ACTUATOR_COMMAND_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            service_task.add_done_callback(self._async_handle_late_actuator_completion)
-            raise
-        finally:
-            if service_task.done():
-                self._tasks.discard(service_task)
-        if service_error is not None:
-            raise service_error
-
-    @staticmethod
-    async def _async_call_actuator_service(
-        hass: HomeAssistant,
-        operation: ActuatorOperation,
-        service_data: Mapping[str, object],
-    ) -> Exception | None:
-        """Capture an HA service rejection so a shielded late task cannot leak it."""
-        try:
-            await hass.services.async_call(
-                operation.domain,
-                operation.service,
-                service_data,
-                blocking=True,
-            )
-        except Exception as error:
-            return error
-        return None
-
-    def _actuator_transition_delays(self, now: datetime) -> list[float]:
-        """Return pending changeover, valve, and pump delays."""
-        delays: list[float] = []
-        if self.runtime_state.changeover_deadline is not None:
-            delays.append(
-                max(
-                    0.0,
-                    (self.runtime_state.changeover_deadline - now).total_seconds(),
-                )
-            )
-        for valve_node in self.plant.valves.values():
-            valve = self.runtime_state.valves.get(valve_node.id)
-            if (
-                valve is not None
-                and valve.state is ValveState.OPENING
-                and valve.changed_at is not None
-            ):
-                deadline = valve.changed_at + timedelta(seconds=valve_node.opening_time_seconds)
-                delays.append(max(0.0, (deadline - now).total_seconds()))
-        for pump_node in self.plant.pumps.values():
-            pump = self.runtime_state.pumps.get(pump_node.id)
-            if pump is not None and pump.state is PumpState.OVERRUN and pump.changed_at is not None:
-                deadline = pump.changed_at + timedelta(seconds=pump_node.overrun_seconds)
-                delays.append(max(0.0, (deadline - now).total_seconds()))
-        return delays
-
-    def _controller_transition_delays(self, now: datetime) -> list[float]:
-        """Return zone timing and source-selection delays."""
-        delays: list[float] = []
-        if self.evaluation is not None:
-            for decision in self.evaluation.diagnostics.zone_decisions.values():
-                if decision.deadline is not None:
-                    delays.append(max(0.0, (decision.deadline - now).total_seconds()))
-
-        selection = self.runtime_state.source_selection
-        if self.plant.source_selector is not None:
-            if selection.phase.value == "breaking" and selection.transition_started_at is not None:
-                deadline = selection.transition_started_at + timedelta(
-                    seconds=self.plant.source_selector.break_interval_seconds
-                )
-                if deadline > now:
-                    delays.append((deadline - now).total_seconds())
-            if selection.phase.value == "minimum_dwell" and selection.last_selected_at is not None:
-                deadline = selection.last_selected_at + timedelta(
-                    seconds=self.plant.source_selector.minimum_dwell_seconds
-                )
-                if deadline > now:
-                    delays.append((deadline - now).total_seconds())
-
-        for zone_id, zone in self.plant.zones.items():
-            zone_runtime = self.runtime_state.zone_runtime.get(zone_id)
-            if zone_runtime is None or zone_runtime.last_demand_transition_at is None:
-                continue
-            duration = (
-                zone.minimum_active_duration_seconds
-                if zone_runtime.demand
-                else zone.minimum_idle_duration_seconds
-            )
-            if duration > 0:
-                deadline = zone_runtime.last_demand_transition_at + timedelta(seconds=duration)
-                if deadline > now:
-                    delays.append((deadline - now).total_seconds())
-        return delays
-
-    def _observation_expiry_delays(self, now: datetime) -> list[float]:
-        """Return future sensor and feedback freshness expirations."""
-        if self.snapshot is None:
-            return []
-        delays: list[float] = []
-        for zone in self.plant.zones.values():
-            for sensor in zone.sensor_metadata:
-                observation = self.snapshot.temperatures.get(sensor.entity_id)
-                if observation is None or observation.observed_at is None:
-                    continue
-                deadline = observation.observed_at + timedelta(seconds=sensor.max_age_seconds)
-                if deadline > now:
-                    delays.append((deadline - now).total_seconds())
-        for source in self.plant.sources.values():
-            if source.temperature_entity_id is None:
-                continue
-            observation = self.snapshot.source_temperatures.get(source.id)
-            if observation is None or observation.observed_at is None:
-                continue
-            deadline = observation.observed_at + timedelta(seconds=source.maximum_age_seconds)
-            if deadline > now:
-                delays.append((deadline - now).total_seconds())
-        for sensor_id in self._humidity_sensor_ids():
-            observation = self.snapshot.humidities.get(sensor_id)
-            if observation is None or observation.observed_at is None:
-                continue
-            max_age = min(
-                sensor.max_age_seconds
-                for zone in self.plant.zones.values()
-                for sensor in zone.humidity_sensor_metadata
-                if sensor.entity_id == sensor_id
-            )
-            deadline = observation.observed_at + timedelta(seconds=max_age)
-            if deadline > now:
-                delays.append((deadline - now).total_seconds())
-        for circuit in self.plant.circuits.values():
-            for observation, max_age in (
-                (circuit.supply_temperature_sensor, circuit.supply_temperature_max_age_seconds),
-                (
-                    circuit.surface_temperature_sensor,
-                    circuit.surface_temperature_max_age_seconds,
-                ),
-            ):
-                if observation is None:
-                    continue
-                reading = (
-                    self.snapshot.supply_temperatures.get(observation)
-                    if observation == circuit.supply_temperature_sensor
-                    else self.snapshot.surface_temperatures.get(observation)
-                )
-                if reading is None or reading.observed_at is None:
-                    continue
-                deadline = reading.observed_at + timedelta(seconds=max_age)
-                if deadline > now:
-                    delays.append((deadline - now).total_seconds())
-        for valve in self.plant.valves.values():
-            if valve.position_entity_id is None:
-                continue
-            observation = self.snapshot.actuator_feedback.get(valve.id)
-            reading = observation.position if observation is not None else None
-            if reading is not None and reading.observed_at is not None:
-                deadline = reading.observed_at + timedelta(seconds=valve.position_max_age_seconds)
-                if deadline > now:
-                    delays.append((deadline - now).total_seconds())
-        for pump in self.plant.pumps.values():
-            feedback = self.snapshot.actuator_feedback.get(pump.id)
-            for kind, entity_id, max_age in (
-                ("power", pump.power_entity_id, pump.power_max_age_seconds),
-                ("flow", pump.flow_entity_id, pump.flow_max_age_seconds),
-                ("fault", pump.fault_entity_id, pump.fault_max_age_seconds),
-            ):
-                if entity_id is None:
-                    continue
-                reading = getattr(feedback, kind, None) if feedback is not None else None
-                if reading is not None and reading.observed_at is not None:
-                    deadline = reading.observed_at + timedelta(seconds=max_age)
-                    if deadline > now:
-                        delays.append((deadline - now).total_seconds())
-        return delays
-
-    def _next_transition_delay(self, now: datetime) -> float | None:
-        """Return seconds until the earliest actuator, duration, or stale deadline."""
-        if self.runtime_state.safe_shutdown_phase is SafeShutdownPhase.PUMPS_STOPPED:
-            return 0.0
-        delays = [
-            *self._actuator_transition_delays(now),
-            *self._controller_transition_delays(now),
-            *self._observation_expiry_delays(now),
-        ]
-        return min(delays) if delays else None
-
-    def _schedule_next_transition(self, hass: HomeAssistant, now: datetime) -> None:
-        """Replace the pending timer with the earliest controller deadline."""
-        self._cancel_transition_timer()
-        delay = self._next_transition_delay(now)
-        if delay is None:
-            return
-        if delay == 0:
-            if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-                self._schedule_task(hass, self.async_safe_shutdown(hass))
-            else:
-                self._schedule_refresh(hass)
-            return
-        self._remove_transition_timer = async_call_later(
-            hass, delay, self._async_handle_transition_timer
-        )
-
-    def _refresh_actuator_observations(self, hass: HomeAssistant) -> None:
-        """Refresh executor observations and reconcile retained runtime state."""
-        self.executor.observe_entities(self._actuator_states(hass))
-        self._reconcile_actuator_runtime()
-
-    @staticmethod
-    def _temperature_observation(
-        hass: HomeAssistant, entity_id: str, plausible: PlausibleRange
-    ) -> NumericObservation:
-        """Read one temperature observation in Celsius with its Home Assistant timestamp."""
-        return _numeric_observation(_bound_state(hass, entity_id), celsius_from_unit, plausible)
-
-    @staticmethod
-    def _humidity_observation(hass: HomeAssistant, entity_id: str) -> NumericObservation:
-        """Read one relative humidity observation in percent with its timestamp."""
-        return _numeric_observation(
-            _bound_state(hass, entity_id), relative_humidity_from_unit, RELATIVE_HUMIDITY_RANGE
-        )
-
-    @staticmethod
-    def _feedback_observation(
-        hass: HomeAssistant,
-        entity_id: str | None,
-    ) -> FeedbackObservation | None:
-        """Read one configured feedback entity without coercing its meaning."""
-        if entity_id is None:
-            return None
-        state = _bound_state(hass, entity_id)
-        if state is None:
-            return FeedbackObservation(None, None)
-        raw_state = getattr(state, "state", None)
-        value: float | bool | str | None = raw_state
-        if raw_state is not None:
-            with suppress(TypeError, ValueError):
-                value = float(raw_state)
-        observed_at = getattr(state, "last_reported", None)
-        if observed_at is None:
-            observed_at = getattr(state, "last_updated", None)
-        return FeedbackObservation(value, observed_at)
-
-    def _build_snapshot(self, hass: HomeAssistant) -> PlantSnapshot:
-        """Build one immutable controller snapshot from current HA state."""
-        source_temperatures: dict[str, NumericObservation] = {}
-        source_availability: dict[str, bool] = {}
-        source_selector_states: dict[str, str | None] = {}
-        source_demand_states: dict[str, bool] = {}
-        for source in self.plant.sources.values():
-            if source.temperature_entity_id is not None:
-                source_temperatures[source.id] = self._temperature_observation(
-                    hass,
-                    source.temperature_entity_id,
-                    WATER_TEMPERATURE_RANGE,
-                )
-            if source.availability_entity_id is not None:
-                source_availability[source.id] = _state_is_available(
-                    _bound_state(hass, source.availability_entity_id)
-                )
-            if source.demand_entity_id is not None:
-                state = _bound_state(hass, source.demand_entity_id)
-                if state is not None:
-                    source_demand_states[source.id] = _state_is_on(state)
-        if (
-            self.plant.source_selector is not None
-            and self.plant.source_selector.entity_id is not None
-        ):
-            state = _bound_state(hass, self.plant.source_selector.entity_id)
-            source_selector_states[self.plant.source_selector.id] = (
-                getattr(state, "state", None) if state is not None else None
-            )
-
-        actuator_feedback: dict[str, ActuatorFeedback] = {}
-        for valve in self.plant.valves.values():
-            if valve.position_entity_id is not None:
-                actuator_feedback[valve.id] = ActuatorFeedback(
-                    position=self._feedback_observation(hass, valve.position_entity_id)
-                )
-        for pump in self.plant.pumps.values():
-            if any(
-                entity_id is not None
-                for entity_id in (pump.power_entity_id, pump.flow_entity_id, pump.fault_entity_id)
-            ):
-                actuator_feedback[pump.id] = ActuatorFeedback(
-                    power=self._feedback_observation(hass, pump.power_entity_id),
-                    flow=self._feedback_observation(hass, pump.flow_entity_id),
-                    fault=self._feedback_observation(hass, pump.fault_entity_id),
-                )
-
-        temperature_ids = set(self._temperature_sensor_ids())
-        humidity_ids = set(self._humidity_sensor_ids())
-        supply_ids = {
-            circuit.supply_temperature_sensor
-            for circuit in self.plant.circuits.values()
-            if circuit.supply_temperature_sensor is not None
-        }
-        surface_ids = {
-            circuit.surface_temperature_sensor
-            for circuit in self.plant.circuits.values()
-            if circuit.surface_temperature_sensor is not None
-        }
-        thermostat_states: dict[
-            str, HydronicusThermostatState | ExternalClimateThermostatState
-        ] = {}
-        for zone_id, zone in self.plant.zones.items():
-            if isinstance(zone.thermostat, HydronicusThermostatConfig):
-                thermostat_states[zone_id] = HydronicusThermostatState(
-                    target_temperature=self.zone_target_temperatures.get(
-                        zone_id, zone.thermostat.initial_target_temperature
-                    ),
-                    preset=self.zone_preset_modes.get(zone_id, "none"),
-                    hvac_mode=self.zone_hvac_modes.get(zone_id, ThermostatHvacMode.OFF),
-                )
-            else:
-                thermostat_states[zone_id] = _external_climate_state(
-                    _bound_state(hass, zone.thermostat.entity_id),
-                    hass.config.units.temperature_unit,
-                )
-        return PlantSnapshot(
-            temperatures={
-                sensor_id: self._temperature_observation(hass, sensor_id, AIR_TEMPERATURE_RANGE)
-                for sensor_id in temperature_ids
-            },
-            thermostats=thermostat_states,
-            humidities={
-                sensor_id: self._humidity_observation(hass, sensor_id) for sensor_id in humidity_ids
-            },
-            supply_temperatures={
-                sensor_id: self._temperature_observation(hass, sensor_id, WATER_TEMPERATURE_RANGE)
-                for sensor_id in supply_ids
-            },
-            surface_temperatures={
-                sensor_id: self._temperature_observation(hass, sensor_id, AIR_TEMPERATURE_RANGE)
-                for sensor_id in surface_ids
-            },
-            source_temperatures=source_temperatures,
-            source_availability=source_availability,
-            source_selector_states=source_selector_states,
-            source_demand_states=source_demand_states,
-            actuator_feedback=actuator_feedback,
-            unavailable_entity_ids=self.unavailable_entity_ids,
-        )
-
-    async def _async_execute_evaluation(
-        self,
-        hass: HomeAssistant,
-        result: Evaluation,
-        now: datetime,
-    ) -> None:
-        """Store and execute one completed pure controller evaluation."""
-        self.evaluation_count += 1
-        self.runtime_state = result.next_runtime
-        self.evaluation = result
-        self.last_execution = await self.executor.async_execute(
-            result.control_plan,
-            lambda operation: self._async_dispatch_actuator(hass, operation),
-            unavailable_actuator_ids=(
-                self._unavailable_actuator_ids()
-                | self._actuator_ids_blocked_by_failed_valve_starts()
-            ),
-            force_dry_run_actuator_ids=(
-                frozenset({self.plant.source_selector.id})
-                if self.plant.source_selector is not None
-                and self.plant.source_selector.entity_id is not None
-                else frozenset()
-            ),
-        )
-        self._apply_execution_contract(self.last_execution, now)
-
-    async def async_refresh(self, hass: HomeAssistant) -> None:
-        """Read sensor states, evaluate the controller, and notify shadow entities."""
-        async with self._operation_lock:
-            await self._async_refresh_locked(hass)
-
-    async def _async_refresh_locked(self, hass: HomeAssistant) -> None:
-        """Read sensor states and evaluate the controller while holding the mutation lock."""
-        if self._stopping:
-            return
-        self._refresh_binding_health(hass)
-        self.refresh_count += 1
-        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-            await self._async_safe_shutdown_locked(hass)
-            return
-
-        self._refresh_actuator_observations(hass)
-        self.snapshot = self._build_snapshot(hass)
-        now = self._now()
-        result = evaluate(
-            self.plant,
-            self.snapshot,
-            self.runtime_state,
-            now,
-        )
-        await self._async_execute_evaluation(hass, result, now)
-        if self._entry is not None or self._hass is not None:
-            self._schedule_next_transition(hass, now)
-        self._notify_listeners_if_changed()
-
-    def _notify_listeners_if_changed(self) -> None:
-        """Publish only when recorder-visible runtime state has changed."""
-        signature = repr(
-            (
-                self.runtime_state,
-                tuple(sorted(self.zone_target_temperatures.items())),
-                tuple(sorted(self.zone_preset_modes.items())),
-                tuple(sorted(self.zone_hvac_modes.items())),
-                self.operational_status(),
-                self.output_hold,
-                self.last_reconciliation_status,
-                self.last_reconciliation_changed_actuator_count,
-                self._evaluation_publication_signature(),
-                # Area readings the zone's own value does not reveal, such as a
-                # sensor that is not the minimum of a minimum aggregation.
-                tuple((zone_id, self.zone_areas(zone_id)) for zone_id in sorted(self.plant.zones)),
-                tuple(sorted(self.executor.failure_states.items())),
-                self._execution_publication_signature(),
-                tuple(sorted(self.executor.reconciliations.items()))
-                if self.diagnostics_include_actuator_details
-                else (),
-            )
-        )
-        if signature == self._last_publication_signature:
-            return
-        self._last_publication_signature = signature
-        for listener in tuple(self._listeners):
-            listener()
-
-    def _evaluation_publication_signature(self) -> object:
-        """Return evaluation data without volatile deadline timestamps."""
-        if self.evaluation is None:
-            return None
-        diagnostics = self.evaluation.diagnostics
-
-        def decision_signature(decision: ZoneDecision) -> tuple[object, ...]:
-            aggregation = decision.aggregation
-            return (
-                decision.status,
-                decision.demand,
-                aggregation.value if aggregation is not None else None,
-                aggregation.usable_sensor_ids if aggregation is not None else (),
-                aggregation.excluded_optional_sensor_ids if aggregation is not None else (),
-                aggregation.blocking_required_sensor_ids if aggregation is not None else (),
-                decision.explanation,
-                decision.deadline is not None,
-                decision.humidity_aggregation.value
-                if decision.humidity_aggregation is not None
-                else None,
-                decision.dew_point_temperature,
-                decision.dew_point,
-                decision.condensation_margin,
-                tuple(
-                    (interlock.interlock_id, interlock.status, interlock.reason)
-                    for interlock in decision.interlocks
-                ),
-            )
-
-        return (
-            tuple(
-                (zone_id, decision_signature(decision))
-                for zone_id, decision in sorted(diagnostics.zone_decisions.items())
-            ),
-            tuple(
-                (zone_id, decision_signature(decision))
-                for zone_id, decision in sorted(diagnostics.cooling_zone_decisions.items())
-            ),
-            tuple(sorted(diagnostics.zone_reasons.items())),
-            tuple(sorted(diagnostics.interlocks.items())),
-            diagnostics.source_recommendation,
-            tuple(sorted(diagnostics.source_diagnostics.items())),
-            diagnostics.source_selection,
-            diagnostics.mode_conflicts,
-            tuple(
-                (
-                    actuator_id,
-                    diagnostic.status,
-                    diagnostic.mismatch,
-                    diagnostic.blocked,
-                    diagnostic.expected,
-                    diagnostic.observed,
-                    diagnostic.stale_feedback,
-                )
-                for actuator_id, diagnostic in sorted(diagnostics.actuator_diagnostics.items())
-            ),
-            (
-                tuple(sorted(diagnostics.circuit_reasons.items())),
-                tuple(sorted(diagnostics.actuator_reasons.items())),
-                tuple(sorted(self.executor.reconciliations.items())),
-            )
-            if self.diagnostics_include_actuator_details
-            else (),
-        )
-
-    def _execution_publication_signature(self) -> object:
-        """Return stable operation outcomes that must trigger subscribers."""
-        report = self.last_execution
-        if report is None:
-            return None
-
-        def operation_signature(operation: ActuatorOperation) -> tuple[object, ...]:
-            return (
-                operation.actuator_id,
-                operation.domain,
-                operation.service,
-                operation.target_state,
-                operation.target_value,
-                operation.reason,
-            )
-
-        return (
-            tuple(operation_signature(operation) for operation in report.proposed),
-            tuple(operation_signature(operation) for operation in report.executed),
-            tuple(operation_signature(operation) for operation in report.suppressed),
-            tuple(
-                (
-                    operation_signature(failure.operation),
-                    failure.kind,
-                    failure.explanation,
-                )
-                for failure in report.failures
-            ),
-        )
-
-    def _now(self) -> datetime:
-        """Read the UTC clock in one place so timer tests can control it."""
-        return datetime.now(UTC)
-
-    def _reconcile_executed_operation(
-        self,
-        operation: ActuatorOperation,
-        pumps: dict[str, PumpRuntime],
-        now: datetime,
-    ) -> bool:
-        """Apply the retained-runtime contract for one executed operation."""
-        if operation.actuator_id not in self.plant.pumps:
-            return False
-        if operation.target_state is not ActuatorObservedState.ON:
-            return False
-        pumps[operation.actuator_id] = PumpRuntime(PumpState.STARTING, now)
-        return True
-
-    def _reconcile_failed_operation(
-        self,
-        operation: ActuatorOperation,
-        valves: dict[str, ValveRuntime],
-        pumps: dict[str, PumpRuntime],
-        now: datetime,
-    ) -> bool:
-        """Fail one actuator operation into its conservative retained state."""
-        if operation.actuator_id in self.plant.valves and operation.target_state in {
-            ActuatorObservedState.ON,
-            ActuatorObservedState.OPEN,
-        }:
-            valves[operation.actuator_id] = ValveRuntime(ValveState.INDETERMINATE, now, False)
-            return True
-        if operation.actuator_id in self.plant.valves and operation.target_state in {
-            ActuatorObservedState.OFF,
-            ActuatorObservedState.CLOSED,
-        }:
-            valves[operation.actuator_id] = ValveRuntime(
-                ValveState.CLOSED
-                if self.executor.actuator_state(operation.actuator_id) is operation.target_state
-                else ValveState.INDETERMINATE,
-                now,
-                False,
-            )
-            return True
-        if (
-            operation.actuator_id in self.plant.pumps
-            and operation.target_state is ActuatorObservedState.ON
-        ):
-            pumps[operation.actuator_id] = PumpRuntime(PumpState.OFF, now)
-            return True
-        if (
-            operation.actuator_id in self.plant.pumps
-            and operation.target_state is ActuatorObservedState.OFF
-        ):
-            pumps[operation.actuator_id] = PumpRuntime(
-                PumpState.OFF
-                if self.executor.actuator_state(operation.actuator_id) is ActuatorObservedState.OFF
-                else PumpState.RUNNING,
-                now,
-            )
-            return True
-        return False
-
-    def _apply_execution_contract(self, report: ExecutionReport, now: datetime) -> None:
-        """Keep physical pumps in starting state until an observation confirms them."""
-        if self.dry_run and not report.failures:
-            return
-        pumps = dict(self.runtime_state.pumps)
-        valves = dict(self.runtime_state.valves)
-        changed = False
-        for operation in report.executed:
-            changed |= self._reconcile_executed_operation(operation, pumps, now)
-        for failure in report.failures:
-            changed |= self._reconcile_failed_operation(
-                failure.operation,
-                valves,
-                pumps,
-                now,
-            )
-        for valve_id in self._failed_valve_start_ids():
-            current = valves.get(valve_id)
-            if current is not None and current.state is not ValveState.CLOSED:
-                valves[valve_id] = ValveRuntime(ValveState.INDETERMINATE, now, False)
-                changed = True
-        if changed:
-            self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
-
-    def _actuator_ids_blocked_by_failed_valve_starts(self) -> frozenset[str]:
-        """Block dependent pump starts while a valve-open command is indeterminate."""
-        failed_valve_ids = self._failed_valve_start_ids()
-        if not failed_valve_ids:
-            return frozenset()
-        return frozenset(
-            circuit.pump_id
-            for circuit in self.plant.circuits.values()
-            if any(valve_id in failed_valve_ids for valve_id in circuit.valve_ids)
-        )
-
-    def _failed_valve_start_ids(self) -> frozenset[str]:
-        """Return valves whose last open command has not been safely reconciled."""
-        return frozenset(
-            valve_id
-            for valve_id in self.plant.valves
-            if (failure := self.executor.failure_for(valve_id)) is not None
-            and failure.operation.target_state
-            in {ActuatorObservedState.ON, ActuatorObservedState.OPEN}
-        )
-
-
-def _used_reading(
-    entity_id: str | None,
-    aggregation: AggregationResult | None,
-    metadata: tuple[TemperatureSensorMetadata, ...],
-    observations: Mapping[str, NumericObservation],
-) -> float | None:
-    """Return a sensor's calibrated reading when the aggregation judged it usable."""
-    if entity_id is None or aggregation is None or entity_id not in aggregation.usable_sensor_ids:
-        return None
-    observation = observations.get(entity_id)
-    if observation is None or observation.value is None:
-        return None
-    offset = next(
-        (sensor.calibration_offset for sensor in metadata if sensor.entity_id == entity_id), 0.0
-    )
-    return observation.value + offset
-
-
-def _stored_requested_mode(entry: Any) -> PlantMode:
-    """Decode the operator mode conservatively across old config entries."""
-    raw_mode = entry.data.get(CONF_REQUESTED_MODE, PlantMode.AUTO.value)
-    try:
-        return PlantMode(raw_mode)
-    except ValueError:
-        return PlantMode.AUTO
-
-
-_PRESET_MODES = {"comfort", "eco", "away"}
-
-
-def _bound_state(hass: HomeAssistant, entity_id: str) -> State | None:
-    """Return the state of a bound entity, or None for an entity of this integration.
-
-    A Plant never reads a Hydronicus entity as an observation or actuator. Entity IDs
-    follow zone names, so a zone's Temperature can take the ID of a room sensor that
-    did not exist yet, and reading it would feed the Plant's output back into itself.
-    """
-    registry_entry = er.async_get(hass).async_get(entity_id)
-    if registry_entry is not None and registry_entry.platform == DOMAIN:
-        return None
-    return hass.states.get(entity_id)
-
-
-def _entity_reference_is_resolved(state: Any) -> bool:
-    """Return whether Home Assistant currently exposes the configured entity."""
-    return state is not None
-
-
-def _state_is_available(state: Any) -> bool:
-    """Interpret common Home Assistant availability helper states."""
-    if state is None:
-        return False
-    normalized = str(state.state).strip().lower()
-    if normalized in {"on", "true", "1", "yes", "available", "ready", "home"}:
-        return True
-    if normalized in {"off", "false", "0", "no", "unavailable", "unknown", "away"}:
-        return False
-    return False
-
-
-def _state_is_on(state: Any) -> bool:
-    """Interpret a synthetic source-demand switch state conservatively."""
-    if state is None:
-        return False
-    return str(state.state).strip().lower() in {"on", "true", "1", "yes"}
-
-
-def celsius_from_unit(value: float, unit: object) -> float | None:
-    """Apply the observation unit policy to one temperature reading.
-
-    Celsius, Fahrenheit, and kelvin are converted to Celsius. A reading without a
-    unit is assumed to be Celsius. Any other unit makes the reading unusable, so
-    the controller treats it like any other invalid observation and fails closed.
-    """
-    if unit is None or unit == "" or unit == UnitOfTemperature.CELSIUS:
-        return value
-    if unit not in TemperatureConverter.VALID_UNITS:
-        return None
-    return TemperatureConverter.convert(value, str(unit), UnitOfTemperature.CELSIUS)
-
-
-def relative_humidity_from_unit(value: float, unit: object) -> float | None:
-    """Accept relative humidity in percent, or without a unit, and nothing else."""
-    if unit is None or unit == "" or unit == PERCENTAGE:
-        return value
-    return None
+# How many Dry run proposals diagnostics keep.
+_PROPOSALS_KEPT: Final = 50
 
 
 @dataclass(frozen=True, slots=True)
-class PlausibleRange:
-    """An inclusive band of physically plausible readings after unit normalization."""
+class Proposal:
+    """An action that Dry run recorded instead of sending."""
 
-    minimum: float
-    maximum: float
-    unit: str
-
-    def contains(self, value: float) -> bool:
-        """Return whether a normalized reading lies inside the band."""
-        return self.minimum <= value <= self.maximum
+    at: float
+    entity: str
+    target: OutputTarget
 
 
-# Room air and heated or cooled surfaces. The band is wide enough for unheated
-# spaces and saunas, and rejects sensor fault values such as 0 K or -127 °C.
-AIR_TEMPERATURE_RANGE = PlausibleRange(-50.0, 100.0, UnitOfTemperature.CELSIUS)
-# Supply water and source or buffer water. Pressurized boilers and district
-# heating can run above 100 °C, so the upper bound is wider than for air.
-WATER_TEMPERATURE_RANGE = PlausibleRange(-50.0, 150.0, UnitOfTemperature.CELSIUS)
-RELATIVE_HUMIDITY_RANGE = PlausibleRange(0.0, 100.0, PERCENTAGE)
+@dataclass(frozen=True, slots=True)
+class Commanding:
+    """A valid Plant and the armed outputs it commanded, persisted across setups.
 
-
-def _numeric_observation(
-    state: State | None,
-    normalize: Callable[[float, object], float | None],
-    plausible: PlausibleRange,
-) -> NumericObservation:
-    """Read one numeric observation, normalized by its unit, with its timestamp.
-
-    A reading in an unsupported unit, or a finite reading outside the plausible
-    band, carries no value and says why, so the controller fails closed and
-    explains the real cause. Non-finite readings pass through unchanged and the
-    controller reports them as non-finite.
+    A new configuration compares itself with it, so that outputs it no longer
+    has are stopped by the Plant that started them.
     """
-    if state is None:
-        return NumericObservation(value=None, observed_at=None)
-    observed_at = state.last_reported or state.last_updated
-    try:
-        value = float(state.state)
-    except TypeError, ValueError:
-        return NumericObservation(value=None, observed_at=observed_at)
-    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
-    normalized = normalize(value, unit)
-    if normalized is None:
-        return NumericObservation(
-            value=None, observed_at=observed_at, invalid_reason=f"unsupported unit {unit!r}"
-        )
-    if isfinite(normalized) and not plausible.contains(normalized):
-        return NumericObservation(
-            value=None,
-            observed_at=observed_at,
-            invalid_reason=f"implausible value {normalized:.2f} {plausible.unit}",
-        )
-    return NumericObservation(value=normalized, observed_at=observed_at)
+
+    plant: Plant
+    outputs: frozenset[str]
+
+    def to_dict(self, document: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Return JSON-friendly data, with the Plant's export when already made."""
+        return {
+            "plant": dict(document) if document is not None else export_plant(self.plant),
+            "outputs": sorted(self.outputs),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Commanding:
+        outputs = data["outputs"]
+        if not isinstance(outputs, list):
+            raise TypeError("outputs is not a list")
+        return cls(parse_plant(data["plant"]), frozenset(str(entity) for entity in outputs))
 
 
-def _finite_state_attribute(state: Any, key: str) -> float | None:
-    """Read one finite diagnostic climate attribute without guessing."""
-    attributes = getattr(state, "attributes", {})
-    try:
-        raw_value = attributes.get(key)
-        if raw_value is None:
+@dataclass(frozen=True, slots=True)
+class ZoneReadings:
+    """What a zone's sensors show now, for its entities."""
+
+    temperature: float | None = None
+    humidity: float | None = None
+    dew_point: float | None = None
+    # Each covered area with the sensors it names and their readings.
+    areas: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # Each explicit temperature sensor with its reading.
+    sensors: Mapping[str, float | None] = field(default_factory=dict)
+
+
+def service_call(action: Action) -> tuple[str, str, dict[str, Any]]:
+    """Return the domain, service, and data of the call that drives an output to a target."""
+    entity = action.entity
+    domain = entity.partition(".")[0]
+    data: dict[str, Any] = {"entity_id": entity}
+    match action.target:
+        case SwitchTarget(on=on):
+            if domain == "valve":
+                return domain, "open_valve" if on else "close_valve", data
+            if domain in ("switch", "input_boolean"):
+                return domain, "turn_on" if on else "turn_off", data
+            return "homeassistant", "turn_on" if on else "turn_off", data
+        case OptionTarget(option=option):
+            return domain, "select_option", {**data, "option": option}
+        case ValueTarget(value=value):
+            return domain, "set_value", {**data, "value": value}
+
+
+class PlantRuntime:
+    """Runs one Plant: observe, step, reconcile, send, persist, and publish."""
+
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, plant: Plant, problem: str | None = None
+    ) -> None:
+        self.hass = hass
+        self.entry = entry
+        # The Plant the entities show. While the configuration is not valid, it is an
+        # empty Plant with the stored ID and name, and ``problem`` says what is wrong.
+        self.plant = plant
+        self.problem = problem
+        # The last valid Plant and the outputs it commanded, as persisted.
+        self.previous: Commanding | None = None
+        # The previous Plant while its off sequence runs, with the outputs it stops.
+        self.stopping: Commanding | None = None
+        self._decided = False
+        self._export = None if problem is not None else export_plant(plant)
+        self._stopping_export: dict[str, Any] | None = None
+        self.store: Store[dict[str, Any]] = Store(hass, STORE_VERSION, store_key(entry.entry_id))
+        self.state = State()
+        self.reconcile_state = ReconcileState()
+        self.requested_mode = Mode.OFF
+        self.memory = OutputMemory()
+        self.thermostats: dict[str, DigitalThermostatState] = {}
+        self.areas = AreaResolution()
+        # The last evaluation: what was observed, what step() saw, and what it decided.
+        self.observations: Observations | None = None
+        self.view: Observations | None = None
+        self.desired: Desired | None = None
+        self.reconciled: Reconciled | None = None
+        self.evaluated_at: float | None = None
+        self.zone_readings: dict[str, ZoneReadings] = {}
+        self.missing: dict[str, str] = {}
+        self.proposals: deque[Proposal] = deque(maxlen=_PROPOSALS_KEPT)
+        self.issues: tuple[Issue, ...] = ()
+        # The first evaluation always syncs, which clears Repairs of an earlier setup,
+        # such as an invalid Plant that a reconfigure has fixed.
+        self._issues_synced = False
+        # The unique IDs each platform provided in this setup, by entity domain.
+        self.provided: dict[str, frozenset[str]] = {}
+        # The configuration this runtime was built from; a change reloads the Plant.
+        self.fingerprint: str = ""
+        # Whether a changed configuration has already asked for a reload.
+        self.reloading = False
+        # The device registry ID of the Plant device, which zone and source devices are under.
+        self.plant_device_id = ""
+        self._outputs = plant.outputs()
+        self._listeners: list[CALLBACK_TYPE] = []
+        self._unsubscribe: list[CALLBACK_TYPE] = []
+        self._state_listener: CALLBACK_TYPE | None = None
+        self._area_listener: CALLBACK_TYPE | None = None
+        self._tracked: frozenset[str] = frozenset()
+        self._timer: CALLBACK_TYPE | None = None
+        self._dispatch: asyncio.Task[None] | None = None
+        self._saved: dict[str, Any] | None = None
+        self._queued = False
+        self._set_up = False
+        self._hass_started = False
+        self._began = False
+        self._stopped = False
+        self._awaiting_restore = {
+            zone.slug for zone in plant.zones if isinstance(zone.thermostat, DigitalThermostat)
+        }
+
+    # Lifecycle
+
+    async def async_load(self) -> None:
+        """Restore the persisted State, reconciler State, output memory, and Plant mode."""
+        data = await self.store.async_load()
+        if not data:
+            return
+        try:
+            self.state = State.from_dict(data.get("state", {}))
+            self.reconcile_state = ReconcileState.from_dict(data.get("reconcile", {}))
+            self.memory = OutputMemory.from_dict(data.get("outputs", {}))
+            self.requested_mode = Mode(data.get("mode", Mode.OFF))
+        except (KeyError, TypeError, ValueError) as error:
+            _LOGGER.warning(
+                "The persisted state of Plant %s could not be read and starts over: %s",
+                self.entry.title,
+                error,
+            )
+            self.state, self.reconcile_state = State(), ReconcileState()
+            self.memory, self.requested_mode = OutputMemory(), Mode.OFF
+        if (commanding := data.get("commanding")) is not None:
+            try:
+                self.previous = Commanding.from_dict(commanding)
+            except (KeyError, TypeError, ValueError, PlantFileError) as error:
+                _LOGGER.warning(
+                    "The previous configuration of Plant %s could not be read, so outputs it "
+                    "removed are not stopped: %s",
+                    self.entry.title,
+                    error,
+                )
+        kept = set(self._outputs)
+        if self.previous is not None:
+            kept |= self.previous.outputs
+        self.memory.forget_except(kept)
+        self._saved = self._data()
+
+    @callback
+    def async_start(self) -> None:
+        """Begin once Home Assistant has started and every digital thermostat has restored.
+
+        A zone whose climate entity is disabled never restores and counts as
+        restored; its thermostat reads as not restored, so the zone never calls.
+        """
+        self._set_up = True
+        if "climate" not in self.provided and self._awaiting_restore:
+            _LOGGER.warning(
+                "The thermostats of Plant %s did not load; its zones with a digital "
+                "thermostat do not call until they do",
+                self.plant.name,
+            )
+            self._awaiting_restore.clear()
+        registry = er.async_get(self.hass)
+        for slug in tuple(self._awaiting_restore):
+            entity_id = registry.async_get_entity_id(
+                "climate", DOMAIN, zone_unique_id(self.plant.id, slug, "climate")
+            )
+            entry = registry.async_get(entity_id) if entity_id is not None else None
+            if entry is not None and entry.disabled_by is not None:
+                self._awaiting_restore.discard(slug)
+        self._unsubscribe.append(async_at_started(self.hass, self._async_on_started))
+        self._maybe_begin()
+
+    async def _async_on_started(self, _hass: HomeAssistant) -> None:
+        self._hass_started = True
+        self._maybe_begin()
+
+    @callback
+    def _maybe_begin(self) -> None:
+        if self._began or self._stopped:
+            return
+        if not (self._set_up and self._hass_started) or self._awaiting_restore:
+            return
+        self._began = True
+        self.request_evaluation()
+
+    async def async_stop(self) -> None:
+        """Stop without sending a command, and save the persisted state now."""
+        self._stopped = True
+        if self._timer is not None:
+            self._timer()
+            self._timer = None
+        for unsubscribe in (self._state_listener, self._area_listener, *self._unsubscribe):
+            if unsubscribe is not None:
+                unsubscribe()
+        self._state_listener = self._area_listener = None
+        self._unsubscribe.clear()
+        if self._dispatch is not None and not self._dispatch.done():
+            self._dispatch.cancel()
+            await asyncio.wait([self._dispatch])
+        await self.store.async_save(self._data())
+
+    # Inputs from the Plant's own entities
+
+    @callback
+    def restore_thermostat(self, zone: str, thermostat: DigitalThermostatState) -> None:
+        """Take a digital thermostat's restored state before the first evaluation."""
+        self.thermostats[zone] = thermostat
+        self._awaiting_restore.discard(zone)
+        self._maybe_begin()
+
+    @callback
+    def set_thermostat(self, zone: str, thermostat: DigitalThermostatState) -> None:
+        """Take a change of a digital thermostat and evaluate."""
+        self.thermostats[zone] = thermostat
+        self.request_evaluation()
+
+    @callback
+    def set_mode(self, mode: Mode) -> None:
+        """Take the Plant mode the mode select requests."""
+        self.requested_mode = mode
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
+    @callback
+    def set_control(self, on: bool) -> None:
+        """Turn Control equipment on or off; it is stored in the entry options."""
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, "control": on}
+        )
+        self._publish()
+        self.request_evaluation()
+
+    @property
+    def control(self) -> bool:
+        return control(self.entry)
+
+    @property
+    def armed(self) -> frozenset[str]:
+        return armed_outputs(self.entry) & set(self._outputs)
+
+    # Entities
+
+    @callback
+    def async_add_listener(self, listener: CALLBACK_TYPE) -> CALLBACK_TYPE:
+        """Call ``listener`` after every evaluation; return the function that removes it."""
+        self._listeners.append(listener)
+
+        @callback
+        def remove() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return remove
+
+    @callback
+    def _publish(self) -> None:
+        for listener in tuple(self._listeners):
+            listener()
+
+    # Evaluation
+
+    @callback
+    def request_evaluation(self) -> None:
+        """Evaluate soon; requests until then share one evaluation."""
+        if not self._began or self._stopped or self._queued:
+            return
+        self._queued = True
+        self.hass.async_create_task(
+            self._async_evaluate(),
+            f"Evaluate Hydronicus Plant {self.plant.name}",
+            eager_start=False,
+        )
+
+    async def _async_evaluate(self) -> None:
+        self._queued = False
+        if not self._stopped:
+            self.evaluate()
+
+    @property
+    def control_plant(self) -> Plant:
+        """The Plant whose outputs the evaluations drive: the previous one while it stops."""
+        return self.plant if self.stopping is None else self.stopping.plant
+
+    @callback
+    def evaluate(self) -> None:
+        """Run one evaluation now."""
+        now = dt_util.utcnow().timestamp()
+        if not self._decided:
+            self._decide()
+        plant = self.control_plant
+        self._resolve_areas()
+        observations = self._observe(now, plant)
+        view = step_view(observations, self.reconcile_state)
+        state, desired, due = step(plant, view, self.state, now)
+        result = reconcile(
+            plant,
+            desired,
+            observations.outputs,
+            self.reconcile_state,
+            now,
+            armed=observations.armed,
+            live=state.live,
+        )
+        self.state, self.reconcile_state = state, result.state
+        self.observations, self.view, self.desired, self.reconciled = (
+            observations,
+            view,
+            desired,
+            result,
+        )
+        self.evaluated_at = now
+        self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
+        self.zone_readings = {
+            zone.slug: _zone_readings(zone, observations, self.areas, now)
+            for zone in self.plant.zones
+        }
+        if self.stopping is not None and not state.live:
+            # Every output of the previous Plant is observed off: the new one takes over.
+            _LOGGER.info(
+                "Plant %s stopped the outputs of its previous configuration", self.entry.title
+            )
+            self.stopping = self._stopping_export = None
+            self.request_evaluation()
+        self._save()
+        if result.send:
+            self._send(result.send, now)
+        self._schedule(now, due, result.retry_at)
+        self._sync_issues(result, plant)
+        self._publish()
+        if result.proposed:
+            # A Dry run proposal counts as observed, so it is a change that evaluates
+            # again, as the observed result of a live call would be.
+            self.request_evaluation()
+
+    @callback
+    def _decide(self) -> None:
+        """Before the first evaluation, choose whether the previous Plant stops first.
+
+        It does when the configuration is not valid, or when an output it
+        commanded and the new Plant does not have is observed on or has a call in
+        flight. The off sequence stops every output of the previous Plant that is
+        available now; one that is unavailable cannot be reached and is left as it is.
+        """
+        self._decided = True
+        previous = self.previous
+        if previous is None or not previous.outputs:
+            return
+        roles = previous.plant.outputs()
+        states, attempts = self.hass.states, self.reconcile_state.attempts
+
+        def value(entity: str) -> bool | str | None:
+            state = states.get(entity)
+            if roles[entity] is OutputRole.SOURCE_MODE:
+                return option_value(state)
+            return switch_value(state)
+
+        commanded = {entity for entity in previous.outputs if entity in roles}
+        if self.problem is None and not any(
+            entity in attempts or value(entity) is True for entity in commanded - set(self._outputs)
+        ):
+            return
+        reachable = frozenset(
+            entity for entity in commanded if entity in attempts or value(entity) is not None
+        )
+        if not reachable:
+            return
+        _LOGGER.warning(
+            "Plant %s stops the outputs of its previous configuration before it runs the new one",
+            self.entry.title,
+        )
+        self.stopping = Commanding(previous.plant, reachable)
+        self._stopping_export = export_plant(previous.plant)
+        # The persisted Plant was live, so its off sequence commands.
+        self.state = replace(self.state, live=True)
+
+    def _plants(self) -> tuple[Plant, ...]:
+        """The Plants the runtime reads: the configured one and one that is stopping."""
+        return (self.plant,) if self.stopping is None else (self.plant, self.stopping.plant)
+
+    def _roles(self) -> dict[str, OutputRole]:
+        """Every output of the Plants the runtime reads, with its role."""
+        roles = dict(self._outputs)
+        if self.stopping is not None:
+            roles.update(self.stopping.plant.outputs())
+        return roles
+
+    def _observe(self, now: float, plant: Plant) -> Observations:
+        states = self.hass.states
+        outputs: dict[str, OutputState] = {}
+        for entity, role in plant.outputs().items():
+            state = states.get(entity)
+            changed = now if state is None else state.last_changed_timestamp
+            if role is OutputRole.SOURCE_MODE:
+                option = option_value(state)
+                outputs[entity] = OptionState(option, self.memory.since(entity, option, changed))
+            else:
+                on = switch_value(state)
+                outputs[entity] = SwitchState(on, self.memory.since(entity, on, changed))
+        readiness: dict[str, SwitchState] = {}
+        for loop in plant.all_loops:
+            for valve in loop.valves:
+                if valve.readiness is not None:
+                    state = states.get(valve.readiness)
+                    readiness[valve.readiness] = SwitchState(
+                        switch_value(state), now if state is None else state.last_changed_timestamp
+                    )
+        sensors = {
+            entity: reading(states.get(entity), kind, now)
+            for entity, kind in self._sensor_kinds().items()
+        }
+        thermostats: dict[str, ThermostatState] = {}
+        for zone in plant.zones:
+            if isinstance(zone.thermostat, ExternalThermostat):
+                thermostats[zone.slug] = external_thermostat(states.get(zone.thermostat.entity))
+            elif (digital := self.thermostats.get(zone.slug)) is not None:
+                thermostats[zone.slug] = digital
+        # A stopping Plant runs its off sequence, as with Control equipment off, and an
+        # invalid configuration only observes.
+        stopping = self.stopping
+        return Observations(
+            mode=self.requested_mode,
+            control=self.control and stopping is None and self.problem is None,
+            armed=self.armed if stopping is None else stopping.outputs,
+            outputs=outputs,
+            readiness=readiness,
+            sensors=sensors,
+            areas=dict(self.areas.area_sensors),
+            thermostats=thermostats,
+        )
+
+    def _sensor_kinds(self) -> dict[str, SensorKind]:
+        """Every numeric sensor the Plants read now, with what it measures."""
+        kinds: dict[str, SensorKind] = {}
+        for plant in self._plants():
+            self._add_sensor_kinds(plant, kinds)
+        return kinds
+
+    def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
+        for pump in plant.pumps:
+            if pump.supply_temperature is not None:
+                kinds[pump.supply_temperature] = SensorKind.WATER
+        for loop in plant.all_loops:
+            if loop.surface_temperature is not None:
+                kinds[loop.surface_temperature] = SensorKind.AIR
+        for zone in plant.zones:
+            for sensor in zone.temperature:
+                kinds[sensor.entity] = SensorKind.AIR
+            for sensor in zone.humidity:
+                kinds[sensor.entity] = SensorKind.HUMIDITY
+            for area in zone.areas:
+                names = self.areas.area_sensors.get(area.area)
+                if names is None:
+                    continue
+                if names.temperature is not None:
+                    kinds[names.temperature] = SensorKind.AIR
+                if names.humidity is not None:
+                    kinds[names.humidity] = SensorKind.HUMIDITY
+
+    # Areas and the state listener
+
+    @callback
+    def _resolve_areas(self) -> None:
+        """Re-read the covered areas and follow what they name now, without a reload."""
+        covered = tuple(
+            dict.fromkeys(area for plant in self._plants() for area in covered_area_ids(plant))
+        )
+        areas = resolve_area_sensors(self.hass, covered)
+        if areas != self.areas or self._area_listener is None:
+            self.areas = areas
+            if self._area_listener is not None:
+                self._area_listener()
+            self._area_listener = async_track_area_changes(
+                self.hass, covered, areas, self.request_evaluation
+            )
+        tracked = self._tracked_entities()
+        if tracked != self._tracked or self._state_listener is None:
+            self._tracked = tracked
+            if self._state_listener is not None:
+                self._state_listener()
+            self._state_listener = async_track_state_change_event(
+                self.hass, sorted(tracked), self._on_state_change
+            )
+
+    def _tracked_entities(self) -> frozenset[str]:
+        tracked = set(self._roles()) | set(self._sensor_kinds())
+        for plant in self._plants():
+            for loop in plant.all_loops:
+                tracked.update(valve.readiness for valve in loop.valves if valve.readiness)
+            for zone in plant.zones:
+                if isinstance(zone.thermostat, ExternalThermostat):
+                    tracked.add(zone.thermostat.entity)
+        return frozenset(tracked)
+
+    @callback
+    def _on_state_change(self, event: Event[EventStateChangedData]) -> None:
+        entity = event.data["entity_id"]
+        role = self._roles().get(entity)
+        new_state: HassState | None = event.data["new_state"]
+        if role is not None and new_state is not None:
+            # Every change of an output is remembered, so no change goes unseen
+            # between two evaluations.
+            value: bool | str | None = (
+                option_value(new_state)
+                if role is OutputRole.SOURCE_MODE
+                else switch_value(new_state)
+            )
+            self.memory.since(entity, value, new_state.last_changed_timestamp)
+        self.request_evaluation()
+
+    # Sending
+
+    @callback
+    def _send(self, actions: Iterable[Action], sent_at: float) -> None:
+        previous = self._dispatch
+        self._dispatch = self.hass.async_create_task(
+            self._async_send(tuple(actions), sent_at, previous),
+            f"Send Hydronicus Plant {self.plant.name} actions",
+            eager_start=False,
+        )
+
+    async def _async_send(
+        self, actions: tuple[Action, ...], sent_at: float, previous: asyncio.Task[None] | None
+    ) -> None:
+        if previous is not None and not previous.done():
+            await asyncio.wait([previous])
+        for action in actions:
+            remaining = sent_at + CALL_TIMEOUT - dt_util.utcnow().timestamp()
+            if remaining <= 0:
+                _LOGGER.warning(
+                    "Plant %s did not send %s to %s in time; it retries",
+                    self.plant.name,
+                    action.target,
+                    action.entity,
+                )
+                continue
+            domain, service, data = service_call(action)
+            try:
+                async with asyncio.timeout(remaining):
+                    await self.hass.services.async_call(domain, service, data, blocking=True)
+            except TimeoutError:
+                _LOGGER.warning(
+                    "Plant %s: %s.%s for %s did not return in time",
+                    self.plant.name,
+                    domain,
+                    service,
+                    action.entity,
+                )
+            except Exception as error:  # Any failure is retried and surfaced as a Repair.
+                _LOGGER.warning(
+                    "Plant %s: %s.%s for %s failed: %s",
+                    self.plant.name,
+                    domain,
+                    service,
+                    action.entity,
+                    error,
+                )
+
+    # Scheduling and persistence
+
+    @callback
+    def _schedule(self, now: float, due: float | None, retry_at: float | None) -> None:
+        if self._timer is not None:
+            self._timer()
+            self._timer = None
+        times = [
+            time for time in (None if due is None else now + due, retry_at) if time is not None
+        ]
+        if times:
+            self._timer = async_track_point_in_utc_time(
+                self.hass, self._on_timer, dt_util.utc_from_timestamp(min(times))
+            )
+
+    @callback
+    def _on_timer(self, _now: datetime) -> None:
+        self._timer = None
+        self.request_evaluation()
+
+    def _data(self) -> dict[str, Any]:
+        return {
+            "state": self.state.to_dict(),
+            "reconcile": self.reconcile_state.to_dict(),
+            "outputs": self.memory.to_dict(),
+            "mode": self.requested_mode.value,
+            "commanding": self._commanding(),
+        }
+
+    def _commanding(self) -> dict[str, Any] | None:
+        """The Plant whose outputs may be on and the outputs it commands, to persist."""
+        if not self._decided:
+            # Nothing has run yet: keep what the previous setup left.
+            return None if self.previous is None else self.previous.to_dict()
+        if self.stopping is not None:
+            return self.stopping.to_dict(self._stopping_export)
+        if self._export is None:
+            # A configuration that is not valid commands nothing.
             return None
-        value = float(raw_value)
-    except AttributeError, TypeError, ValueError:
-        return None
-    return value if isfinite(value) else None
+        outputs = self.armed if self.state.live else frozenset()
+        return Commanding(self.plant, outputs).to_dict(self._export)
 
+    @callback
+    def _save(self) -> None:
+        data = self._data()
+        if data != self._saved:
+            self._saved = data
+            self.store.async_delay_save(lambda: data, STORE_SAVE_DELAY)
 
-def _climate_temperature_attribute(state: Any, key: str, unit: str) -> float | None:
-    """Read one climate temperature attribute, reported in the system unit, as Celsius."""
-    value = _finite_state_attribute(state, key)
-    if value is None:
-        return None
-    return celsius_from_unit(value, unit)
+    # Repairs
 
-
-def _external_climate_state(state: Any, temperature_unit: str) -> ExternalClimateThermostatState:
-    """Normalize an external climate entity before it reaches the pure evaluator.
-
-    Home Assistant reports climate temperature attributes in the configured unit
-    system, so they are converted to Celsius here.
-    """
-    if state is None:
-        return ExternalClimateThermostatState(
-            explanation="External thermostat blocked: the climate entity is missing."
+    @callback
+    def _sync_issues(self, result: Reconciled, reconciled: Plant) -> None:
+        """Raise the current Repairs; ``reconciled`` is the Plant ``result`` drove."""
+        plant, states = self.plant, self.hass.states
+        issues: list[Issue] = []
+        if self.problem is not None:
+            issues.append(invalid_plant(self.entry.title, self.problem))
+        issues.extend(output_not_responding(reconciled, entity) for entity in result.repairs)
+        armed = self.armed
+        # A new Plant starts with nothing armed, and its owner arms it in Plant settings,
+        # so a Repair then would only repeat that step. Once any output is armed, an
+        # unarmed one is new, such as a new zone's valve, and waits for confirmation.
+        if armed and (unarmed := set(self._outputs) - armed):
+            issues.append(outputs_awaiting_confirmation(plant, unarmed))
+        self.missing = {
+            entity: path
+            for entity, path in entity_paths(plant).items()
+            if states.get(entity) is None
+        }
+        issues.extend(missing_binding(plant, entity, path) for entity, path in self.missing.items())
+        for area_id, names in self.areas.area_sensors.items():
+            for entity in (names.temperature, names.humidity):
+                if entity is not None and states.get(entity) is None:
+                    self.missing[entity] = f"area {area_id}"
+                    issues.append(missing_area_sensor(plant, self.areas.name(area_id), entity))
+        issues.extend(
+            zone_area_issue(plant, problem, self.areas)
+            for problem in zone_area_problems(plant, self.areas)
         )
-    raw_mode = str(getattr(state, "state", "")).strip().lower()
-    if raw_mode in {"", "unknown", "unavailable"}:
-        return ExternalClimateThermostatState(
-            explanation=f"External thermostat blocked: entity state is {raw_mode or 'missing'}."
+        current = tuple(issues)
+        if current != self.issues or not self._issues_synced:
+            self.issues, self._issues_synced = current, True
+            async_sync_issues(self.hass, self.entry.entry_id, current)
+
+    # What the entities show
+
+    def running_mode(self) -> Mode:
+        return Mode.OFF if self.desired is None else self.desired.mode
+
+    def loop_flowing(self, loop: Loop) -> bool:
+        """Whether a loop passes flow in the view ``step()`` saw, including Dry run proposals."""
+        view = self.view
+        if view is None:
+            return False
+        if not all(_on(view.outputs.get(valve.entity)) for valve in loop.valves):
+            return False
+        pump = self.plant.pump(loop.pump)
+        if pump.switch is not None:
+            return _on(view.outputs.get(pump.switch))
+        source = self.plant.source
+        return source is not None and _on(view.outputs.get(source.request))
+
+    def status(self) -> str | None:
+        """Off, idle, heating, cooling, changing over, degraded, stopping, or invalid."""
+        desired, result = self.desired, self.reconciled
+        if desired is None or result is None:
+            return None
+        if self.stopping is not None:
+            return "stopping"
+        if self.problem is not None:
+            return "invalid"
+        if result.repairs or self.missing:
+            return "degraded"
+        if "mode" in desired.reasons:
+            return "changing_over"
+        if desired.mode is Mode.OFF:
+            return "off" if self.requested_mode is Mode.OFF else "idle"
+        # Anything asked to run, from a valve opening to a pump's overrun, is work in the mode.
+        if any(target == SwitchTarget(True) for target in desired.outputs.values()) or any(
+            self.loop_flowing(loop) for loop in self.plant.all_loops
+        ):
+            return "heating" if desired.mode is Mode.HEAT else "cooling"
+        return "idle"
+
+    def stopping_outputs(self) -> list[str]:
+        """The outputs of a stopping previous Plant that are not yet observed off."""
+        stopping, observations = self.stopping, self.observations
+        if stopping is None or observations is None:
+            return []
+        return sorted(
+            entity
+            for entity in stopping.outputs
+            if isinstance(state := observations.outputs.get(entity), SwitchState)
+            and state.on is not False
         )
-    try:
-        hvac_mode = ThermostatHvacMode(raw_mode)
-        hvac_mode_valid = True
-    except ValueError:
-        hvac_mode = None
-        hvac_mode_valid = not raw_mode
-    attributes = getattr(state, "attributes", {})
-    raw_action = str(attributes.get("hvac_action", "")).strip().lower()
-    try:
-        hvac_action = ExternalHvacAction(raw_action)
-    except ValueError:
-        hvac_action = None
-    if not hvac_mode_valid:
-        explanation = f"External thermostat blocked: HVAC mode {raw_mode!r} is unsupported."
-    elif hvac_action is not None:
-        explanation = f"External thermostat reports {hvac_action.value}."
-    else:
-        explanation = "External thermostat blocked: HVAC action is missing or unsupported."
-    return ExternalClimateThermostatState(
-        available=True,
-        hvac_action=hvac_action,
-        hvac_mode=hvac_mode,
-        hvac_mode_valid=hvac_mode_valid,
-        target_temperature=_climate_temperature_attribute(state, "temperature", temperature_unit),
-        current_temperature=_climate_temperature_attribute(
-            state, "current_temperature", temperature_unit
-        ),
-        explanation=explanation,
+
+    def blocked_zones(self) -> dict[str, str]:
+        """Each zone that cannot get what its thermostat asks for, with the reason."""
+        desired = self.desired
+        if desired is None:
+            return {}
+        blocked: dict[str, str] = {}
+        for zone in self.plant.zones:
+            demand = desired.demands.get(zone.slug)
+            if demand is None:
+                continue
+            if demand.on and demand.mode is not desired.mode and desired.mode is not Mode.OFF:
+                blocked[zone.slug] = (
+                    f"thermostat asks to {demand.mode.value} while the Plant runs "
+                    f"{desired.mode.value}"
+                )
+                continue
+            dropped = [
+                reason
+                for loop in zone.loops
+                if (reason := desired.reasons.get(str(loop.ref), "")).startswith("dropped")
+            ]
+            if demand.on and dropped:
+                blocked[zone.slug] = dropped[0]
+            elif not demand.on and demand.reason in _BLOCKING_REASONS:
+                blocked[zone.slug] = demand.reason
+        return blocked
+
+
+_BLOCKING_REASONS: Final = frozenset(
+    {"thermostat unavailable", "thermostat not restored", "no usable temperature"}
+)
+
+
+def _on(state: OutputState | None) -> bool:
+    return isinstance(state, SwitchState) and state.on is True
+
+
+def _zone_readings(
+    zone: Zone, observations: Observations, areas: AreaResolution, now: float
+) -> ZoneReadings:
+    """The combined temperature, the highest humidity, and the worst-case dew point of a zone."""
+
+    def reached(deadline: float) -> bool:
+        return now >= deadline
+
+    sensors, names = observations.sensors, observations.areas
+    temperatures = zone_values(zone, names, sensors, reached)
+    humidities = zone_values(zone, names, sensors, reached, humidity=True)
+    temperature = None if temperatures is None else aggregate(temperatures, zone.aggregation)
+    humidity = None if humidities is None else max(humidities)
+    worst = (
+        None
+        if temperatures is None or humidities is None
+        else dew_point(max(temperatures), max(humidities))
+    )
+    breakdown: dict[str, dict[str, Any]] = {}
+    for area in zone.areas:
+        named = names.get(area.area)
+        entry: dict[str, Any] = {"name": areas.name(area.area)}
+        for key, entity in (
+            ("temperature", None if named is None else named.temperature),
+            ("humidity", None if named is None else named.humidity),
+        ):
+            entry[f"{key}_sensor"] = entity
+            entry[key] = None if entity is None else _value(sensors.get(entity))
+        breakdown[area.area] = entry
+    return ZoneReadings(
+        temperature=temperature,
+        humidity=humidity,
+        dew_point=worst,
+        areas=breakdown,
+        sensors={sensor.entity: _value(sensors.get(sensor.entity)) for sensor in zone.temperature},
     )
 
 
-def _validate_target_temperature(temperature: float) -> float:
-    """Validate the same finite bounded target range advertised by the climate entity."""
-    try:
-        value = float(temperature)
-    except (TypeError, ValueError) as error:
-        raise _invalid_target_temperature_error(temperature) from error
-    if not isfinite(value) or not MIN_ZONE_TARGET_TEMPERATURE <= value <= (
-        MAX_ZONE_TARGET_TEMPERATURE
-    ):
-        raise _invalid_target_temperature_error(temperature)
-    return value
+def _value(reading_: Reading | None) -> float | None:
+    return None if reading_ is None else reading_.value
 
 
-def _invalid_target_temperature_error(temperature: object) -> ServiceValidationError:
-    """Describe a rejected zone setpoint with the advertised Celsius bounds."""
-    return ServiceValidationError(
-        translation_domain=DOMAIN,
-        translation_key="invalid_target_temperature",
-        translation_placeholders={
-            "temperature": str(temperature),
-            "minimum": f"{MIN_ZONE_TARGET_TEMPERATURE:g}",
-            "maximum": f"{MAX_ZONE_TARGET_TEMPERATURE:g}",
-        },
-    )
+def store_key(entry_id: str) -> str:
+    """Return the Store key of a Plant's persisted state."""
+    return f"{DOMAIN}.{entry_id}"

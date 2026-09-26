@@ -1,499 +1,170 @@
-"""Read-only demand, execution, and safety entities."""
+"""Zone demand, loop flow, and the source request (contract K7)."""
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import HydronicConfigEntry
-from .core.model import PumpState, ValveState, ZoneRuntime
-from .entity_device import plant_device_info, topology_device_info
-from .entity_registration import async_add_plant_entities
-from .runtime import HydronicRuntime
+from . import HydronicusConfigEntry
+from .core.model import Loop, Mode, Zone
+from .core.step import value_of
+from .entity import (
+    HydronicusEntity,
+    async_add_plant_entities,
+    loop_unique_id,
+    plant_device,
+    plant_unique_id,
+    source_device,
+    zone_device,
+    zone_unique_id,
+)
+from .runtime import PlantRuntime
 
-# Entities render one atomic runtime evaluation and never poll or call out.
 PARALLEL_UPDATES = 0
 
-# Prose reasons, operation lists, deadlines, and failure details change on
-# almost every evaluation and would bloat history without adding value.
-VOLATILE_ATTRIBUTES = frozenset(
-    {
-        "operations",
-        "reason",
-        "deadline",
-        "execution_failure",
-        "stale_feedback",
-    }
-)
 
+class ZoneDemandSensor(HydronicusEntity, BinarySensorEntity):
+    """Whether a zone demands heating, or cooling, with the demand level from 0 to 1."""
 
-class HydronicShadowEntity(BinarySensorEntity):
-    """Shared lifecycle for entities driven by the in-memory shadow runtime."""
+    _unrecorded_attributes = frozenset({"reason"})
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
-    _unrecorded_attributes = VOLATILE_ATTRIBUTES
+    def __init__(self, runtime: PlantRuntime, zone: Zone, mode: Mode) -> None:
+        kind = "heating" if mode is Mode.HEAT else "cooling"
+        super().__init__(
+            runtime,
+            zone_unique_id(runtime.plant.id, zone.slug, f"{kind}_demand"),
+            zone_device(runtime, zone),
+        )
+        self._attr_translation_key = f"{kind}_demand"
+        self._zone = zone.slug
+        self._mode = mode
 
-    def __init__(self, entry: HydronicConfigEntry) -> None:
-        """Bind the entity to one plant runtime."""
-        self._runtime: HydronicRuntime = cast(HydronicRuntime, entry.runtime_data)
-        self._attr_device_info = plant_device_info(self._runtime)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe after Home Assistant has registered the entity."""
-        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
-
-
-class DryRunBinarySensor(HydronicShadowEntity):
-    """Expose the Plant-wide Dry run safety boundary."""
-
-    _attr_translation_key = "dry_run"
-
-    def __init__(self, entry: HydronicConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = f"{self._runtime.plant_id}_dry_run"
+    @property
+    def available(self) -> bool:
+        return self.runtime.desired is not None
 
     @property
     def is_on(self) -> bool:
-        """Return whether actuator dispatch is currently suppressed."""
-        return self._runtime.dry_run
+        desired = self.runtime.desired
+        demand = None if desired is None else desired.demands.get(self._zone)
+        return demand is not None and demand.on and demand.mode is self._mode
 
     @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the latest operation boundary and safe-shutdown phase.
-
-        A Plant stored live can be held in Dry run while another live Plant uses
-        the same outputs; the hold attributes say so and name that Plant.
-        """
-        hold = self._runtime.output_hold
-        return {
-            "dry_run": self._runtime.dry_run,
-            "held_by_output_conflict": hold is not None,
-            "held_by_plant": hold.other_plant if hold is not None else None,
-            "safe_shutdown_phase": self._runtime.runtime_state.safe_shutdown_phase.value,
-            "operations": self._runtime.execution_summary(),
-        }
+    def extra_state_attributes(self) -> dict[str, Any]:
+        desired = self.runtime.desired
+        demand = None if desired is None else desired.demands.get(self._zone)
+        if demand is None:
+            return {"level": 0.0}
+        level = demand.level if demand.mode is self._mode else 0.0
+        return {"level": round(level, 3), "reason": demand.reason}
 
 
-class ModeChangeoverLockoutBinarySensor(HydronicShadowEntity):
-    """Whether a requested mode is waiting for safe shared-plant idle."""
+class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
+    """Whether a loop passes flow: its valves are open and its pump runs."""
 
-    _attr_translation_key = "mode_changeover_lockout"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: HydronicConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = f"{self._runtime.plant_id}_mode_changeover_lockout"
-
-    @property
-    def is_on(self) -> bool:
-        """Return the structured transition state."""
-        return self._runtime.mode_is_locked()
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose mode, phase, and deadline as machine-readable attributes."""
-        state = self._runtime.runtime_state
-        return {
-            "requested_mode": state.requested_mode.value,
-            "active_mode": state.plant_mode.value,
-            "phase": state.changeover_phase.value,
-            "target_mode": (
-                state.changeover_target_mode.value
-                if state.changeover_target_mode is not None
-                else None
-            ),
-            "deadline": (
-                state.changeover_deadline.isoformat()
-                if state.changeover_deadline is not None
-                else None
-            ),
-            "reason": self._runtime.mode_explanation(),
-        }
-
-
-class ZoneDemandBinarySensor(HydronicShadowEntity):
-    """Whether a zone currently requests heat."""
-
-    _attr_translation_key = "zone_demand"
-
-    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._zone_id = zone_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_demand"
-        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return the cached calculated demand."""
-        return self._runtime.runtime_state.zone_runtime.get(self._zone_id, ZoneRuntime()).demand
-
-
-class ZoneBlockedBinarySensor(HydronicShadowEntity):
-    """Whether sensor health currently blocks a zone from requesting heat."""
-
-    _attr_translation_key = "zone_blocked"
-    _attr_device_class = BinarySensorDeviceClass.PROBLEM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._zone_id = zone_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_blocked"
-        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return structured blocked state from the latest evaluation."""
-        return self._runtime.zone_is_blocked(self._zone_id)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose structured block diagnostics without parsing display prose."""
-        aggregation = self._runtime.zone_aggregation(self._zone_id)
-        return {
-            "reason": self._runtime.zone_blocked_reason(self._zone_id),
-            "blocking_required_sensor_ids": (
-                list(aggregation.blocking_required_sensor_ids) if aggregation is not None else []
-            ),
-            "excluded_optional_sensor_ids": (
-                list(aggregation.excluded_optional_sensor_ids) if aggregation is not None else []
-            ),
-        }
-
-
-class ZoneCoolingDemandBinarySensor(HydronicShadowEntity):
-    """Whether a zone currently requests cooling."""
-
-    _attr_translation_key = "zone_cooling_demand"
-
-    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._zone_id = zone_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_demand"
-        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return the latest pure-controller cooling demand."""
-        return bool(self._runtime.runtime_state.cooling_zone_demands.get(self._zone_id, False))
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose cooling decision status and explanation."""
-        decision = self._runtime.cooling_zone_decision(self._zone_id)
-        return {
-            "blocked": self._runtime.cooling_zone_is_blocked(self._zone_id),
-            "reason": self._runtime.cooling_zone_blocked_reason(self._zone_id),
-            "decision_status": (
-                getattr(decision.status, "value", decision.status) if decision is not None else None
-            ),
-        }
-
-
-class ZoneCoolingBlockedBinarySensor(HydronicShadowEntity):
-    """Whether cooling safety currently blocks a zone."""
-
-    _attr_translation_key = "zone_cooling_blocked"
-    _attr_device_class = BinarySensorDeviceClass.PROBLEM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._zone_id = zone_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_cooling_blocked"
-        self._attr_device_info = topology_device_info(self._runtime, "zone", zone_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return structured cooling safety state."""
-        return self._runtime.cooling_zone_is_blocked(self._zone_id)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the interlock explanation without prose parsing."""
-        decision = self._runtime.cooling_zone_decision(self._zone_id)
-        return {
-            "reason": self._runtime.cooling_zone_blocked_reason(self._zone_id),
-            "dew_point": decision.dew_point if decision is not None else None,
-            "condensation_margin": decision.condensation_margin if decision is not None else None,
-        }
-
-
-class SourceDemandBinarySensor(HydronicShadowEntity):
-    """Expose one guarded source-demand recommendation as a synthetic output."""
-
-    _attr_translation_key = "source_demand"
-
-    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._source_id = source_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_demand"
-        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return the demand requested by the latest evaluation."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return bool(getattr(diagnostic, "demand_requested", False))
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the guarded permit and execution boundary atomically."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return {
-            "available": getattr(diagnostic, "available", None),
-            "eligible": getattr(diagnostic, "eligible", False),
-            "recommended": getattr(diagnostic, "recommended", False),
-            "active": getattr(diagnostic, "active", False),
-            "demand_permitted": getattr(diagnostic, "demand_permitted", False),
-            "dry_run": self._runtime.dry_run,
-            "blocked": getattr(diagnostic, "blocked", False),
-            "reason": getattr(diagnostic, "reason", None),
-        }
-
-
-class SourceAvailableBinarySensor(HydronicShadowEntity):
-    """Expose the source availability input used by qualification."""
-
-    _attr_translation_key = "source_available"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._source_id = source_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_available"
-        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return only a positively known available state."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return getattr(diagnostic, "available", None) is True
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose eligibility and the qualification reason."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return {
-            "available": getattr(diagnostic, "available", None),
-            "eligible": getattr(diagnostic, "eligible", False),
-            "reason": getattr(diagnostic, "reason", None),
-        }
-
-
-class SourceActiveBinarySensor(HydronicShadowEntity):
-    """Expose which source owns the current guarded heating request."""
-
-    _attr_translation_key = "source_active"
+    _attr_translation_key = "loop_flowing"
+    _unrecorded_attributes = frozenset({"reason"})
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
-    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._source_id = source_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_active"
-        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return the active-source result from the same evaluation as demand."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return bool(getattr(diagnostic, "active", False))
-
-
-class SourceBlockedBinarySensor(HydronicShadowEntity):
-    """Expose source-specific blocking without blocking unrelated source demand."""
-
-    _attr_translation_key = "source_blocked"
-    _attr_device_class = BinarySensorDeviceClass.PROBLEM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._source_id = source_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_blocked"
-        self._attr_device_info = topology_device_info(self._runtime, "source", source_id, name)
-
-    @property
-    def is_on(self) -> bool:
-        """Return whether this source's dependent demand is blocked."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return bool(getattr(diagnostic, "blocked", False))
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the bounded source block explanation."""
-        diagnostic = self._runtime.source_diagnostic(self._source_id)
-        return {"reason": getattr(diagnostic, "reason", None)}
-
-
-_REQUESTED_TRANSLATION_KEYS = {"valve": "valve_requested", "pump": "pump_requested"}
-
-
-class ActuatorRequestedBinarySensor(HydronicShadowEntity):
-    """Whether a valve or pump is virtually requested by the controller."""
-
-    def __init__(
-        self, entry: HydronicConfigEntry, actuator_id: str, actuator_name: str, kind: str
-    ) -> None:
-        super().__init__(entry)
-        self._actuator_id = actuator_id
-        self._kind = kind
-        self._attr_unique_id = f"{self._runtime.plant_id}_{kind}_{actuator_id}_requested"
-        self._attr_translation_key = _REQUESTED_TRANSLATION_KEYS[kind]
-        self._attr_device_info = topology_device_info(
-            self._runtime, kind, actuator_id, actuator_name
+    def __init__(self, runtime: PlantRuntime, loop: Loop) -> None:
+        plant = runtime.plant
+        device = (
+            plant_device(plant)
+            if loop.zone is None
+            else zone_device(runtime, plant.zone(loop.zone))
         )
+        super().__init__(runtime, loop_unique_id(plant.id, loop.ref, "flowing"), device)
+        self._attr_translation_placeholders = {"loop": loop.title}
+        self._loop = loop
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.view is not None
 
     @property
     def is_on(self) -> bool:
-        """Return the cached virtual request state."""
-        if self._kind == "valve":
-            return self._runtime.runtime_state.valves.get(self._actuator_id, None) is not None and (
-                self._runtime.runtime_state.valves[self._actuator_id].state is not ValveState.CLOSED
-            )
-        return self._runtime.runtime_state.pumps.get(self._actuator_id, None) is not None and (
-            self._runtime.runtime_state.pumps[self._actuator_id].state
-            in (PumpState.STARTING, PumpState.RUNNING, PumpState.OVERRUN)
-        )
-
-
-class ActuatorMismatchBinarySensor(HydronicShadowEntity):
-    """Expose a manual actuator-state mismatch without toggle behavior."""
-
-    _attr_translation_key = "actuator_mismatch"
-    _attr_device_class = BinarySensorDeviceClass.PROBLEM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._actuator_id = actuator_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_mismatch"
-        kind = "valve" if actuator_id in self._runtime.plant.valves else "pump"
-        self._attr_device_info = topology_device_info(self._runtime, kind, actuator_id, name)
+        return self.runtime.loop_flowing(self._loop)
 
     @property
-    def is_on(self) -> bool:
-        """Return the structured mismatch state."""
-        if self._runtime.actuator_execution_failure(self._actuator_id) is not None:
-            return True
-        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
-        return bool(getattr(diagnostic, "mismatch", False))
+    def extra_state_attributes(self) -> dict[str, Any]:
+        runtime, loop = self.runtime, self._loop
+        view = runtime.view
+        outputs = {} if view is None else view.outputs
 
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose expected and observed values for operator diagnosis."""
-        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
-        failure = self._runtime.actuator_execution_failure(self._actuator_id)
+        def shown(entity: str) -> Any:
+            state = outputs.get(entity)
+            return None if state is None else value_of(state)
+
+        pump = runtime.plant.pump(loop.pump)
+        source = runtime.plant.source
+        pump_entity = pump.switch or (None if source is None else source.request)
+        desired = runtime.desired
         return {
-            "expected": getattr(diagnostic, "expected", None),
-            "observed": getattr(diagnostic, "observed", None),
-            "reason": getattr(diagnostic, "reason", None),
-            "feedback_kind": getattr(diagnostic, "feedback_kind", None),
-            "execution_failure": getattr(failure, "explanation", None),
+            "valves": {valve.entity: shown(valve.entity) for valve in loop.valves},
+            "pump": pump.slug,
+            "pump_running": None if pump_entity is None else shown(pump_entity),
+            "reason": None if desired is None else desired.reasons.get(str(loop.ref)),
         }
 
 
-class ActuatorBlockedBinarySensor(HydronicShadowEntity):
-    """Expose whether unsafe actuator feedback blocks dependent circuits."""
+class SourceRequestedSensor(HydronicusEntity, BinarySensorEntity):
+    """Whether the Plant asks its source for heat or cooling."""
 
-    _attr_translation_key = "actuator_blocked"
-    _attr_device_class = BinarySensorDeviceClass.PROBLEM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "source_requested"
+    _unrecorded_attributes = frozenset({"reason"})
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
 
-    def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
-        super().__init__(entry)
-        self._actuator_id = actuator_id
-        self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_blocked"
-        kind = "valve" if actuator_id in self._runtime.plant.valves else "pump"
-        self._attr_device_info = topology_device_info(self._runtime, kind, actuator_id, name)
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "source_requested"),
+            source_device(runtime),
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.desired is not None
 
     @property
     def is_on(self) -> bool:
-        """Return whether dependent circuits fail closed."""
-        if self._runtime.actuator_execution_failure(self._actuator_id) is not None:
-            return True
-        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
-        return bool(getattr(diagnostic, "blocked", False))
+        desired = self.runtime.desired
+        return desired is not None and desired.source_request
 
     @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose stale feedback and the dependent block reason."""
-        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
-        failure = self._runtime.actuator_execution_failure(self._actuator_id)
+    def extra_state_attributes(self) -> dict[str, Any]:
+        runtime = self.runtime
+        desired, observations = runtime.desired, runtime.observations
+        source = runtime.plant.source
+        assert source is not None
+        observed = None if observations is None else observations.outputs.get(source.request)
         return {
-            "reason": getattr(diagnostic, "reason", None),
-            "stale_feedback": list(getattr(diagnostic, "stale_feedback", ())),
-            "dependent_blocked": getattr(diagnostic, "blocked", False),
-            "execution_failure": getattr(failure, "explanation", None),
+            "observed": None if observed is None else value_of(observed),
+            "reason": None if desired is None else desired.reasons.get("source"),
         }
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: HydronicConfigEntry,
+    entry: HydronicusConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add demand and actuator-request entities."""
     runtime = entry.runtime_data
-    parent_entities: list[BinarySensorEntity] = [
-        DryRunBinarySensor(entry),
-        ModeChangeoverLockoutBinarySensor(entry),
-    ]
-    subentry_entities: dict[str, list[BinarySensorEntity]] = {}
-    for zone in runtime.plant.zones.values():
-        entities: list[BinarySensorEntity] = [
-            ZoneDemandBinarySensor(entry, zone.id, zone.name),
-            ZoneBlockedBinarySensor(entry, zone.id, zone.name),
-        ]
-        if runtime.plant.zone_can_cool(zone.id):
-            entities.extend(
-                (
-                    ZoneCoolingDemandBinarySensor(entry, zone.id, zone.name),
-                    ZoneCoolingBlockedBinarySensor(entry, zone.id, zone.name),
-                )
-            )
-        if subentry_id := runtime.subentry_id_for(zone.id):
-            subentry_entities.setdefault(subentry_id, []).extend(entities)
-        else:
-            parent_entities.extend(entities)
-    for source in runtime.plant.sources.values():
-        entities = [
-            SourceDemandBinarySensor(entry, source.id, source.name),
-            SourceAvailableBinarySensor(entry, source.id, source.name),
-            SourceActiveBinarySensor(entry, source.id, source.name),
-            SourceBlockedBinarySensor(entry, source.id, source.name),
-        ]
-        if subentry_id := runtime.subentry_id_for(source.id):
-            subentry_entities.setdefault(subentry_id, []).extend(entities)
-        else:
-            parent_entities.extend(entities)
-    for valve in runtime.plant.valves.values():
-        entities = [
-            ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve"),
-            ActuatorMismatchBinarySensor(entry, valve.id, valve.name),
-            ActuatorBlockedBinarySensor(entry, valve.id, valve.name),
-        ]
-        if subentry_id := runtime.subentry_id_for(valve.id):
-            subentry_entities.setdefault(subentry_id, []).extend(entities)
-        else:
-            parent_entities.extend(entities)
-    # Pumps are Plant equipment, so their entities always belong to the parent.
-    for pump in runtime.plant.pumps.values():
-        parent_entities.extend(
-            (
-                ActuatorRequestedBinarySensor(entry, pump.id, pump.name, "pump"),
-                ActuatorMismatchBinarySensor(entry, pump.id, pump.name),
-                ActuatorBlockedBinarySensor(entry, pump.id, pump.name),
-            )
-        )
-    async_add_plant_entities(
-        runtime, "binary_sensor", async_add_entities, parent_entities, subentry_entities
-    )
+    plant = runtime.plant
+    entities: list[tuple[str | None, Entity]] = []
+    if plant.source is not None:
+        entities.append((None, SourceRequestedSensor(runtime)))
+    for loop in plant.loops:
+        entities.append((None, LoopFlowingSensor(runtime, loop)))
+    for zone in plant.zones:
+        entities.append((zone.slug, ZoneDemandSensor(runtime, zone, Mode.HEAT)))
+        if zone.cools:
+            entities.append((zone.slug, ZoneDemandSensor(runtime, zone, Mode.COOL)))
+        entities.extend((zone.slug, LoopFlowingSensor(runtime, loop)) for loop in zone.loops)
+    async_add_plant_entities(runtime, "binary_sensor", async_add_entities, entities)

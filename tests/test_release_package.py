@@ -18,30 +18,19 @@ from scripts.package_release import (
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
-def test_frontend_build_preserves_lit_attribute_bindings() -> None:
-    """The release build must retain distinct Lit tagged-template call sites."""
-    build_script = (REPOSITORY_ROOT / "frontend" / "build.mjs").read_text(encoding="utf-8")
-
-    assert "minifyIdentifiers: true" in build_script
-    assert "minifySyntax: false" in build_script
-    assert "minifyWhitespace: true" in build_script
-    assert "minify: true" not in build_script
-
-
 def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> None:
     """HACS can extract the release directly into its integration directory."""
 
     archive_path = tmp_path / "hydronicus.zip"
-    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.1.0")
+    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.2.0")
     install_path = tmp_path / "config" / "custom_components" / "hydronicus"
 
-    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.1.0") == files
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.2.0") == files
     with ZipFile(archive_path) as archive:
         assert archive.namelist() == files
         assert "manifest.json" in archive.namelist()
         assert not any(path.startswith("custom_components/") for path in files)
-        bundle = archive.read("frontend/hydronicus-plant-card.js").decode()
-        assert 'version:"0.1.0"' in bundle
+        assert not any(path.startswith("frontend/") for path in files)
         archive.extractall(install_path)
 
     assert (install_path / "manifest.json").is_file()
@@ -82,11 +71,11 @@ def test_public_control_boundary_is_documented_without_legacy_package(
 ) -> None:
     """Public docs state the control boundary and exclude the legacy package."""
     how_it_works = (REPOSITORY_ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
-    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.1.0")
+    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.2.0")
 
     assert "Every new Plant starts in Dry run" in how_it_works
-    assert "records the complete plan as proposed operations" in how_it_works
-    assert "stops as soon as its last cooling loop releases, without overrun" in how_it_works
-    assert "Source-selector operations are explicitly kept in Dry run" in how_it_works
-    assert "When Dry run is off" in how_it_works
+    assert "A new Plant starts with no output armed" in how_it_works
+    assert "records each command it would send as proposed" in how_it_works
+    assert "Cooling stops a pump without overrun" in how_it_works
+    assert "never send a command" in how_it_works
     assert all("hydronic_climate" not in path for path in files)
