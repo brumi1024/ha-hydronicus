@@ -8,16 +8,13 @@ next retry. Evaluations are coalesced: any number of state changes in one pass
 of the event loop cause one evaluation.
 
 The evaluation itself never awaits, so it needs no lock. Actions are sent
-afterwards by one chain of tasks, in the order the reconciler gave them, each
-limited to ``CALL_TIMEOUT`` after the evaluation that decided it, so calls to
-one entity act in the order they were decided and none acts later than
-``step()`` assumes. A returned call is not a confirmation; the next observation
-is.
+afterwards by the Plant's ``Dispatcher``, in the order the reconciler gave
+them, each limited to ``CALL_TIMEOUT`` after the evaluation that decided it.
 
 Setup loads the persisted State and the digital thermostats restore their
 entities before the first evaluation, which waits until Home Assistant has
 started. Stopping, as on unload and reload, only cancels timers, listeners, and
-unsent actions, and saves; it never sends a command.
+the dispatcher, and saves; it never sends a command.
 
 The persisted state also holds the last valid Plant with the outputs it was
 commanding. When a new configuration removes an output that is still on, or is
@@ -28,10 +25,9 @@ only then runs the new Plant; an invalid one is then only observed.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Final
@@ -71,18 +67,15 @@ from .core.model import (
     ExternalThermostat,
     Loop,
     Mode,
-    OptionTarget,
     OutputRole,
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
     Zone,
 )
 from .core.plant_file import PlantFileError, entity_paths, export_plant, parse_plant
-from .core.reconcile import Action, Reconciled, ReconcileState, reconcile, step_view
+from .core.reconcile import Reconciled, ReconcileState, reconcile, step_view
 from .core.step import (
-    CALL_TIMEOUT,
     DigitalThermostatState,
     Observations,
     OptionState,
@@ -93,6 +86,7 @@ from .core.step import (
     ThermostatState,
     step,
 )
+from .dispatch import Dispatcher
 from .entity import zone_unique_id
 from .issues import (
     Issue,
@@ -168,24 +162,6 @@ class ZoneReadings:
     sensors: Mapping[str, float | None] = field(default_factory=dict)
 
 
-def service_call(action: Action) -> tuple[str, str, dict[str, Any]]:
-    """Return the domain, service, and data of the call that drives an output to a target."""
-    entity = action.entity
-    domain = entity.partition(".")[0]
-    data: dict[str, Any] = {"entity_id": entity}
-    match action.target:
-        case SwitchTarget(on=on):
-            if domain == "valve":
-                return domain, "open_valve" if on else "close_valve", data
-            if domain in ("switch", "input_boolean"):
-                return domain, "turn_on" if on else "turn_off", data
-            return "homeassistant", "turn_on" if on else "turn_off", data
-        case OptionTarget(option=option):
-            return domain, "select_option", {**data, "option": option}
-        case ValueTarget(value=value):
-            return domain, "set_value", {**data, "value": value}
-
-
 class PlantRuntime:
     """Runs one Plant: observe, step, reconcile, send, persist, and publish."""
 
@@ -240,7 +216,7 @@ class PlantRuntime:
         self._area_listener: CALLBACK_TYPE | None = None
         self._tracked: frozenset[str] = frozenset()
         self._timer: CALLBACK_TYPE | None = None
-        self._dispatch: asyncio.Task[None] | None = None
+        self._dispatcher = Dispatcher(hass, entry, plant.name)
         self._saved: dict[str, Any] | None = None
         self._queued = False
         self._set_up = False
@@ -337,9 +313,7 @@ class PlantRuntime:
                 unsubscribe()
         self._state_listener = self._area_listener = None
         self._unsubscribe.clear()
-        if self._dispatch is not None and not self._dispatch.done():
-            self._dispatch.cancel()
-            await asyncio.wait([self._dispatch])
+        await self._dispatcher.async_stop()
         await self.store.async_save(self._data())
 
     # Inputs from the Plant's own entities
@@ -467,7 +441,7 @@ class PlantRuntime:
             self.request_evaluation()
         self._save()
         if result.send:
-            self._send(result.send, now)
+            self._dispatcher.send(result.send, now)
         self._schedule(now, due, result.retry_at)
         self._sync_issues(result, plant)
         self._publish()
@@ -650,54 +624,6 @@ class PlantRuntime:
             )
             self.memory.since(entity, value, new_state.last_changed_timestamp)
         self.request_evaluation()
-
-    # Sending
-
-    @callback
-    def _send(self, actions: Iterable[Action], sent_at: float) -> None:
-        previous = self._dispatch
-        self._dispatch = self.hass.async_create_task(
-            self._async_send(tuple(actions), sent_at, previous),
-            f"Send Hydronicus Plant {self.plant.name} actions",
-            eager_start=False,
-        )
-
-    async def _async_send(
-        self, actions: tuple[Action, ...], sent_at: float, previous: asyncio.Task[None] | None
-    ) -> None:
-        if previous is not None and not previous.done():
-            await asyncio.wait([previous])
-        for action in actions:
-            remaining = sent_at + CALL_TIMEOUT - dt_util.utcnow().timestamp()
-            if remaining <= 0:
-                _LOGGER.warning(
-                    "Plant %s did not send %s to %s in time; it retries",
-                    self.plant.name,
-                    action.target,
-                    action.entity,
-                )
-                continue
-            domain, service, data = service_call(action)
-            try:
-                async with asyncio.timeout(remaining):
-                    await self.hass.services.async_call(domain, service, data, blocking=True)
-            except TimeoutError:
-                _LOGGER.warning(
-                    "Plant %s: %s.%s for %s did not return in time",
-                    self.plant.name,
-                    domain,
-                    service,
-                    action.entity,
-                )
-            except Exception as error:  # Any failure is retried and surfaced as a Repair.
-                _LOGGER.warning(
-                    "Plant %s: %s.%s for %s failed: %s",
-                    self.plant.name,
-                    domain,
-                    service,
-                    action.entity,
-                    error,
-                )
 
     # Scheduling and persistence
 
