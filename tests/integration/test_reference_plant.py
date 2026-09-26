@@ -105,7 +105,7 @@ async def test_the_reference_plant_heats_a_zone_end_to_end(
     assert sorted(actuators.shorts()) == [f"{LIVING_CEILING}:on", f"{LIVING_FLOOR}:on"]
     demand = hass.states.get("binary_sensor.living_area_heating_demand")
     assert demand.state == "on" and demand.attributes["level"] == 1.0
-    assert hass.states.get("climate.living_area").attributes["hvac_action"] == "heating"
+    assert hass.states.get("climate.living_area").attributes["hvac_action"] == "preheating"
     actuators.clear()
 
     await async_advance(hass, freezer, 179, step=5)
@@ -116,6 +116,7 @@ async def test_the_reference_plant_heats_a_zone_end_to_end(
     assert hass.states.get("binary_sensor.heat_pump_requested").state == "on"
     assert hass.states.get("binary_sensor.living_area_floor_flowing").state == "on"
     assert hass.states.get("sensor.home_status").state == "heating"
+    assert hass.states.get("climate.living_area").attributes["hvac_action"] == "heating"
     assert not actuators.to(BASEMENT_CEILING) and not actuators.to(BEDROOM_CEILING)
     requested_at = actuators.to(SOURCE_REQUEST)[0].at
     actuators.clear()

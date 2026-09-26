@@ -19,13 +19,12 @@ from .core.model import Zone
 from .core.step import value_of
 from .entity import (
     HydronicusEntity,
+    ZoneEntity,
     async_add_plant_entities,
     plant_device,
     plant_unique_id,
-    zone_device,
-    zone_unique_id,
 )
-from .runtime import PlantRuntime, ZoneReadings
+from .runtime import PlantRuntime
 
 PARALLEL_UPDATES = 0
 
@@ -57,34 +56,33 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.runtime.desired is not None
+        return self.runtime.view is not None
 
     @property
     def native_value(self) -> str | None:
-        return self.runtime.status()
+        view = self.runtime.view
+        return None if view is None else view.status()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        runtime = self.runtime
-        desired, reconciled = runtime.desired, runtime.reconciled
+        runtime, view = self.runtime, self.runtime.view
+        if view is None:
+            return {}
         plant = runtime.plant
         attributes: dict[str, Any] = {
             "requested_mode": runtime.requested_mode.value,
-            "running_mode": runtime.running_mode().value,
+            "running_mode": view.running_mode.value,
             "live": runtime.state.live,
-            "active_loops": [
-                str(loop.ref) for loop in plant.all_loops if runtime.loop_flowing(loop)
-            ],
-            "blocked_zones": runtime.blocked_zones(),
+            "active_loops": [str(loop.ref) for loop in plant.all_loops if view.loop_flowing(loop)],
+            "blocked_zones": view.blocked_zones(),
             "unarmed_outputs": sorted(set(plant.outputs()) - runtime.armed),
-            "source_requested": desired is not None and desired.source_request,
-            "outputs_not_responding": sorted(reconciled.repairs) if reconciled else [],
-            "missing_entities": sorted(runtime.missing),
-            "stopping_outputs": runtime.stopping_outputs(),
+            "source_requested": view.desired.source_request,
+            "outputs_not_responding": sorted(view.reconciled.repairs),
+            "missing_entities": sorted(view.missing),
+            "stopping_outputs": view.stopping_outputs(),
             "configuration_problem": runtime.problem,
+            "reasons": dict(view.desired.reasons),
         }
-        if desired is not None:
-            attributes["reasons"] = dict(desired.reasons)
         if not runtime.state.live:
             attributes["proposed"] = {
                 entity: value_of(state)
@@ -93,7 +91,7 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
         return attributes
 
 
-class ZoneTemperatureSensor(HydronicusEntity, SensorEntity):
+class ZoneTemperatureSensor(ZoneEntity, SensorEntity):
     """A zone's combined temperature, with each area's sensor and reading."""
 
     _attr_translation_key = "combined_temperature"
@@ -104,16 +102,7 @@ class ZoneTemperatureSensor(HydronicusEntity, SensorEntity):
     _attr_suggested_display_precision = 1
 
     def __init__(self, runtime: PlantRuntime, zone: Zone) -> None:
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, "temperature"),
-            zone_device(runtime, zone),
-        )
-        self._zone = zone.slug
-
-    @property
-    def _readings(self) -> ZoneReadings:
-        return self.runtime.zone_readings.get(self._zone, ZoneReadings())
+        super().__init__(runtime, zone, "temperature")
 
     @property
     def native_value(self) -> float | None:
@@ -128,7 +117,7 @@ class ZoneTemperatureSensor(HydronicusEntity, SensorEntity):
         }
 
 
-class ZoneDewPointSensor(HydronicusEntity, SensorEntity):
+class ZoneDewPointSensor(ZoneEntity, SensorEntity):
     """A cooling zone's worst-case dew point, from its warmest and most humid readings."""
 
     _attr_translation_key = "dew_point"
@@ -139,24 +128,16 @@ class ZoneDewPointSensor(HydronicusEntity, SensorEntity):
     _attr_suggested_display_precision = 1
 
     def __init__(self, runtime: PlantRuntime, zone: Zone) -> None:
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, "dew_point"),
-            zone_device(runtime, zone),
-        )
-        self._zone = zone.slug
+        super().__init__(runtime, zone, "dew_point")
 
     @property
     def native_value(self) -> float | None:
-        readings = self.runtime.zone_readings.get(self._zone)
-        return (
-            None if readings is None or readings.dew_point is None else round(readings.dew_point, 2)
-        )
+        dew_point = self._readings.dew_point
+        return None if dew_point is None else round(dew_point, 2)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        readings = self.runtime.zone_readings.get(self._zone, ZoneReadings())
-        return {"humidity": readings.humidity}
+        return {"humidity": self._readings.humidity}
 
 
 async def async_setup_entry(

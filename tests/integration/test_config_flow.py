@@ -108,11 +108,11 @@ async def test_the_first_evaluation_waits_until_home_assistant_has_started(
     hass.set_state(CoreState.starting)
     reference_world(hass)
     entry = await async_import(hass, REFERENCE_PLANT)
-    assert entry.runtime_data.desired is None
+    assert entry.runtime_data.view is None
     assert hass.states.get("sensor.home_status").state == "unavailable"
 
     await hass.async_start()
     await hass.async_block_till_done()
 
-    assert entry.runtime_data.desired is not None
+    assert entry.runtime_data.view is not None
     assert hass.states.get("sensor.home_status").state == "off"

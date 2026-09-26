@@ -228,7 +228,7 @@ The Plant publishes a small set of entities: the **Mode** select, the **Control 
 Their attributes carry the reasons behind every decision.
 See [the entities](entities.md) for the full list.
 
-Problems that need you are Repairs: an output that does not respond, an entity that does not exist, outputs awaiting confirmation, and area problems.
+Problems that need you are Repairs: an output that does not respond, an entity that does not exist, outputs awaiting confirmation, area problems, and an evaluation that fails.
 See [troubleshooting](troubleshooting.md#repairs).
 
 ## What Dry run proves

@@ -1,25 +1,25 @@
 """Diagnostics of one Plant (contract K5).
 
 They hold the configuration as its plant file, the last observations, the
-desired state, the reconciler state, and the recent Dry run proposals, with
-names and IDs redacted by ``async_redact_data``.
+desired state, the reconciler state, and the recent Dry run proposals. A Plant
+holds no secret, and its names and entity IDs are what makes a report
+readable, so nothing is redacted; the troubleshooting guide says so.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from enum import Enum
-from typing import Any, Final
+from typing import Any
 
-from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
 from . import HydronicusConfigEntry
+from .core.model import Desired
 from .core.plant_file import export_plant
 from .core.reconcile import target_to_dict
-from .core.step import value_of
-
-TO_REDACT: Final = {"id", "name", "title"}
+from .core.step import Observations, value_of
+from .storage import stored_document
 
 
 def _plain(value: Any) -> Any:
@@ -37,47 +37,50 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _observations(observations: Observations) -> dict[str, Any]:
+    return {
+        "mode": observations.mode.value,
+        "control": observations.control,
+        "armed": sorted(observations.armed),
+        "outputs": {
+            entity: {"value": value_of(state), "since": state.since}
+            for entity, state in observations.outputs.items()
+        },
+        "readiness": _plain(dict(observations.readiness)),
+        "sensors": _plain(dict(observations.sensors)),
+        "areas": _plain(dict(observations.areas)),
+        "thermostats": _plain(dict(observations.thermostats)),
+    }
+
+
+def _desired(desired: Desired) -> dict[str, Any]:
+    return {
+        "mode": desired.mode.value,
+        "source_request": desired.source_request,
+        "outputs": {entity: target_to_dict(target) for entity, target in desired.outputs.items()},
+        "reasons": dict(desired.reasons),
+        "demands": _plain(dict(desired.demands)),
+    }
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: HydronicusConfigEntry
 ) -> dict[str, Any]:
     runtime = entry.runtime_data
-    observations, desired, reconciled = runtime.observations, runtime.desired, runtime.reconciled
-    data: dict[str, Any] = {
-        "plant": export_plant(runtime.plant),
+    view = runtime.view
+    return {
+        # A configuration that is not valid has no Plant to export, only what is stored.
+        "plant": export_plant(runtime.plant) if runtime.problem is None else stored_document(entry),
         "options": dict(entry.options),
         "requested_mode": runtime.requested_mode.value,
-        "status": runtime.status(),
-        "evaluated_at": runtime.evaluated_at,
-        "observations": None
-        if observations is None
-        else {
-            "mode": observations.mode.value,
-            "control": observations.control,
-            "armed": sorted(observations.armed),
-            "outputs": {
-                entity: {"value": value_of(state), "since": state.since}
-                for entity, state in observations.outputs.items()
-            },
-            "readiness": _plain(dict(observations.readiness)),
-            "sensors": _plain(dict(observations.sensors)),
-            "areas": _plain(dict(observations.areas)),
-            "thermostats": _plain(dict(observations.thermostats)),
-        },
-        "desired": None
-        if desired is None
-        else {
-            "mode": desired.mode.value,
-            "source_request": desired.source_request,
-            "outputs": {
-                entity: target_to_dict(target) for entity, target in desired.outputs.items()
-            },
-            "reasons": dict(desired.reasons),
-            "demands": _plain(dict(desired.demands)),
-        },
+        "status": None if view is None else view.status(),
+        "evaluated_at": None if view is None else view.at,
+        "observations": None if view is None else _observations(view.observations),
+        "desired": None if view is None else _desired(view.desired),
         "state": runtime.state.to_dict(),
         "reconcile": runtime.reconcile_state.to_dict(),
-        "repairs": [] if reconciled is None else sorted(reconciled.repairs),
-        "retry_at": None if reconciled is None else reconciled.retry_at,
+        "repairs": [] if view is None else sorted(view.reconciled.repairs),
+        "retry_at": None if view is None else view.reconciled.retry_at,
         "proposals": [
             {
                 "at": proposal.at,
@@ -86,15 +89,14 @@ async def async_get_config_entry_diagnostics(
             }
             for proposal in runtime.proposals
         ],
-        "missing": dict(runtime.missing),
+        "missing": {} if view is None else dict(view.missing),
         "configuration_problem": runtime.problem,
         "stopping": None
-        if runtime.stopping is None
+        if view is None or view.stopping is None
         else {
-            "plant": export_plant(runtime.stopping.plant),
-            "outputs": sorted(runtime.stopping.outputs),
-            "not_off": runtime.stopping_outputs(),
+            "plant": export_plant(view.stopping.plant),
+            "outputs": sorted(view.stopping.outputs),
+            "not_off": view.stopping_outputs(),
         },
         "issues": [issue.kind.value for issue in runtime.issues],
     }
-    return async_redact_data(data, TO_REDACT)

@@ -66,6 +66,7 @@ Diagnostics list the current Repairs by the key in the second column.
 | Repair | Key | Severity |
 | --- | --- | --- |
 | Plant is not valid | `invalid_plant` | Error |
+| A Plant cannot evaluate | `evaluation_failed` | Error |
 | An output does not respond | `output_not_responding` | Error |
 | Outputs awaiting confirmation | `outputs_awaiting_confirmation` | Warning |
 | An entity does not exist | `missing_binding` | Error |
@@ -82,6 +83,14 @@ Meanwhile it shows only its **Mode** select, **Control equipment** switch, and *
 This happens when a zone that the Plant still needs is deleted, such as the zone of a pump's only min-flow loop.
 The Repair names the problem; select **Submit** to open the Plant's **Reconfigure**, and fix it there, for example by choosing other **Min-flow loops** or with **Replace from a plant file**.
 Saving a valid Plant runs it again.
+
+### A Plant cannot evaluate
+
+An evaluation of the Plant failed with an error, which is a defect in Hydronicus.
+While it fails, the Plant sends no new command, so the outputs stay as they were last commanded, and its entities keep their last state.
+It tries again every minute, and after any change it observes, and the Repair clears after the next evaluation that succeeds.
+Report the problem with the error from the log and the Plant's diagnostics.
+If the equipment must not stay as it is meanwhile, stop it by hand or with its own controls.
 
 ### An output does not respond
 
@@ -197,14 +206,14 @@ For a plant loop that cools, the dew points of the zones it runs with count, or 
 
 Open **Settings > System > Logs** and filter for `hydronicus`.
 Hydronicus logs a warning when a command fails or does not return in time, when the persisted state of a Plant cannot be read, when the thermostats of a Plant do not load, when the stored configuration is not valid, and when it stops the outputs of a previous configuration.
-It logs an error when it refuses a Plant created by an earlier version.
+It logs an error when it refuses a Plant created by an earlier version, and when an evaluation fails.
 
 Download diagnostics with **Download diagnostics** on the Plant's entry.
 They hold:
 
 | Key | Content |
 | --- | --- |
-| `plant` | The Plant as its plant file. |
+| `plant` | The Plant as its plant file, or, while the configuration is not valid, the plant file as it is stored. |
 | `options` | The armed outputs and **Control equipment**. |
 | `requested_mode` and `status` | The **Mode** select and the **Status** sensor. |
 | `observations` | What the last evaluation read: outputs, readiness sensors, sensors, areas, and thermostats. |
@@ -216,7 +225,7 @@ They hold:
 | `configuration_problem` | Why the stored configuration is not valid, or none. |
 | `stopping` | While the previous configuration stops: that configuration, the outputs it stops, and those not yet seen off. |
 
-Diagnostics leave out the Plant ID and every name, but they keep entity IDs, area IDs, and slugs.
+Diagnostics hold no secrets, and nothing in them is redacted: they include the Plant ID, entity IDs, area IDs, and the names of the Plant, its zones, and its other objects.
 Review them before you share them, and remove anything that identifies your household.
 Use the [diagnostic bug report template](../.github/ISSUE_TEMPLATE/diagnostic-bug-report.md) to report a problem.
 

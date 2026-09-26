@@ -6,22 +6,27 @@ import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import mock_restore_cache_with_extra_data
 
+from custom_components.hydronicus import async_remove_config_entry_device
 from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.core.model import Mode, Preset
 from custom_components.hydronicus.core.step import DigitalThermostatState
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.issues import IssueKind
 from tests.integration.helpers import (
+    REFERENCE_PLANT,
     Actuators,
     async_advance,
     async_call,
     async_import,
     async_set_options,
+    reference_world,
     set_humidity,
     set_temperature,
+    zone_subentry_id,
 )
 
 EXTERNAL = """
@@ -48,6 +53,20 @@ zones:
     thermostat: {digital: {target: 20.5, presets: {comfort: 22, eco: 19}}}
     loops:
       ceiling: {valves: [switch.study_valve], pump: pump, modes: [heat, cool]}
+"""
+
+
+SOURCED = """
+hydronicus: 2
+name: Flat
+source: {request: switch.boiler}
+pumps:
+  pump: {switch: switch.pump}
+zones:
+  den:
+    temperature: [sensor.den]
+    loops:
+      radiator: {valves: [switch.den_valve], pump: pump}
 """
 
 
@@ -99,6 +118,40 @@ async def test_a_zone_that_cools_gets_cooling_demand_and_a_dew_point(
     assert hass.states.get("binary_sensor.study_heating_demand").state == "off"
     assert actuators.shorts() == ["switch.study_valve:on"]
     assert hass.states.get("climate.study").attributes["current_humidity"] == 50.0
+
+
+async def test_a_thermostat_action_is_what_the_equipment_does_for_its_zone(
+    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
+) -> None:
+    """Demand alone is not an action: the Plant must run the zone's mode and its loop flow."""
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 18.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+    await async_set_options(hass, entry, armed=["switch.pump", "switch.study_valve"], control=True)
+
+    def action() -> str:
+        return str(hass.states.get("climate.study").attributes["hvac_action"])
+
+    assert action() == "off"
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="heat")
+    assert hass.states.get("binary_sensor.study_heating_demand").state == "on"
+    assert action() == "idle", "the Plant mode is off"
+
+    await async_call(hass, "select", "select_option", entity_id="select.flat_mode", option="heat")
+    assert actuators.shorts() == ["switch.study_valve:on"]
+    assert action() == "preheating", "the valve is opening"
+    await async_advance(hass, freezer, 200, step=5)
+    assert actuators.shorts() == ["switch.study_valve:on", "switch.pump:on"]
+    assert action() == "heating"
+
+    set_temperature(hass, "sensor.study", 24.0)
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="cool")
+    assert hass.states.get("binary_sensor.study_cooling_demand").state == "on"
+    assert action() == "idle", "the Plant runs heat"
+    await async_call(hass, "climate", "turn_off", entity_id="climate.study")
+    assert action() == "off"
 
 
 async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
@@ -171,6 +224,11 @@ async def test_setting_a_target_with_a_mode_changes_both(hass: HomeAssistant) ->
             hvac_mode="auto",
         )
     assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 22.5)
+    with pytest.raises(ServiceValidationError, match="Accepted range is 5.0 to 35.0"):
+        await async_call(
+            hass, "climate", "set_temperature", entity_id="climate.study", temperature=40.0
+        )
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 22.5)
 
 
 async def test_a_missing_output_blocks_its_loop_and_raises_a_repair(
@@ -204,7 +262,7 @@ async def test_a_missing_output_blocks_its_loop_and_raises_a_repair(
     }
 
 
-async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation_redacted(
+async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation(
     hass: HomeAssistant, actuators: Actuators
 ) -> None:
     outputs_off(hass, "switch.pump", "switch.study_valve")
@@ -218,8 +276,8 @@ async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation_redacted(
 
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert diagnostics["plant"]["id"] == "**REDACTED**"
-    assert diagnostics["plant"]["name"] == "**REDACTED**"
+    assert diagnostics["plant"]["id"] == entry.unique_id
+    assert diagnostics["plant"]["name"] == "Flat"
     assert diagnostics["plant"]["zones"]["study"]["loops"]["ceiling"]["valves"] == [
         "switch.study_valve"
     ]
@@ -231,3 +289,54 @@ async def test_diagnostics_hold_the_plant_file_and_the_last_evaluation_redacted(
     assert diagnostics["proposals"][0]["entity"] == "switch.study_valve"
     assert diagnostics["status"] == "heating"
     assert actuators.calls == []
+
+
+async def test_a_device_the_plant_no_longer_has_is_removed(hass: HomeAssistant) -> None:
+    outputs_off(hass, "switch.boiler", "switch.pump", "switch.den_valve")
+    set_temperature(hass, "sensor.den", 20.0)
+    entry = await async_import(hass, SOURCED)
+    devices = dr.async_get(hass)
+    source = devices.async_get_device_by_identifier(
+        (DOMAIN, f"{entry.unique_id}:source"), entry.entry_id
+    )
+    assert source is not None
+    assert hass.states.get("binary_sensor.boiler_requested") is None
+    assert hass.states.get("binary_sensor.heat_source_requested") is not None
+    plant = devices.async_get_device_by_identifier((DOMAIN, str(entry.unique_id)), entry.entry_id)
+    assert plant is not None
+    assert not await async_remove_config_entry_device(hass, entry, plant)
+    assert not await async_remove_config_entry_device(hass, entry, source)
+
+    data = dict(entry.data)
+    del data["source"]
+    hass.config_entries.async_update_entry(entry, data=data)
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.plant.source is None
+    assert hass.states.get("binary_sensor.heat_source_requested") is None
+    assert (
+        devices.async_get_device_by_identifier(
+            (DOMAIN, f"{entry.unique_id}:source"), entry.entry_id
+        )
+        is None
+    )
+    assert devices.async_get(plant.id) is not None
+    stale = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, f"{entry.unique_id}:zone:gone")}
+    )
+    assert await async_remove_config_entry_device(hass, entry, stale)
+
+
+async def test_diagnostics_of_an_invalid_plant_hold_what_is_stored(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    hass.config_entries.async_remove_subentry(entry, zone_subentry_id(entry, "living_area"))
+    await hass.async_block_till_done()
+    assert entry.runtime_data.problem is not None
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diagnostics["configuration_problem"] == entry.runtime_data.problem
+    assert diagnostics["plant"]["name"] == "Home"
+    assert diagnostics["plant"]["pumps"]["heat_pump"]["min_flow_loops"] == []
+    assert set(diagnostics["plant"]["zones"]) == {"basement", "bedroom_area"}

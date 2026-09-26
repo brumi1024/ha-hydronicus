@@ -14,13 +14,14 @@ from custom_components.hydronicus.areas import (
     ZoneAreaProblem,
     ZoneAreaProblemKind,
 )
-from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.core.plant_file import export_plant, read_plant_file
 from custom_components.hydronicus.flows.documents import NEW
 from custom_components.hydronicus.flows.forms import pick_schema
 from custom_components.hydronicus.issues import (
     FIXABLE,
     Issue,
     IssueKind,
+    evaluation_failed,
     invalid_plant,
     missing_area_sensor,
     missing_binding,
@@ -68,9 +69,10 @@ def _issues() -> list[Issue]:
     areas = AreaResolution()
     return [
         invalid_plant("Home", "pumps.heat_pump.min_flow_loops: needs a loop"),
+        evaluation_failed("Home", "KeyError: 'floor'"),
         output_not_responding(plant, SOURCE_REQUEST),
         outputs_awaiting_confirmation(plant, ["switch.a", "switch.b"]),
-        missing_binding(plant, "switch.a", "pumps.floor.switch"),
+        missing_binding(plant, export_plant(plant), "switch.a", "pumps.floor.switch"),
         missing_area_sensor(plant, "Kitchen", "sensor.kitchen"),
         *(
             zone_area_issue(plant, ZoneAreaProblem(kind, "basement", "workshop"), areas)
@@ -142,7 +144,6 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
     assert set(STRINGS["exceptions"]) == {
         "invalid_plant",
         "plant_not_found",
-        "invalid_target_temperature",
         "unsupported_hvac_mode",
     }
     assert set(STRINGS["services"]) == {"export_plant"}

@@ -1,7 +1,7 @@
 """The Repairs the runtime raises for one Plant.
 
-Output faults, missing bindings, unconfirmed outputs, and zone area problems
-are Repairs, not entities (contract K7). The runtime computes the current set
+A failed evaluation, output faults, missing bindings, unconfirmed outputs, and
+zone area problems are Repairs, not entities (contract K7). The runtime computes the current set
 after every evaluation and ``async_sync_issues`` creates the new ones and
 deletes the resolved ones.
 
@@ -12,7 +12,6 @@ are fixed outside Hydronicus, at the device or in the area settings.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -25,13 +24,14 @@ from homeassistant.helpers import issue_registry as ir
 from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
 from .core.model import OutputRole, Plant
-from .core.plant_file import describe_path, export_plant
+from .core.plant_file import describe_path
 
 
 class IssueKind(StrEnum):
     """The translation key of each Repair."""
 
     INVALID_PLANT = "invalid_plant"
+    EVALUATION_FAILED = "evaluation_failed"
     OUTPUT_NOT_RESPONDING = "output_not_responding"
     OUTPUTS_AWAITING_CONFIRMATION = "outputs_awaiting_confirmation"
     MISSING_BINDING = "missing_binding"
@@ -136,6 +136,10 @@ def invalid_plant(plant_name: str, error: str) -> Issue:
     return Issue(IssueKind.INVALID_PLANT, "", {"plant": plant_name, "error": error})
 
 
+def evaluation_failed(plant_name: str, error: str) -> Issue:
+    return Issue(IssueKind.EVALUATION_FAILED, "", {"plant": plant_name, "error": error})
+
+
 def output_not_responding(plant: Plant, entity_id: str) -> Issue:
     role = _ROLE_NAMES[plant.outputs()[entity_id]]
     return Issue(
@@ -153,8 +157,11 @@ def outputs_awaiting_confirmation(plant: Plant, entity_ids: Iterable[str]) -> Is
     )
 
 
-def missing_binding(plant: Plant, entity_id: str, path: str) -> Issue:
-    """A bound entity that does not exist; a zone's binding is fixed in that zone."""
+def missing_binding(plant: Plant, document: Mapping[str, Any], entity_id: str, path: str) -> Issue:
+    """A bound entity that does not exist; a zone's binding is fixed in that zone.
+
+    ``document`` is the Plant's plant file, which names the objects the path passes through.
+    """
     keys = path.split(".")
     return Issue(
         IssueKind.MISSING_BINDING,
@@ -162,7 +169,7 @@ def missing_binding(plant: Plant, entity_id: str, path: str) -> Issue:
         {
             "plant": plant.name,
             "entity_id": entity_id,
-            "path": describe_path(_document(plant), path),
+            "path": describe_path(document, path),
         },
         zone=keys[1] if keys[0] == "zones" and len(keys) > 1 else None,
         path=path,
@@ -175,12 +182,6 @@ def missing_area_sensor(plant: Plant, area: str, entity_id: str) -> Issue:
         f"{area}|{entity_id}",
         {"plant": plant.name, "area": area, "entity_id": entity_id},
     )
-
-
-@functools.lru_cache(maxsize=8)
-def _document(plant: Plant) -> dict[str, Any]:
-    """The plant file of a Plant, which names the objects a path passes through."""
-    return export_plant(plant)
 
 
 def zone_area_issue(plant: Plant, problem: ZoneAreaProblem, areas: AreaResolution) -> Issue:

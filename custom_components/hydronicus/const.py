@@ -2,8 +2,16 @@
 
 from typing import Final
 
+from homeassistant.const import Platform
+
 DOMAIN: Final = "hydronicus"
-PLATFORMS: Final = ("binary_sensor", "climate", "select", "sensor", "switch")
+PLATFORMS: Final = (
+    Platform.BINARY_SENSOR,
+    Platform.CLIMATE,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+)
 
 # Version 5 stores the format 2 plant file: the Plant in the entry data and each
 # zone in a ``zone`` subentry. Earlier versions are refused, never migrated.

@@ -13,6 +13,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -26,7 +27,7 @@ from .const import (
 )
 from .core.model import Plant
 from .core.plant_file import PlantFileError, describe_path
-from .entity import async_remove_unprovided_entities
+from .entity import async_remove_unprovided, is_stale_device, plant_device
 from .issues import async_delete_issues, async_sync_issues, invalid_plant
 from .runtime import PlantRuntime, store_key
 from .services import async_setup_services
@@ -36,6 +37,9 @@ from .zone_area import async_place_new_zone_climates, zones_without_climate
 type HydronicusConfigEntry = ConfigEntry[PlantRuntime]
 
 _LOGGER = logging.getLogger(__name__)
+
+# Plants are set up in the UI only.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -115,13 +119,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     entry.runtime_data = runtime
     runtime.plant_device_id = (
         dr.async_get(hass)
-        .async_get_or_create(
-            config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, plant.id)},
-            name=plant.name,
-            manufacturer="Hydronicus",
-            model="Hydronicus Plant",
-        )
+        .async_get_or_create(config_entry_id=entry.entry_id, **plant_device(plant))
         .id
     )
     new_climates = zones_without_climate(hass, plant)
@@ -130,7 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
         if problem is None:
             # An invalid Plant provides only the Plant's own entities and keeps the rest.
             async_place_new_zone_climates(hass, plant, new_climates)
-            async_remove_unprovided_entities(hass, entry, runtime)
+            async_remove_unprovided(hass, entry, runtime)
     except Exception:
         await runtime.async_stop()
         raise
@@ -138,6 +136,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     runtime.async_start()
     return True
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: HydronicusConfigEntry, device: dr.DeviceEntry
+) -> bool:
+    """Let the owner delete a device the Plant no longer has, and no other.
+
+    While the configuration is not valid, every device waits for it to be fixed.
+    """
+    runtime = entry.runtime_data
+    return runtime.problem is None and is_stale_device(runtime.plant, device)
 
 
 def invalid_placeholder(entry: ConfigEntry) -> Plant:
@@ -167,10 +176,15 @@ async def _async_update_listener(hass: HomeAssistant, entry: HydronicusConfigEnt
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -> bool:
-    """Unload a Plant without sending a command; the equipment stays as it is."""
-    runtime = entry.runtime_data
-    await runtime.async_stop()
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    """Unload a Plant without sending a command; the equipment stays as it is.
+
+    The platforms unload first, so a platform that fails to unload leaves the
+    Plant loaded and running rather than loaded with its runtime stopped.
+    """
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    await entry.runtime_data.async_stop()
+    return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
