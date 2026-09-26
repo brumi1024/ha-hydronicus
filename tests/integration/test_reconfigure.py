@@ -9,10 +9,12 @@ Plant.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.hydronicus.core.model import MinFlow, RunKind
 from custom_components.hydronicus.core.plant_file import read_plant_file
@@ -154,6 +156,20 @@ async def test_reconfigure_adds_a_pump_and_a_plant_loop_and_edits_a_pump(
         "living_area.ceiling",
     ]
     assert "switch.garage_valve" in plant.outputs()
+
+
+async def test_saving_sets_up_again_a_plant_that_failed_to_set_up(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    with patch.object(
+        hass.config_entries, "async_forward_entry_setups", side_effect=HomeAssistantError
+    ):
+        entry = await async_import(hass, REFERENCE_PLANT)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    result = await async_reconfigure(hass, entry)
+
+    await async_save(hass, result)
+
+    assert entry.state is ConfigEntryState.LOADED
 
 
 async def test_a_pump_that_a_loop_uses_cannot_be_removed(hass: HomeAssistant) -> None:

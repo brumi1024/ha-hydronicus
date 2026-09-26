@@ -132,9 +132,16 @@ def async_reload_if_failed(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Set up again a Plant that failed to set up, after its configuration changed.
 
     A loaded Plant reloads from its update listener; one that failed has none.
+    The retry waits one turn of the event loop, because Home Assistant stores
+    the subentry that a zone flow creates only after the flow's last step returns.
     """
-    if entry.state in (ConfigEntryState.SETUP_ERROR, ConfigEntryState.SETUP_RETRY):
-        hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    @callback
+    def retry() -> None:
+        if entry.state in (ConfigEntryState.SETUP_ERROR, ConfigEntryState.SETUP_RETRY):
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    hass.loop.call_soon(retry)
 
 
 def new_options() -> dict[str, Any]:

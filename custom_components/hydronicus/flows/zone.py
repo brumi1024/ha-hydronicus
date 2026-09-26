@@ -142,9 +142,10 @@ class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
         data = to_storage(plant)[1][zone]
         title = plant.zone(zone).title
         if self.source != SOURCE_RECONFIGURE:
-            return self.async_create_entry(title=title, data=data, unique_id=zone)
-        result = self.async_update_and_abort(
-            entry, self._get_reconfigure_subentry(), title=title, data=data
-        )
+            result = self.async_create_entry(title=title, data=data, unique_id=zone)
+        else:
+            result = self.async_update_and_abort(
+                entry, self._get_reconfigure_subentry(), title=title, data=data
+            )
         async_reload_if_failed(self.hass, entry)
         return result

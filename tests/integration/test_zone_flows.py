@@ -8,10 +8,12 @@ with the same rules as setup.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.hydronicus.core.model import ExternalThermostat
 from tests.integration.helpers import (
@@ -85,6 +87,28 @@ async def test_add_a_zone_through_its_subentry(hass: HomeAssistant) -> None:
     }
     assert hass.states.get("climate.guest_room") is not None
     assert entry.options["armed_outputs"] == [FLOOR_PUMP], "adding a zone never changes arming"
+
+
+async def test_adding_a_zone_sets_up_again_a_plant_that_failed_to_set_up(
+    hass: HomeAssistant,
+) -> None:
+    """A Plant that failed has no update listener, so the new zone itself retries it."""
+    reference_world(hass)
+    with patch.object(
+        hass.config_entries, "async_forward_entry_setups", side_effect=HomeAssistantError
+    ):
+        entry = await async_import(hass, REFERENCE_PLANT)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.subentries
+    result = await async_open(hass, entry)
+    result = await async_submit(flows, result, {"name": "Study", "temperature": ["sensor.study"]})
+    result = await async_submit(flows, result, {})
+    result = await async_choose(flows, result, "save")
+    assert result["type"] is FlowResultType.CREATE_ENTRY, result
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("climate.study") is not None
 
 
 async def test_reconfigure_a_zone_edits_its_settings_and_its_loops(hass: HomeAssistant) -> None:
