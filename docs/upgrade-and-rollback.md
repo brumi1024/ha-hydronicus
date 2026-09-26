@@ -46,9 +46,6 @@ Keeping the Plant `id` of an old file keeps the Plant ID, but entity unique IDs 
 5. Open **Settings > Devices & services > Add integration** and search for **Hydronicus**.
 6. Follow [configuration](configuration.md), and keep **Control equipment** off for the first Plant.
 
-The package installs only `custom_components/hydronicus`.
-The old `hydronic_climate` package and domain are not part of Hydronicus and must not be created.
-
 ## Before changing an installation
 
 Create a Home Assistant backup before you update Hydronicus, change a Plant that controls heating, or test a source checkout.

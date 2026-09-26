@@ -67,9 +67,3 @@ Keep independent physical safeguards, such as high-limit, pressure, flow, freeze
 The source is reached through a request switch and an optional mode select; writing a flow temperature setpoint arrives with heat pump control over Modbus in a later release.
 There is no automatic season selection yet; an automation can set the Plant mode.
 A plant loop that cools with zones that have no cooling loop of their own does not yet get a cooling thermostat for those zones.
-
-## Hydronicus rename boundary
-
-Hydronicus is installed from `custom_components/hydronicus` and uses the `hydronicus` domain.
-
-The former `hydronic_climate` integration name and domain are not supported and must not be recreated during an upgrade.

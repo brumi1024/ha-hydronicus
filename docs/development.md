@@ -24,7 +24,7 @@ make hooks
 - `make lint` checks Ruff linting, Python compilation, and the repository's JSON files.
 - `make format-check` checks the whole repository with the Ruff formatter.
 - `make typecheck` checks the whole `custom_components/hydronicus` package with mypy.
-- `make release-check` and `make public-beta-check` build and inspect the HACS release archive and check the installation documentation.
+- `make release-check` builds and inspects the HACS release archive.
 - `make test` runs every test with core coverage.
 - `make verify` runs the complete local quality gate that CI runs.
 
