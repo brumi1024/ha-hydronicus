@@ -13,9 +13,10 @@ lists pumps and loops as objects that carry their slugs, which keeps their order
 ``to_storage`` and ``from_storage`` convert between them.
 
 The canonical export writes every structural and timing key and omits optional
-keys at their defaults: names, sensors, and settings a user left out. Lists and
-small mappings are written in flow style, so ``write_plant_file`` produces the
-compact form of ``docs/examples/reference-plant.yaml``.
+keys at their defaults: names, sensors, the exercise and frost protection, and
+settings a user left out. Lists and small mappings are written in flow style, so
+``write_plant_file`` produces the compact form of
+``docs/examples/reference-plant.yaml``.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from uuid import UUID, uuid4
 import yaml
 
 from .model import (
+    DEFAULT_EXERCISE,
+    DEFAULT_FROST_PROTECTION,
     DEFAULT_MAX_AGE,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_MIN_OFF,
@@ -45,6 +48,7 @@ from .model import (
     RUNS_WITH_ZONE,
     Aggregation,
     DigitalThermostat,
+    Exercise,
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -68,7 +72,18 @@ from .model import (
 PLANT_FILE_FORMAT: Final = 2
 
 # Keys in canonical order.
-_TOP_KEYS: Final = ("hydronicus", "id", "name", "mode_dwell", "source", "pumps", "loops", "zones")
+_TOP_KEYS: Final = (
+    "hydronicus",
+    "id",
+    "name",
+    "mode_dwell",
+    "exercise",
+    "frost_protection",
+    "source",
+    "pumps",
+    "loops",
+    "zones",
+)
 _SOURCE_KEYS: Final = ("name", "request", "mode", "post_run", "min_on", "min_off")
 _SOURCE_MODE_KEYS: Final = ("entity", "heat", "cool")
 _PUMP_KEYS: Final = (
@@ -128,6 +143,7 @@ _DIGITAL_KEYS: Final = (
     "min_off",
 )
 _RUNS_KEYS: Final = ("with_zones",)
+_EXERCISE_KEYS: Final = ("interval", "run")
 _LOOP_MODES: Final = (Mode.HEAT, Mode.COOL)
 _DEFAULT_MODES: Final = frozenset({Mode.HEAT})
 _DEFAULT_THERMOSTAT: Final = DigitalThermostat()
@@ -196,6 +212,10 @@ def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Pla
         zones=tuple(
             _zone(slug, value, path) for slug, value, path in _slugs(top.get("zones", {}), "zones")
         ),
+        exercise=_exercise(top["exercise"], "exercise") if "exercise" in top else DEFAULT_EXERCISE,
+        frost_protection=_frost_protection(
+            top.get("frost_protection", DEFAULT_FROST_PROTECTION), "frost_protection"
+        ),
     )
     validate_plant(plant)
     return plant
@@ -219,6 +239,30 @@ def _check_format(top: Mapping[str, Any]) -> None:
         "hydronicus",
         f"Unsupported plant file format {value!r}; this version reads format {PLANT_FILE_FORMAT}.",
     )
+
+
+def _exercise(value: object, path: str) -> Exercise | None:
+    """Read ``false``, which turns the exercise off, or its interval and run time."""
+    if value is False or value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected a mapping of interval and run, or false.")
+    exercise = _mapping(value, path, _EXERCISE_KEYS)
+    return Exercise(
+        interval=_number(
+            exercise.get("interval", DEFAULT_EXERCISE.interval),
+            _join(path, "interval"),
+            positive=True,
+        ),
+        run=_number(exercise.get("run", DEFAULT_EXERCISE.run), _join(path, "run"), positive=True),
+    )
+
+
+def _frost_protection(value: object, path: str) -> float | None:
+    """Read the frost protection temperature, or ``false``, which turns it off."""
+    if value is False or value is None:
+        return None
+    return _number(value, path)
 
 
 def _source(value: object, path: str) -> Source:
@@ -874,6 +918,8 @@ _TOP_WORDS: Final = {
     "id": "Plant ID",
     "name": "Plant name",
     "mode_dwell": "Mode dwell",
+    "exercise": "Exercise",
+    "frost_protection": "Frost protection",
     "source": "Source",
     "pumps": "Pumps",
     "loops": "Plant loops",
@@ -981,6 +1027,19 @@ def export_plant(plant: Plant) -> dict[str, Any]:
         "name": plant.name,
         "mode_dwell": _export_number(plant.mode_dwell),
     }
+    if plant.exercise != DEFAULT_EXERCISE:
+        document["exercise"] = (
+            False
+            if plant.exercise is None
+            else {
+                "interval": _export_number(plant.exercise.interval),
+                "run": _export_number(plant.exercise.run),
+            }
+        )
+    if plant.frost_protection != DEFAULT_FROST_PROTECTION:
+        document["frost_protection"] = (
+            False if plant.frost_protection is None else _export_number(plant.frost_protection)
+        )
     if plant.source is not None:
         document["source"] = _export_source(plant.source)
     if plant.pumps:
@@ -1230,7 +1289,7 @@ class _FlowMapping(dict[str, Any]):
 
 
 # Mappings under these keys are written on one line.
-_FLOW_MAPPINGS: Final = frozenset({"mode", "runs", "thermostat"})
+_FLOW_MAPPINGS: Final = frozenset({"mode", "runs", "thermostat", "exercise"})
 _MAP_TAG: Final = "tag:yaml.org,2002:map"
 _SEQ_TAG: Final = "tag:yaml.org,2002:seq"
 # Never fold a long line.

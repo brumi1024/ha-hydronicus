@@ -12,8 +12,16 @@ import pytest
 from hypothesis import HealthCheck, Phase, find, given, settings
 from hypothesis import strategies as st
 
-from custom_components.hydronicus.core.model import MinFlow, Plant, RunKind
-from tests.sim.strategies import CallFault, Trace, plants, run, seasonal_traces, traces
+from custom_components.hydronicus.core.model import MinFlow, Mode, Plant, RunKind
+from tests.sim.strategies import (
+    CallFault,
+    Trace,
+    idle_thermostats,
+    plants,
+    run,
+    seasonal_traces,
+    traces,
+)
 from tests.sim.world import FaultKind
 
 # Hypothesis 6.156 on Python 3.14 misjudges its own PRNG as garbage when it
@@ -63,6 +71,66 @@ def seasonal_cases(draw: st.DrawFn) -> tuple[Plant, Trace]:
 def test_the_invariants_hold_through_changes_of_season(case: tuple[Plant, Trace]) -> None:
     """Random traces rarely both heat and cool; these change between the two on purpose."""
     run(*case)
+
+
+@st.composite
+def exercised_cases(draw: st.DrawFn) -> tuple[Plant, Trace]:
+    plant = draw(plants().filter(lambda plant: plant.exercise is not None))
+    return plant, draw(traces(plant))
+
+
+# Seconds one exercise may take: the longest opening time, the longest run, and calls.
+_EXERCISE_SLACK = 600.0
+
+
+@SIM
+@given(exercised_cases())
+def test_an_idle_plant_exercises_every_pump_and_valve(case: tuple[Plant, Trace]) -> None:
+    """After any trace, a Plant left idle in heat exercises every output it may.
+
+    Every output is armed and available, every sensor reports a room far from
+    frost, and every thermostat is off. Each switched pump with a heating loop
+    and no valveless loop that only cools must run, and each valve of a heating
+    loop must open, within two intervals of the dwell ending, one pump at a time.
+    """
+    plant, trace = case
+    assert plant.exercise is not None
+    sim = run(plant, trace)
+    sim.set_control(True)
+    sim.set_armed(plant.outputs())
+    for zone in plant.zones:
+        for sensor in (*zone.temperature, *zone.humidity):
+            sim.set_sensor_stale(sensor.entity, False)
+            sim.set_sensor_available(sensor.entity, True)
+        sim.set_zone_temperature(zone.slug, 21.0)
+    idle_thermostats(sim)
+    sim.set_mode(Mode.HEAT, thermostats=False)
+    sim.run_for(plant.mode_dwell)
+    start = sim.t
+    expected = {entity: sim.is_on(entity) for entity in _exercised(plant)}
+    sim.run_for(2 * plant.exercise.interval + len(plant.pumps) * _EXERCISE_SLACK)
+    missed = sorted(
+        entity
+        for entity, on in expected.items()
+        if not on and not any(on for t, on in sim.switched(entity) if t >= start)
+    )
+    assert not missed, f"never exercised: {missed}"
+
+
+def _exercised(plant: Plant) -> set[str]:
+    """The outputs an exercise in heat reaches."""
+    expected: set[str] = set()
+    for pump in plant.pumps:
+        loops = plant.pump_loops(pump.slug)
+        heating = [loop for loop in loops if Mode.HEAT in loop.modes]
+        if not heating:
+            continue
+        if pump.switch is not None and all(
+            Mode.HEAT in loop.modes for loop in loops if not loop.valves
+        ):
+            expected.add(pump.switch)
+        expected.update(valve.entity for loop in heating for valve in loop.valves)
+    return expected
 
 
 @settings(SIM, max_examples=200)
@@ -128,6 +196,7 @@ def test_generated_traces_reach_every_event() -> None:
         "Restart",
         "JumpClock",
         "Suspend",
+        "Idle",
     }
     seen: set[str] = set()
 

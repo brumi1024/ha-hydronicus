@@ -39,7 +39,9 @@ from .demand import (
     Reading,
     ThermostatState,
     aggregate,
+    coldest_temperature,
     fresh,
+    frost_demand,
     unusable_sensors,
     worst_dew_point,
     zone_demand,
@@ -49,6 +51,7 @@ from .model import (
     Demand,
     Desired,
     DigitalThermostat,
+    Exercise,
     Loop,
     MinFlow,
     Mode,
@@ -74,6 +77,7 @@ __all__ = [
     "AreaSensors",
     "DemandState",
     "DigitalThermostatState",
+    "ExerciseState",
     "ExternalThermostatState",
     "GuardState",
     "Observations",
@@ -206,6 +210,17 @@ class GuardState:
 
 
 @dataclass(frozen=True, slots=True)
+class ExerciseState:
+    """The exercise of one pump's idle switch or valves, see ``_Plan.exercise``."""
+
+    pump: str
+    # When the switched pump was first seen running in the exercise.
+    started: float | None = None
+    # The exercise is over and its pump, still possibly running, stops without overrun.
+    done: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class State:
     """What ``step()`` carries from one evaluation to the next.
 
@@ -244,6 +259,13 @@ class State:
     winding: frozenset[str] = frozenset()
     # The zones whose demand an open window turns off, by slug.
     windows_open: frozenset[str] = frozenset()
+    # The zones that frost protection heats, by zone slug, until they are warm again.
+    frost: frozenset[str] = frozenset()
+    # Since when each switched pump and valve has not been seen on, by entity, or
+    # None while it is on; the clock of a new one starts when it is first seen.
+    idle_since: Mapping[str, float | None] = field(default_factory=dict)
+    # The exercise in progress, if any.
+    exercise: ExerciseState | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -267,6 +289,15 @@ class State:
             "ready": dict(self.ready),
             "winding": sorted(self.winding),
             "windows_open": sorted(self.windows_open),
+            "frost": sorted(self.frost),
+            "idle_since": dict(self.idle_since),
+            "exercise": None
+            if self.exercise is None
+            else {
+                "pump": self.exercise.pump,
+                "started": self.exercise.started,
+                "done": self.exercise.done,
+            },
         }
 
     @classmethod
@@ -294,6 +325,12 @@ class State:
             ready={entity: float(value) for entity, value in data.get("ready", {}).items()},
             winding=frozenset(str(entity) for entity in data.get("winding", ())),
             windows_open=frozenset(str(zone) for zone in data.get("windows_open", ())),
+            frost=frozenset(str(zone) for zone in data.get("frost", ())),
+            idle_since={
+                entity: _optional_float(value)
+                for entity, value in data.get("idle_since", {}).items()
+            },
+            exercise=_exercise_state(data.get("exercise")),
         )
 
 
@@ -308,6 +345,12 @@ class _Check:
     blocks: bool
     releases: bool
     reason: str
+
+
+def _exercise_state(value: Any) -> ExerciseState | None:
+    if value is None:
+        return None
+    return ExerciseState(str(value["pump"]), _optional_float(value["started"]), bool(value["done"]))
 
 
 # Evaluation
@@ -336,6 +379,11 @@ class _Evaluation:
         self.reasons: dict[str, str] = {}
         # The zones whose demand an open window turns off now.
         self.windows_open: set[str] = set()
+        # The zones that frost protection heats, which the demands stage finds.
+        self.frost: list[str] = []
+        # This evaluation's condensation guards, and since when each output is idle.
+        self.guard_states: dict[str, GuardState] = {}
+        self.idle_times: dict[str, float | None] = {}
         self._ready: dict[Loop, bool] = {}
         self._pumps = {pump.slug: pump for pump in plant.pumps}
         self._loops_of: dict[str, list[Loop]] = {pump.slug: [] for pump in plant.pumps}
@@ -444,6 +492,8 @@ class _Evaluation:
         plant, obs, state, now = self.plant, self.obs, self.state, self.now
         demands, demand_states = self.demands()
         guards = self.guards()
+        self.guard_states = guards
+        self.idle_times = self.idle_since()
         flowing = self.source_may_run() or any(
             self.pump_may_run(self._pumps[loop.pump]) and self.may_pass(loop)
             for loop in plant.all_loops
@@ -464,7 +514,13 @@ class _Evaluation:
             # A guard blocks only cooling; outside it, it only follows its reference.
             for key in [f"{ref}.guard" for ref in guards]:
                 self.reasons.pop(key, None)
-        plan = _Plan(self, mode, label, active, winding_down, demands, blocked_by_guard)
+        # With the Mode select off, the Plant heats only for frost protection.
+        plan_demands = (
+            demands
+            if obs.mode is not Mode.OFF
+            else {slug: demand for slug, demand in demands.items() if slug in self.frost}
+        )
+        plan = _Plan(self, mode, label, active, winding_down, plan_demands, blocked_by_guard)
         outputs = plan.outputs()
 
         live = obs.control or (state.live and not self.finished())
@@ -486,7 +542,7 @@ class _Evaluation:
         next_state = State(
             live=live,
             mode=mode,
-            last_mode=label,
+            last_mode=plan.label,
             flowing=flowing,
             flow_ended=flow_ended,
             source_request=plan.request,
@@ -497,6 +553,9 @@ class _Evaluation:
             ready=ready,
             winding=frozenset(winding),
             windows_open=frozenset(self.windows_open),
+            frost=frozenset(self.frost),
+            idle_since=self.idle_times,
+            exercise=plan.next_exercise,
         )
         desired = Desired(
             outputs=outputs,
@@ -505,6 +564,8 @@ class _Evaluation:
             reasons=self.reasons,
             demands=demands,
             blocking_sensors=self.blocking_sensors(),
+            frost_protection=tuple(self.frost),
+            exercise=plan.exercising,
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
@@ -527,6 +588,12 @@ class _Evaluation:
                 self.reached,
             )
             state, demand = self.window_inhibit(zone, state, demand)
+            # Frost protection overrides the thermostat and an open window alike,
+            # and leaves the thermostat's decision underneath as it is.
+            frost = self.frost_protection(zone)
+            if frost is not None:
+                demand = frost
+                self.frost.append(zone.slug)
             states[zone.slug], demands[zone.slug] = state, demand
             self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
         return demands, states
@@ -569,6 +636,38 @@ class _Evaluation:
             or (window.on is not True and self.reached(window.since + zone.window_close_delay))
             for window in windows
         )
+
+    def frost_protection(self, zone: Zone) -> Demand | None:
+        """Frost protection's demand, which overrides the thermostat's, or None.
+
+        It heats a zone whose coldest usable reading is below the frost protection
+        temperature, whatever its thermostat and the Mode select say, but never
+        while the Plant runs or is asked to run cool: a zone that cold in cooling
+        has a broken sensor.
+        """
+        frost = self.plant.frost_protection
+        if frost is None or Mode.COOL in (self.obs.mode, self.state.mode):
+            return None
+        obs = self.obs
+        coldest = coldest_temperature(zone, obs.areas, obs.sensors, self.reached)
+        return frost_demand(frost, coldest, zone.slug in self.state.frost)
+
+    def idle_since(self) -> dict[str, float | None]:
+        """Since when each switched pump and valve has not been seen on, or None while on."""
+        plant, previous = self.plant, self.state.idle_since
+        entities = [pump.switch for pump in plant.pumps if pump.switch is not None]
+        entities.extend(valve.entity for loop in plant.all_loops for valve in loop.valves)
+        idle: dict[str, float | None] = {}
+        for entity in entities:
+            if self.switch(entity) is True:
+                idle[entity] = None
+            elif entity not in previous:
+                # A new output's clock starts now, so a new Plant is not overdue.
+                idle[entity] = self.now
+            else:
+                last = previous[entity]
+                idle[entity] = self.since(entity) if last is None else last
+        return idle
 
     def blocking_sensors(self) -> dict[str, tuple[str, ...]]:
         """Each zone's required sensors that are not usable, among the readings it needs.
@@ -744,10 +843,22 @@ class _Evaluation:
         """Control equipment is off while outputs are still commanded: the off sequence."""
         return not self.obs.control and self.state.live
 
+    def requested(self) -> Mode:
+        """The mode asked for: the Mode select's, or heat for frost protection while it is off.
+
+        Control equipment turned off asks for off, so its off sequence runs and
+        then nothing, frost protection included.
+        """
+        if self.forced_off:
+            return Mode.OFF
+        if self.obs.mode is Mode.OFF and self.frost:
+            return Mode.HEAT
+        return self.obs.mode
+
     def mode(self, flowing: bool, flow_ended: float | None) -> tuple[Mode, bool]:
         """Stage 3: the mode the outputs run in, and whether it is being left."""
-        state, obs = self.state, self.obs
-        requested = Mode.OFF if self.forced_off else obs.mode
+        state = self.state
+        requested = self.requested()
         mode = state.mode
         if mode is not Mode.OFF and requested is not mode:
             if flowing:
@@ -814,15 +925,13 @@ class _Plan:
         source = plant.source
         self.surely_requested = source is not None and ev.surely_on(source.request)
         self.wanted = {loop for loop in plant.all_loops if self.is_wanted(loop)}
+        self.exercise()
         self.blocked = {pump.slug: self.pump_blocked(pump) for pump in plant.pumps}
         self.source_wanted = (
             self.active
             and source is not None
             and ev.usable(source.request)
-            and any(
-                loop.runs.kind is not RunKind.WITH_SOURCE and not self.blocked[loop.pump]
-                for loop in self.wanted
-            )
+            and any(self.calls_source(loop) and not self.blocked[loop.pump] for loop in self.wanted)
         )
         self.paths = {pump.slug: self.path(pump) for pump in plant.pumps}
         self.pumps_on = {
@@ -873,6 +982,10 @@ class _Plan:
             return False
         ev.reasons[key] = "wanted"
         return True
+
+    def calls_source(self, loop: Loop) -> bool:
+        """A wanted loop asks the source for heat, unless it runs with it or is exercised."""
+        return loop.runs.kind is not RunKind.WITH_SOURCE and loop not in self.exercised
 
     def zone_demands(self, slug: str) -> bool:
         demand = self.demands.get(slug)
@@ -961,7 +1074,7 @@ class _Plan:
     def pump_on(self, pump: Pump) -> bool:
         ev, now = self.ev, self.ev.now
         assert pump.switch is not None
-        if self.blocked[pump.slug]:
+        if self.blocked[pump.slug] or self.exercise_stops(pump):
             return False
         if any(ev.ready(loop) for loop in self.paths[pump.slug] if loop in self.wanted):
             return True
@@ -1034,9 +1147,7 @@ class _Plan:
             reasons["source"] = "waiting for a path for every source-driven pump"
             return False
         qualifying = [loop for loop in self.plant.all_loops if self.qualifies(loop)]
-        demanded = any(
-            loop in self.wanted and loop.runs.kind is not RunKind.WITH_SOURCE for loop in qualifying
-        )
+        demanded = any(loop in self.wanted and self.calls_source(loop) for loop in qualifying)
         state = ev.state
         if state.source_request:
             changed = state.source_changed if state.source_changed is not None else ev.now
@@ -1081,3 +1192,146 @@ class _Plan:
                 ev.reasons[pump.switch] = "held until the source request is off"
                 held.update(loops)
         return held
+
+    # The exercise: an idle pump or valve runs now and then, so it does not seize
+
+    def exercise(self) -> None:
+        """Choose the loops to exercise while the Plant is idle, and the exercise's next state.
+
+        One pump is exercised at a time, once its switch or a valve of its loops
+        has not been seen on for the exercise interval. Its loops that may carry
+        the mode that labels any flow open, and once they are ready its switched
+        pump runs for the exercise's run time; the pump then stops without
+        overrun, and the valves close once it is seen off, as at the end of
+        demand. A source-driven pump is never commanded, so its loops only open
+        until they are ready. An exercise never asks the source for heat, and it
+        yields at once to any wanted loop.
+        """
+        ev = self.ev
+        self.exercised: set[Loop] = set()
+        self.exercise_runs = False
+        self.next_exercise: ExerciseState | None = None
+        settings = self.plant.exercise
+        idle = self.exercise_idle()
+        # A Plant that never ran a mode labels its exercise heat.
+        unlabelled = self.label is Mode.OFF
+        if unlabelled:
+            self.label = Mode.HEAT
+        previous = ev.state.exercise
+        pump = None if previous is None else ev._pumps.get(previous.pump)
+        if pump is not None and previous is not None:
+            if idle and settings is not None and not previous.done:
+                loops, runs = self.exercise_loops(pump)
+                started = previous.started
+                if runs and started is None and pump.switch and ev.surely_on(pump.switch):
+                    started = ev.now
+                ran = not runs or (started is not None and ev.reached(started + settings.run))
+                if loops and not (ran and all(ev.ready(loop) for loop in loops)):
+                    self.begin_exercise(pump, loops, runs, started)
+                    return
+            if (
+                pump.switch is not None
+                and ev.may_be_on(pump.switch)
+                and not any(loop in self.wanted for loop in ev.loops_of(pump))
+            ):
+                self.next_exercise = ExerciseState(pump.slug, previous.started, done=True)
+                ev.reasons[pump.switch] = "exercise over"
+                return
+        # The previous exercise is over, so the next pump that is due may start.
+        if idle and settings is not None:
+            for pump in self.plant.pumps:
+                loops, runs = self.exercise_loops(pump)
+                if loops and (
+                    (runs and pump.switch is not None and self.due(pump.switch, settings))
+                    or any(
+                        self.due(valve.entity, settings) for loop in loops for valve in loop.valves
+                    )
+                ):
+                    self.begin_exercise(pump, loops, runs, None)
+                    return
+        if unlabelled:
+            self.label = Mode.OFF
+
+    def exercise_idle(self) -> bool:
+        """Nothing else runs: no loop is wanted, the source is at rest, and no other pump runs."""
+        ev = self.ev
+        if ev.forced_off or self.wanted or "mode" in ev.reasons:
+            return False
+        if ev.state.source_request or ev.source_may_run():
+            return False
+        exercised = ev.state.exercise.pump if ev.state.exercise is not None else None
+        return not any(
+            pump.switch is not None
+            and pump.slug != exercised
+            and (ev.switch(pump.switch) is True or ev.pending(pump.switch) == ON)
+            for pump in self.plant.pumps
+        )
+
+    def exercise_loops(self, pump: Pump) -> tuple[list[Loop], bool]:
+        """The loops of a pump to open in an exercise, and whether its switched pump runs.
+
+        A loop opens when it runs in the mode that labels the flow, its valves are
+        armed and available, and in cooling its condensation guard permits. The
+        pump runs only when it is armed and available and no other loop of it
+        may pass flow, and without it only loops with valves are exercised.
+        """
+        ev, label = self.ev, self.label
+
+        def carries(loop: Loop) -> bool:
+            # After cooling the running mode is off, where ``guard_blocked`` never
+            # blocks, so the exercise reads the guard itself, with all its checks.
+            guard = ev.guard_states.get(str(loop.ref))
+            blocked = label is Mode.COOL and (guard is None or guard.blocked)
+            return label in loop.modes and not blocked
+
+        loops = ev.loops_of(pump)
+        chosen = [
+            loop
+            for loop in loops
+            if carries(loop) and all(ev.usable(valve.entity) for valve in loop.valves)
+        ]
+        runs = (
+            pump.switch is not None
+            and ev.usable(pump.switch)
+            and not self.pump_blocked(pump)
+            and not any(
+                not carries(loop) and (not loop.valves or ev.may_pass(loop)) for loop in loops
+            )
+        )
+        if not runs:
+            chosen = [loop for loop in chosen if loop.valves]
+        return chosen, runs
+
+    def due(self, entity: str, settings: Exercise) -> bool:
+        """An output has not been seen on for the exercise interval."""
+        since = self.ev.idle_times.get(entity)
+        return since is not None and self.ev.reached(since + settings.interval)
+
+    def begin_exercise(
+        self, pump: Pump, loops: list[Loop], runs: bool, started: float | None
+    ) -> None:
+        """Run an exercise now: its loops are wanted, and its pump runs only if ``runs``."""
+        ev = self.ev
+        self.exercised = set(loops)
+        self.exercise_runs = runs
+        self.wanted |= self.exercised
+        self.next_exercise = ExerciseState(pump.slug, started)
+        for loop in loops:
+            ev.reasons[str(loop.ref)] = "exercise"
+        if runs and pump.switch is not None:
+            ev.reasons[pump.switch] = "exercise"
+
+    @property
+    def exercising(self) -> str | None:
+        """The slug of the pump whose exercise runs now, not one that is stopping."""
+        exercise = self.next_exercise
+        return None if exercise is None or exercise.done else exercise.pump
+
+    def exercise_stops(self, pump: Pump) -> bool:
+        """The pump belongs to an exercise that must not run it, or that is over."""
+        exercise = self.next_exercise
+        return (
+            exercise is not None
+            and exercise.pump == pump.slug
+            and (exercise.done or not self.exercise_runs)
+        )

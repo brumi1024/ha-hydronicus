@@ -92,6 +92,14 @@ DEFAULT_MAX_HUMIDITY: Final = 70.0
 # every window of the zone has read closed this long, in seconds.
 DEFAULT_WINDOW_OPEN_DELAY: Final = 60.0
 DEFAULT_WINDOW_CLOSE_DELAY: Final = 60.0
+# An idle switched pump or valve is exercised once it has not been seen on for a
+# week, and an exercised pump runs for a minute, so neither seizes.
+DEFAULT_EXERCISE_INTERVAL: Final = 604800.0
+DEFAULT_EXERCISE_RUN: Final = 60.0
+# A zone whose coldest reading falls below this, in °C, is heated whatever its thermostat says.
+DEFAULT_FROST_PROTECTION: Final = 5.0
+# Frost protection heats until the coldest reading is this far above its temperature, in kelvin.
+FROST_PROTECTION_RELEASE: Final = 1.0
 
 
 def title_from_slug(slug: str) -> str:
@@ -308,6 +316,19 @@ class Zone:
 
 
 @dataclass(frozen=True, slots=True)
+class Exercise:
+    """How often an idle pump or valve is exercised so it does not seize."""
+
+    # Seconds a switched pump or a valve may stay unseen on before it is exercised.
+    interval: float = DEFAULT_EXERCISE_INTERVAL
+    # Seconds an exercised switched pump runs.
+    run: float = DEFAULT_EXERCISE_RUN
+
+
+DEFAULT_EXERCISE: Final = Exercise()
+
+
+@dataclass(frozen=True, slots=True)
 class Plant:
     """One config entry: an optional source, its pumps, its zones, and its plant loops."""
 
@@ -319,6 +340,10 @@ class Plant:
     # Plant loops, which no zone owns.
     loops: tuple[Loop, ...] = ()
     zones: tuple[Zone, ...] = ()
+    # None turns the exercise of idle pumps and valves off.
+    exercise: Exercise | None = DEFAULT_EXERCISE
+    # The frost protection temperature in °C, or None to turn frost protection off.
+    frost_protection: float | None = DEFAULT_FROST_PROTECTION
 
     @property
     def all_loops(self) -> tuple[Loop, ...]:
@@ -420,3 +445,7 @@ class Desired:
     # By zone slug, the required sensors whose readings are not usable, among the
     # readings the zone needs; the zone fails closed until they report again.
     blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # The zones that frost protection heats, whatever their thermostats say.
+    frost_protection: tuple[str, ...] = ()
+    # The slug of the pump whose idle switch or valves are being exercised, if any.
+    exercise: str | None = None

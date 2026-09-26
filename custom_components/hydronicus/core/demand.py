@@ -4,7 +4,8 @@ These are the parts of ``step()`` that read sensors and thermostats, carried
 over from the v0.1 controller: fail-closed aggregation of fresh readings, the
 Magnus dew point and the worst-case dew point from the warmest and most humid
 readings, digital thermostat hysteresis with minimum durations, and the
-normalization of an external thermostat's ``hvac_action``.
+normalization of an external thermostat's ``hvac_action``. Frost protection's
+demand overrides a thermostat's, from the coldest usable reading.
 
 Every time-based decision goes through a ``reached`` callback, which answers
 whether a deadline has passed and otherwise records it, so the evaluation can
@@ -18,7 +19,15 @@ from dataclasses import dataclass
 from math import fsum, isfinite, log
 from typing import Final
 
-from .model import Aggregation, Demand, DigitalThermostat, Mode, Preset, Zone
+from .model import (
+    FROST_PROTECTION_RELEASE,
+    Aggregation,
+    Demand,
+    DigitalThermostat,
+    Mode,
+    Preset,
+    Zone,
+)
 
 type Reached = Callable[[float], bool]
 
@@ -275,3 +284,38 @@ def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> D
 
 def _off(mode: Mode, reason: str) -> Demand:
     return Demand(mode, False, reason)
+
+
+# Frost protection
+
+
+def coldest_temperature(
+    zone: Zone, areas: Mapping[str, AreaSensors], sensors: Mapping[str, Reading], reached: Reached
+) -> float | None:
+    """Return a zone's coldest usable temperature, from required and optional sensors alike.
+
+    Frost protection reads every usable reading, so a sensor that is not usable
+    never hides a room that freezes; None when no reading is usable.
+    """
+    values = [
+        value
+        for entity, _, max_age in _zone_sensors(zone, areas, False)
+        if (value := fresh(sensors.get(entity), max_age, reached)) is not None
+    ]
+    return min(values, default=None)
+
+
+def frost_demand(frost: float, coldest: float | None, active: bool) -> Demand | None:
+    """Return the heating demand of frost protection, or None while it does not act.
+
+    It starts once the coldest reading is below the frost protection temperature,
+    and holds until that reading is ``FROST_PROTECTION_RELEASE`` above it.
+    """
+    if coldest is None:
+        return None
+    stop = frost + FROST_PROTECTION_RELEASE
+    if coldest < frost or (active and coldest < stop):
+        return Demand(
+            Mode.HEAT, True, f"frost protection: heat to {stop:.1f} °C from {coldest:.1f} °C"
+        )
+    return None
