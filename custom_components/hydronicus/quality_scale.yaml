@@ -116,8 +116,9 @@ rules:
   entity-category:
     status: todo
     comment: |
-      No entity sets an EntityCategory; Control equipment and the
-      Mode select read as arguable config-category controls.
+      The loop runtime and zone duty cycle sensors are diagnostic;
+      Control equipment and the Mode select read as arguable
+      config-category controls.
   entity-device-class: done
   entity-disabled-by-default:
     status: todo

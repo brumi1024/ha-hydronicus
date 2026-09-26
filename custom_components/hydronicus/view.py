@@ -158,6 +158,23 @@ def zone_loops(plant: Plant, zone: str) -> list[Loop]:
     ]
 
 
+def observed_flow(
+    plant: Plant, observations: Observations
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The loops that pass flow as observed, and the zones they serve.
+
+    Unlike the loop flowing sensors, this leaves out the Dry run proposals and
+    the calls in flight: it is what the equipment does.
+    """
+    flowing = [loop for loop in plant.all_loops if _passes_flow(plant, loop, observations.outputs)]
+    zones = frozenset(
+        zone.slug
+        for zone in plant.zones
+        if any(loop in flowing for loop in zone_loops(plant, zone.slug))
+    )
+    return frozenset(str(loop.ref) for loop in flowing), zones
+
+
 def zone_readings(
     zone: Zone, observations: Observations, areas: AreaResolution, now: float
 ) -> ZoneReadings:

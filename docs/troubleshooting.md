@@ -217,6 +217,16 @@ The **Dew point** sensor shows the zone's worst-case dew point, and the `.guard`
 A missing reference, one that has not reported for 1800 seconds, or a zone without a usable humidity reading, also blocks.
 For a plant loop that cools, the dew points of the zones it runs with count, or of every zone when it runs with the source, so each of those zones needs a humidity reading.
 
+## Balancing
+
+### A zone runs nearly all day
+
+A zone's **Duty cycle** sensor shows the share of the last 24 hours in which its loops passed flow, and each loop's runtime sensor how long that loop has run in total; [the entity reference](entities.md#each-zone) says what counts.
+Compare the zones over a few days of similar weather in the same mode, since the duty cycle follows the load.
+A zone that stays near 100 percent while the others run much less gets too little heat or cooling for its needs: its loops are undersized, or the hydraulic balancing gives it too little flow.
+Open its balancing valves or raise its flow, or throttle the zones that reach their targets easily, then watch the duty cycles settle over the following days.
+Only real flow counts, so the duty cycle reads 0 in Dry run.
+
 ## Logs and diagnostics
 
 Open **Settings > System > Logs** and filter for `hydronicus`.
@@ -235,6 +245,7 @@ They hold:
 | `desired` | What the last evaluation decided, with its reasons, each zone's demand, and the required sensors that block each zone. |
 | `state` and `reconcile` | The stored timers and the commands waiting for a result. |
 | `blocking_sensors` | When each required sensor that blocks its zone began to, which starts the 10 minutes before its Repair. |
+| `flow` | Each loop's runtime in seconds under `runtimes`, and each zone's seconds of flow in each hour of the duty cycle's window under `hours`, keyed by the hour's number since 1970 in UTC. |
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |
 | `missing` | The bound entities that do not exist. |

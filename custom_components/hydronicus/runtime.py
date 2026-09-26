@@ -20,6 +20,10 @@ the dispatcher, and saves; it never sends a command.
 The persisted state also holds the last valid Plant with the outputs it was
 commanding, which ``PreviousConfiguration`` stops before a new configuration
 runs when that removes an output that is on or is not valid.
+
+Every evaluation also tells the ``FlowHistory`` which loops pass flow, for the
+runtime and duty cycle sensors. While a loop flows, a refresh updates those
+sensors once a minute; it never evaluates and never sends a command.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from datetime import datetime
 from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import (
     CALLBACK_TYPE,
     Event,
@@ -80,6 +85,7 @@ from .core.step import (
 )
 from .dispatch import Dispatcher
 from .entity import zone_unique_id
+from .flow_history import FlowHistory
 from .issues import (
     BlockingSensors,
     Issue,
@@ -106,7 +112,7 @@ from .observe import (
 )
 from .previous import PreviousConfiguration
 from .storage import armed_outputs, control
-from .view import PlantView, zone_readings
+from .view import PlantView, observed_flow, zone_readings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,6 +120,8 @@ _LOGGER = logging.getLogger(__name__)
 _PROPOSALS_KEPT: Final = 50
 # How long after a failed evaluation the Plant evaluates again, in seconds.
 EVALUATION_RETRY: Final = 60.0
+# How often the flow counters are saved while nothing else changes, in seconds.
+FLOW_SAVE_INTERVAL: Final = 900.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +158,7 @@ class PlantRuntime:
         self.blocking = BlockingSensors()
         self.thermostats: dict[str, DigitalThermostatState] = {}
         self.areas = AreaResolution()
+        self.flow = FlowHistory()
         # The last evaluation, as the entities read it; None until the first one.
         self.view: PlantView | None = None
         self.proposals: deque[Proposal] = deque(maxlen=_PROPOSALS_KEPT)
@@ -172,6 +181,9 @@ class PlantRuntime:
         self._area_listener: CALLBACK_TYPE | None = None
         self._tracked: frozenset[str] = frozenset()
         self._timer: CALLBACK_TYPE | None = None
+        self._refresh: CALLBACK_TYPE | None = None
+        self._hass_stop: CALLBACK_TYPE | None = None
+        self._flow_saved_at = 0.0
         self._dispatcher = Dispatcher(hass, entry, plant.name)
         self._saved: dict[str, Any] | None = None
         self._queued = False
@@ -195,6 +207,7 @@ class PlantRuntime:
             self.reconcile_state = ReconcileState.from_dict(data.get("reconcile", {}))
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
             self.blocking = BlockingSensors.from_dict(data.get("blocking_sensors", {}))
+            self.flow = FlowHistory.from_dict(data.get("flow", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
@@ -204,12 +217,18 @@ class PlantRuntime:
             )
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
-            self.blocking = BlockingSensors()
+            self.blocking, self.flow = BlockingSensors(), FlowHistory()
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
             kept |= self.previous.persisted.outputs
         self.memory.forget_except(kept)
+        if self.problem is None:
+            # An invalid Plant keeps the counters for when it is fixed.
+            plant = self.plant
+            self.flow.forget_except(
+                {str(loop.ref) for loop in plant.all_loops}, {zone.slug for zone in plant.zones}
+            )
         self._saved = self._data()
 
     @callback
@@ -236,6 +255,9 @@ class PlantRuntime:
             if entry is not None and entry.disabled_by is not None:
                 self._awaiting_restore.discard(slug)
         self._unsubscribe.append(async_at_started(self.hass, self._async_on_started))
+        self._hass_stop = self.hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP, self._on_hass_stop
+        )
         self._maybe_begin()
 
     async def _async_on_started(self, _hass: HomeAssistant) -> None:
@@ -254,16 +276,34 @@ class PlantRuntime:
     async def async_stop(self) -> None:
         """Stop without sending a command, and save the persisted state now."""
         self._stopped = True
-        if self._timer is not None:
-            self._timer()
-            self._timer = None
-        for unsubscribe in (self._state_listener, self._area_listener, *self._unsubscribe):
+        for unsubscribe in (
+            self._timer,
+            self._refresh,
+            self._hass_stop,
+            self._state_listener,
+            self._area_listener,
+            *self._unsubscribe,
+        ):
             if unsubscribe is not None:
                 unsubscribe()
+        self._timer = self._refresh = self._hass_stop = None
         self._state_listener = self._area_listener = None
         self._unsubscribe.clear()
+        # The time until the next setup is not counted, whatever flows meanwhile.
+        self.flow.pause(dt_util.utcnow().timestamp())
         await self._dispatcher.async_stop()
         await self.store.async_save(self._data())
+
+    @callback
+    def _on_hass_stop(self, _event: Event) -> None:
+        """Count the flow up to now, and save it when Home Assistant writes its last data.
+
+        Home Assistant does not unload a Plant when it stops, and the counters are
+        saved only every ``FLOW_SAVE_INTERVAL`` while nothing else changes.
+        """
+        self._hass_stop = None
+        self.flow.update(dt_util.utcnow().timestamp())
+        self.store.async_delay_save(self._data)
 
     # Inputs from the Plant's own entities
 
@@ -400,6 +440,11 @@ class PlantRuntime:
         )
         self.state, self.reconcile_state = state, result.state
         self.blocking.update(desired.blocking_sensors, now)
+        # Only flow observed while the Plant is live counts, never a Dry run proposal.
+        loops, zones = (
+            observed_flow(self.plant, observations) if state.live else (frozenset(), frozenset())
+        )
+        self.flow.update(now, loops, zones)
         self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
         if self.previous.stopping is not None and not state.live:
             self.previous.stopped()
@@ -410,6 +455,7 @@ class PlantRuntime:
         self._schedule(
             None if due is None else now + due, result.retry_at, self.blocking.next_report(now)
         )
+        self._schedule_refresh(now)
         missing = self._sync_issues(result, plant, now)
         self.view = PlantView(
             plant=self.plant,
@@ -586,12 +632,34 @@ class PlantRuntime:
         self._timer = None
         self.request_evaluation()
 
+    @callback
+    def _schedule_refresh(self, now: float) -> None:
+        """Refresh the flow sensors when they change next without an evaluation."""
+        if self._refresh is not None:
+            self._refresh()
+            self._refresh = None
+        if (at := self.flow.next_refresh(now)) is not None:
+            self._refresh = async_track_point_in_utc_time(
+                self.hass, self._on_refresh, dt_util.utc_from_timestamp(at)
+            )
+
+    @callback
+    def _on_refresh(self, _now: datetime) -> None:
+        """Count the flow up to now and publish it; this never evaluates."""
+        self._refresh = None
+        now = dt_util.utcnow().timestamp()
+        self.flow.update(now)
+        self._save()
+        self._publish()
+        self._schedule_refresh(now)
+
     def _data(self) -> dict[str, Any]:
         return {
             "state": self.state.to_dict(),
             "reconcile": self.reconcile_state.to_dict(),
             "outputs": self.memory.to_dict(),
             "blocking_sensors": self.blocking.to_dict(),
+            "flow": self.flow.to_dict(),
             "mode": self.requested_mode.value,
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
         }
@@ -599,9 +667,18 @@ class PlantRuntime:
     @callback
     def _save(self) -> None:
         data = self._data()
-        if data != self._saved:
-            self._saved = data
-            self.store.async_delay_save(lambda: data, STORE_SAVE_DELAY)
+        if data == self._saved:
+            return
+        now = dt_util.utcnow().timestamp()
+        if (
+            self._saved is not None
+            and {**data, "flow": None} == {**self._saved, "flow": None}
+            and now < self._flow_saved_at + FLOW_SAVE_INTERVAL
+        ):
+            # Only the flow counters changed, which they do every minute while a loop flows.
+            return
+        self._saved, self._flow_saved_at = data, now
+        self.store.async_delay_save(lambda: data, STORE_SAVE_DELAY)
 
     # Repairs
 

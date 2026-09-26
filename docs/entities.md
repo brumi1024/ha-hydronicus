@@ -11,7 +11,7 @@ A Plant rebuilt from its [plant file](plant-file.md) therefore gets the same ent
 | Device | Name | Holds |
 | --- | --- | --- |
 | Plant | The Plant name | The Plant's mode, **Control equipment**, status, and plant loops. |
-| Zone | The zone name | The zone's thermostat, demand, temperature, dew point, and loops. It sits under the Plant device and belongs to the zone's subentry. |
+| Zone | The zone name | The zone's thermostat, demand, temperature, dew point, duty cycle, and loops. It sits under the Plant device and belongs to the zone's subentry. |
 | Source | The source name | Whether the source is requested. It sits under the Plant device. |
 
 A device goes with its object: removing the source removes the source device, and removing a zone removes the zone device.
@@ -76,6 +76,7 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | **Cooling demand** binary sensor | `binary_sensor.<zone>_cooling_demand` | A loop of the zone cools. |
 | **Combined temperature** sensor | `sensor.<zone>_combined_temperature` | The zone has a temperature sensor or an area. |
 | **Dew point** sensor | `sensor.<zone>_dew_point` | A loop of the zone cools. |
+| **Duty cycle** sensor | `sensor.<zone>_duty_cycle` | The zone has a loop, or a plant loop runs with it. |
 
 The thermostat is the zone's digital thermostat.
 It offers `off` and `heat`, plus `cool` when a loop of the zone cools, and the presets the zone has.
@@ -111,12 +112,22 @@ Its attributes show where the readings come from, and are not recorded in histor
 The **Dew point** sensor is the zone's worst-case dew point: the dew point of its warmest temperature and its highest humidity.
 Its `humidity` attribute is that highest humidity.
 
+The **Duty cycle** sensor is a diagnostic: the share of the last 24 hours, in percent, in which a loop of the zone, or a plant loop that runs with it, passed flow.
+It covers the 24 whole hours before the current hour, so it changes when a new hour begins, and an hour counts in full once it is over.
+Only flow that Hydronicus observes while outputs are commanded counts, as for the loops' runtime below: time in Dry run, and time while Hydronicus or Home Assistant was not running, count as no flow.
+It is unknown until the Plant's first evaluation.
+[Troubleshooting](troubleshooting.md#a-zone-runs-nearly-all-day) explains how to use it to balance the zones.
+
 ## Each loop
 
 | Entity | Entity ID | Device |
 | --- | --- | --- |
 | Flowing binary sensor | `binary_sensor.<zone>_<loop>_flowing` | The zone of a zone loop. |
 | Flowing binary sensor | `binary_sensor.<plant>_<loop>_flowing` | The Plant, for a plant loop. |
+| Runtime sensor | `sensor.<zone>_<loop>_runtime` | The zone of a zone loop. |
+| Runtime sensor | `sensor.<plant>_<loop>_runtime` | The Plant, for a plant loop. |
+
+Both are named after the loop, such as `Ceiling flowing` and `Ceiling runtime`.
 
 It is on while the loop passes flow: every valve is on and its pump runs, where a source-driven pump runs while the source's request is on.
 In Dry run it shows the proposed states.
@@ -128,6 +139,12 @@ Its attributes:
 | `pump` | The slug of the loop's pump. |
 | `pump_running` | Whether the pump's switch, or the source's request for a source-driven pump, is on. |
 | `reason` | Why the loop runs or not, such as `wanted`, `min-flow path`, or `dropped: condensation guard blocks`. |
+
+The runtime sensor is a diagnostic: how long the loop has passed flow in total, in hours.
+It counts only flow that Hydronicus observes while outputs are commanded, that is while **Control equipment** is on or its off-mode sequence runs, with every valve on and the pump observed running.
+The proposed flow of Dry run never counts, and neither does time while Hydronicus or Home Assistant was not running, even if the equipment ran meanwhile.
+It survives reloads and restarts, and it is a total that only grows, so Home Assistant's long-term statistics give its daily, weekly, and monthly runtime, such as in a statistics graph card.
+While a loop flows, the runtime and duty cycle sensors update once a minute.
 
 ## The source
 
@@ -144,12 +161,12 @@ Its attributes:
 
 ## The reference plant
 
-The [reference plant](examples/reference-plant.yaml), with Plant `Home`, source `Heat pump`, and zones `Basement`, `Bedroom area`, and `Living area`, gets 24 entities:
+The [reference plant](examples/reference-plant.yaml), with Plant `Home`, source `Heat pump`, and zones `Basement`, `Bedroom area`, and `Living area`, gets 32 entities:
 
-- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, and `binary_sensor.home_towel_dryer_flowing` for the Plant.
+- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
 - `binary_sensor.heat_pump_requested` for the source.
-- For each zone, such as `living_area`: `climate.living_area`, `binary_sensor.living_area_heating_demand`, `binary_sensor.living_area_cooling_demand`, `sensor.living_area_combined_temperature`, `sensor.living_area_dew_point`, and `binary_sensor.living_area_ceiling_flowing`.
-- `binary_sensor.living_area_floor_flowing` for the living area's underfloor loop.
+- For each zone, such as `living_area`: `climate.living_area`, `binary_sensor.living_area_heating_demand`, `binary_sensor.living_area_cooling_demand`, `sensor.living_area_combined_temperature`, `sensor.living_area_dew_point`, `sensor.living_area_duty_cycle`, `binary_sensor.living_area_ceiling_flowing`, and `sensor.living_area_ceiling_runtime`.
+- `binary_sensor.living_area_floor_flowing` and `sensor.living_area_floor_runtime` for the living area's underfloor loop.
 
 ## What is not an entity
 

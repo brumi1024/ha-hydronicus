@@ -59,6 +59,12 @@
       },
       "dew_point": {
         "default": "mdi:water-thermometer"
+      },
+      "duty_cycle": {
+        "default": "mdi:chart-donut"
+      },
+      "loop_runtime": {
+        "default": "mdi:timer-outline"
       }
     },
     "switch": {

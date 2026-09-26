@@ -1,4 +1,4 @@
-"""The Plant status and each zone's combined temperature and dew point (contract K7)."""
+"""The Plant status, each zone's readings and duty cycle, and each loop's runtime (contract K7)."""
 
 from __future__ import annotations
 
@@ -9,22 +9,26 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicusConfigEntry
-from .core.model import Zone
+from .core.model import Loop, Zone
 from .core.step import value_of
 from .entity import (
     HydronicusEntity,
     ZoneEntity,
     async_add_plant_entities,
+    loop_device,
+    loop_unique_id,
     plant_device,
     plant_unique_id,
 )
+from .flow_history import HOUR
 from .runtime import PlantRuntime
+from .view import zone_loops
 
 PARALLEL_UPDATES = 0
 
@@ -140,6 +144,48 @@ class ZoneDewPointSensor(ZoneEntity, SensorEntity):
         return {"humidity": self._readings.humidity}
 
 
+class ZoneDutyCycleSensor(ZoneEntity, SensorEntity):
+    """The share of the last day in which a loop that serves the zone passed flow."""
+
+    _attr_translation_key = "duty_cycle"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, runtime: PlantRuntime, zone: Zone) -> None:
+        super().__init__(runtime, zone, "duty_cycle")
+
+    @property
+    def native_value(self) -> float | None:
+        duty_cycle = self.runtime.flow.duty_cycle(self._zone)
+        return None if duty_cycle is None else round(duty_cycle, 1)
+
+
+class LoopRuntimeSensor(HydronicusEntity, SensorEntity):
+    """How long a loop has passed flow while the Plant was live."""
+
+    _attr_translation_key = "loop_runtime"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, runtime: PlantRuntime, loop: Loop) -> None:
+        super().__init__(
+            runtime,
+            loop_unique_id(runtime.plant.id, loop.ref, "runtime"),
+            loop_device(runtime, loop),
+        )
+        self._attr_translation_placeholders = {"loop": loop.title}
+        self._loop = str(loop.ref)
+
+    @property
+    def native_value(self) -> float:
+        return round(self.runtime.flow.runtime(self._loop) / HOUR, 3)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: HydronicusConfigEntry,
@@ -152,4 +198,9 @@ async def async_setup_entry(
             entities.append((zone.slug, ZoneTemperatureSensor(runtime, zone)))
         if zone.cools:
             entities.append((zone.slug, ZoneDewPointSensor(runtime, zone)))
+        if zone_loops(runtime.plant, zone.slug):
+            entities.append((zone.slug, ZoneDutyCycleSensor(runtime, zone)))
+    entities.extend(
+        (loop.zone, LoopRuntimeSensor(runtime, loop)) for loop in runtime.plant.all_loops
+    )
     async_add_plant_entities(runtime, "sensor", async_add_entities, entities)
