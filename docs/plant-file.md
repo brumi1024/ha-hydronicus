@@ -110,6 +110,8 @@ Read it from the top:
 | `id` | no | a new random ID | The Plant ID, a UUID. It forms the unique ID of every entity, so keep it to keep the entity IDs. |
 | `name` | yes | | The Plant name, which also names the Plant's device and its Plant-wide entities. |
 | `mode_dwell` | no | `3600` | Seconds between the end of the old mode's flow and the start of the new mode, after a change between heating and cooling. |
+| `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` to turn it off. |
+| `frost_protection` | no | `5` | The frost protection temperature in °C, or `false` to turn frost protection off. A zone whose coldest reading falls below it is heated whatever its thermostat says, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
 | `pumps` | no | | Slug to [pump](#pumps). |
 | `loops` | no | | Slug to [plant loop](#plant-loops). |
@@ -118,6 +120,35 @@ Read it from the top:
 Unknown keys are errors at every level of the file.
 Times are in seconds and temperatures in °C.
 Numbers must not be negative unless a key says otherwise.
+
+## Exercise
+
+A pump or valve that stays off for months can seize, so Hydronicus runs each switched pump and opens each valve that has not been on for a while, as [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves) describes.
+`exercise` is a mapping of two keys, or `false` to turn the exercise off:
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `interval` | no | `604800` | Seconds a switched pump or a valve may stay off before it is exercised, a week by default. Must be positive. |
+| `run` | no | `60` | Seconds an exercised switched pump runs. Must be positive. |
+
+This Plant exercises its pump and valve every three days, and never protects against frost, because its boiler does:
+
+```yaml
+hydronicus: 2
+name: Barn
+exercise: {interval: 259200, run: 120}
+frost_protection: false
+pumps:
+  pump:
+    switch: switch.barn_pump
+zones:
+  barn:
+    temperature: [sensor.barn_temperature]
+    loops:
+      radiators:
+        valves: [switch.barn_radiator_valve]
+        pump: pump
+```
 
 ## Slugs and names
 
@@ -453,7 +484,7 @@ A zone references only the Plant's pumps and source, so removing a zone removes 
 An export writes the canonical form of the file:
 
 - Every structural and timing key is written, such as `mode_dwell`, a switched pump's `overrun`, and each loop's `modes`.
-- Optional keys at their defaults are left out: names that read the same as their slug, sensor and area settings you did not change, and digital thermostat settings at their defaults.
+- Optional keys at their defaults are left out: names that read the same as their slug, sensor and area settings you did not change, digital thermostat settings at their defaults, and `exercise` and `frost_protection` at theirs.
 - A source-driven pump always states its `min_flow`, because it is a safety decision.
 - Lists and short mappings are written on one line.
 

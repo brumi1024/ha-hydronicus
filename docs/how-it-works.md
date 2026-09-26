@@ -59,10 +59,13 @@ It comes back once every window has read closed for its close delay, also 60 sec
 The thermostat's own decision goes on underneath, so its hysteresis is where it was when the window closes, and a demand that comes back holds for its minimum on time from then, because the zone's valves have closed meanwhile.
 A window sensor that is unavailable or unknown reads as closed, so a lost sensor never stops the heating.
 
+[Frost protection](#frost-protection) acts last, and overrides both the thermostat and an open window of a zone that is about to freeze.
+
 ### 3. Mode
 
 The Plant mode is off, heat, or cool, chosen with the **Mode** select, and heating and cooling never run at the same time.
 A change between heating and cooling is sequenced, as described in [mode changes](#mode-changes).
+While the **Mode** select is off, [frost protection](#frost-protection) runs the Plant in heat for the zones it protects, and only for them.
 
 ### 4. Wanted loops
 
@@ -103,9 +106,13 @@ The minimum on time also holds when the **Mode** select changes the mode.
 A blocking condensation guard, a loop that is no longer ready or whose pump stops, turning **Control equipment** off, and stopping a previous configuration release the request at once.
 After the request ends, the source's post-run, 180 seconds by default, keeps the loops of its own pumps open.
 
-### 10. Timers
+### 10. Exercise
 
-The evaluation records its timers, such as when each valve became ready and when each pump's overrun started, and works out when it next needs to look again.
+While nothing else runs, a switched pump or a valve that has not been on for a week is [exercised](#exercising-idle-pumps-and-valves).
+
+### 11. Timers
+
+The evaluation records its timers, such as when each valve became ready, when each pump's overrun started, and since when each pump and valve has been off, and works out when it next needs to look again.
 
 Safe shutdown is the same evaluation with the Plant mode forced to off, so stopping always follows the same sequence as a normal end of demand.
 
@@ -173,6 +180,47 @@ A change between heating and cooling runs in order:
 
 Returning to the mode that last ran, or starting the first mode of a new Plant, needs no dwell.
 Switching the Plant to off stops the current mode with the same sequence.
+
+## Frost protection
+
+Frost protection keeps a zone from freezing while its thermostat, or the whole Plant, is off.
+A zone whose coldest usable temperature reading is below the frost protection temperature, 5 °C by default, demands heating whatever its thermostat says and even while a window is open, and its demand reads `frost protection: heat to 6.0 °C from 4.0 °C`.
+The coldest reading counts, not the zone's combined temperature, and every usable sensor of the zone counts, required or optional, so one warm or missing sensor does not hide a cold room.
+A zone without any usable reading gets no frost protection.
+The demand holds until the coldest reading is 1 K above the frost protection temperature.
+
+Frost protection heats as a calling zone does: the zone's loops open, their pumps run, and the source is asked for heat.
+While the **Mode** select is off, it runs the Plant in heat for the zones it protects and only for them, so a zone whose thermostat asks for heat still waits for the **Mode**.
+After cooling, the [mode dwell](#mode-changes) still runs before the Plant heats.
+It never acts while the Plant runs cool or the **Mode** select asks for cool, because a zone that cold while cooling has a broken sensor, which the checks of [stale and implausible readings](configuration.md#observation-units) handle.
+It obeys arming and **Control equipment** as a thermostat's demand does: turning **Control equipment** off still stops the equipment in order, and then frost protection is only proposed in Dry run.
+
+The **Status** sensor's `frost_protection` attribute lists the zones it heats, and a digital thermostat that is off shows `heating` while frost protection heats its zone.
+Set `frost_protection` in the [plant file](plant-file.md#top-level-keys), or **Frost protection** in the Plant form, to change the temperature or turn it off.
+
+## Exercising idle pumps and valves
+
+A circulator or a thermoelectric valve actuator that stays off for months can seize, so Hydronicus exercises each switched pump and each valve that has not been seen on for the exercise interval, a week by default.
+The clock of a pump or valve starts when Hydronicus first sees it, so a new Plant is not overdue, and it survives restarts.
+
+An exercise runs only while nothing else does: no loop is wanted, the source is neither requested nor in its post-run, no other switched pump runs, the mode is not changing, and **Control equipment** is not stopping the Plant.
+It exercises one pump at a time, with the same sequence as demand:
+
+1. The pump's loops open.
+2. Once they are ready, its switched pump runs for the exercise's run time, 60 seconds by default.
+3. The pump stops without overrun, and the valves close once it is seen off.
+
+A pump the source drives is never commanded, so the valves of its loops only open until they are ready, and close again.
+An exercise never asks the source for heat or cooling, and it stops at once when any loop is wanted, such as when a zone calls.
+
+An exercise passes water only through loops of the mode that last ran, so it never carries one mode's water through a loop of the other; a Plant that has not run yet exercises its heating loops.
+After cooling, a loop takes part only while its condensation guard permits, and a loop that only heats waits until the Plant has heated again.
+A switched pump runs only when it is armed and available and no other loop on it would pass flow; otherwise only its valves are exercised.
+Exercises obey arming and **Control equipment** as demand does: an output that is not armed is never exercised, and in Dry run an exercise is proposed and its proposal counts as done.
+
+The **Status** sensor reads `exercising` meanwhile, and its `idle_since` attribute shows since when each switched pump and valve has not been on.
+The exercised loops and pump show the reason `exercise`.
+Set `exercise` in the [plant file](plant-file.md#exercise), or the **Protection** section of the Plant form, to change the interval and the run time or turn it off.
 
 ## Cooling and the condensation guard
 

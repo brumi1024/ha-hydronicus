@@ -28,6 +28,7 @@ When a zone calls for heat and nothing moves, check these in order:
 | `off` | The **Mode** select is off, and nothing runs. | Set the **Mode**. |
 | `idle` | The Plant is in a mode, and nothing is asked to run. | The zones' demand and `blocked_zones`. |
 | `heating` or `cooling` | Something runs, or is asked to run, in that mode. | `active_loops`, and `proposed` in Dry run. |
+| `exercising` | Nothing else runs, and an idle pump or its valves are exercised so they do not seize. | `exercising` and `idle_since`. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. | `reasons`, under `mode`. |
 | `degraded` | An output does not respond, or an entity the Plant binds does not exist. | `outputs_not_responding`, `missing_entities`, and the Repairs. |
 | `stopping` | A change removed outputs that were running, or left a configuration that is not valid, and the equipment of the previous configuration is being stopped. | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
@@ -49,6 +50,8 @@ Common reasons:
 | `min-flow path` | The loop is held open for a pump the source drives. |
 | `held open as a path` | The loop stays open because a pump that may still run needs it. |
 | `overrun` | A switched pump runs its overrun after heating ended. |
+| `demands: frost protection: ...` | The zone's coldest reading is below the frost protection temperature, so it is heated whatever its thermostat says. |
+| `exercise` | The loop or pump is exercised because it has not been on for the exercise interval; `exercise over` is its pump stopping without overrun. |
 | `waiting for the source mode` | The source's mode select does not show the Plant mode's option yet. |
 | `waiting for a path for every source-driven pump` | A pump the source drives has no ready loop yet. |
 | `held for its minimum on time` | The source request stays on for its minimum on time. |
