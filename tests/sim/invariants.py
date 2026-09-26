@@ -574,6 +574,9 @@ class Checker:
     def guard_blocked(self, loop: Loop) -> bool:
         """Whether the condensation guard must block, on the readings the controller sees."""
         pump = self.plant.pump(loop.pump)
+        for entity in (pump.condensation_switch, loop.condensation_switch):
+            if entity is not None and self._contact(entity) is not False:
+                return True
         references = [
             entity for entity in (pump.supply_temperature, loop.surface_temperature) if entity
         ]
@@ -594,7 +597,26 @@ class Checker:
         if worst is None:
             return True
         threshold = worst + CONDENSATION_MARGIN - GUARD_TOLERANCE
-        return any(value < threshold for value in values if value is not None)
+        if any(value < threshold for value in values if value is not None):
+            return True
+        if loop.surface_temperature is not None and loop.surface_minimum is not None:
+            surface = self.fresh(loop.surface_temperature, GUARD_REFERENCE_MAX_AGE)
+            if surface is not None and surface < loop.surface_minimum - GUARD_TOLERANCE:
+                return True
+        for zone in zones:
+            humidities = self._zone_values(zone, humidity=True)
+            if (
+                zone.max_humidity is not None
+                and humidities is not None
+                and max(humidities) > zone.max_humidity + GUARD_TOLERANCE
+            ):
+                return True
+        return False
+
+    def _contact(self, entity: str) -> bool | None:
+        """A condensation switch or window as the controller sees it; None while unavailable."""
+        body = self.world.contacts[entity]
+        return body.on if body.available else None
 
     def demands_heat(self, zone: Zone) -> bool:
         """Whether the zone surely demands heat, beyond any hysteresis."""
@@ -602,6 +624,9 @@ class Checker:
         if isinstance(state, ExternalThermostatState):
             return state.action is Mode.HEAT
         if not isinstance(state, DigitalThermostatState) or state.hvac_mode is not Mode.HEAT:
+            return False
+        if any(self._contact(window) for window in zone.windows):
+            # An open window turns the demand off; the trace has settled past its delays.
             return False
         thermostat = zone.thermostat
         assert isinstance(thermostat, DigitalThermostat)

@@ -212,6 +212,10 @@ class Sim:
     def set_thermostat(self, zone: str, state: ThermostatState) -> None:
         self.world.set_thermostat(zone, state)
 
+    def set_contact(self, entity: str, on: bool | None) -> None:
+        """Turn a condensation switch or window on or off, or None for unavailable."""
+        self.world.set_contact(entity, on)
+
     def set_target(self, zone: str, target: float) -> None:
         state = self.world.thermostats[zone]
         assert isinstance(state, DigitalThermostatState)

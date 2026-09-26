@@ -87,6 +87,12 @@ def test_generated_plants_stay_within_the_contract(plant: Plant) -> None:
         lambda plant: any(
             valve.entity.startswith("valve.") for loop in plant.all_loops for valve in loop.valves
         ),
+        lambda plant: (
+            any(pump.condensation_switch for pump in plant.pumps)
+            and any(loop.condensation_switch for loop in plant.all_loops)
+        ),
+        lambda plant: any(loop.cools and loop.surface_minimum is None for loop in plant.all_loops),
+        lambda plant: any(zone.windows for zone in plant.zones),
     ],
     ids=[
         "source-driven path pump",
@@ -97,6 +103,9 @@ def test_generated_plants_stay_within_the_contract(plant: Plant) -> None:
         "with_zones loop",
         "no source",
         "valve entity",
+        "condensation switches",
+        "surface minimum off",
+        "windows",
     ],
 )
 def test_generated_plants_reach_every_feature(feature: object) -> None:
@@ -112,6 +121,7 @@ def test_generated_traces_reach_every_event() -> None:
         "SetSensor",
         "SensorFault",
         "SetThermostat",
+        "SetContact",
         "Unavailable",
         "CallFault",
         "SpontaneousOff",
