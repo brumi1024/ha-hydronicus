@@ -21,6 +21,7 @@ from custom_components.hydronicus.issues import (
     FIXABLE,
     Issue,
     IssueKind,
+    evaluation_failed,
     invalid_plant,
     missing_area_sensor,
     missing_binding,
@@ -68,6 +69,7 @@ def _issues() -> list[Issue]:
     areas = AreaResolution()
     return [
         invalid_plant("Home", "pumps.heat_pump.min_flow_loops: needs a loop"),
+        evaluation_failed("Home", "KeyError: 'floor'"),
         output_not_responding(plant, SOURCE_REQUEST),
         outputs_awaiting_confirmation(plant, ["switch.a", "switch.b"]),
         missing_binding(plant, "switch.a", "pumps.floor.switch"),

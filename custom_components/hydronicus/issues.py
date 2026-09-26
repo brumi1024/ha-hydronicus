@@ -1,7 +1,7 @@
 """The Repairs the runtime raises for one Plant.
 
-Output faults, missing bindings, unconfirmed outputs, and zone area problems
-are Repairs, not entities (contract K7). The runtime computes the current set
+A failed evaluation, output faults, missing bindings, unconfirmed outputs, and
+zone area problems are Repairs, not entities (contract K7). The runtime computes the current set
 after every evaluation and ``async_sync_issues`` creates the new ones and
 deletes the resolved ones.
 
@@ -32,6 +32,7 @@ class IssueKind(StrEnum):
     """The translation key of each Repair."""
 
     INVALID_PLANT = "invalid_plant"
+    EVALUATION_FAILED = "evaluation_failed"
     OUTPUT_NOT_RESPONDING = "output_not_responding"
     OUTPUTS_AWAITING_CONFIRMATION = "outputs_awaiting_confirmation"
     MISSING_BINDING = "missing_binding"
@@ -134,6 +135,10 @@ def async_delete_issues(hass: HomeAssistant, entry_id: str) -> None:
 
 def invalid_plant(plant_name: str, error: str) -> Issue:
     return Issue(IssueKind.INVALID_PLANT, "", {"plant": plant_name, "error": error})
+
+
+def evaluation_failed(plant_name: str, error: str) -> Issue:
+    return Issue(IssueKind.EVALUATION_FAILED, "", {"plant": plant_name, "error": error})
 
 
 def output_not_responding(plant: Plant, entity_id: str) -> Issue:

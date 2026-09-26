@@ -90,7 +90,9 @@ from .dispatch import Dispatcher
 from .entity import zone_unique_id
 from .issues import (
     Issue,
+    IssueKind,
     async_sync_issues,
+    evaluation_failed,
     invalid_plant,
     missing_area_sensor,
     missing_binding,
@@ -112,6 +114,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # How many Dry run proposals diagnostics keep.
 _PROPOSALS_KEPT: Final = 50
+# How long after a failed evaluation the Plant evaluates again, in seconds.
+EVALUATION_RETRY: Final = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,8 +395,35 @@ class PlantRuntime:
 
     async def _async_evaluate(self) -> None:
         self._queued = False
-        if not self._stopped:
+        if self._stopped:
+            return
+        try:
             self.evaluate()
+        except Exception as error:  # A failed evaluation must not stop the Plant for good.
+            _LOGGER.exception(
+                "Plant %s could not evaluate and tries again in %s seconds",
+                self.plant.name,
+                int(EVALUATION_RETRY),
+            )
+            self._evaluation_failed(error)
+
+    @callback
+    def _evaluation_failed(self, error: Exception) -> None:
+        """Raise the Repair next to the others, and evaluate again after ``EVALUATION_RETRY``.
+
+        The outputs keep what they were last sent, and the next evaluation that
+        succeeds clears the Repair.
+        """
+        now = dt_util.utcnow().timestamp()
+        self._schedule(now, EVALUATION_RETRY, None)
+        failed = evaluation_failed(self.plant.name, f"{type(error).__name__}: {error}")
+        current = (
+            *(issue for issue in self.issues if issue.kind is not IssueKind.EVALUATION_FAILED),
+            failed,
+        )
+        if current != self.issues:
+            self.issues = current
+            async_sync_issues(self.hass, self.entry.entry_id, current)
 
     @property
     def control_plant(self) -> Plant:

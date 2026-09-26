@@ -573,6 +573,10 @@
         }
       }
     },
+    "evaluation_failed": {
+      "title": "Plant {plant} cannot evaluate",
+      "description": "Plant {plant} failed to evaluate: {error}\n\nHydronicus sends no new command while it cannot evaluate, so the outputs stay as they were last commanded, and it tries again every minute. The repair clears automatically after the next evaluation that succeeds. The Home Assistant log has the details; report the problem with that log and the Plant's diagnostics."
+    },
     "output_not_responding": {
       "title": "{plant}: {entity_id} does not respond",
       "description": "Plant {plant} asked {role} {entity_id} to change three times, and the change was never observed. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
