@@ -59,7 +59,7 @@ from .areas import (
     resolve_area_sensors,
     zone_area_problems,
 )
-from .const import DOMAIN, STORE_SAVE_DELAY, STORE_VERSION
+from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.demand import aggregate, dew_point, zone_values
 from .core.model import (
     Desired,
@@ -347,7 +347,7 @@ class PlantRuntime:
     def set_control(self, on: bool) -> None:
         """Turn Control equipment on or off; it is stored in the entry options."""
         self.hass.config_entries.async_update_entry(
-            self.entry, options={**self.entry.options, "control": on}
+            self.entry, options={**self.entry.options, OPTION_CONTROL: on}
         )
         self._publish()
         self.request_evaluation()

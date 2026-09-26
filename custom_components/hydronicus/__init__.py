@@ -13,6 +13,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -36,6 +37,9 @@ from .zone_area import async_place_new_zone_climates, zones_without_climate
 type HydronicusConfigEntry = ConfigEntry[PlantRuntime]
 
 _LOGGER = logging.getLogger(__name__)
+
+# Plants are set up in the UI only.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
