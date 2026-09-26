@@ -43,6 +43,7 @@ Common reasons:
 | `idle: thermostat not restored` | The zone's digital thermostat has not loaded, or its entity is disabled. |
 | `idle: no usable temperature` | A required sensor of the zone is missing or stale, or the zone has no usable reading at all. |
 | `idle: thermostat unavailable` | The zone's external thermostat is unavailable or reports an action Hydronicus does not know. |
+| `demands: ..., held for its minimum on time` | The zone's digital thermostat keeps its demand for its minimum on time, 600 seconds by default, although the zone has reached its target; `idle: ..., held for its minimum off time` is the same after a demand ends. |
 | `dropped: ... unarmed or unavailable` | The loop needs an output that is not armed or not available. |
 | `dropped: condensation guard blocks` | The loop cools and its condensation guard blocks; the loop's `.guard` reason gives the reference and the threshold. |
 | `min-flow path` | The loop is held open for a pump the source drives. |
@@ -74,6 +75,7 @@ Diagnostics list the current Repairs by the key in the second column.
 | A zone covers a missing area | `zone_area_missing` | Error |
 | A zone has no temperature sensor | `zone_without_temperature_source` | Error |
 | An area names a Hydronicus sensor | `zone_area_self_feed` | Warning |
+| A sensor blocks its zone | `zone_sensor_unusable` | Error |
 
 ### Plant is not valid
 
@@ -94,7 +96,7 @@ If the equipment must not stay as it is meanwhile, stop it by hand or with its o
 
 ### An output does not respond
 
-Hydronicus asked an output to change three times and never saw the change.
+Hydronicus asked an output to change three times and never saw the change, or a `valve` entity still shows opening or closing 70 seconds after its opening time.
 It keeps retrying, up to every 5 minutes, and the Repair clears once the output shows what the Plant asks for.
 Check that the device is powered and reachable, and that its state in Home Assistant follows it.
 Meanwhile a pump whose stop is not seen keeps its path open, and a valve whose opening is not seen keeps its loop from counting as ready.
@@ -133,6 +135,18 @@ Select **Submit** to open the zone's settings and add a sensor or another area, 
 A covered area's settings name a sensor that Hydronicus provides, such as a zone's **Combined temperature**.
 Following it would feed the Plant back into itself, so the zone ignores it.
 Choose a sensor that measures the room in the area settings.
+
+### A sensor blocks its zone
+
+A sensor that the zone requires has had no usable reading for at least 10 minutes: it is unavailable, stale, in an unsupported unit, or outside its plausible range.
+A zone fails closed without a required reading, so its digital thermostat does not call, and the loops that cool by its dew point do not cool.
+The Repair names the Plant, the zone, and the sensor, and clears once the sensor reports a usable reading again.
+Check the sensor, its battery, and its connection.
+If it reports only on change and its heartbeat is rarer than its `max_age`, raise `max_age` in the [plant file](plant-file.md#sensors).
+An extra sensor is required unless the plant file makes it optional, while an area's sensors block the zone only when the area is marked `required`.
+
+The 10 minutes keep a restart or a short dropout from raising the Repair, and they count across a restart, because the Plant stores when each block began.
+A sensor that does not exist raises [An entity does not exist](#an-entity-does-not-exist) or [An area names a missing sensor](#an-area-names-a-missing-sensor) instead.
 
 ## Setup and forms
 
@@ -180,9 +194,10 @@ A zone that cools also needs a humidity sensor or an area, and so does each zone
 
 ### A zone does not call
 
-- A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone.
+- A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone, and after 10 minutes the [A sensor blocks its zone](#a-sensor-blocks-its-zone) Repair names it.
   The [observation units](configuration.md#observation-units) list the accepted units and ranges.
-- A sensor is stale 1800 seconds after its last report by default; a battery sensor that reports only on change may need a longer maximum age in the [plant file](plant-file.md#sensors).
+- A sensor is stale 3600 seconds after its last report by default, changed or not.
+  A sensor that reports only on change and sends its heartbeat less often than hourly needs a longer `max_age` in the [plant file](plant-file.md#sensors); one that reports every few minutes can have a shorter one, so a failure is noticed sooner.
 - A sensor without a unit is taken as °C.
 
 ### The combined temperature is unexpected
@@ -199,7 +214,7 @@ If the area names a sensor that does not exist, a Repair says so.
 
 The loop's condensation guard blocks when its coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
 The **Dew point** sensor shows the zone's worst-case dew point, and the `.guard` reason in the **Status** sensor's `reasons` shows the reference and the threshold.
-A missing or stale reference, or a zone without a usable humidity reading, also blocks.
+A missing reference, one that has not reported for 1800 seconds, or a zone without a usable humidity reading, also blocks.
 For a plant loop that cools, the dew points of the zones it runs with count, or of every zone when it runs with the source, so each of those zones needs a humidity reading.
 
 ## Logs and diagnostics
@@ -217,8 +232,9 @@ They hold:
 | `options` | The armed outputs and **Control equipment**. |
 | `requested_mode` and `status` | The **Mode** select and the **Status** sensor. |
 | `observations` | What the last evaluation read: outputs, readiness sensors, sensors, areas, and thermostats. |
-| `desired` | What the last evaluation decided, with its reasons and each zone's demand. |
+| `desired` | What the last evaluation decided, with its reasons, each zone's demand, and the required sensors that block each zone. |
 | `state` and `reconcile` | The stored timers and the commands waiting for a result. |
+| `blocking_sensors` | When each required sensor that blocks its zone began to, which starts the 10 minutes before its Repair. |
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |
 | `missing` | The bound entities that do not exist. |

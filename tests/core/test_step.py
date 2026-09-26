@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 
 from custom_components.hydronicus.core.model import (
+    DEFAULT_MAX_AGE,
     Desired,
     Mode,
     OptionTarget,
@@ -16,12 +17,12 @@ from custom_components.hydronicus.core.model import (
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
 )
 from custom_components.hydronicus.core.plant_file import read_plant_file
 from custom_components.hydronicus.core.step import (
     CALL_TIMEOUT,
     GUARD_MIN_BLOCKED,
+    GUARD_REFERENCE_MAX_AGE,
     TICK,
     DemandState,
     DigitalThermostatState,
@@ -33,7 +34,6 @@ from custom_components.hydronicus.core.step import (
     Sent,
     State,
     SwitchState,
-    ValueState,
     satisfies,
     step,
     value_of,
@@ -44,7 +44,8 @@ LONG_AGO = NOW - 3600.0
 ON = SwitchTarget(True)
 OFF = SwitchTarget(False)
 
-# A boiler, a circulator, and one radiator zone.
+# A boiler, a circulator, and one radiator zone whose thermostat follows the
+# temperature at once.
 RADIATOR = """
 hydronicus: 2
 name: Flat
@@ -55,6 +56,7 @@ zones:
   room:
     temperature: [sensor.room]
     humidity: [sensor.room_rh]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
     loops:
       radiator: {valves: [switch.valve], pump: pump}
 """
@@ -159,11 +161,10 @@ def test_observed_outputs_satisfy_their_targets() -> None:
     assert satisfies(SwitchState(True, NOW), ON)
     assert not satisfies(SwitchState(None, NOW), OFF)
     assert satisfies(OptionState("Heat", NOW), OptionTarget("Heat"))
-    assert satisfies(ValueState(35.0, NOW), ValueTarget(35.0))
     assert not satisfies(OptionState("Heat", NOW), ON)
     assert not satisfies(None, ON)
     assert [value_of(SwitchState(True, 0)), value_of(OptionState("x", 0))] == [True, "x"]
-    assert value_of(ValueState(None, 0)) is None
+    assert value_of(SwitchState(None, 0)) is None
 
 
 def test_state_round_trips_through_json_and_defaults_every_field() -> None:
@@ -175,7 +176,10 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         flow_ended=NOW,
         source_request=True,
         source_changed=NOW - 5,
-        demands={"room": DemandState(Mode.HEAT, True, NOW)},
+        demands={
+            "room": DemandState(Mode.HEAT, True, NOW),
+            "hall": DemandState(Mode.OFF, False, None),
+        },
         guards={"room.radiator": GuardState(True, NOW)},
         overruns={"pump": NOW},
         ready={"switch.valve": LONG_AGO},
@@ -194,7 +198,7 @@ def test_nothing_runs_while_no_zone_calls_and_the_next_evaluation_is_when_a_read
     assert all(target == OFF for target in desired.outputs.values())
     assert desired.mode is Mode.HEAT and not desired.source_request
     assert desired.reasons["room"].startswith("idle")
-    assert due == pytest.approx(1800.0 + TICK)
+    assert due == pytest.approx(DEFAULT_MAX_AGE + TICK)
     assert state.live and state.mode is Mode.HEAT
 
 
@@ -221,14 +225,53 @@ def test_a_calling_zone_opens_its_valve_then_runs_its_pump_then_asks_the_source(
     assert desired.outputs["switch.boiler"] == ON and state.source_changed == NOW
 
 
-def test_the_desired_state_reports_each_zone_demand_with_its_level() -> None:
+def test_the_desired_state_reports_each_zone_demand() -> None:
     plant = _plant(RADIATOR)
     _, desired, _ = run(plant, observe(plant, temperatures={"room": 20.5}))
     demand = desired.demands["room"]
     assert demand.on and demand.mode is Mode.HEAT
-    assert demand.level == pytest.approx(0.5)
     _, desired, _ = run(plant, observe(plant))
-    assert not desired.demands["room"].on and desired.demands["room"].level == 0.0
+    assert not desired.demands["room"].on
+
+
+def test_a_valve_that_shows_opening_is_not_ready_and_one_closing_may_pass_flow() -> None:
+    plant = _plant(RADIATOR)
+    cold = observe(plant, temperatures={"room": 19.0}, on=["switch.valve"])
+    opening = replace(
+        cold, outputs={**cold.outputs, "switch.valve": SwitchState(True, LONG_AGO, moving=True)}
+    )
+    state, desired, _ = run(plant, opening)
+    assert targets(desired, "switch.valve", "switch.pump") == [ON, OFF], "opening is not ready"
+    assert "switch.valve" not in state.ready
+    arrived = replace(cold, outputs={**cold.outputs, "switch.valve": SwitchState(True, NOW)})
+    state, desired, due = run(plant, arrived, state)
+    assert targets(desired, "switch.pump") == [OFF]
+    assert due == pytest.approx(180.0 + TICK), "the opening time counts from open"
+
+    warm = observe(plant, on=["switch.pump"])
+    closing = replace(
+        warm, outputs={**warm.outputs, "switch.valve": SwitchState(False, NOW, moving=True)}
+    )
+    state, desired, _ = run(plant, closing)
+    assert targets(desired, "switch.valve", "switch.pump") == [ON, OFF], (
+        "a closing valve is held open as the path of a pump that runs"
+    )
+    assert "switch.valve" in state.winding
+    assert not satisfies(SwitchState(True, NOW, moving=True), ON)
+
+
+def test_the_desired_state_names_the_required_sensors_that_block_each_zone() -> None:
+    plant = _plant(HEAT_PUMP)
+    unusable = {entity: Reading(None, NOW) for entity in ("sensor.a_rh", "sensor.c", "sensor.c_rh")}
+    _, desired, _ = run(plant, observe(plant, sensors=unusable))
+    assert desired.blocking_sensors == {"a": ("sensor.a_rh",), "c": ("sensor.c",)}, (
+        "a humidity sensor blocks only a zone whose dew point guards a loop that cools"
+    )
+    external = read_plant_file(
+        RADIATOR.replace("{digital: {min_on: 0, min_off: 0}}", "{external: climate.room}")
+    )
+    _, desired, _ = run(external, observe(external, sensors={"sensor.room": Reading(None, NOW)}))
+    assert desired.blocking_sensors == {}, "an external thermostat needs no temperature to heat"
 
 
 def test_readiness_is_confirmed_by_a_sensor_and_kept_across_a_backward_clock_step() -> None:
@@ -519,7 +562,7 @@ def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteres
     )
     assert not run(plant, ready_clear, blocked, later)[0].guards["a.ceiling"].blocked
 
-    stale = {"sensor.supply": Reading(20.0, NOW - 1801)}
+    stale = {"sensor.supply": Reading(20.0, NOW - GUARD_REFERENCE_MAX_AGE - 1)}
     assert (
         run(plant, replace(ready, sensors={**ready.sensors, **stale}))[0]
         .guards["a.ceiling"]
@@ -647,7 +690,7 @@ def test_a_first_evaluation_adopts_the_requested_mode_for_loops_found_running() 
 
 def test_an_external_thermostat_demands_only_in_the_plant_mode() -> None:
     plant = read_plant_file(
-        RADIATOR.replace("temperature: [sensor.room]", "thermostat: {external: climate.room}")
+        RADIATOR.replace("{digital: {min_on: 0, min_off: 0}}", "{external: climate.room}")
     )
     base = observe(plant)
     heat = replace(base, thermostats={"room": ExternalThermostatState(Mode.HEAT)})

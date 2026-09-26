@@ -31,7 +31,7 @@ PARALLEL_UPDATES = 0
 
 
 class ZoneDemandSensor(ZoneEntity, BinarySensorEntity):
-    """Whether a zone demands heating, or cooling, with the demand level from 0 to 1."""
+    """Whether a zone demands heating, or cooling, and why."""
 
     _unrecorded_attributes = frozenset({"reason"})
 
@@ -56,9 +56,8 @@ class ZoneDemandSensor(ZoneEntity, BinarySensorEntity):
         view = self.runtime.view
         demand = None if view is None else view.desired.demands.get(self._zone)
         if demand is None:
-            return {"level": 0.0}
-        level = demand.level if demand.mode is self._mode else 0.0
-        return {"level": round(level, 3), "reason": demand.reason}
+            return {}
+        return {"reason": demand.reason}
 
 
 class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):

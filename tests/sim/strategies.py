@@ -1,7 +1,8 @@
 """Hypothesis strategies for random Plants and the event traces run over them.
 
 Plants follow contract K9: 1 to 4 pumps of both kinds, 1 to 6 loops with 0 to 3
-valves, 1 to 4 zones, and an optional source. They are valid by construction:
+valves, switches or valve entities that report their travel, 1 to 4 zones, and
+an optional source. They are valid by construction:
 the strategy only draws combinations that ``validate_plant`` accepts, and it
 calls ``validate_plant`` to prove it. Plant loops heat only, so a loop that
 cools always belongs to one zone, whose dew point it answers to, and a
@@ -10,7 +11,8 @@ source-driven pump's min-flow loops run in every mode its other loops run in.
 A trace starts from initial inputs and optionally from loops found running,
 then applies timed events: mode and Control equipment changes, arming, sensor
 changes, stale and unavailable sensors, thermostat changes, unavailable
-outputs, delayed, rejected, and timed out calls, spontaneous relay drops,
+outputs, delayed, rejected, and timed out calls, valves that stall on their
+way, spontaneous relay drops,
 restarts with and without downtime, backward clock jumps, and blocked event
 loops. Nothing else happens during a downtime or a blocked event loop, and a
 spontaneous change never falls near a fault, so the controller always gets one
@@ -88,7 +90,7 @@ def plants(draw: st.DrawFn) -> Plant:
         prefix = f"{owner or 'plant'}_l{index}"
         valves = tuple(
             Valve(
-                entity=f"switch.{prefix}_valve_{number}",
+                entity=f"{draw(st.sampled_from(['switch', 'valve']))}.{prefix}_valve_{number}",
                 opening_time=draw(st.sampled_from([30.0, 60.0, 180.0])),
                 readiness=f"binary_sensor.{prefix}_valve_{number}_open"
                 if draw(st.booleans())
@@ -501,7 +503,7 @@ def _events(
         st.builds(
             CallFault,
             st.sampled_from(commandable),
-            st.sampled_from(list(FaultKind)),
+            st.sampled_from([FaultKind.DELAY, FaultKind.REJECT, FaultKind.TIMEOUT]),
             durations,
             st.sampled_from([2.0, 5.0, 9.0]),
         ),
@@ -514,6 +516,11 @@ def _events(
         choices.append(st.builds(Arm, st.sampled_from(disarmable), st.just(False)))
     if outages:
         choices.append(st.builds(Unavailable, st.sampled_from(outages), durations))
+    travelling = [entity for entity in commandable if entity.startswith("valve.")]
+    if travelling:
+        choices.append(
+            st.builds(CallFault, st.sampled_from(travelling), st.just(FaultKind.STALL), durations)
+        )
     return st.one_of(choices)
 
 

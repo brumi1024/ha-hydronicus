@@ -44,7 +44,7 @@ Config entry version 5.0 is the supported persisted contract.
 The entry's data is the format 2 plant file without `zones`, and each zone is a `zone` subentry whose data is that zone's mapping plus its `slug`; the subentry's unique ID is the slug and its title is the zone's name.
 Home Assistant stores a config entry with sorted keys, so `pumps`, `loops`, and each zone's `loops` are stored as lists of objects that carry their `slug`, which keeps the order the owner chose.
 The entry's options hold `armed_outputs`, the confirmed output entity IDs, and `control`, the **Control equipment** state.
-The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, and the last valid Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
+The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, when each required sensor began to block its zone, and the last valid Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
 
 Entries of earlier versions are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
 Do not add schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
@@ -57,7 +57,7 @@ Do not add schema aliases or migration paths without a concrete persisted predec
 - `core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into entry data and zone subentry data with its slug-keyed objects listed in order, `from_storage` joins them again, and `describe_path` puts a problem's path in words.
 - `core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
 - `core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
-- `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
+- `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, waits for a valve that shows it is opening or closing toward its target, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
 
 A decision never counts on a call having acted: a call that no observation has confirmed may act until `CALL_TIMEOUT` after it was sent.
 
@@ -82,7 +82,7 @@ The Home Assistant adapter lives beside the core:
   Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a problem onto the field its path belongs to.
   A select's fixed options are translated through its `translation_key`, such as the add option of a pick form, whose value `add-new` is a valid translation key that no slug can be.
   What the code writes into a form stays English: labels of options whose values are slugs or entity IDs, such as `Living area / Ceiling` or a pump driven by the source, and description placeholders, such as the reviews, the change summary, and the reconfigure status, because Home Assistant translates neither.
-- `issues.py` computes the Repairs of a Plant, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
+- `issues.py` computes the Repairs of a Plant, including a required sensor that `step()` reports blocking its zone once the block has lasted 10 minutes, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
 - `entity.py` and the platforms publish the [entity contract](entities.md) from the view; unique IDs and device identifiers derive from the Plant ID and object slugs.
 - `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` returns the configuration, the last observations, the desired state, and the reconciler state, unredacted, since a Plant holds no secret.
 

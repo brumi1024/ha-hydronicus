@@ -48,7 +48,8 @@ It re-reads which sensors each covered area names, so a change in the area setti
 Each zone combines its usable temperatures by its aggregation: mean, minimum, or maximum.
 A required sensor that is missing blocks the zone, and an optional one is left out.
 A digital thermostat demands heating once the temperature is `heat_start_delta` (0.3 K) below the target, and stops once it is `heat_stop_delta` (0.1 K) above; cooling works the same way the other side of the target.
-It can hold a decision for a minimum on or off time, and it reports a demand level from 0 to 1 from the distance to target over its proportional band.
+It holds each decision for its minimum on or off time, 600 seconds by default, because a thermoelectric valve takes minutes to open and a short call would otherwise close it again before its pump ran.
+A zone that has not called since its thermostat started or changed mode may call at once.
 An external thermostat demands heating while its `hvac_action` is heating or preheating, cooling while it is cooling, and nothing while it is idle or off; anything else, or an unavailable thermostat, blocks the zone.
 A zone's demand counts only when its thermostat's mode matches the Plant mode; a zone that asks to cool while the Plant heats is shown as blocked.
 
@@ -66,6 +67,7 @@ A wanted loop is dropped when an output it needs is not armed or not available, 
 ### 5. Readiness
 
 A loop is ready once each of its valves has been seen open for its opening time, 180 seconds by default, or its readiness sensor reports it open.
+A `valve` entity that shows opening is not open yet, so its opening time counts from when it shows open.
 A loop with no valve is ready at once.
 Readiness comes only from what Home Assistant shows, never from a command having been sent.
 
@@ -126,6 +128,9 @@ At most one command per output is outstanding at a time.
 
 A command whose result is not seen is sent again after a wait that starts at 10 seconds and doubles up to 5 minutes, for as long as the difference remains.
 After three attempts without a result, Hydronicus raises a Repair saying that the output does not respond, and keeps retrying; the Repair clears once the output shows what is asked.
+A `valve` entity that shows opening or closing is on its way, so it is not sent the command again while it moves.
+It still may pass water, so a closing valve counts as open until it shows closed.
+One that still moves 70 seconds after its opening time, the time three attempts would take, raises the same Repair and is sent the command again.
 Meanwhile a pump whose stop is not seen keeps its last path open, and a valve whose opening is not seen keeps its loop from counting as ready.
 An output that is unavailable gets no command until it returns.
 
@@ -176,7 +181,7 @@ Each loop that cools has a condensation guard, checked on every evaluation:
   Each zone that counts needs a humidity reading and a temperature reading, from its own sensors or its areas.
 - The guard blocks when the coldest reference is below that dew point plus a 2 K margin.
 - It releases only once the coldest reference is at least 1 K above that threshold, and only after it has blocked for at least 5 minutes.
-- A missing or stale reference blocks the guard, and so does a zone without a usable dew point.
+- A missing reference, or one that has not reported for 1800 seconds, blocks the guard, and so does a zone without a usable dew point.
 
 A blocked guard drops the loop, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 Pumps have no overrun in cooling, so a pump stops as soon as its last cooling loop releases.
@@ -228,7 +233,7 @@ The Plant publishes a small set of entities: the **Mode** select, the **Control 
 Their attributes carry the reasons behind every decision.
 See [the entities](entities.md) for the full list.
 
-Problems that need you are Repairs: an output that does not respond, an entity that does not exist, outputs awaiting confirmation, area problems, and an evaluation that fails.
+Problems that need you are Repairs: an output that does not respond, an entity that does not exist, outputs awaiting confirmation, area problems, a required sensor that has blocked its zone for 10 minutes, and an evaluation that fails.
 See [troubleshooting](troubleshooting.md#repairs).
 
 ## What Dry run proves

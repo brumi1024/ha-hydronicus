@@ -194,7 +194,7 @@ def test_the_reference_documents_every_key() -> None:
         if name.endswith("_KEYS")
         for key in getattr(plant_file, name)
     }
-    assert keys > {"min_flow_loops", "readiness", "proportional_band"}
+    assert keys > {"min_flow_loops", "readiness", "max_age"}
     assert sorted(key for key in keys if f"`{key}`" not in text) == []
 
 
@@ -267,7 +267,6 @@ ERROR_CASES: dict[str, Callable[[dict[str, Any]], None]] = {
     "digital_without_temperature": _drop("zones", "bedroom_area", "areas"),
     "cooling_without_humidity": _cooling_zone_without_humidity,
     "missing_runs": _drop("loops", "towel_dryer", "runs"),
-    "setpoint_strategy": _set("source", "strategy", value="setpoint"),
 }
 
 

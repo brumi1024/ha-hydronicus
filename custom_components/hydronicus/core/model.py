@@ -32,15 +32,6 @@ class MinFlow(StrEnum):
     GUARANTEED = "guaranteed"
 
 
-class SourceStrategy(StrEnum):
-    """How Hydronicus asks the source for heat or cooling."""
-
-    # Ask for heat or cooling and let the source choose its flow temperature.
-    REQUEST = "request"
-    # Also write a flow setpoint; reserved for iteration 2.
-    SETPOINT = "setpoint"
-
-
 class Aggregation(StrEnum):
     """How a zone combines its temperature readings."""
 
@@ -81,9 +72,16 @@ DEFAULT_MODE_DWELL: Final = 3600.0
 DEFAULT_POST_RUN: Final = 180.0
 DEFAULT_MIN_ON: Final = 600.0
 DEFAULT_MIN_OFF: Final = 600.0
+# A digital thermostat holds each demand decision this long, in seconds, so a
+# short dip does not open a slow thermoelectric valve, which takes about three
+# minutes, and close it again before its pump ever starts.
+DEFAULT_DEMAND_MIN_ON: Final = 600.0
+DEFAULT_DEMAND_MIN_OFF: Final = 600.0
 DEFAULT_OVERRUN: Final = 180.0
 DEFAULT_OPENING_TIME: Final = 180.0
-DEFAULT_MAX_AGE: Final = 1800.0
+# A zone or area sensor's reading is stale this long after its last report. Many
+# battery sensors report only on change, with a heartbeat about once an hour.
+DEFAULT_MAX_AGE: Final = 3600.0
 DEFAULT_SOURCE_TITLE: Final = "Heat source"
 
 
@@ -204,7 +202,6 @@ class Source:
     """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
 
     request: str
-    strategy: SourceStrategy = SourceStrategy.REQUEST
     mode: SourceModeSelect | None = None
     post_run: float = DEFAULT_POST_RUN
     min_on: float = DEFAULT_MIN_ON
@@ -245,10 +242,8 @@ class DigitalThermostat:
     heat_stop_delta: float = 0.1
     cool_start_delta: float = 0.3
     cool_stop_delta: float = 0.1
-    min_on: float = 0.0
-    min_off: float = 0.0
-    # The distance to target, in kelvin, over which the demand level rises from 0 to 1.
-    proportional_band: float = 1.0
+    min_on: float = DEFAULT_DEMAND_MIN_ON
+    min_off: float = DEFAULT_DEMAND_MIN_OFF
 
     @property
     def preset_targets(self) -> Mapping[Preset, float]:
@@ -372,23 +367,15 @@ class OptionTarget:
     option: str
 
 
-@dataclass(frozen=True, slots=True)
-class ValueTarget:
-    """A number that should hold a value."""
-
-    value: float
-
-
-type OutputTarget = SwitchTarget | OptionTarget | ValueTarget
+type OutputTarget = SwitchTarget | OptionTarget
 
 
 @dataclass(frozen=True, slots=True)
 class Demand:
-    """A zone's request: on or off in a thermostat mode, with a level from 0 to 1."""
+    """A zone's request: on or off in a thermostat mode."""
 
     mode: Mode
     on: bool
-    level: float
     reason: str
 
 
@@ -401,9 +388,10 @@ class Desired:
     # The mode the outputs run in now: during a changeover it stays the old mode
     # until the old mode's loops have stopped, and it is off during the dwell.
     mode: Mode
-    # Always None until the setpoint strategy arrives in iteration 2.
-    flow_setpoint: float | None
     # Why, per zone, loop, and output.
     reasons: Mapping[str, str]
-    # Each zone's demand, by zone slug, which the entities publish with its level.
+    # Each zone's demand, by zone slug, which the entities publish.
     demands: Mapping[str, Demand] = field(default_factory=dict)
+    # By zone slug, the required sensors whose readings are not usable, among the
+    # readings the zone needs; the zone fails closed until they report again.
+    blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)

@@ -13,7 +13,8 @@ from hypothesis import HealthCheck, Phase, find, given, settings
 from hypothesis import strategies as st
 
 from custom_components.hydronicus.core.model import MinFlow, Plant, RunKind
-from tests.sim.strategies import Trace, plants, run, seasonal_traces, traces
+from tests.sim.strategies import CallFault, Trace, plants, run, seasonal_traces, traces
+from tests.sim.world import FaultKind
 
 # Hypothesis 6.156 on Python 3.14 misjudges its own PRNG as garbage when it
 # first seeds one for a derandomized run; the warning is about Hypothesis itself.
@@ -83,6 +84,9 @@ def test_generated_plants_stay_within_the_contract(plant: Plant) -> None:
         lambda plant: any(loop.runs.kind is RunKind.WITH_SOURCE for loop in plant.loops),
         lambda plant: any(loop.runs.kind is RunKind.WITH_ZONES for loop in plant.loops),
         lambda plant: plant.source is None,
+        lambda plant: any(
+            valve.entity.startswith("valve.") for loop in plant.all_loops for valve in loop.valves
+        ),
     ],
     ids=[
         "source-driven path pump",
@@ -92,6 +96,7 @@ def test_generated_plants_stay_within_the_contract(plant: Plant) -> None:
         "with_source loop",
         "with_zones loop",
         "no source",
+        "valve entity",
     ],
 )
 def test_generated_plants_reach_every_feature(feature: object) -> None:
@@ -121,3 +126,13 @@ def test_generated_traces_reach_every_event() -> None:
         return seen >= kinds
 
     find(cases(), covers, settings=settings(_FIND, max_examples=2000))
+
+
+def test_generated_traces_stall_valves_that_report_their_travel() -> None:
+    def stalls(case: tuple[Plant, Trace]) -> bool:
+        return any(
+            isinstance(event, CallFault) and event.kind is FaultKind.STALL
+            for _, event in case[1].events
+        )
+
+    find(cases(), stalls, settings=settings(_FIND, max_examples=500))

@@ -138,7 +138,14 @@ async def test_the_first_evaluation_sees_restored_thermostats_and_persisted_stat
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     stored = hass_storage[f"{DOMAIN}.{entry.entry_id}"]["data"]
-    assert set(stored) == {"state", "reconcile", "outputs", "mode", "commanding"}
+    assert set(stored) == {
+        "state",
+        "reconcile",
+        "outputs",
+        "blocking_sensors",
+        "mode",
+        "commanding",
+    }
     assert stored["commanding"]["plant"]["id"] == entry.unique_id
     assert sorted(stored["commanding"]["outputs"]) == sorted(REFERENCE_OUTPUTS)
     assert stored["mode"] == "heat" and stored["state"]["live"] is True

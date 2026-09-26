@@ -69,7 +69,7 @@ Heating and cooling never run at the same time, and a change of Mode is sequence
 
 ## Demand
 
-Demand is a Zone's request in the current Mode, with an on or off decision and a level from 0 to 1.
+Demand is a Zone's request in the current Mode: an on or off decision.
 
 ## Min-flow path
 

@@ -40,14 +40,15 @@ from .demand import (
     ThermostatState,
     aggregate,
     fresh,
+    unusable_sensors,
     worst_dew_point,
     zone_demand,
     zone_values,
 )
 from .model import (
-    DEFAULT_MAX_AGE,
     Demand,
     Desired,
+    DigitalThermostat,
     Loop,
     MinFlow,
     Mode,
@@ -58,7 +59,6 @@ from .model import (
     Pump,
     RunKind,
     SwitchTarget,
-    ValueTarget,
     Valve,
 )
 
@@ -66,6 +66,7 @@ __all__ = [
     "CALL_TIMEOUT",
     "CONDENSATION_MARGIN",
     "GUARD_MIN_BLOCKED",
+    "GUARD_REFERENCE_MAX_AGE",
     "GUARD_RELEASE",
     "TICK",
     "AreaSensors",
@@ -81,7 +82,6 @@ __all__ = [
     "State",
     "SwitchState",
     "ThermostatState",
-    "ValueState",
     "satisfies",
     "step",
     "value_of",
@@ -93,6 +93,10 @@ CONDENSATION_MARGIN: Final = 2.0
 GUARD_RELEASE: Final = 1.0
 # A blocked guard releases only after it has blocked this long, in seconds.
 GUARD_MIN_BLOCKED: Final = 300.0
+# A condensation reference is stale this long after its last report, in seconds.
+# Supply and surface temperatures fall fast once cooling starts, so a reference
+# must be fresher than a room reading.
+GUARD_REFERENCE_MAX_AGE: Final = 1800.0
 # How long the runtime waits for one service call; one sent longer ago has acted or never will.
 CALL_TIMEOUT: Final = 10.0
 # Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
@@ -112,8 +116,12 @@ class SwitchState:
     # None while the entity is unavailable or unknown.
     on: bool | None
     # When the observed state last changed (``last_changed``), including a
-    # change to or from unavailable.
+    # change to or from unavailable, and from moving to arrived.
     since: float
+    # The entity reports that it is still on its way to ``on``, as a valve entity
+    # does while it is opening or closing. A moving valve does not show its
+    # target yet and may pass flow either way.
+    moving: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,15 +132,7 @@ class OptionState:
     since: float
 
 
-@dataclass(frozen=True, slots=True)
-class ValueState:
-    """A number as observed; used by the setpoint strategy from iteration 2."""
-
-    value: float | None
-    since: float
-
-
-type OutputState = SwitchState | OptionState | ValueState
+type OutputState = SwitchState | OptionState
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,25 +172,21 @@ class Observations:
 def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
     """Whether an observed output shows a target."""
     match target, state:
-        case SwitchTarget(on=on), SwitchState(on=observed):
-            return observed is on
+        case SwitchTarget(on=on), SwitchState(on=observed, moving=moving):
+            return observed is on and not moving
         case OptionTarget(option=option), OptionState(option=observed):
             return observed == option
-        case ValueTarget(value=value), ValueState(value=observed):
-            return observed == value
         case _:
             return False
 
 
-def value_of(state: OutputState) -> bool | str | float | None:
+def value_of(state: OutputState) -> bool | str | None:
     """The observed value of an output, None while it is unavailable."""
     match state:
         case SwitchState(on=on):
             return on
         case OptionState(option=option):
             return option
-        case ValueState(value=value):
-            return value
 
 
 # State
@@ -277,7 +273,9 @@ class State:
             source_request=bool(data.get("source_request", False)),
             source_changed=_optional_float(data.get("source_changed")),
             demands={
-                slug: DemandState(Mode(value["mode"]), bool(value["on"]), float(value["since"]))
+                slug: DemandState(
+                    Mode(value["mode"]), bool(value["on"]), _optional_float(value["since"])
+                )
                 for slug, value in data.get("demands", {}).items()
             },
             guards={
@@ -336,8 +334,11 @@ class _Evaluation:
     # Outputs as observed, with the calls that may still act
 
     def switch(self, entity: str) -> bool | None:
+        """Whether an output is observed on; None while it is unknown or still moving."""
         observed = self.obs.outputs.get(entity)
-        return observed.on if isinstance(observed, SwitchState) else None
+        if not isinstance(observed, SwitchState) or observed.moving:
+            return None
+        return observed.on
 
     def since(self, entity: str) -> float:
         observed = self.obs.outputs.get(entity)
@@ -480,9 +481,9 @@ class _Evaluation:
             outputs=outputs,
             source_request=plan.request,
             mode=mode,
-            flow_setpoint=None,
             reasons=self.reasons,
             demands=demands,
+            blocking_sensors=self.blocking_sensors(),
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
@@ -508,6 +509,35 @@ class _Evaluation:
             self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
         return demands, states
 
+    def blocking_sensors(self) -> dict[str, tuple[str, ...]]:
+        """Each zone's required sensors that are not usable, among the readings it needs.
+
+        A digital thermostat needs its zone's temperature, and a condensation
+        guard needs the temperature and humidity of each zone whose dew point it reads.
+        """
+        plant, obs = self.plant, self.obs
+        guarded = {
+            zone.slug
+            for loop in plant.all_loops
+            if loop.cools
+            for zone in plant.dew_point_zones(loop)
+        }
+        blocking: dict[str, tuple[str, ...]] = {}
+        for zone in plant.zones:
+            needs = [False] if isinstance(zone.thermostat, DigitalThermostat) else []
+            if zone.slug in guarded:
+                needs = [False, True]
+            entities = [
+                entity
+                for humidity in needs
+                for entity in unusable_sensors(
+                    zone, obs.areas, obs.sensors, self.reached, humidity=humidity
+                )
+            ]
+            if entities:
+                blocking[zone.slug] = tuple(dict.fromkeys(entities))
+        return blocking
+
     def guards(self) -> dict[str, GuardState]:
         """The condensation guard of every loop that cools."""
         guards: dict[str, GuardState] = {}
@@ -521,7 +551,10 @@ class _Evaluation:
         plant, obs, now = self.plant, self.obs, self.now
         pump = self._pumps[loop.pump]
         references = [e for e in (pump.supply_temperature, loop.surface_temperature) if e]
-        values = [fresh(obs.sensors.get(e), DEFAULT_MAX_AGE, self.reached) for e in references]
+        values = [
+            fresh(obs.sensors.get(entity), GUARD_REFERENCE_MAX_AGE, self.reached)
+            for entity in references
+        ]
         points = [
             worst_dew_point(zone, obs.areas, obs.sensors, self.reached)
             for zone in plant.dew_point_zones(loop)

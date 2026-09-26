@@ -168,7 +168,7 @@ A zone that covers an area follows the sensors the area names:
 - An area sensor that Hydronicus itself provides, such as a zone's **Combined temperature**, is ignored, and a Repair names it.
 
 By default an area's sensors are optional: a stale or unavailable one is left out, so one flat battery in a zone of five rooms does not stop the other four.
-A reading is stale after 1800 seconds without a report.
+A reading is stale after 3600 seconds without a report, which suits a battery sensor that reports only on change with an hourly heartbeat.
 The [plant file](plant-file.md#areas) can make an area's sensors required or change their maximum age; the forms keep those settings when you edit the zone.
 
 A zone that covers exactly one area puts its thermostat in that area when the thermostat is first created, so it appears on the area's page and answers voice commands such as "set the bedroom to 21".
@@ -193,7 +193,8 @@ A zone has exactly one thermostat.
 A digital thermostat is the zone's climate entity, which Hydronicus provides.
 It restores its target, preset, and mode after a restart, starts off with a target of 21 °C when new, and offers heating, plus cooling when a loop of the zone cools.
 It demands heating 0.3 K below its target and stops 0.1 K above it, and cooling the same way the other side.
-The [plant file](plant-file.md#thermostats) can change these deltas, add minimum on and off times, and change the proportional band of the demand level.
+It holds each decision for at least 600 seconds, so a short call does not open a slow thermoelectric valve and close it again before the pump has run.
+The [plant file](plant-file.md#thermostats) can change these deltas and the minimum on and off times.
 
 An existing thermostat is an existing Home Assistant climate entity that owns the zone's demand.
 Hydronicus reads only its `hvac_action`: heating or preheating calls for heat, cooling calls for cooling, and idle or off calls for nothing.

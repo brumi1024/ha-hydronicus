@@ -18,7 +18,7 @@ from . import HydronicusConfigEntry
 from .core.model import Desired
 from .core.plant_file import export_plant
 from .core.reconcile import target_to_dict
-from .core.step import Observations, value_of
+from .core.step import Observations, SwitchState, value_of
 from .storage import stored_document
 
 
@@ -43,7 +43,11 @@ def _observations(observations: Observations) -> dict[str, Any]:
         "control": observations.control,
         "armed": sorted(observations.armed),
         "outputs": {
-            entity: {"value": value_of(state), "since": state.since}
+            entity: {
+                "value": value_of(state),
+                "since": state.since,
+                "moving": isinstance(state, SwitchState) and state.moving,
+            }
             for entity, state in observations.outputs.items()
         },
         "readiness": _plain(dict(observations.readiness)),
@@ -60,6 +64,7 @@ def _desired(desired: Desired) -> dict[str, Any]:
         "outputs": {entity: target_to_dict(target) for entity, target in desired.outputs.items()},
         "reasons": dict(desired.reasons),
         "demands": _plain(dict(desired.demands)),
+        "blocking_sensors": _plain(dict(desired.blocking_sensors)),
     }
 
 
@@ -79,6 +84,7 @@ async def async_get_config_entry_diagnostics(
         "desired": None if view is None else _desired(view.desired),
         "state": runtime.state.to_dict(),
         "reconcile": runtime.reconcile_state.to_dict(),
+        "blocking_sensors": runtime.blocking.to_dict(),
         "repairs": [] if view is None else sorted(view.reconciled.repairs),
         "retry_at": None if view is None else view.reconciled.retry_at,
         "proposals": [

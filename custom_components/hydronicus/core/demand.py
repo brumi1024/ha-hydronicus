@@ -73,7 +73,9 @@ class DemandState:
 
     mode: Mode
     on: bool
-    since: float
+    # None for an off decision that no on decision in this mode came before: no
+    # valve has closed for it, so no minimum off time holds it.
+    since: float | None
 
 
 def external_action(hvac_action: str | None, hvac_mode: str | None) -> Mode | None:
@@ -143,6 +145,25 @@ def zone_values(
     return values or None
 
 
+def unusable_sensors(
+    zone: Zone,
+    areas: Mapping[str, AreaSensors],
+    sensors: Mapping[str, Reading],
+    reached: Reached,
+    *,
+    humidity: bool = False,
+) -> list[str]:
+    """Return a zone's required temperature or humidity sensors that are not usable.
+
+    These are the sensors that make ``zone_values`` fail closed.
+    """
+    return [
+        entity
+        for entity, required, max_age in _zone_sensors(zone, areas, humidity)
+        if required and fresh(sensors.get(entity), max_age, reached) is None
+    ]
+
+
 def aggregate(values: list[float], aggregation: Aggregation) -> float:
     match aggregation:
         case Aggregation.MIN:
@@ -197,7 +218,7 @@ def zone_demand(
             return _settle(previous, Mode.OFF, False, now), _off(Mode.OFF, "thermostat unavailable")
         on = action is not Mode.OFF
         reason = f"thermostat {action.value}" if on else "thermostat idle"
-        return _settle(previous, action, on, now), Demand(action, on, 1.0 if on else 0.0, reason)
+        return _settle(previous, action, on, now), Demand(action, on, reason)
     config = zone.thermostat
     if not isinstance(thermostat, DigitalThermostatState) or not isinstance(
         config, DigitalThermostat
@@ -221,12 +242,11 @@ def zone_demand(
     was_on = previous is not None and previous.mode is mode and previous.on
     requested = below >= start or (was_on and below > -stop)
     state = _apply_timing(previous, mode, requested, config, now, reached)
-    level = min(1.0, max(0.0, below / config.proportional_band)) if state.on else 0.0
     verb = "heat" if mode is Mode.HEAT else "cool"
     reason = f"{verb} to {target:.1f} °C from {temperature:.1f} °C"
     if state.on != requested:
         reason += ", held for its minimum " + ("on" if state.on else "off") + " time"
-    return state, Demand(mode, state.on, level, reason)
+    return state, Demand(mode, state.on, reason)
 
 
 def _apply_timing(
@@ -238,22 +258,20 @@ def _apply_timing(
     reached: Reached,
 ) -> DemandState:
     """Hold a decision for its minimum on or off time after hysteresis."""
-    if previous is None or previous.mode is not mode:
-        return DemandState(mode, requested, now)
-    if requested == previous.on:
-        return previous
+    if previous is None or previous.mode is not mode or requested == previous.on:
+        return _settle(previous, mode, requested, now)
     duration = config.min_on if previous.on else config.min_off
-    if duration > 0 and not reached(previous.since + duration):
+    if previous.since is not None and duration > 0 and not reached(previous.since + duration):
         return previous
     return DemandState(mode, requested, now)
 
 
 def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> DemandState:
     """A decision without minimum durations, keeping the time of the last change."""
-    if previous is not None and previous.mode is mode and previous.on == on:
-        return previous
-    return DemandState(mode, on, now)
+    if previous is not None and previous.mode is mode:
+        return previous if previous.on == on else DemandState(mode, on, now)
+    return DemandState(mode, on, now if on else None)
 
 
 def _off(mode: Mode, reason: str) -> Demand:
-    return Demand(mode, False, 0.0, reason)
+    return Demand(mode, False, reason)

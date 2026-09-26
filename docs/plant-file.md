@@ -38,7 +38,6 @@ name: Home
 mode_dwell: 3600
 source:
   name: Heat pump
-  strategy: request
   request: switch.heat_pump_heat_request
   mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}
   post_run: 180
@@ -142,7 +141,6 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |
 | `name` | no | `Heat source` | The source's name, which names its device. |
-| `strategy` | no | `request` | How Hydronicus asks for heat: `request` switches the request and lets the source choose its own flow temperature. `setpoint` is reserved for weather compensation and is refused for now. |
 | `request` | yes | | The `switch` that asks the source for heat or cooling. |
 | `mode` | no | | The `select` that switches the source between heating and cooling, as a mapping of `entity`, the select, `heat`, its option for heating, and `cool`, its option for cooling, such as `{entity: select.heat_pump_mode, heat: Heat, cool: Cool}`. The two options must differ. |
 | `post_run` | no | `180` | How long the source keeps its own pumps running after the request ends. Hydronicus keeps their loops open for that long. |
@@ -205,6 +203,7 @@ A loop's `valves` list holds entity IDs of `switch` or `valve` entities, or mapp
 
 `valves: [switch.floor_valve]` is the short form of `valves: [{entity: switch.floor_valve}]`.
 Every valve of a loop opens together, and the loop is ready once each of them is.
+A `valve` entity may show opening or closing while it moves: it is not ready while it shows opening, its opening time counts from when it shows open, and it counts as possibly open until it shows closed.
 
 An output entity has exactly one role in a Plant: a valve of one loop, a pump's switch, or a source output.
 A valve entity is never shared by two loops, and a pump's switch is never also a valve or the source request.
@@ -292,7 +291,7 @@ An item of `areas` is the ID of a Home Assistant area, or a mapping:
 | --- | --- | --- | --- |
 | `area` | yes | | The area ID. |
 | `required` | no | `false` | Whether a stale or unavailable sensor of the area blocks the zone. |
-| `max_age` | no | `1800` | Seconds after which a reading of the area's sensors is stale. Must be positive. |
+| `max_age` | no | `3600` | Seconds after which a reading of the area's sensors is stale. Must be positive. |
 
 A zone follows the temperature sensor and the humidity sensor that each of its areas names in its area settings, after its extra sensors.
 The area ID is the one Home Assistant made from the area's name when the area was created, such as `living_room`; renaming an area keeps its ID.
@@ -306,7 +305,13 @@ An item of `temperature` or `humidity` is a `sensor` entity ID, or a mapping:
 | --- | --- | --- | --- |
 | `entity` | yes | | The sensor. |
 | `required` | no | `true` | Whether the sensor being stale or unavailable blocks the zone. An optional sensor is left out instead. |
-| `max_age` | no | `1800` | Seconds after which a reading is stale. Must be positive. |
+| `max_age` | no | `3600` | Seconds after which a reading is stale. Must be positive. |
+
+A reading is stale once its sensor has not reported for `max_age`, whether or not its value changed.
+Many battery sensors report only when their value changes, with a heartbeat about once an hour, so the default is an hour.
+Raise `max_age` for a sensor whose heartbeat is rarer, so a steady room does not count as stale.
+Lower it for a sensor that reports every few minutes, so a sensor that stops is noticed sooner.
+The condensation guard's references, a pump's `supply_temperature` and a loop's `surface_temperature`, are stale after 1800 seconds, because cooling needs a fresh reference.
 
 Calibrate a sensor at its source; the plant file has no offsets or weights.
 
@@ -327,9 +332,8 @@ A digital thermostat accepts these keys:
 | `heat_stop_delta` | `0.1` | Heating demand stops this far above the target. |
 | `cool_start_delta` | `0.3` | Cooling demand starts this far above the target. |
 | `cool_stop_delta` | `0.1` | Cooling demand stops this far below the target. |
-| `min_on` | `0` | The shortest time demand stays on, in seconds. |
-| `min_off` | `0` | The shortest time demand stays off, in seconds. |
-| `proportional_band` | `1` | The distance to target, in kelvin, over which the demand level rises from 0 to 1. Must be positive. |
+| `min_on` | `600` | The shortest time demand stays on, in seconds, so a short call does not open a slow valve and close it again before its pump has run. |
+| `min_off` | `600` | The shortest time demand stays off after it ends, in seconds, so a valve that has just closed is not opened again at once. A zone that has not called since its thermostat started or changed mode may call at once. |
 
 This zone has an external thermostat, and a radiator loop with no valve whose pump is its only control:
 
@@ -369,7 +373,7 @@ zones:
         target: 21.5
         presets: {comfort: 22, eco: 19}
         heat_start_delta: 0.5
-        min_on: 600
+        min_on: 900
     loops:
       floor:
         valves:
@@ -459,7 +463,6 @@ These are problems in variations of the reference plant, with the path, the word
 | `zones.bedroom_area` | Zone Bedroom area | A digital thermostat needs a temperature sensor or an area. |
 | `zones.living_area.humidity` | Zone Living area, humidity sensors | A zone that cools needs a humidity sensor or an area for its dew point. |
 | `loops.towel_dryer.runs` | Plant loop Towel dryer, runs with | This key is required. |
-| `source.strategy` | Source, strategy | The setpoint strategy arrives with weather compensation; use request. |
 
 A file that is empty, or is not valid YAML, is reported for the whole file, and so is a mapping that repeats a key.
 

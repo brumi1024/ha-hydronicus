@@ -496,9 +496,6 @@
       "heating_demand": {
         "name": "Heating demand",
         "state_attributes": {
-          "level": {
-            "name": "Level"
-          },
           "reason": {
             "name": "Reason"
           }
@@ -507,9 +504,6 @@
       "cooling_demand": {
         "name": "Cooling demand",
         "state_attributes": {
-          "level": {
-            "name": "Level"
-          },
           "reason": {
             "name": "Reason"
           }
@@ -581,7 +575,7 @@
     },
     "output_not_responding": {
       "title": "{plant}: {entity_id} does not respond",
-      "description": "Plant {plant} asked {role} {entity_id} to change three times, and the change was never observed. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
+      "description": "Plant {plant} asked {role} {entity_id} to change, and the change was never observed: three attempts went unanswered, or a valve still showed that it was opening or closing well after its opening time. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
     },
     "outputs_awaiting_confirmation": {
       "title": "{plant}: outputs awaiting confirmation",
@@ -660,6 +654,10 @@
     "zone_area_self_feed": {
       "title": "{plant}, zone {zone}: area {area} names a Hydronicus sensor",
       "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
+    },
+    "zone_sensor_unusable": {
+      "title": "{plant}, zone {zone}: sensor {entity_id} blocks the zone",
+      "description": "In Plant {plant}, zone {zone} requires {entity_id}, and for at least 10 minutes its reading has been unavailable, stale, in an unsupported unit, or outside its plausible range. A zone without a required reading fails closed: while this lasts, its digital thermostat does not call, and the loops that cool by its dew point do not cool. Check the sensor, its battery, and its connection. A battery sensor that reports only on change may need a longer max_age in the plant file, and an area's sensors block the zone only when the area is marked required. The repair clears automatically once the sensor reports a usable reading."
     }
   },
   "exceptions": {

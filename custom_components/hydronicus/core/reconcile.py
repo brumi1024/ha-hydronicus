@@ -18,6 +18,11 @@ is still unmet is sent again after a backoff that doubles from ``BACKOFF_MIN``
 to ``BACKOFF_MAX``, and an output is reported for a Repair once
 ``REPAIR_AFTER`` attempts have failed.
 
+A valve entity that reports it is opening or closing toward its target is on
+its way there, so it is not sent the target again while it moves. It is
+reported for a Repair once it has moved for its opening time and
+``TRAVEL_GRACE`` without arriving, and then retried like any other output.
+
 In Dry run nothing is sent. The reconciler records each action as proposed and
 treats it as observed at once, and ``step_view`` shows ``step()`` those proposed
 states, so the virtual sequence advances exactly as it would live.
@@ -36,7 +41,6 @@ from .model import (
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
 )
 from .step import (
     CALL_TIMEOUT,
@@ -46,7 +50,6 @@ from .step import (
     OutputState,
     Sent,
     SwitchState,
-    ValueState,
     satisfies,
     value_of,
 )
@@ -56,6 +59,7 @@ __all__ = [
     "BACKOFF_MIN",
     "CALL_TIMEOUT",
     "REPAIR_AFTER",
+    "TRAVEL_GRACE",
     "Action",
     "Attempt",
     "ReconcileState",
@@ -167,6 +171,7 @@ def reconcile(
     roles = plant.outputs()
     if not live:
         return _dry_run(roles, desired, outputs, state, now, armed)
+    travel = {valve.entity: valve.opening_time for loop in plant.all_loops for valve in loop.valves}
     attempts: dict[str, Attempt] = {}
     send: list[tuple[int, Action]] = []
     retries: list[float] = []
@@ -177,12 +182,14 @@ def reconcile(
         attempt = state.attempts.get(entity)
         if attempt is not None and satisfies(observed, attempt.target):
             attempt = None
+        arrival = _arrival(observed, target, travel.get(entity, 0.0))
+        stuck = arrival is not None and now >= arrival and entity in armed
         if attempt is not None and now < attempt.sent_at + CALL_TIMEOUT:
             # In flight, even to an output just disarmed: ``step()`` must still
             # see it, and nothing else goes out until it acts or times out.
             attempts[entity] = attempt
             retries.append(attempt.sent_at + CALL_TIMEOUT + TICK)
-            if attempt.count - 1 >= REPAIR_AFTER and target == attempt.target:
+            if stuck or (attempt.count - 1 >= REPAIR_AFTER and target == attempt.target):
                 repairs.add(entity)
             continue
         if target is None or entity not in armed:
@@ -192,12 +199,18 @@ def reconcile(
         if attempt is not None and attempt.target != target:
             attempt = None
         failed = 0 if attempt is None else attempt.count
-        if failed >= REPAIR_AFTER:
+        if failed >= REPAIR_AFTER or stuck:
             repairs.add(entity)
         if observed is None or value_of(observed) is None:
             # Unavailable: nothing can reach it; its return is a change that re-evaluates.
             if attempt is not None:
                 attempts[entity] = attempt
+            continue
+        if arrival is not None and not stuck:
+            # On its way: its arrival is a change that re-evaluates.
+            if attempt is not None:
+                attempts[entity] = attempt
+            retries.append(arrival + TICK)
             continue
         if attempt is not None and now < attempt.sent_at + backoff(attempt.count):
             attempts[entity] = attempt
@@ -218,6 +231,23 @@ def reconcile(
 def backoff(count: int) -> float:
     """Seconds after the ``count``-th send before the target is sent again."""
     return float(min(BACKOFF_MIN * 2 ** (count - 1), BACKOFF_MAX))
+
+
+# How long an output may go on moving toward its target beyond its travel time
+# before it is reported: as long as the retries before a Repair take.
+TRAVEL_GRACE: Final = sum(backoff(count) for count in range(1, REPAIR_AFTER + 1))
+
+
+def _arrival(state: OutputState | None, target: OutputTarget | None, travel: float) -> float | None:
+    """When an output that shows it is on its way to ``target`` is overdue.
+
+    None unless it shows that, as a valve entity does while opening or closing.
+    """
+    if not isinstance(state, SwitchState) or not isinstance(target, SwitchTarget):
+        return None
+    if not state.moving or state.on is not target.on:
+        return None
+    return state.since + travel + TRAVEL_GRACE
 
 
 def _phase(role: OutputRole, target: OutputTarget) -> int:
@@ -246,7 +276,7 @@ def _dry_run(
     proposals = {
         entity: proposed
         for entity, proposed in state.dry_run.items()
-        if entity in roles and value_of(proposed) != _observed_value(outputs.get(entity))
+        if entity in roles and _shown(proposed) != _shown(outputs.get(entity))
     }
     proposed: list[tuple[int, Action]] = []
     for entity, role in roles.items():
@@ -264,8 +294,11 @@ def _dry_run(
     )
 
 
-def _observed_value(state: OutputState | None) -> bool | str | float | None:
-    return None if state is None else value_of(state)
+def _shown(state: OutputState | None) -> tuple[bool | str | None, bool]:
+    """What an output shows: its value, and whether it is still moving there."""
+    if state is None:
+        return None, False
+    return value_of(state), isinstance(state, SwitchState) and state.moving
 
 
 def _as_observed(target: OutputTarget, now: float) -> OutputState:
@@ -274,8 +307,6 @@ def _as_observed(target: OutputTarget, now: float) -> OutputState:
             return SwitchState(on, now)
         case OptionTarget(option=option):
             return OptionState(option, now)
-        case ValueTarget(value=value):
-            return ValueState(value, now)
 
 
 def step_view(observations: Observations, state: ReconcileState) -> Observations:
@@ -305,16 +336,12 @@ def target_to_dict(target: OutputTarget) -> dict[str, Any]:
             return {"on": on}
         case OptionTarget(option=option):
             return {"option": option}
-        case ValueTarget(value=value):
-            return {"value": value}
 
 
 def target_from_dict(data: Mapping[str, Any]) -> OutputTarget:
     if "on" in data:
         return SwitchTarget(bool(data["on"]))
-    if "option" in data:
-        return OptionTarget(str(data["option"]))
-    return ValueTarget(float(data["value"]))
+    return OptionTarget(str(data["option"]))
 
 
 def _output_to_dict(state: OutputState) -> dict[str, Any]:
@@ -323,14 +350,10 @@ def _output_to_dict(state: OutputState) -> dict[str, Any]:
             return {"on": on, "since": since}
         case OptionState(option=option, since=since):
             return {"option": option, "since": since}
-        case ValueState(value=value, since=since):
-            return {"value": value, "since": since}
 
 
 def _output_from_dict(data: Mapping[str, Any]) -> OutputState:
     since = float(data["since"])
     if "on" in data:
         return SwitchState(None if data["on"] is None else bool(data["on"]), since)
-    if "option" in data:
-        return OptionState(None if data["option"] is None else str(data["option"]), since)
-    return ValueState(None if data["value"] is None else float(data["value"]), since)
+    return OptionState(None if data["option"] is None else str(data["option"]), since)

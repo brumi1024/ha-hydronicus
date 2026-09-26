@@ -94,11 +94,10 @@ It shows the zone's combined temperature, and its humidity when the zone has a h
 A zone with an external thermostat gets no thermostat entity, because the existing climate entity is the thermostat.
 A zone that covers exactly one area gets its thermostat placed in that area when it is first created, so it appears on the area's page and answers voice commands for the area.
 
-The demand binary sensors are on while the zone demands heating or cooling, and have these attributes:
+The demand binary sensors are on while the zone demands heating or cooling, and have this attribute:
 
 | Attribute | Value |
 | --- | --- |
-| `level` | The demand level from 0 to 1. A digital thermostat raises it with the distance to target over its proportional band; an external thermostat reports 1 or 0. |
 | `reason` | Why the zone demands or not, such as `heat to 21.0 °C from 19.5 °C` or `thermostat off`. It is not recorded in history. |
 
 The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors by its aggregation.
