@@ -15,12 +15,12 @@ Exemptions and bounds, all in physical seconds:
 - A spontaneous physical change, such as a relay turning off by itself, exempts
   invariant 3 for ``SPONTANEOUS_GRACE`` after it; invariants 2 and 4 need no
   exemption because a valve closing by itself still passes flow for its travel
-  time, which is when the controller must have reacted. When the controller may
-  command neither the pump's stop output nor the valve that closed by itself,
-  because they are unarmed, unavailable, or the Plant is in Dry run, it cannot
-  react without breaking invariant 1, and invariants 2 and 4 are exempt for that
-  pump until one reaction, ``SPONTANEOUS_GRACE``, after one of them could be
-  commanded again.
+  time, which is when the controller must have reacted. When, after a valve of
+  a pump closed by itself, the controller may command neither the pump's stop
+  output nor enough valves to open any of its loops again, because each loop
+  has a shut valve that is unarmed, unavailable, or in Dry run, it cannot react
+  without breaking invariant 1, and invariants 2 and 4 are exempt for that pump
+  until one reaction, ``SPONTANEOUS_GRACE``, after that changes.
 - Invariant 3 is exempt while the controller desires the source request off
   but cannot get it off: the request has been unarmed, unavailable, or under a
   call fault within the last ``CALL_TIMEOUT + LATENCY``, or an off call to it
@@ -345,17 +345,26 @@ class Checker:
         within one reaction, ``SPONTANEOUS_GRACE``.
         """
         world = self.world
-        valves = {
-            valve.entity for loop in self.plant.pump_loops(pump.slug) for valve in loop.valves
-        }
-        closed = {entity for _, entity in world.spontaneous if entity in valves}
+        loops = self.plant.pump_loops(pump.slug)
+        valves = {valve.entity for loop in loops for valve in loop.valves}
+        if not any(entity in valves for _, entity in world.spontaneous):
+            return False
         source = self.plant.source
         stop = pump.switch or (source.request if source is not None else None)
-        return bool(closed) and all(
-            t - self.uncommandable_at.get(entity, -math.inf) <= SPONTANEOUS_GRACE
-            for entity in (*closed, stop)
-            if entity is not None
+        if stop is not None and not self._uncommandable(stop, t):
+            return False
+        # No loop can be opened again: each has a shut valve no call can reach,
+        # so reopening its other valves would not give the pump a path.
+        return all(
+            any(
+                not world.valve_passes(valve.entity) and self._uncommandable(valve.entity, t)
+                for valve in loop.valves
+            )
+            for loop in loops
         )
+
+    def _uncommandable(self, entity: str, t: float) -> bool:
+        return t - self.uncommandable_at.get(entity, -math.inf) <= SPONTANEOUS_GRACE
 
     def _release_impossible(self, t: float) -> bool:
         """The controller desires the source request off, and nothing it sends can do that."""
