@@ -1,10 +1,10 @@
 """The Repairs the runtime raises for one Plant.
 
 A failed evaluation, output faults, missing bindings, unconfirmed outputs, zone
-area problems, and required sensors that block their zone are Repairs, not
-entities (contract K7). The runtime computes the current set after every
-evaluation and ``async_sync_issues`` creates the new ones and deletes the
-resolved ones.
+area problems, required sensors that block their zone, and condensation inputs
+that block cooling are Repairs, not entities (contract K7). The runtime computes
+the current set after every evaluation and ``async_sync_issues`` creates the new
+ones and deletes the resolved ones.
 
 The kinds in ``FIXABLE`` have a fix flow in ``repairs``, which their issue data
 leads to: the Plant's entry, and for a zone's problem its subentry. The others
@@ -24,9 +24,10 @@ from homeassistant.helpers import issue_registry as ir
 
 from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
-from .core.model import OutputRole, Plant
+from .core.demand import fresh
+from .core.model import Loop, OutputRole, Plant
 from .core.plant_file import describe_path
-from .core.step import TICK
+from .core.step import GUARD_REFERENCE_MAX_AGE, TICK, Observations
 
 
 class IssueKind(StrEnum):
@@ -42,6 +43,7 @@ class IssueKind(StrEnum):
     ZONE_WITHOUT_TEMPERATURE_SOURCE = "zone_without_temperature_source"
     ZONE_AREA_SELF_FEED = "zone_area_self_feed"
     ZONE_SENSOR_UNUSABLE = "zone_sensor_unusable"
+    CONDENSATION_INPUT_UNUSABLE = "condensation_input_unusable"
 
 
 # Kinds with a fix flow; hassfest wants their translations to carry the fix flow
@@ -67,9 +69,9 @@ _WARNINGS = frozenset(
         IssueKind.ZONE_AREA_SELF_FEED,
     }
 )
-# How long a required sensor blocks its zone before its Repair is raised, in
-# seconds, so that a restart or a short spell of unavailability raises nothing.
-SENSOR_REPAIR_AFTER: Final = 600.0
+# How long an input stays unusable before its Repair is raised, in seconds, so
+# that a restart or a short spell of unavailability raises nothing.
+UNUSABLE_REPAIR_AFTER: Final = 600.0
 
 _ROLE_NAMES = {
     OutputRole.SOURCE_REQUEST: "source request",
@@ -199,51 +201,136 @@ def zone_sensor_unusable(plant: Plant, zone: str, entity_id: str) -> Issue:
     )
 
 
-class BlockingSensors:
-    """When each required sensor began to block its zone, which delays its Repair.
+def condensation_inputs_unusable(plant: Plant, reported: Iterable[tuple[str, str]]) -> list[Issue]:
+    """One Repair for each unusable condensation input, naming every loop it blocks.
 
-    The runtime updates it from ``Desired.blocking_sensors`` after every
-    evaluation and persists it, so a restart neither raises the Repair early
+    ``reported`` holds the loop and the entity of each input that
+    ``UnusableInputs`` reports.
+    """
+    loops: dict[str, set[str]] = {}
+    for loop, entity in reported:
+        loops.setdefault(entity, set()).add(loop)
+    issues = []
+    for entity, refs in loops.items():
+        blocked = [loop for loop in plant.all_loops if str(loop.ref) in refs]
+        noun = "loop" if len(blocked) == 1 else "loops"
+        issues.append(
+            Issue(
+                IssueKind.CONDENSATION_INPUT_UNUSABLE,
+                entity,
+                {
+                    "plant": plant.name,
+                    "entity_id": entity,
+                    "input": _input_name(plant, entity),
+                    "loops": f"{noun} {listed([_loop_name(plant, loop) for loop in blocked])}",
+                },
+            )
+        )
+    return issues
+
+
+def unusable_condensation_inputs(
+    plant: Plant, observations: Observations, now: float
+) -> dict[str, tuple[str, ...]]:
+    """The condensation inputs of each loop that cools that block its guard, by loop.
+
+    They are its pump's and its own condensation switch while unavailable or
+    unknown, and its pump's supply temperature and its own surface temperature
+    while their reading is missing, stale, or not plausible, as the guard reads
+    them. The Plant mode does not matter: cooling needs them before it can start.
+    """
+
+    def reached(deadline: float) -> bool:
+        return now >= deadline
+
+    unusable: dict[str, tuple[str, ...]] = {}
+    for loop in plant.all_loops:
+        if not loop.cools:
+            continue
+        pump = plant.pump(loop.pump)
+        switches = [
+            entity
+            for entity in (pump.condensation_switch, loop.condensation_switch)
+            if entity is not None
+            and ((switch := observations.readiness.get(entity)) is None or switch.on is None)
+        ]
+        references = [
+            entity
+            for entity in (pump.supply_temperature, loop.surface_temperature)
+            if entity is not None
+            and fresh(observations.sensors.get(entity), GUARD_REFERENCE_MAX_AGE, reached) is None
+        ]
+        if entities := tuple(dict.fromkeys((*switches, *references))):
+            unusable[str(loop.ref)] = entities
+    return unusable
+
+
+def _input_name(plant: Plant, entity: str) -> str:
+    """What a condensation input is: a switch, or a supply or surface temperature sensor."""
+    if any(entity == pump.supply_temperature for pump in plant.pumps):
+        return "supply temperature sensor"
+    if any(entity == loop.surface_temperature for loop in plant.all_loops):
+        return "surface temperature sensor"
+    return "condensation switch"
+
+
+def _loop_name(plant: Plant, loop: Loop) -> str:
+    return loop.title if loop.zone is None else f"{plant.zone(loop.zone).title} / {loop.title}"
+
+
+class UnusableInputs:
+    """When each unusable input began to block what needs it, which delays its Repair.
+
+    A required sensor blocks its zone, keyed by the zone's slug, and a
+    condensation input blocks the cooling of a loop, keyed by ``str(LoopRef)``;
+    each is kept under the kind of its Repair. The runtime updates it after
+    every evaluation and persists it, so a restart neither raises a Repair early
     nor starts the delay over.
     """
 
-    def __init__(self, since: Mapping[tuple[str, str], float] | None = None) -> None:
-        # By zone slug and sensor entity ID.
-        self._since: dict[tuple[str, str], float] = dict(since or {})
+    def __init__(self, since: Mapping[tuple[IssueKind, str, str], float] | None = None) -> None:
+        # By kind, what the input blocks, and the input's entity ID.
+        self._since: dict[tuple[IssueKind, str, str], float] = dict(since or {})
 
-    def update(self, blocking: Mapping[str, Iterable[str]], now: float) -> None:
+    def update(self, unusable: Mapping[IssueKind, Mapping[str, Iterable[str]]], now: float) -> None:
         """Keep the blocks that go on, start the new ones now, and drop the ended ones."""
         self._since = {
-            (zone, entity): self._since.get((zone, entity), now)
-            for zone, entities in blocking.items()
+            (kind, blocked, entity): self._since.get((kind, blocked, entity), now)
+            for kind, inputs in unusable.items()
+            for blocked, entities in inputs.items()
             for entity in entities
         }
 
-    def reported(self, now: float) -> list[tuple[str, str]]:
-        """The zone and sensor of each block that has lasted ``SENSOR_REPAIR_AFTER``."""
-        return [key for key, since in self._since.items() if now >= since + SENSOR_REPAIR_AFTER]
+    def reported(self, kind: IssueKind, now: float) -> list[tuple[str, str]]:
+        """The blocked object and input of each block of ``kind`` that has lasted long enough."""
+        return [
+            (blocked, entity)
+            for (of, blocked, entity), since in self._since.items()
+            if of is kind and now >= since + UNUSABLE_REPAIR_AFTER
+        ]
 
     def next_report(self, now: float) -> float | None:
         """Just after the next block that still waits becomes a Repair, if any does."""
         waiting = [
-            since + SENSOR_REPAIR_AFTER + TICK
+            since + UNUSABLE_REPAIR_AFTER + TICK
             for since in self._since.values()
-            if now < since + SENSOR_REPAIR_AFTER
+            if now < since + UNUSABLE_REPAIR_AFTER
         ]
         return min(waiting, default=None)
 
-    def to_dict(self) -> dict[str, dict[str, float]]:
-        data: dict[str, dict[str, float]] = {}
-        for (zone, entity), since in self._since.items():
-            data.setdefault(zone, {})[entity] = since
+    def to_dict(self) -> dict[str, dict[str, dict[str, float]]]:
+        data: dict[str, dict[str, dict[str, float]]] = {}
+        for (kind, blocked, entity), since in self._since.items():
+            data.setdefault(kind.value, {}).setdefault(blocked, {})[entity] = since
         return data
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> BlockingSensors:
+    def from_dict(cls, data: Mapping[str, Any]) -> UnusableInputs:
         return cls(
             {
-                (zone, entity): float(since)
-                for zone, entities in data.items()
+                (IssueKind(kind), blocked, entity): float(since)
+                for kind, inputs in data.items()
+                for blocked, entities in inputs.items()
                 for entity, since in entities.items()
             }
         )

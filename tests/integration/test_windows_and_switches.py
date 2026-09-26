@@ -1,4 +1,8 @@
-"""The binary sensors a Plant reads besides valve readiness: windows and condensation switches."""
+"""The binary sensors a Plant reads besides valve readiness: windows and condensation switches.
+
+It also covers the Repair of a condensation input, a switch or a guard
+reference, that stays unusable.
+"""
 
 from __future__ import annotations
 
@@ -156,3 +160,84 @@ async def test_a_zone_that_frost_protection_heats_is_not_blocked_by_its_window(
     assert demand.attributes["reason"].startswith("frost protection")
     assert blocked_zones(hass) == {}
 
+
+async def test_an_unavailable_condensation_switch_raises_a_repair_after_ten_minutes(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    # Whatever the Plant mode: the switch is needed before cooling can start.
+    await async_study(hass, "heat", 19.0)
+
+    # A short dropout raises nothing, and the next one starts the 10 minutes again.
+    hass.states.async_set("binary_sensor.dew", "unavailable")
+    await hass.async_block_till_done()
+    await async_advance(hass, freezer, 300, step=300)
+    hass.states.async_set("binary_sensor.dew", "off")
+    await hass.async_block_till_done()
+    hass.states.async_set("binary_sensor.dew", "unknown")
+    await hass.async_block_till_done()
+    await async_advance(hass, freezer, 599, step=599)
+    assert repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE) == []
+
+    await async_advance(hass, freezer, 2)
+    (issue,) = repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE)
+    assert issue.translation_placeholders == {
+        "plant": "Flat",
+        "entity_id": "binary_sensor.dew",
+        "input": "condensation switch",
+        "loops": "loop Study / Radiator",
+    }
+    assert issue.severity is ir.IssueSeverity.ERROR and not issue.is_fixable
+
+    hass.states.async_set("binary_sensor.dew", "off")
+    await hass.async_block_till_done()
+    assert repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE) == []
+
+
+async def test_a_stale_condensation_reference_raises_a_repair(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    await async_study(hass, "cool", 26.0)
+
+    # The supply temperature is stale 1800 seconds after its last report.
+    await async_advance(hass, freezer, 1801, step=1801)
+    reasons = hass.states.get("sensor.flat_status").attributes["reasons"]
+    assert reasons["study.radiator.guard"] == (
+        "condensation guard blocks: no usable condensation reference or dew point"
+    )
+    await async_advance(hass, freezer, 599, step=599)
+    assert repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE) == []
+    await async_advance(hass, freezer, 2)
+    (issue,) = repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE)
+    assert issue.translation_placeholders["entity_id"] == "sensor.supply"
+    assert issue.translation_placeholders["input"] == "supply temperature sensor"
+
+    set_temperature(hass, "sensor.supply", 22.0)
+    await hass.async_block_till_done()
+    assert repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE) == []
+
+
+async def test_the_ten_minutes_of_a_condensation_input_count_across_a_reload(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    entry = await async_study(hass, "cool", 26.0)
+    hass.states.async_set("binary_sensor.dew", "unavailable")
+    await hass.async_block_till_done()
+    await async_advance(hass, freezer, 300, step=300)
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE) == []
+    await async_advance(hass, freezer, 301, step=301)
+    assert len(repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE)) == 1
+
+
+async def test_a_missing_condensation_input_has_only_its_own_repair(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    await async_study(hass, "cool", 26.0)
+    hass.states.async_remove("binary_sensor.dew")
+    hass.states.async_remove("sensor.supply")
+    await async_advance(hass, freezer, 900, step=300)
+
+    assert repairs(hass, IssueKind.CONDENSATION_INPUT_UNUSABLE) == []
+    assert missing_bindings(hass) == ["binary_sensor.dew", "sensor.supply"]
