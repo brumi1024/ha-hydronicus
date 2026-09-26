@@ -44,6 +44,24 @@
               "min_on": "The shortest time the source request stays on.",
               "min_off": "The shortest time the source request stays off."
             }
+          },
+          "protection": {
+            "name": "Protection",
+            "description": "Keeps idle pumps and valves from seizing and rooms from freezing.",
+            "data": {
+              "exercise": "Exercise idle pumps and valves",
+              "exercise_interval": "Exercise interval",
+              "exercise_run": "Exercise pump run",
+              "frost_protection": "Frost protection",
+              "frost_temperature": "Frost protection temperature"
+            },
+            "data_description": {
+              "exercise": "While nothing else runs, open a valve and run a switched pump that has not been on for the exercise interval, so it does not seize.",
+              "exercise_interval": "How long a pump or valve may stay off before it is exercised.",
+              "exercise_run": "How long an exercised switched pump runs.",
+              "frost_protection": "Heat a zone whose coldest temperature falls below the frost protection temperature, even when its thermostat or the Plant mode is off.",
+              "frost_temperature": "Frost protection heats until the coldest temperature is 1 °C above this."
+            }
           }
         }
       },
@@ -565,6 +583,7 @@
           "heating": "Heating",
           "cooling": "Cooling",
           "changing_over": "Changing over",
+          "exercising": "Exercising",
           "degraded": "Degraded",
           "stopping": "Stopping removed outputs",
           "invalid": "Configuration not valid"

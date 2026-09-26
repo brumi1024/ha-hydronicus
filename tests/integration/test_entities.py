@@ -154,6 +154,32 @@ async def test_a_thermostat_action_is_what_the_equipment_does_for_its_zone(
     assert action() == "off"
 
 
+async def test_frost_protection_heats_a_zone_whose_thermostat_and_plant_are_off(
+    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
+) -> None:
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 4.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+    await async_set_options(hass, entry, armed=["switch.pump", "switch.study_valve"], control=True)
+    climate = hass.states.get("climate.study")
+    assert (climate.state, climate.attributes["hvac_action"]) == ("off", "preheating")
+    demand = hass.states.get("binary_sensor.study_heating_demand")
+    assert demand.state == "on"
+    assert demand.attributes["reason"] == "frost protection: heat to 6.0 °C from 4.0 °C"
+    status = hass.states.get("sensor.flat_status")
+    assert (status.state, status.attributes["frost_protection"]) == ("heating", ["study"])
+    assert status.attributes["requested_mode"] == "off"
+    assert isinstance(status.attributes["idle_since"]["switch.pump"], str), "the pump is off"
+
+    await async_advance(hass, freezer, 200, step=5)
+    assert actuators.shorts() == ["switch.study_valve:on", "switch.pump:on"]
+    assert hass.states.get("climate.study").attributes["hvac_action"] == "heating"
+    idle_since = hass.states.get("sensor.flat_status").attributes["idle_since"]
+    assert idle_since == {"switch.pump": None, "switch.study_valve": None}, "both are on"
+
+
 async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
     hass: HomeAssistant,
 ) -> None:

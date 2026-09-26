@@ -157,9 +157,11 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
         view = self.runtime.view
         if view is None:
             return None
-        if self._thermostat.hvac_mode is Mode.OFF:
+        action = HVACAction(view.zone_action(self._zone))
+        # Frost protection heats a zone whose thermostat is off.
+        if self._thermostat.hvac_mode is Mode.OFF and action is HVACAction.IDLE:
             return HVACAction.OFF
-        return HVACAction(view.zone_action(self._zone))
+        return action
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

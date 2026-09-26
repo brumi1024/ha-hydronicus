@@ -72,7 +72,7 @@ class PlantView:
         return _passes_flow(self.plant, loop, self.seen.outputs)
 
     def status(self) -> str:
-        """Off, idle, heating, cooling, changing over, degraded, stopping, or invalid."""
+        """Off, idle, heating, cooling, exercising, changing over, degraded, stopping, invalid."""
         desired = self.desired
         if self.stopping is not None:
             return "stopping"
@@ -82,6 +82,8 @@ class PlantView:
             return "degraded"
         if "mode" in desired.reasons:
             return "changing_over"
+        if desired.exercise is not None:
+            return "exercising"
         if desired.mode is Mode.OFF:
             return "off" if self.observations.mode is Mode.OFF else "idle"
         # Anything asked to run, from a valve opening to a pump's overrun, is work in the mode.

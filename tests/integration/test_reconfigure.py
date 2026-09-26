@@ -84,6 +84,13 @@ async def test_reconfigure_the_plant_and_its_source(hass: HomeAssistant) -> None
             "request": SOURCE_REQUEST,
             "mode_select": "select.heat_pump_mode",
             "timing": {"mode_dwell": 1800, "post_run": 240, "min_on": 600, "min_off": 900},
+            "protection": {
+                "exercise": False,
+                "exercise_interval": 604800,
+                "exercise_run": 60,
+                "frost_protection": True,
+                "frost_temperature": 7.5,
+            },
         },
     )
     assert result["step_id"] == "source_mode"
@@ -98,6 +105,7 @@ async def test_reconfigure_the_plant_and_its_source(hass: HomeAssistant) -> None
     assert (plant.name, plant.mode_dwell) == ("House", 1800.0)
     assert plant.source is not None
     assert (plant.source.post_run, plant.source.min_off) == (240.0, 900.0)
+    assert (plant.exercise, plant.frost_protection) == (None, 7.5)
     assert plant.zones == read_plant_file(REFERENCE_PLANT).zones
 
 
