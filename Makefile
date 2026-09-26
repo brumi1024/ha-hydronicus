@@ -26,7 +26,7 @@ typecheck:
 	$(UV) run mypy custom_components/hydronicus
 
 test-core:
-	$(UV) run pytest tests/core --cov=custom_components/hydronicus/core --cov-report=term-missing
+	$(UV) run pytest tests/core --cov=custom_components/hydronicus/core --cov-report=term-missing --cov-fail-under=90
 
 test-integration:
 	$(UV) run pytest tests/integration
@@ -35,6 +35,6 @@ test-sim:
 	$(UV) run pytest tests/sim
 
 test:
-	$(UV) run pytest --cov=custom_components/hydronicus/core --cov-report=term-missing
+	$(UV) run pytest --cov=custom_components/hydronicus --cov-report=term-missing
 
 verify: lint release-check format-check typecheck test
