@@ -645,16 +645,28 @@ class _Evaluation:
         """Frost protection's demand, which overrides the thermostat's, or None.
 
         It heats a zone whose coldest usable reading is below the frost protection
-        temperature, whatever its thermostat and the Mode select say, but never
-        while the Plant runs or is asked to run cool: a zone that cold in cooling
-        has a broken sensor.
+        temperature, whatever its thermostat and the Mode select say, when a loop
+        heats the zone. It never acts while the Plant runs or is asked to run
+        cool, because a zone that cold in cooling has a broken sensor, nor while
+        Control equipment off or a previous configuration stops the Plant.
         """
         frost = self.plant.frost_protection
-        if frost is None or Mode.COOL in (self.obs.mode, self.state.mode):
+        if (
+            frost is None
+            or self.forced_off
+            or Mode.COOL in (self.obs.mode, self.state.mode)
+            or not self.heats(zone)
+        ):
             return None
         obs = self.obs
         coldest = coldest_temperature(zone, obs.areas, obs.sensors, self.reached)
         return frost_demand(frost, coldest, zone.slug in self.state.frost)
+
+    def heats(self, zone: Zone) -> bool:
+        """A loop heats the zone: one of its own, or a plant loop that runs with it."""
+        return any(Mode.HEAT in loop.modes for loop in zone.loops) or any(
+            Mode.HEAT in loop.modes and zone.slug in loop.runs.zones for loop in self.plant.loops
+        )
 
     def idle_since(self) -> dict[str, float | None]:
         """Since when each switched pump and valve has not been seen on, or None while on."""

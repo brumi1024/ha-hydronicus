@@ -65,7 +65,7 @@ A window sensor that is unavailable or unknown reads as closed, so a lost sensor
 
 The Plant mode is off, heat, or cool, chosen with the **Mode** select, and heating and cooling never run at the same time.
 A change between heating and cooling is sequenced, as described in [mode changes](#mode-changes).
-While the **Mode** select is off, [frost protection](#frost-protection) runs the Plant in heat for the zones it protects, and only for them.
+While the **Mode** select is off, [frost protection](#frost-protection) runs the Plant in heat for the zones it protects: their loops, the plant loops that run with them or with the source, and the min-flow loops of a pump the source drives, and no zone whose thermostat asks for heat.
 
 ### 4. Wanted loops
 
@@ -184,16 +184,18 @@ Switching the Plant to off stops the current mode with the same sequence.
 ## Frost protection
 
 Frost protection keeps a zone from freezing while its thermostat, or the whole Plant, is off.
-A zone whose coldest usable temperature reading is below the frost protection temperature, 5 °C by default, demands heating whatever its thermostat says and even while a window is open, and its demand reads `frost protection: heat to 6.0 °C from 4.0 °C`.
+A zone whose coldest usable temperature reading is below the frost protection temperature, 5 °C by default and at most 10 °C, demands heating whatever its thermostat says and even while a window is open, and its demand reads `frost protection: heat to 6.0 °C from 4.0 °C`.
+Only a zone that a loop heats is protected: one of its own loops, or a plant loop that runs with it, heats.
 The coldest reading counts, not the zone's combined temperature, and every usable sensor of the zone counts, required or optional, so one warm or missing sensor does not hide a cold room.
 A zone without any usable reading gets no frost protection.
 The demand holds until the coldest reading is 1 K above the frost protection temperature.
 
 Frost protection heats as a calling zone does: the zone's loops open, their pumps run, and the source is asked for heat.
-While the **Mode** select is off, it runs the Plant in heat for the zones it protects and only for them, so a zone whose thermostat asks for heat still waits for the **Mode**.
+While the **Mode** select is off, it runs the Plant in heat for the zones it protects: their loops, the plant loops that run with them or with the source, and the min-flow loops of a pump the source drives.
+A zone whose thermostat asks for heat still waits for the **Mode**.
 After cooling, the [mode dwell](#mode-changes) still runs before the Plant heats.
 It never acts while the Plant runs cool or the **Mode** select asks for cool, because a zone that cold while cooling has a broken sensor, which the checks of [stale and implausible readings](configuration.md#observation-units) handle.
-It obeys arming and **Control equipment** as a thermostat's demand does: turning **Control equipment** off still stops the equipment in order, and then frost protection is only proposed in Dry run.
+It obeys arming and **Control equipment** as a thermostat's demand does: turning **Control equipment** off, or stopping a previous configuration, stops the equipment in order without frost protection, and then frost protection is only proposed in Dry run.
 
 The **Status** sensor's `frost_protection` attribute lists the zones it heats, and a digital thermostat that is off shows `heating` while frost protection heats its zone.
 Set `frost_protection` in the [plant file](plant-file.md#top-level-keys), or **Frost protection** in the Plant form, to change the temperature or turn it off.

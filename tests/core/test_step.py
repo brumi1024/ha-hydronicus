@@ -1130,6 +1130,7 @@ def test_frost_protection_never_heats_while_the_plant_cools_or_is_turned_off() -
     _, desired, _ = run(plant, _frosty(plant, 3.0, mode=Mode.OFF, control=False), live)
     assert desired.mode is Mode.OFF, "Control equipment off runs the off sequence, then nothing"
     assert all(target == OFF for target in desired.outputs.values())
+    assert desired.frost_protection == (), "and reports no frost protection meanwhile"
 
     unprotected = read_plant_file(
         CABIN.replace("name: Cabin", "name: Cabin\nfrost_protection: false")
@@ -1320,3 +1321,31 @@ def test_the_desired_state_names_the_unusable_condensation_inputs_in_any_mode() 
     _, desired, _ = run(plant, replace(stale, sensors={**stale.sensors, "sensor.supply": aged}))
     assert desired.blocking_condensation_inputs == {"room.ceiling": ("sensor.supply",)}
     assert run(plant, cooling(plant))[1].blocking_condensation_inputs == {}
+
+
+# A zone with no loop of its own, which a plant loop heats.
+SHARED = """
+hydronicus: 2
+name: Shared
+pumps:
+  pump: {switch: switch.pump, overrun: 0}
+loops:
+  floor: {valves: [switch.floor], pump: pump, runs: {with_zones: [room]}}
+zones:
+  room:
+    temperature: [sensor.room]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
+"""
+
+
+def test_frost_protection_heats_only_a_zone_that_a_loop_heats() -> None:
+    cool_only = _plant(COOLED_CEILING.replace("modes: [heat, cool]", "modes: [cool]"))
+    frosty = observe(cool_only, mode=Mode.OFF, temperatures={"room": 3.0})
+    _, desired, _ = run(cool_only, frosty, State(live=True))
+    assert desired.frost_protection == () and desired.mode is Mode.OFF
+
+    shared = _plant(SHARED)
+    frosty = observe(shared, mode=Mode.OFF, temperatures={"room": 3.0})
+    _, desired, _ = run(shared, frosty, State(live=True))
+    assert desired.frost_protection == ("room",), "a plant loop that runs with it heats it"
+    assert desired.outputs["switch.floor"] == ON
