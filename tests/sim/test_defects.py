@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from hydronicus_core.model import (
+from custom_components.hydronicus.core.model import (
     RUNS_WITH_ZONE,
     DigitalThermostat,
     Loop,
@@ -23,10 +23,9 @@ from hydronicus_core.model import (
     Zone,
     ZoneArea,
 )
-from hydronicus_core.plant_file import validate_plant
-from hydronicus_core.reconcile import BACKOFF_MAX
-from hydronicus_core.step import DigitalThermostatState
-
+from custom_components.hydronicus.core.plant_file import validate_plant
+from custom_components.hydronicus.core.reconcile import BACKOFF_MAX
+from custom_components.hydronicus.core.step import DigitalThermostatState
 from tests.sim.harness import Sim
 from tests.sim.plants import (
     BOILER,

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Final
 
-from hydronicus_core.model import Plant
-from hydronicus_core.plant_file import read_plant_file
-
+from custom_components.hydronicus.core.model import Plant
+from custom_components.hydronicus.core.plant_file import read_plant_file
 from tests.core.plant_files import REFERENCE_PLANT
 
 PLANT_ID: Final = "2f1b7c3e-5d4a-4e8b-9c6d-1a2b3c4d5e6f"

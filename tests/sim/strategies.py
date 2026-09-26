@@ -23,7 +23,9 @@ import math
 from dataclasses import dataclass
 from typing import Final, Protocol
 
-from hydronicus_core.model import (
+from hypothesis import strategies as st
+
+from custom_components.hydronicus.core.model import (
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
@@ -45,14 +47,12 @@ from hydronicus_core.model import (
     Valve,
     Zone,
 )
-from hydronicus_core.plant_file import validate_plant
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.plant_file import validate_plant
+from custom_components.hydronicus.core.step import (
     DigitalThermostatState,
     ExternalThermostatState,
     ThermostatState,
 )
-from hypothesis import strategies as st
-
 from tests.sim.harness import Sim
 from tests.sim.invariants import SPONTANEOUS_GRACE
 from tests.sim.world import FaultKind

@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 
 import pytest
-from hydronicus_core.demand import (
+
+from custom_components.hydronicus.core.demand import (
     AreaSensors,
     DemandState,
     DigitalThermostatState,
@@ -19,7 +20,7 @@ from hydronicus_core.demand import (
     zone_demand,
     zone_values,
 )
-from hydronicus_core.model import (
+from custom_components.hydronicus.core.model import (
     Aggregation,
     DigitalThermostat,
     ExternalThermostat,

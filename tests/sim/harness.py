@@ -20,16 +20,20 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Final
 
-from hydronicus_core.model import Desired, LoopRef, Mode, Plant
-from hydronicus_core.reconcile import Reconciled, ReconcileState, reconcile, step_view
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.model import Desired, LoopRef, Mode, Plant
+from custom_components.hydronicus.core.reconcile import (
+    Reconciled,
+    ReconcileState,
+    reconcile,
+    step_view,
+)
+from custom_components.hydronicus.core.step import (
     DigitalThermostatState,
     ExternalThermostatState,
     State,
     ThermostatState,
     step,
 )
-
 from tests.sim.invariants import Checker, InvariantViolation
 from tests.sim.world import EPSILON, Call, Fault, FaultKind, World
 

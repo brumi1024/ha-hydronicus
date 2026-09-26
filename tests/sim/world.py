@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
-from hydronicus_core.model import (
+from custom_components.hydronicus.core.model import (
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -45,8 +45,8 @@ from hydronicus_core.model import (
     SwitchTarget,
     Valve,
 )
-from hydronicus_core.reconcile import CALL_TIMEOUT, Action
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, Action
+from custom_components.hydronicus.core.step import (
     AreaSensors,
     DigitalThermostatState,
     ExternalThermostatState,

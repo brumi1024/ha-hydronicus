@@ -5,9 +5,17 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 import pytest
-from hydronicus_core.model import Desired, Mode, OptionTarget, OutputTarget, Plant, SwitchTarget
-from hydronicus_core.plant_file import read_plant_file
-from hydronicus_core.reconcile import (
+
+from custom_components.hydronicus.core.model import (
+    Desired,
+    Mode,
+    OptionTarget,
+    OutputTarget,
+    Plant,
+    SwitchTarget,
+)
+from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.core.reconcile import (
     BACKOFF_MAX,
     CALL_TIMEOUT,
     REPAIR_AFTER,
@@ -18,7 +26,7 @@ from hydronicus_core.reconcile import (
     backoff,
     reconcile,
 )
-from hydronicus_core.step import TICK, OptionState, OutputState, SwitchState
+from custom_components.hydronicus.core.step import TICK, OptionState, OutputState, SwitchState
 
 NOW = 1_800_000_000.0
 ON = SwitchTarget(True)

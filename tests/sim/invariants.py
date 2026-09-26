@@ -45,7 +45,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from hydronicus_core.model import (
+from custom_components.hydronicus.core.model import (
     DEFAULT_MAX_AGE,
     Desired,
     DigitalThermostat,
@@ -61,13 +61,12 @@ from hydronicus_core.model import (
     SwitchTarget,
     Zone,
 )
-from hydronicus_core.reconcile import CALL_TIMEOUT, REPAIR_AFTER
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, REPAIR_AFTER
+from custom_components.hydronicus.core.step import (
     CONDENSATION_MARGIN,
     DigitalThermostatState,
     ExternalThermostatState,
 )
-
 from tests.sim.world import EPSILON, LATENCY, WALL_BASE, Call, World
 
 if TYPE_CHECKING:

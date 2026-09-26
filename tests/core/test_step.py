@@ -7,7 +7,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
 import pytest
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Desired,
     Mode,
     OptionTarget,
@@ -17,8 +18,8 @@ from hydronicus_core.model import (
     SwitchTarget,
     ValueTarget,
 )
-from hydronicus_core.plant_file import read_plant_file
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.core.step import (
     CALL_TIMEOUT,
     GUARD_MIN_BLOCKED,
     TICK,

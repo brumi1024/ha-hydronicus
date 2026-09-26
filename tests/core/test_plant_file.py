@@ -11,7 +11,8 @@ from typing import Any
 
 import pytest
 import yaml
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Aggregation,
     DigitalThermostat,
     ExternalThermostat,
@@ -27,7 +28,7 @@ from hydronicus_core.model import (
     Valve,
     ZoneArea,
 )
-from hydronicus_core.plant_file import (
+from custom_components.hydronicus.core.plant_file import (
     PLANT_FILE_FORMAT,
     PlantFileError,
     describe_path,
@@ -42,7 +43,6 @@ from hydronicus_core.plant_file import (
     validate_plant,
     write_plant_file,
 )
-
 from tests.core.plant_files import REFERENCE_PLANT, TRIAL_PLANTS
 
 PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
