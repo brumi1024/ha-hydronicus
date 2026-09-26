@@ -507,3 +507,28 @@ async def test_a_zone_saved_while_reconfiguring_stops_the_save(hass: HomeAssista
     await hass.async_block_till_done()
     assert entry.subentries[zone_subentry_id(entry, "living_area")].title == "Living"
     assert [loop.title for loop in entry.runtime_data.plant.loops] == ["Towel dryer"]
+
+
+async def test_a_pump_takes_a_condensation_switch_on_its_supply_pipe(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "pump_pick")
+    result = await async_submit(flow, result, {"pump": "heat_pump"})
+    assert suggested(result, "condensation_switch") is None
+    result = await async_submit(
+        flow,
+        result,
+        {
+            "name": "Heat pump",
+            "min_flow": "path",
+            "min_flow_loops": ["living_area.ceiling"],
+            "supply_temperature": "sensor.ceiling_supply_temperature",
+            "condensation_switch": "binary_sensor.ceiling_supply_dew_point",
+        },
+    )
+    await async_save(hass, result)
+
+    pump = entry.runtime_data.plant.pump("heat_pump")
+    assert pump.condensation_switch == "binary_sensor.ceiling_supply_dew_point"

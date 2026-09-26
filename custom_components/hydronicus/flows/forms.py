@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 import voluptuous as vol
-from homeassistant.const import UnitOfTemperature, UnitOfTime
+from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
@@ -64,6 +64,7 @@ PUMP_FIELDS: Final = {
     "min_flow": "min_flow",
     "min_flow_loops": "min_flow_loops",
     "supply_temperature": "supply_temperature",
+    "condensation_switch": "condensation_switch",
 }
 LOOP_FIELDS: Final = {
     "name": "name",
@@ -73,6 +74,8 @@ LOOP_FIELDS: Final = {
     "runs.with_zones": "with_zones",
     "modes": "modes",
     "surface_temperature": "surface_temperature",
+    "surface_minimum": "surface_minimum",
+    "condensation_switch": "condensation_switch",
 }
 # A zone's own problem, a missing temperature reading, shows on its sensors.
 ZONE_FIELDS: Final = {
@@ -83,6 +86,10 @@ ZONE_FIELDS: Final = {
     "humidity": "humidity",
     "aggregation": "aggregation",
     "thermostat": "thermostat",
+    "windows": "windows",
+    "window_open_delay": "window_open_delay",
+    "window_close_delay": "window_close_delay",
+    "max_humidity": "max_humidity",
 }
 
 
@@ -212,6 +219,18 @@ def celsius() -> selector.NumberSelector:
             max=35,
             step=0.5,
             unit_of_measurement=_CELSIUS,
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
+def percent() -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0,
+            max=100,
+            step=1,
+            unit_of_measurement=PERCENTAGE,
             mode=selector.NumberSelectorMode.BOX,
         )
     )
@@ -347,6 +366,9 @@ def pump_schema(
     schema[optional("supply_temperature", values)] = entity(
         hass, "sensor", shown=_list([values.get("supply_temperature")])
     )
+    schema[optional("condensation_switch", values)] = entity(
+        hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
+    )
     if add_another:
         schema[vol.Optional("add_another", default=False)] = selector.BooleanSelector()
     if removable:
@@ -389,6 +411,12 @@ def zone_schema(
             optional("thermostat", values): entity(
                 hass, "climate", shown=_list([values.get("thermostat")])
             ),
+            optional("windows", values): entity(
+                hass, "binary_sensor", multiple=True, shown=_list(values.get("windows"))
+            ),
+            optional("window_open_delay", values): seconds(),
+            optional("window_close_delay", values): seconds(),
+            optional("max_humidity", values): percent(),
             vol.Optional("presets"): section(
                 vol.Schema({optional(preset.value, presets): celsius() for preset in Preset}),
                 {"collapsed": True},
@@ -426,6 +454,10 @@ def loop_schema(
             ),
             optional("surface_temperature", values): entity(
                 hass, "sensor", shown=_list([values.get("surface_temperature")])
+            ),
+            optional("surface_minimum", values): celsius(),
+            optional("condensation_switch", values): entity(
+                hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
             ),
             _default("opening_time", values, 180): seconds(),
         }
