@@ -22,10 +22,10 @@ def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> N
     """HACS can extract the release directly into its integration directory."""
 
     archive_path = tmp_path / "hydronicus.zip"
-    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.1.0")
+    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.2.0")
     install_path = tmp_path / "config" / "custom_components" / "hydronicus"
 
-    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.1.0") == files
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.2.0") == files
     with ZipFile(archive_path) as archive:
         assert archive.namelist() == files
         assert "manifest.json" in archive.namelist()
@@ -71,7 +71,7 @@ def test_public_control_boundary_is_documented_without_legacy_package(
 ) -> None:
     """Public docs state the control boundary and exclude the legacy package."""
     how_it_works = (REPOSITORY_ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
-    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.1.0")
+    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.2.0")
 
     assert "Every new Plant starts in Dry run" in how_it_works
     assert "A new Plant starts with no output armed" in how_it_works
