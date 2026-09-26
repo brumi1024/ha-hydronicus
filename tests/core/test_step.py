@@ -566,7 +566,8 @@ def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteres
     early, desired, due = run(plant, ready_clear, blocked, NOW + 10)
     assert early.guards["a.ceiling"].blocked and due == pytest.approx(GUARD_MIN_BLOCKED - 10 + TICK)
     assert desired.reasons["a.ceiling.guard"] == (
-        "condensation guard blocks: reference 18.0 °C, held for its minimum blocked time"
+        "condensation guard blocks: reference 18.0 °C; humidity 50.0 % in zone a, "
+        "held for its minimum blocked time"
     )
     assert not run(plant, ready_clear, blocked, later)[0].guards["a.ceiling"].blocked
 
@@ -1285,3 +1286,37 @@ def test_an_exercise_after_cooling_passes_only_cooling_loops_whose_guard_permits
     state, desired, _ = run(plant, observe(plant, mode=Mode.OFF, sensors=stale), overdue)
     assert state.exercise is None, "a blocked condensation guard passes no exercise"
     assert all(target == OFF for target in desired.outputs.values())
+
+
+def test_a_new_condensation_guard_blocks_until_every_check_releases() -> None:
+    plant = _plant(COOLED_CEILING)
+    fresh = cooling(plant, switched=NOW - 10)
+    state, desired, _ = run(plant, fresh)
+    assert state.guards["room.ceiling"] == GuardState(True, NOW)
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: condensation switch binary_sensor.supply_dew off for less "
+        "than 300 s; condensation switch binary_sensor.ceiling_dew off for less than 300 s"
+    )
+    assert desired.outputs["switch.ceiling"] == OFF
+    released, desired, _ = run(plant, fresh, state, NOW + GUARD_MIN_BLOCKED)
+    assert not released.guards["room.ceiling"].blocked
+    assert desired.outputs["switch.ceiling"] == ON
+
+
+def test_the_desired_state_names_the_unusable_condensation_inputs_in_any_mode() -> None:
+    plant = _plant(COOLED_CEILING)
+    lost = cooling(
+        plant,
+        switches={"binary_sensor.ceiling_dew": None},
+        sensors={"sensor.supply": 24.0, "sensor.room_rh": 50.0},
+    )
+    inputs = ("sensor.surface", "binary_sensor.supply_dew", "binary_sensor.ceiling_dew")
+    for mode in (Mode.OFF, Mode.HEAT, Mode.COOL):
+        _, desired, _ = run(plant, replace(lost, mode=mode))
+        assert desired.blocking_condensation_inputs == {"room.ceiling": inputs}
+
+    stale = cooling(plant, sensors={"sensor.surface": 24.0, "sensor.room_rh": 50.0})
+    aged = Reading(24.0, NOW - GUARD_REFERENCE_MAX_AGE - 1)
+    _, desired, _ = run(plant, replace(stale, sensors={**stale.sensors, "sensor.supply": aged}))
+    assert desired.blocking_condensation_inputs == {"room.ceiling": ("sensor.supply",)}
+    assert run(plant, cooling(plant))[1].blocking_condensation_inputs == {}

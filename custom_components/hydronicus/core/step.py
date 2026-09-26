@@ -345,6 +345,8 @@ class _Check:
     blocks: bool
     releases: bool
     reason: str
+    # The condensation inputs it found unusable.
+    unusable: tuple[str, ...] = ()
 
 
 def _exercise_state(value: Any) -> ExerciseState | None:
@@ -384,6 +386,10 @@ class _Evaluation:
         # This evaluation's condensation guards, and since when each output is idle.
         self.guard_states: dict[str, GuardState] = {}
         self.idle_times: dict[str, float | None] = {}
+        # By cooling loop, whether its checks against condensation release, which
+        # is all an exercise needs, and the condensation inputs that are not usable.
+        self.condensation_released: dict[str, bool] = {}
+        self.unusable_inputs: dict[str, tuple[str, ...]] = {}
         self._ready: dict[Loop, bool] = {}
         self._pumps = {pump.slug: pump for pump in plant.pumps}
         self._loops_of: dict[str, list[Loop]] = {pump.slug: [] for pump in plant.pumps}
@@ -506,10 +512,7 @@ class _Evaluation:
         # end of demand does; Control equipment off stops it at once.
         winding_down = leaving and not self.forced_off
 
-        blocked_by_guard = {
-            loop: mode is Mode.COOL and guards.get(str(loop.ref), GuardState(False, now)).blocked
-            for loop in plant.all_loops
-        }
+        blocked_by_guard = {loop: self.guard_blocks(loop, mode) for loop in plant.all_loops}
         if mode is not Mode.COOL:
             # A guard blocks only cooling; outside it, it only follows its reference.
             for key in [f"{ref}.guard" for ref in guards]:
@@ -564,6 +567,7 @@ class _Evaluation:
             reasons=self.reasons,
             demands=demands,
             blocking_sensors=self.blocking_sensors(),
+            blocking_condensation_inputs=self.unusable_inputs,
             frost_protection=tuple(self.frost),
             exercise=plan.exercising,
         )
@@ -710,33 +714,51 @@ class _Evaluation:
         """Block at once on any of the guard's checks; release once all of them release.
 
         The dew point check comes first and always applies. The condensation
-        switches, the surface minimum, and the humidity cutoff only add to it.
+        switches, the surface minimum, and the humidity cutoff only add to it. A
+        new guard starts blocked unless every check already releases.
         """
-        now = self.now
-        checks = [
-            self.dew_point_check(loop),
-            *self.switch_checks(loop),
-            *self.surface_checks(loop),
-            *self.humidity_checks(loop),
-        ]
-        previous = self.state.guards.get(str(loop.ref))
+        now, ref = self.now, str(loop.ref)
+        condensation = [self.dew_point_check(loop), *self.switch_checks(loop)]
+        checks = [*condensation, *self.surface_checks(loop), *self.humidity_checks(loop)]
+        self.condensation_released[ref] = all(check.releases for check in condensation)
+        if unusable := tuple(dict.fromkeys(e for check in checks for e in check.unusable)):
+            self.unusable_inputs[ref] = unusable
+        previous = self.state.guards.get(ref)
         blocking = any(check.blocks for check in checks)
         releasing = all(check.releases for check in checks)
         if blocking:
             reason = "; ".join(check.reason for check in checks if check.blocks)
         elif releasing:
-            reason = f"{checks[0].reason}, held for its minimum blocked time"
+            readings = "; ".join(check.reason for check in checks)
+            reason = f"{readings}, held for its minimum blocked time"
         else:
             reason = "; ".join(check.reason for check in checks if not check.releases)
-        if previous is None or not previous.blocked:
-            guard = GuardState(blocking, now) if previous is None or blocking else previous
+        if previous is None:
+            guard = GuardState(blocking or not releasing, now)
+        elif not previous.blocked:
+            guard = GuardState(True, now) if blocking else previous
         elif releasing and self.reached(previous.since + GUARD_MIN_BLOCKED):
             guard = GuardState(False, now)
         else:
             guard = previous
         if guard.blocked:
-            self.reasons[f"{loop.ref}.guard"] = f"condensation guard blocks: {reason}"
+            self.reasons[f"{ref}.guard"] = f"condensation guard blocks: {reason}"
         return guard
+
+    def guard_blocks(self, loop: Loop, label: Mode, *, exercise: bool = False) -> bool:
+        """Whether a loop's condensation guard keeps it from flowing in ``label``.
+
+        Only cooling is guarded. An exercise runs no source, so no chilled water
+        flows, and it needs only the checks against condensation to release: the
+        dew point and the condensation switches. The surface minimum and the
+        humidity cutoff limit what cooling does to a room, which an exercise does not.
+        """
+        ref = str(loop.ref)
+        if label is not Mode.COOL or ref not in self.guard_states:
+            return False
+        if exercise:
+            return not self.condensation_released[ref]
+        return self.guard_states[ref].blocked
 
     def dew_point_check(self, loop: Loop) -> _Check:
         """Block below the worst-case dew point plus the margin; release 1 K above it."""
@@ -754,7 +776,8 @@ class _Evaluation:
         usable = [value for value in values if value is not None]
         known = [point for point in points if point is not None]
         if not usable or len(usable) < len(values) or not known or len(known) < len(points):
-            return _Check(True, False, "no usable condensation reference or dew point")
+            missing = tuple(e for e, value in zip(references, values, strict=True) if value is None)
+            return _Check(True, False, "no usable condensation reference or dew point", missing)
         threshold = max(known) + CONDENSATION_MARGIN
         reference = min(usable)
         if reference < threshold:
@@ -779,7 +802,7 @@ class _Evaluation:
                 continue
             switch = self.obs.readiness.get(entity)
             if switch is None or switch.on is None:
-                yield _Check(True, False, f"condensation switch {entity} unavailable")
+                yield _Check(True, False, f"condensation switch {entity} unavailable", (entity,))
             elif switch.on:
                 yield _Check(True, False, f"condensation switch {entity} on")
             elif self.reached(switch.since + GUARD_MIN_BLOCKED):

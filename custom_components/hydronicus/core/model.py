@@ -445,6 +445,12 @@ class Desired:
     # By zone slug, the required sensors whose readings are not usable, among the
     # readings the zone needs; the zone fails closed until they report again.
     blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # By loop that cools, ``str(LoopRef)``, its condensation inputs that are not
+    # usable, in any mode: its pump's and its own condensation switch while
+    # unavailable, unknown, or missing, and its pump's supply and its own surface
+    # temperature while missing, stale, or not plausible. Its guard blocks until
+    # they report again.
+    blocking_condensation_inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The zones that frost protection heats, whatever their thermostats say.
     frost_protection: tuple[str, ...] = ()
     # The slug of the pump whose idle switch or valves are being exercised, if any.

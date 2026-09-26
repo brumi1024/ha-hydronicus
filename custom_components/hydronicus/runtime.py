@@ -98,7 +98,6 @@ from .issues import (
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
-    unusable_condensation_inputs,
     zone_area_issue,
     zone_sensor_unusable,
 )
@@ -444,9 +443,7 @@ class PlantRuntime:
         self.unusable.update(
             {
                 IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
-                IssueKind.CONDENSATION_INPUT_UNUSABLE: unusable_condensation_inputs(
-                    plant, observations, now
-                ),
+                IssueKind.CONDENSATION_INPUT_UNUSABLE: desired.blocking_condensation_inputs,
             },
             now,
         )

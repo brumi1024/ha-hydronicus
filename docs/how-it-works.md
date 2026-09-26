@@ -249,7 +249,8 @@ Three optional inputs add to the dew point check, which stays the primary one an
   A humidity limit alone does not protect water at 16 to 18 °C, so it only adds to the dew point check.
 
 The guard releases only once every check releases, and only after it has blocked for at least 5 minutes.
-Its reason names each check that blocks.
+A new guard, such as that of a loop just added, starts blocked unless every check already releases.
+Its reason names each check that blocks, or, while it is held for its minimum time, the reading of every check.
 
 A blocked guard drops the loop, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 Pumps have no overrun in cooling, so a pump stops as soon as its last cooling loop releases.

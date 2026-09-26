@@ -24,10 +24,9 @@ from homeassistant.helpers import issue_registry as ir
 
 from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
-from .core.demand import fresh
 from .core.model import Loop, OutputRole, Plant
 from .core.plant_file import describe_path
-from .core.step import GUARD_REFERENCE_MAX_AGE, TICK, Observations
+from .core.step import TICK
 
 
 class IssueKind(StrEnum):
@@ -205,7 +204,7 @@ def condensation_inputs_unusable(plant: Plant, reported: Iterable[tuple[str, str
     """One Repair for each unusable condensation input, naming every loop it blocks.
 
     ``reported`` holds the loop and the entity of each input that
-    ``UnusableInputs`` reports.
+    ``UnusableInputs`` reports, from ``Desired.blocking_condensation_inputs``.
     """
     loops: dict[str, set[str]] = {}
     for loop, entity in reported:
@@ -227,42 +226,6 @@ def condensation_inputs_unusable(plant: Plant, reported: Iterable[tuple[str, str
             )
         )
     return issues
-
-
-def unusable_condensation_inputs(
-    plant: Plant, observations: Observations, now: float
-) -> dict[str, tuple[str, ...]]:
-    """The condensation inputs of each loop that cools that block its guard, by loop.
-
-    They are its pump's and its own condensation switch while unavailable or
-    unknown, and its pump's supply temperature and its own surface temperature
-    while their reading is missing, stale, or not plausible, as the guard reads
-    them. The Plant mode does not matter: cooling needs them before it can start.
-    """
-
-    def reached(deadline: float) -> bool:
-        return now >= deadline
-
-    unusable: dict[str, tuple[str, ...]] = {}
-    for loop in plant.all_loops:
-        if not loop.cools:
-            continue
-        pump = plant.pump(loop.pump)
-        switches = [
-            entity
-            for entity in (pump.condensation_switch, loop.condensation_switch)
-            if entity is not None
-            and ((switch := observations.readiness.get(entity)) is None or switch.on is None)
-        ]
-        references = [
-            entity
-            for entity in (pump.supply_temperature, loop.surface_temperature)
-            if entity is not None
-            and fresh(observations.sensors.get(entity), GUARD_REFERENCE_MAX_AGE, reached) is None
-        ]
-        if entities := tuple(dict.fromkeys((*switches, *references))):
-            unusable[str(loop.ref)] = entities
-    return unusable
 
 
 def _input_name(plant: Plant, entity: str) -> str:

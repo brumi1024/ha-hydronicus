@@ -37,9 +37,12 @@ def test_a_tripped_condensation_switch_stops_cooling_until_it_has_cleared_for_fi
         sim.set_sensor(f"sensor.{zone}_supply", 20.0)
     sim.start()
     sim.run_until_true(
-        lambda: sim.flowing("office.ceiling") and sim.flowing("den.ceiling"),
-        OPENING + REACTION,
-        "both ceilings cool",
+        lambda: sim.flowing("den.ceiling"), OPENING + REACTION, "the den ceiling cools"
+    )
+    sim.run_until_true(
+        lambda: sim.flowing("office.ceiling"),
+        GUARD_MIN_BLOCKED + OPENING + REACTION,
+        "a new guard waits for the switch to have read off for five minutes",
     )
 
     sim.set_contact(DEW_SWITCH, True)
