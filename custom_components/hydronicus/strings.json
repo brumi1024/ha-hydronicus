@@ -447,6 +447,21 @@
     }
   },
   "selector": {
+    "pump_pick": {
+      "options": {
+        "add-new": "Add a pump"
+      }
+    },
+    "plant_loop_pick": {
+      "options": {
+        "add-new": "Add a plant loop"
+      }
+    },
+    "loop_pick": {
+      "options": {
+        "add-new": "Add a loop"
+      }
+    },
     "min_flow": {
       "options": {
         "path": "Needs an open loop",

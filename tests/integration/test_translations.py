@@ -15,6 +15,8 @@ from custom_components.hydronicus.areas import (
     ZoneAreaProblemKind,
 )
 from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.flows.documents import NEW
+from custom_components.hydronicus.flows.forms import pick_schema
 from custom_components.hydronicus.issues import (
     FIXABLE,
     Issue,
@@ -182,3 +184,25 @@ def test_a_config_or_options_menu_title_takes_no_placeholder() -> None:
         for step_id, step in flow.items():
             if "menu_options" in step:
                 assert not placeholders(step["title"]), step_id
+
+
+# hassfest's rule for a translation key, which selector option keys must follow.
+_TRANSLATION_KEY = re.compile(r"^(?!.+[_-]{2})(?![_-])[a-z0-9-_]+(?<![_-])$")
+
+
+def test_every_selector_option_key_is_a_valid_translation_key() -> None:
+    for name, selector in STRINGS["selector"].items():
+        for option in selector["options"]:
+            assert _TRANSLATION_KEY.match(option), (name, option)
+
+
+def test_the_add_option_of_each_pick_form_is_translated() -> None:
+    selectors = STRINGS["selector"]
+    assert selectors["pump_pick"]["options"][NEW] == "Add a pump"
+    assert selectors["plant_loop_pick"]["options"][NEW] == "Add a plant loop"
+    assert selectors["loop_pick"]["options"][NEW] == "Add a loop"
+    for key in ("pump_pick", "plant_loop_pick", "loop_pick"):
+        (field,) = pick_schema(key, "pump", {"floor": "Floor"}).schema.values()
+        config = field.serialize()["selector"]["select"]
+        assert config["translation_key"] == key
+        assert config["options"][-1] == {"value": NEW, "label": selectors[key]["options"][NEW]}

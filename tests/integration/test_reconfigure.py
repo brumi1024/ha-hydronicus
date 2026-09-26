@@ -108,14 +108,14 @@ async def test_reconfigure_adds_a_pump_and_a_plant_loop_and_edits_a_pump(
     result = await async_reconfigure(hass, entry)
 
     result = await async_choose(flow, result, "pump_pick")
-    result = await async_submit(flow, result, {"pump": "__new__"})
+    result = await async_submit(flow, result, {"pump": "add-new"})
     assert result["step_id"] == "pump"
     assert "remove" not in {str(key) for key in result["data_schema"].schema}
     result = await async_submit(
         flow, result, {"name": "Garage pump", "switch": "switch.garage_pump", "overrun": 60}
     )
     result = await async_choose(flow, result, "plant_loop_pick")
-    result = await async_submit(flow, result, {"loop": "__new__"})
+    result = await async_submit(flow, result, {"loop": "add-new"})
     result = await async_submit(
         flow,
         result,
@@ -324,14 +324,14 @@ async def test_a_new_source_driven_pump_gets_its_min_flow_loops_at_save(
     flow = hass.config_entries.flow
     result = await async_reconfigure(hass, entry)
     result = await async_choose(flow, result, "pump_pick")
-    result = await async_submit(flow, result, {"pump": "__new__"})
+    result = await async_submit(flow, result, {"pump": "add-new"})
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "path"})
     assert result["step_id"] == "reconfigure", result.get("errors")
     status = result["description_placeholders"]["status"]
     assert status.startswith("Pump Primary needs min-flow loops")
 
     result = await async_choose(flow, result, "plant_loop_pick")
-    result = await async_submit(flow, result, {"loop": "__new__"})
+    result = await async_submit(flow, result, {"loop": "add-new"})
     result = await async_submit(
         flow,
         result,
@@ -419,7 +419,7 @@ async def test_a_new_source_driven_pump_without_a_loop_is_explained_at_save(
     flow = hass.config_entries.flow
     result = await async_reconfigure(hass, entry)
     result = await async_choose(flow, result, "pump_pick")
-    result = await async_submit(flow, result, {"pump": "__new__"})
+    result = await async_submit(flow, result, {"pump": "add-new"})
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "path"})
 
     result = await async_choose(flow, result, "save")
@@ -433,7 +433,7 @@ async def test_a_new_source_driven_pump_without_a_loop_is_explained_at_save(
 
     result = await async_reconfigure(hass, entry)
     result = await async_choose(flow, result, "pump_pick")
-    result = await async_submit(flow, result, {"pump": "__new__"})
+    result = await async_submit(flow, result, {"pump": "add-new"})
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "path"})
     result = await async_choose(flow, result, "save")
     result = await async_choose(flow, result, "min_flow_edit_pump")

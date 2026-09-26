@@ -40,8 +40,9 @@ from ..core.plant_file import PLANT_FILE_FORMAT, export_plant
 
 type Document = dict[str, Any]
 
-# The pick option that adds a new pump or loop; a slug never starts with "_".
-NEW: Final = "__new__"
+# The pick option that adds a new pump or loop. A slug never holds a hyphen, and
+# the value is a valid translation key, which translates the option's label.
+NEW: Final = "add-new"
 DEFAULT_PLANT_NAME: Final = "Home"
 DEFAULT_LOOP_NAME: Final = "Loop"
 _SLUG: Final = re.compile(r"[a-z][a-z0-9_]*")

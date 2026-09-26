@@ -447,8 +447,20 @@ def areas_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
     return vol.Schema({optional("areas", values): area_selector(hass)})
 
 
-def pick_schema(name: str, items: Mapping[str, str], new_label: str) -> vol.Schema:
-    return vol.Schema({vol.Required(name): choice({**items, NEW: new_label})})
+# The label of each pick form's add option where the frontend does not translate it.
+_ADD_LABELS: Final = {
+    "pump_pick": "Add a pump",
+    "plant_loop_pick": "Add a plant loop",
+    "loop_pick": "Add a loop",
+}
+
+
+def pick_schema(key: str, name: str, items: Mapping[str, str]) -> vol.Schema:
+    """Choose an object by its name, or add one with the option that ``key`` translates.
+
+    The frontend translates only the add option; the other options are names.
+    """
+    return vol.Schema({vol.Required(name): choice({**items, NEW: _ADD_LABELS[key]}, key=key)})
 
 
 def plant_file_schema(text: str = "") -> vol.Schema:

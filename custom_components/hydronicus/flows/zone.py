@@ -121,7 +121,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return await self.async_step_loop()
         loops = docs.zones(self._document)[self._zone].get("loops", {})
         names = {slug: docs.title(loop, slug) for slug, loop in loops.items()}
-        return self._form("loop_pick", forms.pick_schema("loop", names, "Add a loop"))
+        return self._form("loop_pick", forms.pick_schema("loop_pick", "loop", names))
 
     async def async_step_loop(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Add, edit, or remove one of the zone's loops."""

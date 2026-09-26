@@ -605,7 +605,7 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
             self._editing = None if user_input["pump"] == docs.NEW else user_input["pump"]
             return await self.async_step_pump()
         names = {slug: docs.title(pump, slug) for slug, pump in docs.pumps(self._document).items()}
-        return self._form("pump_pick", forms.pick_schema("pump", names, "Add a pump"))
+        return self._form("pump_pick", forms.pick_schema("pump_pick", "pump", names))
 
     async def async_step_plant_loop_pick(
         self, user_input: dict[str, Any] | None = None
@@ -617,7 +617,7 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         names = {
             slug: docs.title(loop, slug) for slug, loop in docs.plant_loops(self._document).items()
         }
-        return self._form("plant_loop_pick", forms.pick_schema("loop", names, "Add a plant loop"))
+        return self._form("plant_loop_pick", forms.pick_schema("plant_loop_pick", "loop", names))
 
     async def async_step_replace(
         self, user_input: dict[str, Any] | None = None

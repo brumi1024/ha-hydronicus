@@ -76,6 +76,8 @@ The Home Assistant adapter lives beside the core:
 - `bindings.py` refuses an entity Hydronicus provides and an output another Plant binds.
 - `config_flow.py` exposes the flows in `flows/`: guided setup, import, and the entry's reconfigure in `plant.py`, the zone subentry flow in `zone.py`, and Plant settings in `settings.py`.
   Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a problem onto the field its path belongs to.
+  A select's fixed options are translated through its `translation_key`, such as the add option of a pick form, whose value `add-new` is a valid translation key that no slug can be.
+  What the code writes into a form stays English: labels of options whose values are slugs or entity IDs, such as `Living area / Ceiling` or a pump driven by the source, and description placeholders, such as the reviews, the change summary, and the reconfigure status, because Home Assistant translates neither.
 - `issues.py` computes the Repairs of a Plant, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
 - `entity.py` and the platforms publish the [entity contract](entities.md); unique IDs derive from the Plant ID and object slugs.
 - `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` redacts the configuration, the last observations, the desired state, and the reconciler state.

@@ -110,13 +110,13 @@ async def test_reconfigure_a_zone_edits_its_settings_and_its_loops(hass: HomeAss
     assert result["menu_options"] == ["zone", "loop_pick", "save"]
     result = await async_choose(flows, result, "loop_pick")
     options = {option["value"]: option["label"] for option in _options(result, "loop")}
-    assert options == {"ceiling": "Ceiling", "floor": "Floor", "__new__": "Add a loop"}
+    assert options == {"ceiling": "Ceiling", "floor": "Floor", "add-new": "Add a loop"}
     result = await async_submit(flows, result, {"loop": "floor"})
     assert suggested(result, "valves") == [LIVING_FLOOR]
     assert "remove" in fields(result)
     result = await async_submit(flows, result, {"name": "Floor", "pump": "floor", "remove": True})
     result = await async_choose(flows, result, "loop_pick")
-    result = await async_submit(flows, result, {"loop": "__new__"})
+    result = await async_submit(flows, result, {"loop": "add-new"})
     result = await async_submit(
         flows,
         result,
