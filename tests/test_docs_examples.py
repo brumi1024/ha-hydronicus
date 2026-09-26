@@ -267,6 +267,7 @@ ERROR_CASES: dict[str, Callable[[dict[str, Any]], None]] = {
     "digital_without_temperature": _drop("zones", "bedroom_area", "areas"),
     "cooling_without_humidity": _cooling_zone_without_humidity,
     "missing_runs": _drop("loops", "towel_dryer", "runs"),
+    "warm_frost_protection": _set("frost_protection", value=21),
 }
 
 

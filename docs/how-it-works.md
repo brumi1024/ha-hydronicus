@@ -246,7 +246,7 @@ Three optional inputs add to the dew point check, which stays the primary one an
   A loop still needs a supply or surface temperature sensor to cool at all.
 - A loop's surface minimum, 20 °C by default, which needs its surface temperature sensor.
   The guard blocks while the surface is below it and releases 1 K above it; 20 °C keeps a cooled floor comfortable, and a ceiling may use a lower value.
-- A zone's maximum humidity, 70 % by default.
+- A zone's maximum humidity, 70 % by default and at least 30 %.
   The guard blocks while the highest humidity of a zone whose dew point it reads is above that zone's limit, and releases 5 points below it.
   A humidity limit alone does not protect water at 16 to 18 °C, so it only adds to the dew point check.
 

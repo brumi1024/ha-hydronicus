@@ -248,14 +248,16 @@ def test_the_exercise_and_frost_protection_are_on_by_default_and_can_be_changed(
     assert plant.frost_protection == 5.0
     assert "exercise" not in export_plant(plant) and "frost_protection" not in export_plant(plant)
 
-    changed = parse_plant({**empty, "exercise": {"interval": 86400}, "frost_protection": 7.5})
+    changed = parse_plant({**empty, "exercise": {"interval": 86400}, "frost_protection": 10})
     assert changed.exercise == Exercise(interval=86400, run=60)
     text = write_plant_file(changed)
-    assert "exercise: {interval: 86400, run: 60}\nfrost_protection: 7.5\n" in text
+    assert "exercise: {interval: 86400, run: 60}\nfrost_protection: 10\n" in text
     assert read_plant_file(text) == changed
 
     off = parse_plant({**empty, "exercise": False, "frost_protection": None})
     assert (off.exercise, off.frost_protection) == (None, None)
+    nulls = parse_plant({**empty, "exercise": None, "frost_protection": False})
+    assert (nulls.exercise, nulls.frost_protection) == (None, None), "null turns them off too"
     assert export_plant(off)["exercise"] is False and export_plant(off)["frost_protection"] is False
     assert read_plant_file(write_plant_file(off)) == off
 
@@ -400,11 +402,20 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
     ("infinite mode dwell", _set("mode_dwell", float("inf")), "mode_dwell", "number"),
     ("exercise turned on", _set("exercise", True), "exercise", "false"),
     ("unknown exercise key", _set("exercise", {"every": 60}), "exercise.every", "Unknown key"),
-    ("zero exercise interval", _set("exercise", {"interval": 0}), "exercise.interval", "positive"),
-    ("negative exercise run", _set("exercise", {"run": -1}), "exercise.run", "positive"),
+    ("zero exercise interval", _set("exercise", {"interval": 0}), "exercise.interval", "least"),
+    (
+        "exercise interval under an hour",
+        _set("exercise", {"interval": 3599}),
+        "exercise.interval",
+        "Must be at least 3600.",
+    ),
+    ("negative exercise run", _set("exercise", {"run": -1}), "exercise.run", "negative"),
+    ("short exercise run", _set("exercise", {"run": 5}), "exercise.run", "Must be at least 10."),
+    ("long exercise run", _set("exercise", {"run": 601}), "exercise.run", "Must be at most 600."),
     ("frost protection as text", _set("frost_protection", "5"), "frost_protection", "number"),
     ("frost protection turned on", _set("frost_protection", True), "frost_protection", "number"),
     ("negative frost protection", _set("frost_protection", -2), "frost_protection", "negative"),
+    ("warm frost protection", _set("frost_protection", 21), "frost_protection", "at most 10."),
     ("pumps as a list", _set("pumps", ["floor"]), "pumps", "mapping"),
     ("invalid pump slug", _set("pumps.Floor", {"switch": "switch.x"}), "pumps.Floor", "slug"),
     ("numeric pump slug", _set("pumps", {1: {"switch": "switch.x"}}), "pumps", "text"),
@@ -724,6 +735,12 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         _set("zones.basement.max_humidity", 101),
         "zones.basement.max_humidity",
         "at most 100",
+    ),
+    (
+        "humidity limit that blocks cooling for good",
+        _set("zones.basement.max_humidity", 0),
+        "zones.basement.max_humidity",
+        "Must be at least 30.",
     ),
     (
         "digital thermostat without a temperature source",

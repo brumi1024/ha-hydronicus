@@ -38,6 +38,11 @@ from ..core.model import (
     DEFAULT_FROST_PROTECTION,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_SURFACE_MINIMUM,
+    MAX_EXERCISE_RUN,
+    MAX_FROST_PROTECTION,
+    MIN_EXERCISE_INTERVAL,
+    MIN_EXERCISE_RUN,
+    MIN_MAX_HUMIDITY,
     ExternalThermostat,
     OutputRole,
     Plant,
@@ -208,12 +213,13 @@ def entity(
     return selector.EntitySelector(config)
 
 
-def seconds() -> selector.NumberSelector:
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, step=1, unit_of_measurement=_SECONDS, mode=selector.NumberSelectorMode.BOX
-        )
+def seconds(low: float = 0, high: float | None = None) -> selector.NumberSelector:
+    config = selector.NumberSelectorConfig(
+        min=low, step=1, unit_of_measurement=_SECONDS, mode=selector.NumberSelectorMode.BOX
     )
+    if high is not None:
+        config["max"] = high
+    return selector.NumberSelector(config)
 
 
 def celsius() -> selector.NumberSelector:
@@ -228,10 +234,10 @@ def celsius() -> selector.NumberSelector:
     )
 
 
-def percent() -> selector.NumberSelector:
+def humidity_limit() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
-            min=0,
+            min=MIN_MAX_HUMIDITY,
             max=100,
             step=1,
             unit_of_measurement=PERCENTAGE,
@@ -317,12 +323,17 @@ def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
                 vol.Schema(
                     {
                         _default("exercise", protection, True): selector.BooleanSelector(),
-                        _default("exercise_interval", protection, 604800): seconds(),
-                        _default("exercise_run", protection, 60): seconds(),
+                        _default("exercise_interval", protection, 604800): seconds(
+                            MIN_EXERCISE_INTERVAL
+                        ),
+                        _default("exercise_run", protection, 60): seconds(
+                            MIN_EXERCISE_RUN, MAX_EXERCISE_RUN
+                        ),
                         _default("frost_protection", protection, True): selector.BooleanSelector(),
                         _default("frost_temperature", protection, 5): selector.NumberSelector(
                             selector.NumberSelectorConfig(
                                 min=0,
+                                max=MAX_FROST_PROTECTION,
                                 step=0.5,
                                 unit_of_measurement=_CELSIUS,
                                 mode=selector.NumberSelectorMode.BOX,
@@ -440,7 +451,7 @@ def zone_schema(
             ),
             optional("window_open_delay", values): seconds(),
             optional("window_close_delay", values): seconds(),
-            optional("max_humidity", values): percent(),
+            optional("max_humidity", values): humidity_limit(),
             vol.Optional("presets"): section(
                 vol.Schema({optional(preset.value, presets): celsius() for preset in Preset}),
                 {"collapsed": True},

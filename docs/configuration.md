@@ -35,7 +35,7 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Leave the request switch empty for a source that runs on its own controls; valves and switched pumps still run on demand.
    If the source switches between heating and cooling through a select, choose it as the **Source mode select**; it needs a request switch.
    The collapsed **Timing** section holds the **Mode dwell** (3600 seconds), the **Source post-run** (180 seconds), and the **Source minimum on time** and **Source minimum off time** (600 seconds each).
-   The collapsed **Protection** section holds **Exercise idle pumps and valves**, on by default, with the **Exercise interval** (604800 seconds, a week) and the **Exercise pump run** (60 seconds), and **Frost protection**, on by default, with the **Frost protection temperature** (5 °C).
+   The collapsed **Protection** section holds **Exercise idle pumps and valves**, on by default, with the **Exercise interval** (604800 seconds, a week, and at least an hour) and the **Exercise pump run** (60 seconds, from 10 to 600), and **Frost protection**, on by default, with the **Frost protection temperature** (5 °C, at most 10 °C).
    See [frost protection](how-it-works.md#frost-protection) and [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves).
 2. **Source modes**, only with a mode select.
    Choose the **Heating option** and the **Cooling option** of the select.
@@ -58,7 +58,7 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Choose how to **Combine temperatures by**: **Mean**, **Minimum**, or **Maximum**.
    Choose an **Existing thermostat** to let an existing climate entity own the zone's demand, or leave it empty for a digital thermostat that Hydronicus provides.
    Optionally choose the zone's **Windows**, and set the **Window open delay** and the **Window close delay** (60 seconds each), as [Windows](#windows) describes.
-   Set the **Maximum humidity for cooling** (70 %), above which the zone's loops stop cooling, as [Cooling limits](#cooling-limits) describes.
+   Set the **Maximum humidity for cooling** (70 %, from 30 to 100 %), above which the zone's loops stop cooling, as [Cooling limits](#cooling-limits) describes.
    The collapsed **Digital thermostat presets** section sets the **Comfort**, **Eco**, and **Away** targets; leave a preset empty to leave it out.
 6. The loop form.
    Enter the **Loop name**, such as `Ceiling` or `Floor`.

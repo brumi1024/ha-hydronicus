@@ -101,6 +101,16 @@ DEFAULT_FROST_PROTECTION: Final = 5.0
 # Frost protection heats until the coldest reading is this far above its temperature, in kelvin.
 FROST_PROTECTION_RELEASE: Final = 1.0
 
+# The bounds a plant file keeps these settings within. Frost protection above
+# 10 °C would heat rooms whose thermostats are off; a humidity limit below 30 %
+# would block cooling for good; and an exercise more often than hourly, or a
+# pump run outside 10 seconds to 10 minutes, would hardly let the Plant rest.
+MAX_FROST_PROTECTION: Final = 10.0
+MIN_MAX_HUMIDITY: Final = 30.0
+MIN_EXERCISE_INTERVAL: Final = 3600.0
+MIN_EXERCISE_RUN: Final = 10.0
+MAX_EXERCISE_RUN: Final = 600.0
+
 
 def title_from_slug(slug: str) -> str:
     """Return the name a slug reads as, such as ``Living area`` for ``living_area``."""
