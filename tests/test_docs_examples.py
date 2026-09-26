@@ -34,8 +34,6 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 DOCS = REPOSITORY_ROOT / "docs"
 PLANT_FILE_REFERENCE = DOCS / "plant-file.md"
 REFERENCE_EXAMPLE = DOCS / "examples" / "reference-plant.yaml"
-TRIAL_KIT = DOCS / "examples" / "trial"
-FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures"
 PACKAGE = REPOSITORY_ROOT / "custom_components" / "hydronicus"
 STRINGS = PACKAGE / "strings.json"
 PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
@@ -179,20 +177,6 @@ def test_example_plant_files_import(path: Path) -> None:
         assert path.name == "package.yaml"
         return
     parse_plant(document, new_id=lambda: PLANT_ID)
-
-
-@pytest.mark.parametrize(
-    ("example", "fixture"),
-    [
-        (REFERENCE_EXAMPLE, FIXTURES / "reference_plant.yaml"),
-        (TRIAL_KIT / "plant.yaml", FIXTURES / "trial_plant.yaml"),
-        (TRIAL_KIT / "plant-areas.yaml", FIXTURES / "trial_plant_areas.yaml"),
-    ],
-    ids=lambda path: path.name,
-)
-def test_examples_match_the_tested_fixtures(example: Path, fixture: Path) -> None:
-    """The documented examples describe exactly the Plants the tests run."""
-    assert _load(example) == _load(fixture)
 
 
 def test_the_reference_is_the_main_example() -> None:

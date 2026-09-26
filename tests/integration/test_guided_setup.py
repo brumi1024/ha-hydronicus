@@ -19,6 +19,7 @@ from custom_components.hydronicus.core.plant_file import read_plant_file
 from tests.integration.helpers import (
     BASEMENT_CEILING,
     BEDROOM_CEILING,
+    DOCS_EXAMPLES,
     FLOOR_PUMP,
     LIVING_CEILING,
     LIVING_FLOOR,
@@ -531,9 +532,7 @@ async def test_the_review_lists_warnings_but_never_blocks(hass: HomeAssistant) -
 async def test_import_the_reference_plant_and_the_trial_kit(hass: HomeAssistant) -> None:
     reference_world(hass)
     reference = await async_import(hass, REFERENCE_PLANT)
-    trial_text = (
-        __import__("pathlib").Path(__file__).parents[1] / "fixtures" / "trial_plant.yaml"
-    ).read_text(encoding="utf-8")
+    trial_text = (DOCS_EXAMPLES / "trial" / "plant.yaml").read_text(encoding="utf-8")
     trial = await async_import(hass, trial_text)
 
     assert reference.runtime_data.plant == read_plant_file(REFERENCE_PLANT)
