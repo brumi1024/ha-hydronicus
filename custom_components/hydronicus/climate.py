@@ -32,7 +32,8 @@ from .const import DOMAIN
 from .core.model import DigitalThermostat, Mode, Preset, Zone
 from .core.step import DigitalThermostatState
 from .entity import HydronicusEntity, async_add_plant_entities, zone_device, zone_unique_id
-from .runtime import PlantRuntime, ZoneReadings
+from .runtime import PlantRuntime
+from .view import ZoneReadings
 
 # The runtime evaluates thermostat changes itself.
 PARALLEL_UPDATES = 0
@@ -130,7 +131,8 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
 
     @property
     def _readings(self) -> ZoneReadings:
-        return self.runtime.zone_readings.get(self._zone, ZoneReadings())
+        view = self.runtime.view
+        return ZoneReadings() if view is None else view.readings(self._zone)
 
     @property
     def current_temperature(self) -> float | None:
@@ -160,12 +162,12 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        desired = self.runtime.desired
-        if desired is None:
+        view = self.runtime.view
+        if view is None:
             return None
         if self._thermostat.hvac_mode is Mode.OFF:
             return HVACAction.OFF
-        demand = desired.demands.get(self._zone)
+        demand = view.desired.demands.get(self._zone)
         if demand is None or not demand.on:
             return HVACAction.IDLE
         return HVACAction.HEATING if demand.mode is Mode.HEAT else HVACAction.COOLING

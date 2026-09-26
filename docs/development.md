@@ -63,11 +63,15 @@ A decision never counts on a call having acted: a call that no observation has c
 
 The Home Assistant adapter lives beside the core:
 
-- `runtime.py` runs one Plant: it observes, calls `step()` and `reconcile()`, sends the actions outside the evaluation, persists the State, raises the Repairs, publishes the entities, and schedules the next evaluation.
+- `runtime.py` runs one Plant: it observes, calls `step()` and `reconcile()`, hands the actions to the dispatcher, persists the State, raises the Repairs, builds the view, publishes the entities, and schedules the next evaluation.
   Evaluations are coalesced and never await, so they need no lock.
+  An evaluation that raises is logged, raises the `evaluation_failed` Repair, and is retried after a minute.
   Setup restores the stored State and the digital thermostats before the first evaluation, and stopping only cancels, never commands.
-  When a new configuration removes an output that is on, or is not valid, the first evaluation runs the stored previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
   A configuration that is not valid still loads, as an empty Plant with its stored ID and name that only observes, next to the `invalid_plant` Repair.
+- `dispatch.py` sends the actions outside the evaluation from one task at a time, in the order they were decided and each within `CALL_TIMEOUT` of its evaluation, and stopping drops the queue and cancels that task, so no call starts once stopping has begun.
+- `previous.py` persists the last valid Plant with the outputs it was commanding.
+  When a new configuration removes an output that is on, or is not valid, the first evaluation runs that previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
+- `view.py` is the read model: the `PlantView` of each evaluation, from which the entities and diagnostics derive the status, the blocked zones, the flowing loops, and the zone readings.
 - `observe.py` reads Home Assistant states as observations: output feedback, units and plausibility of sensors, external thermostats, and the output memory that keeps when an output last changed across restarts.
 - `areas.py` owns every area and floor registry read: it resolves the sensors that covered areas name on every evaluation, drops sensors Hydronicus provides, and reports area problems for the runtime, the reviews, and Repairs.
   `zone_area.py` puts a new zone climate entity in the one area its zone covers.
@@ -79,7 +83,7 @@ The Home Assistant adapter lives beside the core:
   A select's fixed options are translated through its `translation_key`, such as the add option of a pick form, whose value `add-new` is a valid translation key that no slug can be.
   What the code writes into a form stays English: labels of options whose values are slugs or entity IDs, such as `Living area / Ceiling` or a pump driven by the source, and description placeholders, such as the reviews, the change summary, and the reconfigure status, because Home Assistant translates neither.
 - `issues.py` computes the Repairs of a Plant, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
-- `entity.py` and the platforms publish the [entity contract](entities.md); unique IDs derive from the Plant ID and object slugs.
+- `entity.py` and the platforms publish the [entity contract](entities.md) from the view; unique IDs and device identifiers derive from the Plant ID and object slugs.
 - `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` redacts the configuration, the last observations, the desired state, and the reconciler state.
 
 Reload, unload, removal, and Home Assistant stop are command-free lifecycle boundaries and must never claim that physical shutdown occurred.
