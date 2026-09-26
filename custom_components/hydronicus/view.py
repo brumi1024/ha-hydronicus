@@ -69,14 +69,7 @@ class PlantView:
 
     def loop_flowing(self, loop: Loop) -> bool:
         """Whether a loop passes flow as ``step()`` saw it, including Dry run proposals."""
-        outputs = self.seen.outputs
-        if not all(_on(outputs.get(valve.entity)) for valve in loop.valves):
-            return False
-        pump = self.plant.pump(loop.pump)
-        if pump.switch is not None:
-            return _on(outputs.get(pump.switch))
-        source = self.plant.source
-        return source is not None and _on(outputs.get(source.request))
+        return _passes_flow(self.plant, loop, self.seen.outputs)
 
     def status(self) -> str:
         """Off, idle, heating, cooling, changing over, degraded, stopping, or invalid."""
@@ -110,12 +103,7 @@ class PlantView:
         demand = desired.demands.get(zone)
         if demand is None or not demand.on or demand.mode is not desired.mode:
             return "idle"
-        loops = [
-            loop
-            for loop in self.plant.all_loops
-            if loop.zone == zone
-            or (loop.runs.kind is RunKind.WITH_ZONES and zone in loop.runs.zones)
-        ]
+        loops = zone_loops(self.plant, zone)
         if any(self.loop_flowing(loop) for loop in loops):
             return "heating" if desired.mode is Mode.HEAT else "cooling"
         if desired.mode is Mode.HEAT and any(
@@ -161,6 +149,15 @@ class PlantView:
         return blocked
 
 
+def zone_loops(plant: Plant, zone: str) -> list[Loop]:
+    """The loops that serve a zone: its own, and the plant loops that run with it."""
+    return [
+        loop
+        for loop in plant.all_loops
+        if loop.zone == zone or (loop.runs.kind is RunKind.WITH_ZONES and zone in loop.runs.zones)
+    ]
+
+
 def zone_readings(
     zone: Zone, observations: Observations, areas: AreaResolution, now: float
 ) -> ZoneReadings:
@@ -197,6 +194,20 @@ def zone_readings(
         areas=breakdown,
         sensors={sensor.entity: _value(sensors.get(sensor.entity)) for sensor in zone.temperature},
     )
+
+
+def _passes_flow(plant: Plant, loop: Loop, outputs: Mapping[str, OutputState]) -> bool:
+    """Whether a loop's valves are all on and its pump runs.
+
+    A source-driven pump runs while the source's request is on.
+    """
+    if not all(_on(outputs.get(valve.entity)) for valve in loop.valves):
+        return False
+    pump = plant.pump(loop.pump)
+    if pump.switch is not None:
+        return _on(outputs.get(pump.switch))
+    source = plant.source
+    return source is not None and _on(outputs.get(source.request))
 
 
 def _on(state: OutputState | None) -> bool:

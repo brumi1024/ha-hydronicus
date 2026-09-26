@@ -21,7 +21,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN
-from .core.model import LoopRef, Plant, Zone
+from .core.model import Loop, LoopRef, Plant, Zone
 from .storage import zone_subentry_ids
 from .view import ZoneReadings
 
@@ -83,6 +83,12 @@ def zone_device(runtime: PlantRuntime, zone: Zone) -> DeviceInfo:
         model="Hydronicus Zone",
         via_device_id=runtime.plant_device_id,
     )
+
+
+def loop_device(runtime: PlantRuntime, loop: Loop) -> DeviceInfo:
+    """The device of a loop: its zone's, or the Plant's for a plant loop."""
+    plant = runtime.plant
+    return plant_device(plant) if loop.zone is None else zone_device(runtime, plant.zone(loop.zone))
 
 
 def source_device(runtime: PlantRuntime) -> DeviceInfo:
