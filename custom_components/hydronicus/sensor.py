@@ -19,14 +19,12 @@ from .core.model import Zone
 from .core.step import value_of
 from .entity import (
     HydronicusEntity,
+    ZoneEntity,
     async_add_plant_entities,
     plant_device,
     plant_unique_id,
-    zone_device,
-    zone_unique_id,
 )
 from .runtime import PlantRuntime
-from .view import ZoneReadings
 
 PARALLEL_UPDATES = 0
 
@@ -93,7 +91,7 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
         return attributes
 
 
-class ZoneTemperatureSensor(HydronicusEntity, SensorEntity):
+class ZoneTemperatureSensor(ZoneEntity, SensorEntity):
     """A zone's combined temperature, with each area's sensor and reading."""
 
     _attr_translation_key = "combined_temperature"
@@ -104,17 +102,7 @@ class ZoneTemperatureSensor(HydronicusEntity, SensorEntity):
     _attr_suggested_display_precision = 1
 
     def __init__(self, runtime: PlantRuntime, zone: Zone) -> None:
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, "temperature"),
-            zone_device(runtime, zone),
-        )
-        self._zone = zone.slug
-
-    @property
-    def _readings(self) -> ZoneReadings:
-        view = self.runtime.view
-        return ZoneReadings() if view is None else view.readings(self._zone)
+        super().__init__(runtime, zone, "temperature")
 
     @property
     def native_value(self) -> float | None:
@@ -129,7 +117,7 @@ class ZoneTemperatureSensor(HydronicusEntity, SensorEntity):
         }
 
 
-class ZoneDewPointSensor(HydronicusEntity, SensorEntity):
+class ZoneDewPointSensor(ZoneEntity, SensorEntity):
     """A cooling zone's worst-case dew point, from its warmest and most humid readings."""
 
     _attr_translation_key = "dew_point"
@@ -140,24 +128,16 @@ class ZoneDewPointSensor(HydronicusEntity, SensorEntity):
     _attr_suggested_display_precision = 1
 
     def __init__(self, runtime: PlantRuntime, zone: Zone) -> None:
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, "dew_point"),
-            zone_device(runtime, zone),
-        )
-        self._zone = zone.slug
+        super().__init__(runtime, zone, "dew_point")
 
     @property
     def native_value(self) -> float | None:
-        view = self.runtime.view
-        readings = ZoneReadings() if view is None else view.readings(self._zone)
-        return None if readings.dew_point is None else round(readings.dew_point, 2)
+        dew_point = self._readings.dew_point
+        return None if dew_point is None else round(dew_point, 2)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        view = self.runtime.view
-        readings = ZoneReadings() if view is None else view.readings(self._zone)
-        return {"humidity": readings.humidity}
+        return {"humidity": self._readings.humidity}
 
 
 async def async_setup_entry(

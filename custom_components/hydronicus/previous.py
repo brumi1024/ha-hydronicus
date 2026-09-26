@@ -52,7 +52,8 @@ class Commanding:
 class PreviousConfiguration:
     """What the last setup persisted, and the previous Plant while its off sequence runs."""
 
-    def __init__(self, title: str, plant: Plant, valid: bool) -> None:
+    def __init__(self, title: str, plant: Plant, document: Mapping[str, Any] | None) -> None:
+        """``document`` is the configured Plant's plant file, or None when it is not valid."""
         self.title = title
         # The last valid Plant and the outputs it commanded, as persisted.
         self.persisted: Commanding | None = None
@@ -60,7 +61,7 @@ class PreviousConfiguration:
         self.stopping: Commanding | None = None
         self.decided = False
         self._plant = plant
-        self._export = export_plant(plant) if valid else None
+        self._export = document
         self._stopping_export: dict[str, Any] | None = None
 
     def load(self, data: Mapping[str, Any] | None) -> None:

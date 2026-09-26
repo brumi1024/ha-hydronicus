@@ -27,7 +27,7 @@ from .const import (
 )
 from .core.model import Plant
 from .core.plant_file import PlantFileError, describe_path
-from .entity import async_remove_unprovided, is_stale_device
+from .entity import async_remove_unprovided, is_stale_device, plant_device
 from .issues import async_delete_issues, async_sync_issues, invalid_plant
 from .runtime import PlantRuntime, store_key
 from .services import async_setup_services
@@ -119,13 +119,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     entry.runtime_data = runtime
     runtime.plant_device_id = (
         dr.async_get(hass)
-        .async_get_or_create(
-            config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, plant.id)},
-            name=plant.name,
-            manufacturer="Hydronicus",
-            model="Hydronicus Plant",
-        )
+        .async_get_or_create(config_entry_id=entry.entry_id, **plant_device(plant))
         .id
     )
     new_climates = zones_without_climate(hass, plant)

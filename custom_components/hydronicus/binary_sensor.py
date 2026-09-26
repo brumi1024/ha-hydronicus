@@ -17,33 +17,28 @@ from .core.model import Loop, Mode, Zone
 from .core.step import value_of
 from .entity import (
     HydronicusEntity,
+    ZoneEntity,
     async_add_plant_entities,
     loop_unique_id,
     plant_device,
     plant_unique_id,
     source_device,
     zone_device,
-    zone_unique_id,
 )
 from .runtime import PlantRuntime
 
 PARALLEL_UPDATES = 0
 
 
-class ZoneDemandSensor(HydronicusEntity, BinarySensorEntity):
+class ZoneDemandSensor(ZoneEntity, BinarySensorEntity):
     """Whether a zone demands heating, or cooling, with the demand level from 0 to 1."""
 
     _unrecorded_attributes = frozenset({"reason"})
 
     def __init__(self, runtime: PlantRuntime, zone: Zone, mode: Mode) -> None:
         kind = "heating" if mode is Mode.HEAT else "cooling"
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, f"{kind}_demand"),
-            zone_device(runtime, zone),
-        )
+        super().__init__(runtime, zone, f"{kind}_demand")
         self._attr_translation_key = f"{kind}_demand"
-        self._zone = zone.slug
         self._mode = mode
 
     @property

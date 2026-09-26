@@ -12,7 +12,6 @@ are fixed outside Hydronicus, at the device or in the area settings.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -25,7 +24,7 @@ from homeassistant.helpers import issue_registry as ir
 from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
 from .core.model import OutputRole, Plant
-from .core.plant_file import describe_path, export_plant
+from .core.plant_file import describe_path
 
 
 class IssueKind(StrEnum):
@@ -158,8 +157,11 @@ def outputs_awaiting_confirmation(plant: Plant, entity_ids: Iterable[str]) -> Is
     )
 
 
-def missing_binding(plant: Plant, entity_id: str, path: str) -> Issue:
-    """A bound entity that does not exist; a zone's binding is fixed in that zone."""
+def missing_binding(plant: Plant, document: Mapping[str, Any], entity_id: str, path: str) -> Issue:
+    """A bound entity that does not exist; a zone's binding is fixed in that zone.
+
+    ``document`` is the Plant's plant file, which names the objects the path passes through.
+    """
     keys = path.split(".")
     return Issue(
         IssueKind.MISSING_BINDING,
@@ -167,7 +169,7 @@ def missing_binding(plant: Plant, entity_id: str, path: str) -> Issue:
         {
             "plant": plant.name,
             "entity_id": entity_id,
-            "path": describe_path(_document(plant), path),
+            "path": describe_path(document, path),
         },
         zone=keys[1] if keys[0] == "zones" and len(keys) > 1 else None,
         path=path,
@@ -180,12 +182,6 @@ def missing_area_sensor(plant: Plant, area: str, entity_id: str) -> Issue:
         f"{area}|{entity_id}",
         {"plant": plant.name, "area": area, "entity_id": entity_id},
     )
-
-
-@functools.lru_cache(maxsize=8)
-def _document(plant: Plant) -> dict[str, Any]:
-    """The plant file of a Plant, which names the objects a path passes through."""
-    return export_plant(plant)
 
 
 def zone_area_issue(plant: Plant, problem: ZoneAreaProblem, areas: AreaResolution) -> Issue:

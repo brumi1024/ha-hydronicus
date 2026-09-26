@@ -23,6 +23,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .const import DOMAIN
 from .core.model import LoopRef, Plant, Zone
 from .storage import zone_subentry_ids
+from .view import ZoneReadings
 
 if TYPE_CHECKING:
     from .runtime import PlantRuntime
@@ -124,6 +125,22 @@ class HydronicusEntity(Entity):
         if snapshot != self._published:
             self._published = snapshot
             self.async_write_ha_state()
+
+
+class ZoneEntity(HydronicusEntity):
+    """An entity of one zone, on the zone's device."""
+
+    def __init__(self, runtime: PlantRuntime, zone: Zone, suffix: str) -> None:
+        super().__init__(
+            runtime, zone_unique_id(runtime.plant.id, zone.slug, suffix), zone_device(runtime, zone)
+        )
+        self._zone = zone.slug
+
+    @property
+    def _readings(self) -> ZoneReadings:
+        """What the zone's sensors showed at the last evaluation."""
+        view = self.runtime.view
+        return ZoneReadings() if view is None else view.readings(self._zone)
 
 
 @callback

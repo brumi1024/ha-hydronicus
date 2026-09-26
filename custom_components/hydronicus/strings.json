@@ -667,9 +667,6 @@
     "plant_not_found": {
       "message": "Config entry {config_entry_id} is not a Hydronicus Plant. Choose a Hydronicus Plant to export."
     },
-    "invalid_target_temperature": {
-      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
-    },
     "unsupported_hvac_mode": {
       "message": "The zone thermostat has no mode {mode}. Choose one of: {modes}."
     }

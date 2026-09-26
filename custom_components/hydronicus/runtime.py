@@ -66,7 +66,7 @@ from .core.model import (
     OutputTarget,
     Plant,
 )
-from .core.plant_file import entity_paths
+from .core.plant_file import entity_paths, export_plant
 from .core.reconcile import Reconciled, ReconcileState, reconcile, step_view
 from .core.step import (
     DigitalThermostatState,
@@ -133,7 +133,11 @@ class PlantRuntime:
         # empty Plant with the stored ID and name, and ``problem`` says what is wrong.
         self.plant = plant
         self.problem = problem
-        self.previous = PreviousConfiguration(entry.title, plant, problem is None)
+        # The configured Plant's plant file, exported once.
+        self.document = export_plant(plant)
+        self.previous = PreviousConfiguration(
+            entry.title, plant, self.document if problem is None else None
+        )
         self.store: Store[dict[str, Any]] = Store(hass, STORE_VERSION, store_key(entry.entry_id))
         self.state = State()
         self.reconcile_state = ReconcileState()
@@ -615,7 +619,9 @@ class PlantRuntime:
             for entity, path in entity_paths(plant).items()
             if states.get(entity) is None
         }
-        issues.extend(missing_binding(plant, entity, path) for entity, path in missing.items())
+        issues.extend(
+            missing_binding(plant, self.document, entity, path) for entity, path in missing.items()
+        )
         for area_id, names in self.areas.area_sensors.items():
             for entity in (names.temperature, names.humidity):
                 if entity is not None and states.get(entity) is None:

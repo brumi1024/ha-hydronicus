@@ -1,8 +1,9 @@
 """The digital thermostat of a zone (decision 9).
 
 It owns the zone's target, preset, and mode, restores them across restarts, and
-reports as its action what the equipment does for the zone. The exact Celsius target is persisted
-beside the restored state, because the display unit may round it.
+reports as its action what the equipment does for the zone. The exact Celsius
+target is persisted beside the restored state, because the display unit may
+round it.
 """
 
 from __future__ import annotations
@@ -31,9 +32,8 @@ from . import HydronicusConfigEntry
 from .const import DOMAIN
 from .core.model import DigitalThermostat, Mode, Preset, Zone
 from .core.step import DigitalThermostatState
-from .entity import HydronicusEntity, async_add_plant_entities, zone_device, zone_unique_id
+from .entity import ZoneEntity, async_add_plant_entities
 from .runtime import PlantRuntime
-from .view import ZoneReadings
 
 # The runtime evaluates thermostat changes itself.
 PARALLEL_UPDATES = 0
@@ -49,7 +49,7 @@ _BASE_FEATURES: Final = (
 )
 
 
-class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
+class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
     """A Hydronicus-owned digital thermostat for one zone."""
 
     # No name: the thermostat is the zone device's main feature and takes its name.
@@ -60,12 +60,7 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
     _attr_target_temperature_step = 0.5
 
     def __init__(self, runtime: PlantRuntime, zone: Zone, config: DigitalThermostat) -> None:
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, "climate"),
-            zone_device(runtime, zone),
-        )
-        self._zone = zone.slug
+        super().__init__(runtime, zone, "climate")
         self._config = config
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
         if zone.cools:
@@ -130,11 +125,6 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
         )
 
     @property
-    def _readings(self) -> ZoneReadings:
-        view = self.runtime.view
-        return ZoneReadings() if view is None else view.readings(self._zone)
-
-    @property
     def current_temperature(self) -> float | None:
         return self._readings.temperature
 
@@ -179,19 +169,10 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set a manual target in Celsius, which leaves any preset, and the mode it names."""
+        # Home Assistant has already refused a target outside min_temp and max_temp.
         temperature = kwargs.get(ATTR_TEMPERATURE)
         hvac_mode = kwargs.get(ATTR_HVAC_MODE)
-        target = None if temperature is None else _usable_target(float(temperature))
-        if temperature is not None and target is None:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="invalid_target_temperature",
-                translation_placeholders={
-                    "temperature": str(temperature),
-                    "minimum": str(MIN_TARGET),
-                    "maximum": str(MAX_TARGET),
-                },
-            )
+        target = None if temperature is None else float(temperature)
         if hvac_mode is not None and hvac_mode not in self.hvac_modes:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,

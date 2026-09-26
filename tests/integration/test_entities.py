@@ -224,6 +224,11 @@ async def test_setting_a_target_with_a_mode_changes_both(hass: HomeAssistant) ->
             hvac_mode="auto",
         )
     assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 22.5)
+    with pytest.raises(ServiceValidationError, match="Accepted range is 5.0 to 35.0"):
+        await async_call(
+            hass, "climate", "set_temperature", entity_id="climate.study", temperature=40.0
+        )
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 22.5)
 
 
 async def test_a_missing_output_blocks_its_loop_and_raises_a_repair(
