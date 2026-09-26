@@ -13,7 +13,7 @@ from typing import Any, Final
 
 from .areas import AreaResolution
 from .core.demand import aggregate, dew_point, zone_values
-from .core.model import Desired, Loop, Mode, Plant, SwitchTarget, Zone
+from .core.model import Desired, Loop, Mode, Plant, RunKind, SwitchTarget, Zone
 from .core.reconcile import Reconciled
 from .core.step import Observations, OutputState, Reading, SwitchState
 from .previous import Commanding
@@ -96,6 +96,32 @@ class PlantView:
             self.loop_flowing(loop) for loop in self.plant.all_loops
         ):
             return "heating" if desired.mode is Mode.HEAT else "cooling"
+        return "idle"
+
+    def zone_action(self, zone: str) -> str:
+        """What the equipment does for a zone: heating, cooling, preheating, or idle.
+
+        The zone is heated or cooled while it demands in the mode the outputs run
+        in and one of its loops passes flow, which includes a plant loop that runs
+        with it. It is preheating while it demands heat and a loop it wants does
+        not pass flow yet, such as while its valves open. Anything else is idle.
+        """
+        desired = self.desired
+        demand = desired.demands.get(zone)
+        if demand is None or not demand.on or demand.mode is not desired.mode:
+            return "idle"
+        loops = [
+            loop
+            for loop in self.plant.all_loops
+            if loop.zone == zone
+            or (loop.runs.kind is RunKind.WITH_ZONES and zone in loop.runs.zones)
+        ]
+        if any(self.loop_flowing(loop) for loop in loops):
+            return "heating" if desired.mode is Mode.HEAT else "cooling"
+        if desired.mode is Mode.HEAT and any(
+            desired.reasons.get(str(loop.ref)) == "wanted" for loop in loops
+        ):
+            return "preheating"
         return "idle"
 
     def stopping_outputs(self) -> list[str]:

@@ -71,7 +71,7 @@ The Home Assistant adapter lives beside the core:
 - `dispatch.py` sends the actions outside the evaluation from one task at a time, in the order they were decided and each within `CALL_TIMEOUT` of its evaluation, and stopping drops the queue and cancels that task, so no call starts once stopping has begun.
 - `previous.py` persists the last valid Plant with the outputs it was commanding.
   When a new configuration removes an output that is on, or is not valid, the first evaluation runs that previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
-- `view.py` is the read model: the `PlantView` of each evaluation, from which the entities and diagnostics derive the status, the blocked zones, the flowing loops, and the zone readings.
+- `view.py` is the read model: the `PlantView` of each evaluation, from which the entities and diagnostics derive the status, the blocked zones, the flowing loops, the zone readings, and each thermostat's action.
 - `observe.py` reads Home Assistant states as observations: output feedback, units and plausibility of sensors, external thermostats, and the output memory that keeps when an output last changed across restarts.
 - `areas.py` owns every area and floor registry read: it resolves the sensors that covered areas name on every evaluation, drops sensors Hydronicus provides, and reports area problems for the runtime, the reviews, and Repairs.
   `zone_area.py` puts a new zone climate entity in the one area its zone covers.

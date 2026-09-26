@@ -1,7 +1,7 @@
 """The digital thermostat of a zone (decision 9).
 
 It owns the zone's target, preset, and mode, restores them across restarts, and
-reports the zone's demand as its action. The exact Celsius target is persisted
+reports as its action what the equipment does for the zone. The exact Celsius target is persisted
 beside the restored state, because the display unit may round it.
 """
 
@@ -162,15 +162,13 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
 
     @property
     def hvac_action(self) -> HVACAction | None:
+        """What the equipment does for the zone; the demand sensors show what it asks for."""
         view = self.runtime.view
         if view is None:
             return None
         if self._thermostat.hvac_mode is Mode.OFF:
             return HVACAction.OFF
-        demand = view.desired.demands.get(self._zone)
-        if demand is None or not demand.on:
-            return HVACAction.IDLE
-        return HVACAction.HEATING if demand.mode is Mode.HEAT else HVACAction.COOLING
+        return HVACAction(view.zone_action(self._zone))
 
     @callback
     def _set(self, thermostat: DigitalThermostatState) -> None:

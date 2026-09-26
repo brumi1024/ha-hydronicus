@@ -77,7 +77,16 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 The thermostat is the zone's digital thermostat.
 It offers `off` and `heat`, plus `cool` when a loop of the zone cools, and the presets the zone has.
 Its target ranges from 5 to 35 °C in steps of 0.5, and its target, preset, and mode survive restarts.
-Its `hvac_action` shows the zone's demand: `off`, `idle`, `heating`, or `cooling`.
+Its `hvac_action` shows what the equipment does for the zone, not what the zone asks for, which the demand binary sensors show:
+
+| Action | When |
+| --- | --- |
+| `off` | The thermostat is off. |
+| `heating` or `cooling` | The zone demands in the mode the outputs run in, and one of its loops, or a plant loop that runs with it, passes flow. |
+| `preheating` | The zone demands heat while the outputs run heat, and a loop it wants does not pass flow yet, such as while its valves open. |
+| `idle` | Anything else, such as while the Plant mode is off or runs the other mode, or while the zone's loops are dropped. |
+
+In Dry run it follows the proposed states, as the loop flowing sensors do.
 It shows the zone's combined temperature, and its humidity when the zone has a humidity sensor or an area.
 A zone with an external thermostat gets no thermostat entity, because the existing climate entity is the thermostat.
 A zone that covers exactly one area gets its thermostat placed in that area when it is first created, so it appears on the area's page and answers voice commands for the area.

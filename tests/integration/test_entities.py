@@ -101,6 +101,40 @@ async def test_a_zone_that_cools_gets_cooling_demand_and_a_dew_point(
     assert hass.states.get("climate.study").attributes["current_humidity"] == 50.0
 
 
+async def test_a_thermostat_action_is_what_the_equipment_does_for_its_zone(
+    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
+) -> None:
+    """Demand alone is not an action: the Plant must run the zone's mode and its loop flow."""
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 18.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+    await async_set_options(hass, entry, armed=["switch.pump", "switch.study_valve"], control=True)
+
+    def action() -> str:
+        return str(hass.states.get("climate.study").attributes["hvac_action"])
+
+    assert action() == "off"
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="heat")
+    assert hass.states.get("binary_sensor.study_heating_demand").state == "on"
+    assert action() == "idle", "the Plant mode is off"
+
+    await async_call(hass, "select", "select_option", entity_id="select.flat_mode", option="heat")
+    assert actuators.shorts() == ["switch.study_valve:on"]
+    assert action() == "preheating", "the valve is opening"
+    await async_advance(hass, freezer, 200, step=5)
+    assert actuators.shorts() == ["switch.study_valve:on", "switch.pump:on"]
+    assert action() == "heating"
+
+    set_temperature(hass, "sensor.study", 24.0)
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="cool")
+    assert hass.states.get("binary_sensor.study_cooling_demand").state == "on"
+    assert action() == "idle", "the Plant runs heat"
+    await async_call(hass, "climate", "turn_off", entity_id="climate.study")
+    assert action() == "off"
+
+
 async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
     hass: HomeAssistant,
 ) -> None:
