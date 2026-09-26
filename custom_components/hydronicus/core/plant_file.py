@@ -31,12 +31,16 @@ import yaml
 
 from .model import (
     DEFAULT_MAX_AGE,
+    DEFAULT_MAX_HUMIDITY,
     DEFAULT_MIN_OFF,
     DEFAULT_MIN_ON,
     DEFAULT_MODE_DWELL,
     DEFAULT_OPENING_TIME,
     DEFAULT_OVERRUN,
     DEFAULT_POST_RUN,
+    DEFAULT_SURFACE_MINIMUM,
+    DEFAULT_WINDOW_CLOSE_DELAY,
+    DEFAULT_WINDOW_OPEN_DELAY,
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
@@ -75,9 +79,27 @@ _PUMP_KEYS: Final = (
     "min_flow",
     "min_flow_loops",
     "supply_temperature",
+    "condensation_switch",
 )
-_PLANT_LOOP_KEYS: Final = ("name", "valves", "pump", "runs", "modes", "surface_temperature")
-_ZONE_LOOP_KEYS: Final = ("name", "valves", "pump", "modes", "surface_temperature")
+_PLANT_LOOP_KEYS: Final = (
+    "name",
+    "valves",
+    "pump",
+    "runs",
+    "modes",
+    "surface_temperature",
+    "surface_minimum",
+    "condensation_switch",
+)
+_ZONE_LOOP_KEYS: Final = (
+    "name",
+    "valves",
+    "pump",
+    "modes",
+    "surface_temperature",
+    "surface_minimum",
+    "condensation_switch",
+)
 _ZONE_KEYS: Final = (
     "name",
     "areas",
@@ -85,6 +107,10 @@ _ZONE_KEYS: Final = (
     "humidity",
     "aggregation",
     "thermostat",
+    "windows",
+    "window_open_delay",
+    "window_close_delay",
+    "max_humidity",
     "loops",
 )
 _VALVE_KEYS: Final = ("entity", "opening_time", "readiness")
@@ -113,6 +139,8 @@ _SELECT_DOMAINS: Final = ("select",)
 _SENSOR_DOMAINS: Final = ("sensor",)
 _READINESS_DOMAINS: Final = ("binary_sensor",)
 _CLIMATE_DOMAINS: Final = ("climate",)
+# Condensation switches and windows.
+_CONTACT_DOMAINS: Final = ("binary_sensor",)
 
 _SLUG: Final = re.compile(r"[a-z][a-z0-9_]*")
 # Home Assistant's entity ID rule: lowercase words joined by single underscores.
@@ -232,6 +260,7 @@ def _pump(slug: str, value: object, path: str) -> Pump:
         if "supply_temperature" in pump
         else None
     )
+    condensation_switch = _contact(pump, "condensation_switch", path)
     if "switch" in pump:
         return Pump(
             slug=slug,
@@ -241,6 +270,7 @@ def _pump(slug: str, value: object, path: str) -> Pump:
             min_flow_loops=min_flow_loops,
             supply_temperature=supply_temperature,
             name=_name(pump, path),
+            condensation_switch=condensation_switch,
         )
     if pump["driven_by"] != "source":
         raise PlantFileError(
@@ -258,6 +288,7 @@ def _pump(slug: str, value: object, path: str) -> Pump:
         min_flow_loops=min_flow_loops,
         supply_temperature=supply_temperature,
         name=_name(pump, path),
+        condensation_switch=condensation_switch,
     )
 
 
@@ -292,6 +323,8 @@ def _loop(ref: LoopRef, value: object, path: str) -> Loop:
             else None
         ),
         name=_name(loop, path),
+        condensation_switch=_contact(loop, "condensation_switch", path),
+        surface_minimum=_setting(loop, "surface_minimum", DEFAULT_SURFACE_MINIMUM, path),
     )
 
 
@@ -367,6 +400,22 @@ def _zone(slug: str, value: object, path: str) -> Zone:
             else _DEFAULT_THERMOSTAT
         ),
         name=_name(zone, path),
+        windows=tuple(
+            _entity(item, item_path, _CONTACT_DOMAINS)
+            for item, item_path in _items_of(zone, "windows", path)
+        ),
+        window_open_delay=_number(
+            zone.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY),
+            _join(path, "window_open_delay"),
+        ),
+        window_close_delay=_number(
+            zone.get("window_close_delay", DEFAULT_WINDOW_CLOSE_DELAY),
+            _join(path, "window_close_delay"),
+        ),
+        max_humidity=_percent(
+            _setting(zone, "max_humidity", DEFAULT_MAX_HUMIDITY, path),
+            _join(path, "max_humidity"),
+        ),
     )
 
 
@@ -493,6 +542,25 @@ def _required(mapping: Mapping[str, Any], key: str, path: str) -> Any:
     if key not in mapping:
         raise PlantFileError(_join(path, key), "This key is required.")
     return mapping[key]
+
+
+def _contact(mapping: Mapping[str, Any], key: str, path: str) -> str | None:
+    """Read an optional binary sensor, such as a condensation switch."""
+    return _entity(mapping[key], _join(path, key), _CONTACT_DOMAINS) if key in mapping else None
+
+
+def _setting(mapping: Mapping[str, Any], key: str, default: float, path: str) -> float | None:
+    """Read a number that ``null`` turns off, or its default when the key is left out."""
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    return None if value is None else _number(value, _join(path, key))
+
+
+def _percent(value: float | None, path: str) -> float | None:
+    if value is not None and value > 100:
+        raise PlantFileError(path, "Must be at most 100.")
+    return value
 
 
 def _name(mapping: Mapping[str, Any], path: str) -> str | None:
@@ -641,6 +709,11 @@ def _check_loop(plant: Plant, loop: Loop) -> None:
             "A loop that cools needs a condensation reference: a supply_temperature on pump "
             f"{pump.slug} or the loop's surface_temperature. Without one the loop is heat only.",
         )
+    if loop.surface_temperature is None and loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        raise PlantFileError(
+            _join(path, "surface_minimum"),
+            "A surface_minimum needs the loop's surface_temperature, which it reads.",
+        )
 
 
 def _check_runs(plant: Plant, loop: Loop, path: str) -> None:
@@ -678,6 +751,7 @@ def _check_zone(zone: Zone) -> None:
     _check_listed_once(
         _join(path, "humidity"), [sensor.entity for sensor in zone.humidity], "Sensor"
     )
+    _check_listed_once(_join(path, "windows"), list(zone.windows), "Window")
     if isinstance(zone.thermostat, DigitalThermostat) and not zone.temperature and not zone.areas:
         raise PlantFileError(path, "A digital thermostat needs a temperature sensor or an area.")
     if zone.cools and not zone.humidity and not zone.areas:
@@ -765,6 +839,7 @@ def entity_paths(plant: Plant) -> dict[str, str]:
     for pump in plant.pumps:
         bind(pump.switch, f"pumps.{pump.slug}.switch")
         bind(pump.supply_temperature, f"pumps.{pump.slug}.supply_temperature")
+        bind(pump.condensation_switch, f"pumps.{pump.slug}.condensation_switch")
     for loop in plant.loops:
         _bind_loop(loop, bind)
     for zone in plant.zones:
@@ -775,6 +850,8 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(sensor.entity, f"{path}.humidity.{index}")
         if isinstance(zone.thermostat, ExternalThermostat):
             bind(zone.thermostat.entity, f"{path}.thermostat.external")
+        for index, window in enumerate(zone.windows):
+            bind(window, f"{path}.windows.{index}")
         for loop in zone.loops:
             _bind_loop(loop, bind)
     return paths
@@ -786,6 +863,7 @@ def _bind_loop(loop: Loop, bind: Callable[[str | None, str], None]) -> None:
         bind(valve.entity, f"{path}.valves.{index}")
         bind(valve.readiness, f"{path}.valves.{index}.readiness")
     bind(loop.surface_temperature, f"{path}.surface_temperature")
+    bind(loop.condensation_switch, f"{path}.condensation_switch")
 
 
 # Paths in words
@@ -821,6 +899,11 @@ _KEY_WORDS: Final = {
     "temperature": "temperature sensors",
     "humidity": "humidity sensors",
     "max_age": "maximum age",
+    "condensation_switch": "condensation switch",
+    "surface_minimum": "surface minimum",
+    "window_open_delay": "window open delay",
+    "window_close_delay": "window close delay",
+    "max_humidity": "maximum humidity",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
@@ -830,6 +913,7 @@ _ITEM_WORDS: Final = {
     "areas": "area",
     "temperature": "temperature sensor",
     "humidity": "humidity sensor",
+    "windows": "window",
 }
 _OBJECT_WORDS: Final = {"pumps": "Pump", "loops": "Plant loop", "zones": "Zone"}
 
@@ -942,6 +1026,8 @@ def _export_pump(pump: Pump) -> dict[str, Any]:
         document["min_flow_loops"] = [str(ref) for ref in pump.min_flow_loops]
     if pump.supply_temperature is not None:
         document["supply_temperature"] = pump.supply_temperature
+    if pump.condensation_switch is not None:
+        document["condensation_switch"] = pump.condensation_switch
     return document
 
 
@@ -957,7 +1043,16 @@ def _export_loop(loop: Loop) -> dict[str, Any]:
     document["modes"] = [str(mode) for mode in _LOOP_MODES if mode in loop.modes]
     if loop.surface_temperature is not None:
         document["surface_temperature"] = loop.surface_temperature
+    if loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        document["surface_minimum"] = _export_setting(loop.surface_minimum)
+    if loop.condensation_switch is not None:
+        document["condensation_switch"] = loop.condensation_switch
     return document
+
+
+def _export_setting(value: float | None) -> int | float | None:
+    """Write a setting that ``null`` turns off."""
+    return None if value is None else _export_number(value)
 
 
 def _export_valve(valve: Valve) -> str | dict[str, Any]:
@@ -984,6 +1079,14 @@ def _export_zone(zone: Zone) -> dict[str, Any]:
         document["aggregation"] = str(zone.aggregation)
     if zone.thermostat != _DEFAULT_THERMOSTAT:
         document["thermostat"] = _export_thermostat(zone.thermostat)
+    if zone.windows:
+        document["windows"] = list(zone.windows)
+    if zone.window_open_delay != DEFAULT_WINDOW_OPEN_DELAY:
+        document["window_open_delay"] = _export_number(zone.window_open_delay)
+    if zone.window_close_delay != DEFAULT_WINDOW_CLOSE_DELAY:
+        document["window_close_delay"] = _export_number(zone.window_close_delay)
+    if zone.max_humidity != DEFAULT_MAX_HUMIDITY:
+        document["max_humidity"] = _export_setting(zone.max_humidity)
     if zone.loops:
         document["loops"] = {loop.slug: _export_loop(loop) for loop in zone.loops}
     return document

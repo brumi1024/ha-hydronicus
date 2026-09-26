@@ -58,6 +58,7 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
     _attr_min_temp = MIN_TARGET
     _attr_max_temp = MAX_TARGET
     _attr_target_temperature_step = 0.5
+    _unrecorded_attributes = frozenset({"reason"})
 
     def __init__(self, runtime: PlantRuntime, zone: Zone, config: DigitalThermostat) -> None:
         super().__init__(runtime, zone, "climate")
@@ -159,6 +160,13 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
         if self._thermostat.hvac_mode is Mode.OFF:
             return HVACAction.OFF
         return HVACAction(view.zone_action(self._zone))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Why the zone demands or not, as its demand sensors show it."""
+        view = self.runtime.view
+        demand = None if view is None else view.desired.demands.get(self._zone)
+        return {} if demand is None else {"reason": demand.reason}
 
     @callback
     def _set(self, thermostat: DigitalThermostatState) -> None:

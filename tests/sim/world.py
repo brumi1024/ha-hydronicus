@@ -3,7 +3,8 @@
 The world owns what really happens, independent of what the controller
 believes: switch outputs, valve travel, switched pumps, the source with its
 source-driven pumps and post-run, the mode select, sensors, thermostats, and
-the service calls in flight with their faults.
+the service calls in flight with their faults, and the binary sensors a
+Plant reads besides valve readiness: condensation switches and windows.
 
 Time ``t`` is physical and monotonic, in seconds from the start of the
 simulation. Home Assistant stamps observations with the wall clock, which is
@@ -224,6 +225,8 @@ class World:
         self.selects: dict[str, SelectBody] = {}
         self.valves: dict[str, ValveBody] = {}
         self.readiness: dict[str, SwitchBody] = {}
+        # Condensation switches and windows, which only a trace changes.
+        self.contacts: dict[str, SwitchBody] = {}
         self.sensors: dict[str, SensorBody] = {}
         self.areas: dict[str, AreaSensors] = {}
         self.thermostats: dict[str, ThermostatState] = {}
@@ -282,6 +285,9 @@ class World:
                 self.thermostats.setdefault(
                     zone.slug, DigitalThermostatState(Mode.OFF, zone.thermostat.target)
                 )
+
+        for entity in contacts(plant):
+            self.contacts.setdefault(entity, SwitchBody(changed=self.wall()))
 
     def _sensor(self, entity: str, value: float) -> None:
         self.sensors.setdefault(entity, SensorBody(value))
@@ -496,6 +502,17 @@ class World:
             sensor.available = available
             self.changed()
 
+    def set_contact(self, entity: str, on: bool | None) -> None:
+        """Turn a condensation switch or window on or off, or None for unavailable."""
+        body = self.contacts[entity]
+        available = on is not None
+        if body.available == available and (on is None or body.on == on):
+            return
+        body.available = available
+        body.on = body.on if on is None else on
+        body.changed = self.wall()
+        self.changed()
+
     def set_thermostat(self, zone: str, state: ThermostatState) -> None:
         if self.thermostats.get(zone) != state:
             self.thermostats[zone] = state
@@ -594,7 +611,10 @@ class World:
             control=self.control,
             armed=self.armed,
             outputs=outputs,
-            readiness={entity: body.observe() for entity, body in self.readiness.items()},
+            readiness={
+                entity: body.observe()
+                for entity, body in (*self.readiness.items(), *self.contacts.items())
+            },
             sensors={entity: self.reading(entity, now) for entity in self.sensors},
             areas=dict(self.areas),
             thermostats=dict(self.thermostats),
@@ -608,3 +628,11 @@ class World:
         if sensor.stale:
             return Reading(sensor.stale_value, sensor.stale_since)
         return Reading(sensor.value, now)
+
+
+def contacts(plant: Plant) -> list[str]:
+    """Every condensation switch and window a Plant reads."""
+    found = [pump.condensation_switch for pump in plant.pumps]
+    found.extend(loop.condensation_switch for loop in plant.all_loops)
+    found.extend(window for zone in plant.zones for window in zone.windows)
+    return [entity for entity in dict.fromkeys(found) if entity is not None]

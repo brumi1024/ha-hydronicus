@@ -14,6 +14,8 @@ Have these entities ready:
 - Optionally, a `switch` that asks the heat pump or boiler for heat or cooling, and a `select` that switches it between heating and cooling.
 - A temperature sensor for every zone, either named in the settings of the zone's Home Assistant areas, as described in [Areas](#areas), or chosen in the zone form.
 - For cooling: a humidity sensor for every zone that cools, and a supply temperature or surface temperature sensor as the condensation reference of every loop that cools.
+- Optionally, for cooling: a `binary_sensor` for each dew point or condensation switch on a cooling pipe, which is on when it detects condensation.
+- Optionally, a `binary_sensor` for each window or door whose opening should stop its zone, which is on while it is open.
 
 Hydronicus never offers its own entities in these forms, because a Plant that reads its own output would feed back into itself.
 
@@ -42,6 +44,7 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Set the **Overrun**, how long a switched pump keeps running after heating ends (180 seconds).
    Set the **Minimum flow** to **Needs an open loop**, or to **A separator guarantees its flow** when a hydraulic separator, buffer, or bypass gives the pump a path whatever the loops do.
    Optionally choose the **Supply temperature sensor**, the water temperature this pump supplies, which lets its loops cool.
+   Optionally choose the **Condensation switch** on the pump's supply pipe; while it is on or unavailable, none of the pump's loops cools.
    Turn on **Add another pump** to add the next one.
 4. **How is your home zoned?**
    Choose **One zone per area** to give each chosen Home Assistant area a zone of its own, **Zones that cover several areas** to group areas into zones, such as one zone per floor, or **Zones without areas** for zones with their own sensors or an existing thermostat.
@@ -52,12 +55,16 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Add **Extra temperature sensors** and **Extra humidity sensors** that are not named by the chosen areas, such as a floor probe.
    Choose how to **Combine temperatures by**: **Mean**, **Minimum**, or **Maximum**.
    Choose an **Existing thermostat** to let an existing climate entity own the zone's demand, or leave it empty for a digital thermostat that Hydronicus provides.
+   Optionally choose the zone's **Windows**, and set the **Window open delay** and the **Window close delay** (60 seconds each), as [Windows](#windows) describes.
+   Set the **Maximum humidity for cooling** (70 %), above which the zone's loops stop cooling, as [Cooling limits](#cooling-limits) describes.
    The collapsed **Digital thermostat presets** section sets the **Comfort**, **Eco**, and **Away** targets; leave a preset empty to leave it out.
 6. The loop form.
    Enter the **Loop name**, such as `Ceiling` or `Floor`.
    Choose the **Valves** that open together for the loop, or none for a loop whose pump is its only control.
    Choose the **Pump** that moves the loop's water.
    Choose the **Modes**: **Heating**, **Cooling**, or both; cooling needs the pump's supply temperature sensor or the loop's **Surface temperature sensor**.
+   With a surface sensor, set the **Cooling surface minimum** (20 °C), the coldest the surface may get while the loop cools.
+   Optionally choose a **Condensation switch** that covers this loop alone.
    Set the **Valve opening time**, how long every valve of the loop takes to open before its pump may start (180 seconds).
    Leave **Valves** and **Pump** empty to give the zone no loop of its own, for a zone that only a plant loop serves.
 7. The zone's menu.
@@ -203,6 +210,28 @@ Make sure the existing thermostat does not itself switch a valve or pump that Hy
 
 A zone's thermostat mode counts only when it matches the Plant mode.
 
+## Windows
+
+A zone's **Windows** are binary sensors that are on while a window or door of the zone is open, such as contact sensors.
+Once one of them has been open for the **Window open delay**, the zone's demand is off, in heating and in cooling, and its demand sensors and thermostat show the reason `window open`.
+The demand comes back once every window has been closed for the **Window close delay**.
+The delays keep a door walked through, or a window opened for a moment, from closing valves that take minutes to open again.
+
+The thermostat keeps its target and mode while a window is open, and a demand that comes back holds for its minimum on time from then.
+A window sensor that is unavailable or unknown counts as closed, so a flat battery never stops the heating; a window sensor that does not exist raises a Repair.
+
+## Cooling limits
+
+The [condensation guard](how-it-works.md#cooling-and-the-condensation-guard) stops a loop's cooling below the dew point, and three limits add to it:
+
+- A **Condensation switch** on a pump or a loop, such as a dew point switch on the cooling supply pipe, stops cooling at once while it is on, unavailable, or unknown, and cooling resumes only once it has read off for 5 minutes.
+  It does not replace the supply or surface temperature sensor that a loop needs to cool.
+- The **Cooling surface minimum** of a loop with a surface sensor, 20 °C by default, keeps a cooled floor comfortable to stand on.
+  A ceiling may use a lower value.
+- The **Maximum humidity for cooling** of a zone, 70 % by default, stops the loops that read the zone's dew point while the zone's highest humidity is above it, and they cool again once it is 5 points below.
+
+Empty fields mean the defaults, and only the [plant file](plant-file.md) turns the surface minimum or the humidity limit off, with `null`.
+
 ## Observation units
 
 Hydronicus evaluates every temperature in °C and every humidity in percent, whatever unit system Home Assistant displays.
@@ -321,6 +350,7 @@ Before you turn **Control equipment** on:
 - Every armed output is the entity of the device its role names.
 - Every zone shows the temperature you expect on its **Combined temperature** sensor.
 - Every loop that cools has a condensation reference, and every zone that cools shows a plausible **Dew point**.
+- Every condensation switch reads off while its pipe is dry, and every window reads open and closed as it is.
 - Every pump the source runs has **A separator guarantees its flow** only if a separator, buffer, or bypass really protects it.
 - The Dry run proposals follow the order you expect: valves, then pumps, then the source.
 - The physical protections of the plant work without Home Assistant, as [safety limits](safety.md) describes.

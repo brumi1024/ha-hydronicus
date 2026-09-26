@@ -163,6 +163,7 @@ Every loop runs on exactly one pump, and a pump can drive any number of loops.
 | `min_flow` | no | `path` | `path` when the pump needs an open loop while it runs, `guaranteed` when a hydraulic separator, buffer, or bypass gives it a path whatever the loops do. |
 | `min_flow_loops` | see below | | For a source-driven pump with `min_flow: path`: the loops Hydronicus holds open whenever none of the pump's other loops is ready while the pump may run. |
 | `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. |
+| `condensation_switch` | no | | A `binary_sensor` on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on, unavailable, or unknown, none of the pump's loops cools. |
 
 A pump has either `switch` or `driven_by: source`, never both.
 A switched pump with `min_flow: path` simply never runs without a ready loop, so it takes no `min_flow_loops`.
@@ -220,10 +221,16 @@ A loop with no valve is always an open path, and its pump is its only control.
 | `pump` | yes | | The slug of the pump that moves the loop's water. |
 | `modes` | no | `[heat]` | `[heat]`, `[cool]`, or `[heat, cool]`. |
 | `surface_temperature` | no | | A `sensor` of the floor or ceiling surface temperature, the loop's own condensation reference. |
+| `surface_minimum` | no | `20` | Only with `surface_temperature`: the lowest surface temperature while the loop cools, in °C. `null` turns it off. |
+| `condensation_switch` | no | | A `binary_sensor` that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on, unavailable, or unknown, the loop does not cool. |
 | `runs` | plant loops only | | When a [plant loop](#plant-loops) runs. |
 
 A loop may cool only with a condensation reference: its pump's `supply_temperature` or its own `surface_temperature`.
 A loop without either is heat only.
+A condensation switch never replaces that reference; it only adds to the [condensation guard](how-it-works.md#cooling-and-the-condensation-guard).
+
+The default `surface_minimum` of 20 °C keeps a cooled floor comfortable to stand on, as ISO 7730 and REHVA advise.
+A ceiling nobody touches may run colder, so a ceiling loop may use a lower value, such as `17`, as long as the dew point allows it.
 
 ### Plant loops
 
@@ -276,6 +283,10 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `humidity` | no | | Extra humidity sensors, see [Sensors](#sensors). |
 | `aggregation` | no | `mean` | How the zone combines its temperatures: `mean`, `min`, or `max`. |
 | `thermostat` | no | a digital thermostat | See [Thermostats](#thermostats). |
+| `windows` | no | | `binary_sensor` entities that are on while a window or door of the zone is open, see [Windows](#windows). |
+| `window_open_delay` | no | `60` | Seconds a window must read open before the zone's demand turns off. |
+| `window_close_delay` | no | `60` | Seconds every window must read closed before the zone's demand comes back. |
+| `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool. `null` turns the cutoff off. |
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
 A zone with a digital thermostat needs a temperature sensor or an area.
@@ -314,6 +325,13 @@ Lower it for a sensor that reports every few minutes, so a sensor that stops is 
 The condensation guard's references, a pump's `supply_temperature` and a loop's `surface_temperature`, are stale after 1800 seconds, because cooling needs a fresh reference.
 
 Calibrate a sensor at its source; the plant file has no offsets or weights.
+
+### Windows
+
+Once any window of `windows` has read open for `window_open_delay`, the zone's demand is off, in heating and in cooling, with the reason `window open`.
+It comes back once every window has read closed for `window_close_delay`.
+The thermostat keeps its target and mode meanwhile, and a demand that comes back holds for its `min_on` from then.
+A window sensor that is unavailable or unknown reads as closed, so a lost sensor never stops the heating.
 
 ### Thermostats
 
@@ -383,7 +401,8 @@ zones:
 
 ## A small cooling Plant
 
-A loop that cools needs a condensation reference, and its zone needs a humidity reading:
+A loop that cools needs a condensation reference, and its zone needs a humidity reading.
+This one also stops cooling when the dew point switch on the circulator's supply pipe trips, and stops the zone's demand while its window is open:
 
 ```yaml
 hydronicus: 2
@@ -394,10 +413,12 @@ source:
 pumps:
   circulator:
     switch: switch.office_circulator
+    condensation_switch: binary_sensor.office_dew_point_switch
 zones:
   office:
     temperature: [sensor.office_temperature]
     humidity: [sensor.office_humidity]
+    windows: [binary_sensor.office_window]
     loops:
       ceiling:
         valves: [switch.office_ceiling_valve]
@@ -451,7 +472,7 @@ These are problems in variations of the reference plant, with the path, the word
 | --- | --- | --- |
 | `hydronicus` | Plant file format | Plant file format 1 is no longer read; describe the Plant in format 2. |
 | `zones.Living room` | Zone Living room | A slug starts with a lowercase letter and holds only lowercase letters, digits, and underscores. |
-| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature. |
+| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature, surface_minimum, condensation_switch. |
 | `zones.living_area.loops.floor.pump` | Zone Living area, loop Floor, pump | There is no pump underfloor. |
 | `zones.living_area.loops.floor.modes` | Zone Living area, loop Floor, modes | A loop that cools needs a condensation reference: a supply_temperature on pump floor or the loop's surface_temperature. Without one the loop is heat only. |
 | `pumps.heat_pump.min_flow_loops` | Pump Heat pump, min-flow loops | A source-driven pump with min_flow: path needs min_flow_loops, the loops held open while it may run, or min_flow: guaranteed when a separator protects it. |

@@ -27,7 +27,7 @@ counts as possibly stopped.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -60,6 +60,7 @@ from .model import (
     RunKind,
     SwitchTarget,
     Valve,
+    Zone,
 )
 
 __all__ = [
@@ -68,6 +69,7 @@ __all__ = [
     "GUARD_MIN_BLOCKED",
     "GUARD_REFERENCE_MAX_AGE",
     "GUARD_RELEASE",
+    "HUMIDITY_RELEASE",
     "TICK",
     "AreaSensors",
     "DemandState",
@@ -93,6 +95,8 @@ CONDENSATION_MARGIN: Final = 2.0
 GUARD_RELEASE: Final = 1.0
 # A blocked guard releases only after it has blocked this long, in seconds.
 GUARD_MIN_BLOCKED: Final = 300.0
+# A humidity cutoff releases only this far below its limit, in percentage points.
+HUMIDITY_RELEASE: Final = 5.0
 # A condensation reference is stale this long after its last report, in seconds.
 # Supply and surface temperatures fall fast once cooling starts, so a reference
 # must be fresher than a room reading.
@@ -156,7 +160,8 @@ class Observations:
     armed: frozenset[str]
     # Every output of ``Plant.outputs()``; a missing entity counts as unavailable.
     outputs: Mapping[str, OutputState] = field(default_factory=dict)
-    # Every valve readiness binary sensor.
+    # Every binary sensor the Plant reads: valve readiness sensors, condensation
+    # switches, and windows; a missing one counts as unavailable.
     readiness: Mapping[str, SwitchState] = field(default_factory=dict)
     # Every numeric sensor the Plant reads: zone temperature and humidity,
     # explicit or named by an area, pump supply, and loop surface temperatures.
@@ -237,6 +242,8 @@ class State:
     # The valves and the source request that may have been on, whose closing or
     # post-run may still go on once they are observed off.
     winding: frozenset[str] = frozenset()
+    # The zones whose demand an open window turns off, by slug.
+    windows_open: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -259,6 +266,7 @@ class State:
             "overruns": dict(self.overruns),
             "ready": dict(self.ready),
             "winding": sorted(self.winding),
+            "windows_open": sorted(self.windows_open),
         }
 
     @classmethod
@@ -285,11 +293,21 @@ class State:
             overruns={slug: float(value) for slug, value in data.get("overruns", {}).items()},
             ready={entity: float(value) for entity, value in data.get("ready", {}).items()},
             winding=frozenset(str(entity) for entity in data.get("winding", ())),
+            windows_open=frozenset(str(zone) for zone in data.get("windows_open", ())),
         )
 
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+@dataclass(frozen=True, slots=True)
+class _Check:
+    """One condition of a condensation guard: whether it blocks, whether it releases, and why."""
+
+    blocks: bool
+    releases: bool
+    reason: str
 
 
 # Evaluation
@@ -316,6 +334,8 @@ class _Evaluation:
         self.plant, self.obs, self.state, self.now = plant, obs, state, now
         self.deadlines: list[float] = []
         self.reasons: dict[str, str] = {}
+        # The zones whose demand an open window turns off now.
+        self.windows_open: set[str] = set()
         self._ready: dict[Loop, bool] = {}
         self._pumps = {pump.slug: pump for pump in plant.pumps}
         self._loops_of: dict[str, list[Loop]] = {pump.slug: [] for pump in plant.pumps}
@@ -476,6 +496,7 @@ class _Evaluation:
             overruns=plan.overruns,
             ready=ready,
             winding=frozenset(winding),
+            windows_open=frozenset(self.windows_open),
         )
         desired = Desired(
             outputs=outputs,
@@ -490,14 +511,14 @@ class _Evaluation:
         return next_state, desired, due
 
     def demands(self) -> tuple[dict[str, Demand], dict[str, DemandState]]:
-        """Stage 2: aggregate each zone's temperature and evaluate its thermostat."""
+        """Stage 2: aggregate each zone's temperature, evaluate its thermostat, then its windows."""
         obs = self.obs
         demands: dict[str, Demand] = {}
         states: dict[str, DemandState] = {}
         for zone in self.plant.zones:
             values = zone_values(zone, obs.areas, obs.sensors, self.reached)
             temperature = None if values is None else aggregate(values, zone.aggregation)
-            states[zone.slug], demands[zone.slug] = zone_demand(
+            state, demand = zone_demand(
                 zone,
                 obs.thermostats.get(zone.slug),
                 temperature,
@@ -505,9 +526,49 @@ class _Evaluation:
                 self.now,
                 self.reached,
             )
-            demand = demands[zone.slug]
+            state, demand = self.window_inhibit(zone, state, demand)
+            states[zone.slug], demands[zone.slug] = state, demand
             self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
         return demands, states
+
+    def window_inhibit(
+        self, zone: Zone, state: DemandState, demand: Demand
+    ) -> tuple[DemandState, Demand]:
+        """Turn a zone's demand off while a window is open, after its thermostat decided.
+
+        The thermostat's own decision goes on underneath, so its hysteresis and
+        minimum times are the same when the window closes. A decision that is on
+        then counts its minimum on time from the end of the inhibit, because the
+        zone's valves have closed meanwhile, so it cannot end as soon as it resumes.
+        """
+        was_open = zone.slug in self.state.windows_open
+        if self.window_open(zone, was_open):
+            self.windows_open.add(zone.slug)
+            return state, Demand(demand.mode, False, "window open")
+        if was_open and state.on:
+            state = DemandState(state.mode, True, self.now)
+        return state, demand
+
+    def window_open(self, zone: Zone, was_open: bool) -> bool:
+        """Whether a zone's windows turn its demand off.
+
+        They do once a window has read open for the open delay, and stop once
+        every window has read closed for the close delay. An unavailable or
+        unknown window reads closed, so a lost sensor never stops heating.
+        """
+        windows = [self.obs.readiness.get(entity) for entity in zone.windows]
+        if not was_open:
+            return any(
+                window is not None
+                and window.on is True
+                and self.reached(window.since + zone.window_open_delay)
+                for window in windows
+            )
+        return not all(
+            window is None
+            or (window.on is not True and self.reached(window.since + zone.window_close_delay))
+            for window in windows
+        )
 
     def blocking_sensors(self) -> dict[str, tuple[str, ...]]:
         """Each zone's required sensors that are not usable, among the readings it needs.
@@ -547,8 +608,40 @@ class _Evaluation:
         return guards
 
     def guard(self, loop: Loop) -> GuardState:
+        """Block at once on any of the guard's checks; release once all of them release.
+
+        The dew point check comes first and always applies. The condensation
+        switches, the surface minimum, and the humidity cutoff only add to it.
+        """
+        now = self.now
+        checks = [
+            self.dew_point_check(loop),
+            *self.switch_checks(loop),
+            *self.surface_checks(loop),
+            *self.humidity_checks(loop),
+        ]
+        previous = self.state.guards.get(str(loop.ref))
+        blocking = any(check.blocks for check in checks)
+        releasing = all(check.releases for check in checks)
+        if blocking:
+            reason = "; ".join(check.reason for check in checks if check.blocks)
+        elif releasing:
+            reason = f"{checks[0].reason}, held for its minimum blocked time"
+        else:
+            reason = "; ".join(check.reason for check in checks if not check.releases)
+        if previous is None or not previous.blocked:
+            guard = GuardState(blocking, now) if previous is None or blocking else previous
+        elif releasing and self.reached(previous.since + GUARD_MIN_BLOCKED):
+            guard = GuardState(False, now)
+        else:
+            guard = previous
+        if guard.blocked:
+            self.reasons[f"{loop.ref}.guard"] = f"condensation guard blocks: {reason}"
+        return guard
+
+    def dew_point_check(self, loop: Loop) -> _Check:
         """Block below the worst-case dew point plus the margin; release 1 K above it."""
-        plant, obs, now = self.plant, self.obs, self.now
+        plant, obs = self.plant, self.obs
         pump = self._pumps[loop.pump]
         references = [e for e in (pump.supply_temperature, loop.surface_temperature) if e]
         values = [
@@ -561,32 +654,90 @@ class _Evaluation:
         ]
         usable = [value for value in values if value is not None]
         known = [point for point in points if point is not None]
-        previous = self.state.guards.get(str(loop.ref))
         if not usable or len(usable) < len(values) or not known or len(known) < len(points):
-            blocking, releasing = True, False
-            reason = "no usable condensation reference or dew point"
-        else:
-            threshold = max(known) + CONDENSATION_MARGIN
-            reference = min(usable)
-            blocking = reference < threshold
-            releasing = reference >= threshold + GUARD_RELEASE
-            if blocking:
-                reason = f"reference {reference:.1f} °C below {threshold:.1f} °C"
-            elif releasing:
-                reason = f"reference {reference:.1f} °C, held for its minimum blocked time"
+            return _Check(True, False, "no usable condensation reference or dew point")
+        threshold = max(known) + CONDENSATION_MARGIN
+        reference = min(usable)
+        if reference < threshold:
+            return _Check(True, False, f"reference {reference:.1f} °C below {threshold:.1f} °C")
+        if reference >= threshold + GUARD_RELEASE:
+            return _Check(False, True, f"reference {reference:.1f} °C")
+        return _Check(
+            False,
+            False,
+            f"reference {reference:.1f} °C, releases at {threshold + GUARD_RELEASE:.1f} °C",
+        )
+
+    def switch_checks(self, loop: Loop) -> Iterator[_Check]:
+        """Block at once while a condensation switch reads on or is unavailable.
+
+        The loop's own switch and its pump's switch cover it, and each releases
+        once it has read off for the guard's minimum blocked time.
+        """
+        pump = self._pumps[loop.pump]
+        for entity in (pump.condensation_switch, loop.condensation_switch):
+            if entity is None:
+                continue
+            switch = self.obs.readiness.get(entity)
+            if switch is None or switch.on is None:
+                yield _Check(True, False, f"condensation switch {entity} unavailable")
+            elif switch.on:
+                yield _Check(True, False, f"condensation switch {entity} on")
+            elif self.reached(switch.since + GUARD_MIN_BLOCKED):
+                yield _Check(False, True, f"condensation switch {entity} off")
             else:
-                reason = (
-                    f"reference {reference:.1f} °C, releases at {threshold + GUARD_RELEASE:.1f} °C"
+                yield _Check(
+                    False,
+                    False,
+                    f"condensation switch {entity} off for less than {GUARD_MIN_BLOCKED:.0f} s",
                 )
-        if previous is None or not previous.blocked:
-            guard = GuardState(blocking, now) if previous is None or blocking else previous
-        elif releasing and self.reached(previous.since + GUARD_MIN_BLOCKED):
-            guard = GuardState(False, now)
+
+    def surface_checks(self, loop: Loop) -> Iterator[_Check]:
+        """Block below the loop's surface minimum; release 1 K above it.
+
+        Without a usable surface reading the dew point check already blocks.
+        """
+        minimum = loop.surface_minimum
+        if loop.surface_temperature is None or minimum is None:
+            return
+        surface = fresh(
+            self.obs.sensors.get(loop.surface_temperature), GUARD_REFERENCE_MAX_AGE, self.reached
+        )
+        if surface is None:
+            return
+        if surface < minimum:
+            yield _Check(True, False, f"surface {surface:.1f} °C below its minimum {minimum:g} °C")
+        elif surface >= minimum + GUARD_RELEASE:
+            yield _Check(False, True, f"surface {surface:.1f} °C")
         else:
-            guard = previous
-        if guard.blocked:
-            self.reasons[f"{loop.ref}.guard"] = f"condensation guard blocks: {reason}"
-        return guard
+            yield _Check(
+                False,
+                False,
+                f"surface {surface:.1f} °C, releases at {minimum + GUARD_RELEASE:g} °C",
+            )
+
+    def humidity_checks(self, loop: Loop) -> Iterator[_Check]:
+        """Block while a zone whose dew point guards the loop is above its humidity limit.
+
+        It releases 5 points below the limit. Without a usable humidity the dew
+        point check already blocks.
+        """
+        obs = self.obs
+        for zone in self.plant.dew_point_zones(loop):
+            limit = zone.max_humidity
+            if limit is None:
+                continue
+            values = zone_values(zone, obs.areas, obs.sensors, self.reached, humidity=True)
+            if values is None:
+                continue
+            humidity = max(values)
+            where = f"humidity {humidity:.1f} % in zone {zone.slug}"
+            if humidity > limit:
+                yield _Check(True, False, f"{where} above {limit:g} %")
+            elif humidity <= limit - HUMIDITY_RELEASE:
+                yield _Check(False, True, where)
+            else:
+                yield _Check(False, False, f"{where}, releases at {limit - HUMIDITY_RELEASE:g} %")
 
     @property
     def forced_off(self) -> bool:

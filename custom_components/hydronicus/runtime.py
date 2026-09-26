@@ -510,6 +510,11 @@ class PlantRuntime:
                     readiness[valve.readiness] = SwitchState(
                         switch_value(state), now if state is None else state.last_changed_timestamp
                     )
+        # A condensation switch or window that does not exist is left out: a missing
+        # switch blocks cooling, and a missing window reads closed.
+        for entity in contacts(plant):
+            if (state := states.get(entity)) is not None:
+                readiness[entity] = SwitchState(switch_value(state), state.last_changed_timestamp)
         sensors = {
             entity: reading(states.get(entity), kind, now)
             for entity, kind in self._sensor_kinds().items()
@@ -592,6 +597,7 @@ class PlantRuntime:
         for plant in self._plants():
             for loop in plant.all_loops:
                 tracked.update(valve.readiness for valve in loop.valves if valve.readiness)
+            tracked.update(contacts(plant))
             for zone in plant.zones:
                 if isinstance(zone.thermostat, ExternalThermostat):
                     tracked.add(zone.thermostat.entity)
@@ -727,6 +733,14 @@ class PlantRuntime:
             self.issues, self._issues_synced = current, True
             async_sync_issues(self.hass, self.entry.entry_id, current)
         return missing
+
+
+def contacts(plant: Plant) -> set[str]:
+    """Every condensation switch and window a Plant reads."""
+    found = {pump.condensation_switch for pump in plant.pumps}
+    found.update(loop.condensation_switch for loop in plant.all_loops)
+    found.update(window for zone in plant.zones for window in zone.windows)
+    return {entity for entity in found if entity is not None}
 
 
 def store_key(entry_id: str) -> str:
