@@ -27,7 +27,7 @@ SEMVER_PATTERN = re.compile(
     r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
-IGNORED_PARTS = {"__pycache__"}
+IGNORED_PARTS = {"__pycache__", ".ruff_cache"}
 
 
 class ReleaseValidationError(ValueError):
