@@ -76,6 +76,24 @@ A supply temperature measures the water, not the coldest point of a ceiling or f
 Keep physical condensation protection where the emitters require it.
 A pump the source drives with `min_flow: path` may carry chilled water through its min-flow loop during the source's post-run, even when that loop's guard blocks; a separator, buffer, or bypass with `min_flow: guaranteed` avoids that.
 
+See [cooling while Home Assistant is not running](#cooling-while-home-assistant-is-not-running) for what protects the plant when the guard itself is not running.
+
+## Cooling while Home Assistant is not running
+
+The condensation guard only exists while Home Assistant is running and Hydronicus is evaluating.
+If Home Assistant stops or crashes during cooling, the source request, the valves, and the pumps stay exactly as they were, and chilled water keeps flowing with nothing watching the dew point.
+A reload, an unload, and a restart deliberately send no command, as [reloads, restarts, and changes](#reloads-restarts-and-changes) below describes, so nothing closes the loop by itself either.
+
+Protect against this independently of Hydronicus:
+
+- A hardware dew point or condensation switch on the cooling supply pipe, wired to stop the pump or close the valves directly, the way Danfoss and Siemens radiant systems do; such switches typically stop the plant at about 90% surface relative humidity.
+- A relay-level watchdog, such as a Shelly Gen2 switch's `auto_off` set with a delay on the source request or the cooling valves, combined with an automation that re-asserts them periodically while cooling should run.
+  `auto_off` also stops heating if Home Assistant stops, which is usually acceptable, since unmonitored cooling risks condensation while unmonitored heating mostly risks comfort.
+  The re-asserting automation must not fight Hydronicus: it must only refresh a relay that is already on, never turn one on that Hydronicus has not asked for.
+- The heat pump's own minimum supply temperature setting for cooling, typically 16 to 18 °C for floor and ceiling cooling, as the last line of defence.
+
+Treat this the same as the [physical protection](#two-separate-layers) the plant needs regardless of software: it has to work whether or not Home Assistant is running.
+
 ## Reloads, restarts, and changes
 
 A reload, an unload, and a Home Assistant restart never send a command, so the equipment stays exactly as it was while Hydronicus is not running; with unchanged observations, the first evaluation after one sends no command either.

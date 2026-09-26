@@ -227,6 +227,92 @@ The ranges are inclusive and catch sensor faults, such as -127 °C from a discon
 
 An unusable reading counts like an unavailable one: a required sensor blocks its zone, an optional one is left out, and a condensation reference blocks its loop's cooling.
 
+## Automatic heat and cool changeover
+
+The **Mode** select has no automatic option, by design: [mode changes](how-it-works.md#mode-changes) leaves picking heat or cool to you or to an automation you write.
+This recipe drives it from a slow outdoor temperature, so the Plant does not change mode on a passing cold snap or a sunny afternoon.
+
+### A slow outdoor temperature
+
+Smooth a fast outdoor sensor before you threshold it.
+The [`statistics`](https://www.home-assistant.io/integrations/statistics/) integration's `mean` characteristic over the last 24 hours works well, configured in YAML:
+
+```yaml
+sensor:
+  - platform: statistics
+    name: "Outdoor temperature 24h mean"
+    entity_id: sensor.outdoor_temperature
+    state_characteristic: mean
+    max_age:
+      hours: 24
+```
+
+Replace `sensor.outdoor_temperature` with your own outdoor sensor.
+A trend of a filter sensor works too, if you would rather act on a rate of change than a plain mean; either way, feed the automation below a sensor that moves over a day, not a minute.
+
+### Thresholds with a neutral band
+
+Heat pump and room controller vendors usually switch on a neutral band rather than a single crossover point, so the mode does not chatter around one threshold.
+The numbers below are examples: tune them to your climate, your emitters, and how far ahead the Plant needs to change mode.
+
+- Below about 15 °C: heat.
+- Above about 22 °C: cool.
+- Between them: off, so neither mode runs while the weather is mild.
+
+### The automation
+
+```yaml
+automation:
+  - alias: "Home: automatic heat/cool changeover"
+    triggers:
+      - trigger: state
+        entity_id: sensor.outdoor_temperature_24h_mean
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.automatic_changeover
+        state: "on"
+    actions:
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.outdoor_temperature_24h_mean
+                below: 15
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.home_mode
+                data:
+                  option: "heat"
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.outdoor_temperature_24h_mean
+                above: 22
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.home_mode
+                data:
+                  option: "cool"
+        default:
+          - action: select.select_option
+            target:
+              entity_id: select.home_mode
+            data:
+              option: "off"
+    mode: single
+```
+
+Replace `select.home_mode` with your own Plant's **Mode** select, following the `select.<plant>_mode` pattern from [the entities](entities.md#the-plant).
+Triggering on the mean sensor's own state changes acts as soon as a slow crossing happens, and triggering on Home Assistant start applies a value that is already past a threshold after a restart, before the mean sensor has changed again.
+
+Hydronicus itself enforces the [mode dwell](how-it-works.md#mode-changes) and the stop sequence between heating and cooling, so the automation needs no delay or extra condition of its own around the change.
+Setting the **Mode** select at the wrong moment only makes Hydronicus queue the change behind its own sequence; it never skips it.
+
+Because the automation sets the same select you might set by hand, whichever wrote it last wins: a manual change is overridden the next time the mean sensor crosses a threshold.
+Add an `input_boolean`, such as `input_boolean.automatic_changeover`, and the condition above to opt out of that: turn it off to hold the mode where you left it by hand, and back on to hand the select back to the automation.
+
 ## Checklist
 
 Before you turn **Control equipment** on:
