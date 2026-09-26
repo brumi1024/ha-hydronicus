@@ -11,9 +11,8 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigFlowResult, OptionsFlow
 
-from ..const import OPTION_ARMED_OUTPUTS
 from ..core.plant_file import PlantFileError, write_plant_file
-from ..storage import armed_outputs, plant_from_entry
+from ..storage import armed_outputs, plant_from_entry, with_armed
 from . import forms
 
 
@@ -32,18 +31,12 @@ class PlantSettingsFlow(OptionsFlow):
             return self.async_abort(
                 reason="invalid_plant", description_placeholders={"error": str(error)}
             )
-        labels = forms.output_labels(plant)
         if user_input is not None:
-            chosen = set(user_input.get("outputs") or [])
-            return self.async_create_entry(
-                data={
-                    **entry.options,
-                    OPTION_ARMED_OUTPUTS: [entity for entity in labels if entity in chosen],
-                }
-            )
+            chosen = user_input.get("outputs") or []
+            return self.async_create_entry(data=with_armed(entry, plant, chosen))
         return self.async_show_form(
             step_id="arm",
-            data_schema=forms.arm_schema(labels, armed_outputs(entry)),
+            data_schema=forms.arm_schema(forms.output_labels(plant), armed_outputs(entry)),
             description_placeholders={"plant": entry.title},
         )
 
