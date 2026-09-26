@@ -85,7 +85,7 @@ The Home Assistant adapter lives beside the core:
   Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a problem onto the field its path belongs to.
   A select's fixed options are translated through its `translation_key`, such as the add option of a pick form, whose value `add-new` is a valid translation key that no slug can be.
   What the code writes into a form stays English: labels of options whose values are slugs or entity IDs, such as `Living area / Ceiling` or a pump driven by the source, and description placeholders, such as the reviews, the change summary, and the reconfigure status, because Home Assistant translates neither.
-- `issues.py` computes the Repairs of a Plant, including a required sensor that `step()` reports blocking its zone and an unusable condensation input of a loop that cools, each once it has lasted 10 minutes, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
+- `issues.py` computes the Repairs of a Plant, including a required sensor that `step()` reports blocking its zone and an unusable condensation input that `step()` reports blocking the cooling of a loop, each once it has lasted 10 minutes, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
 - `entity.py` and the platforms publish the [entity contract](entities.md) from the view; unique IDs and device identifiers derive from the Plant ID and object slugs.
 - `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` returns the configuration, the last observations, the desired state, and the reconciler state, unredacted, since a Plant holds no secret.
 
@@ -124,8 +124,8 @@ Only a spontaneous physical change, such as a valve closing by itself, is exempt
 2. A pump with `min_flow: path` never runs without an open path, where a loop with no valve is always an open path.
 3. The source is requested only while at least one loop of the current mode is ready and, when its pump is switched, that pump is observed running.
 4. A source-driven pump with `min_flow: path` has an open path while the source is requested, during its post-run, and while it is observed running.
-5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the dwell and for the old mode's loops to stop.
-6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run.
+5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the old mode's loops to stop and for the dwell after the old mode's flow; an exercise's flow starts no dwell, since no source heats or cools it.
+6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run, and an exercise, which needs only the guard's checks against condensation.
 7. Every difference between desired and observed state is eventually observed resolved or reported as a Repair.
 8. With unchanged observations, the first evaluation after a reload or restart sends no command.
 9. Removing an object first stops the equipment it removes, and a configuration that is not valid stops in order and then only observes, with a Repair.

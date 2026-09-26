@@ -21,8 +21,10 @@ from custom_components.hydronicus.core.model import (
     SwitchTarget,
 )
 from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.core.reconcile import TRAVEL_GRACE
 from custom_components.hydronicus.core.step import (
     CALL_TIMEOUT,
+    EXERCISE_GRACE,
     GUARD_MIN_BLOCKED,
     GUARD_REFERENCE_MAX_AGE,
     HUMIDITY_RELEASE,
@@ -191,7 +193,8 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         windows_open=frozenset({"room"}),
         frost=frozenset({"room"}),
         idle_since={"switch.valve": LONG_AGO, "switch.pump": None},
-        exercise=ExerciseState("pump", NOW - 5, done=True),
+        exercise=ExerciseState("pump", NOW - 200, NOW - 5, done=True),
+        exercise_ended={"towel": NOW - 900},
     )
     assert State.from_dict(json.loads(json.dumps(state.to_dict()))) == state
     assert State.from_dict({}) == State()
@@ -566,7 +569,8 @@ def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteres
     early, desired, due = run(plant, ready_clear, blocked, NOW + 10)
     assert early.guards["a.ceiling"].blocked and due == pytest.approx(GUARD_MIN_BLOCKED - 10 + TICK)
     assert desired.reasons["a.ceiling.guard"] == (
-        "condensation guard blocks: reference 18.0 °C, held for its minimum blocked time"
+        "condensation guard blocks: reference 18.0 °C; humidity 50.0 % in zone a, "
+        "held for its minimum blocked time"
     )
     assert not run(plant, ready_clear, blocked, later)[0].guards["a.ceiling"].blocked
 
@@ -1129,6 +1133,7 @@ def test_frost_protection_never_heats_while_the_plant_cools_or_is_turned_off() -
     _, desired, _ = run(plant, _frosty(plant, 3.0, mode=Mode.OFF, control=False), live)
     assert desired.mode is Mode.OFF, "Control equipment off runs the off sequence, then nothing"
     assert all(target == OFF for target in desired.outputs.values())
+    assert desired.frost_protection == (), "and reports no frost protection meanwhile"
 
     unprotected = read_plant_file(
         CABIN.replace("name: Cabin", "name: Cabin\nfrost_protection: false")
@@ -1185,10 +1190,10 @@ def test_an_exercise_opens_the_valve_runs_the_pump_and_never_asks_the_source() -
     plant = _plant(RADIATOR)
     overdue = State(live=True, idle_since=_overdue(plant, "switch.pump"))
     state, desired, _ = run(plant, observe(plant, mode=Mode.OFF), overdue)
-    assert desired.exercise == "pump" and state.exercise == ExerciseState("pump")
+    assert desired.exercise == "pump" and state.exercise == ExerciseState("pump", NOW)
     assert targets(desired, "switch.valve", "switch.pump", "switch.boiler") == [ON, OFF, OFF]
     assert desired.reasons["room.radiator"] == "exercise"
-    assert state.last_mode is Mode.HEAT, "an exercise of a new Plant runs in heat"
+    assert state.last_mode is Mode.OFF, "an exercise of a new Plant runs in heat but sets no mode"
 
     ready = observe(plant, mode=Mode.OFF, on=["switch.valve"])
     state, desired, _ = run(plant, ready, state)
@@ -1197,11 +1202,13 @@ def test_an_exercise_opens_the_valve_runs_the_pump_and_never_asks_the_source() -
 
     running = observe(plant, mode=Mode.OFF, on=["switch.valve", "switch.pump"])
     state, desired, due = run(plant, running, state)
-    assert state.exercise == ExerciseState("pump", NOW) and not desired.source_request
+    assert state.exercise == ExerciseState("pump", NOW, NOW) and not desired.source_request
     assert due == pytest.approx(60.0 + TICK), "the pump runs for the exercise's run time"
 
     state, desired, _ = run(plant, running, state, NOW + 60)
-    assert desired.exercise is None and state.exercise == ExerciseState("pump", NOW, done=True)
+    assert desired.exercise is None
+    assert state.exercise == ExerciseState("pump", NOW, NOW, done=True)
+    assert state.exercise_ended == {"pump": NOW + 60}
     assert targets(desired, "switch.valve", "switch.pump") == [ON, OFF], (
         "the pump stops without overrun, and its valve waits for it"
     )
@@ -1211,12 +1218,16 @@ def test_an_exercise_opens_the_valve_runs_the_pump_and_never_asks_the_source() -
     state, desired, _ = run(plant, stopped, state, NOW + 70)
     assert state.exercise is None and desired.outputs["switch.valve"] == OFF
     assert state.idle_since == {"switch.pump": LONG_AGO, "switch.valve": None}
+    assert (state.last_mode, state.flowing, state.flow_ended) == (Mode.OFF, False, None)
 
 
 def test_an_exercise_yields_at_once_to_demand() -> None:
     plant = _plant(RADIATOR)
     exercising = State(
-        live=True, mode=Mode.HEAT, last_mode=Mode.HEAT, exercise=ExerciseState("pump", NOW - 10)
+        live=True,
+        mode=Mode.HEAT,
+        last_mode=Mode.HEAT,
+        exercise=ExerciseState("pump", NOW - 200, NOW - 10),
     )
     both = ["switch.valve", "switch.pump"]
     _, desired, _ = run(plant, observe(plant, on=both), exercising)
@@ -1255,7 +1266,7 @@ def test_an_exercise_runs_one_pump_at_a_time_and_skips_what_it_cannot_run() -> N
     everything = _overdue(plant, *plant.outputs())
     overdue = State(live=True, last_mode=Mode.HEAT, idle_since=everything)
     state, desired, _ = run(plant, observe(plant, mode=Mode.OFF), overdue)
-    assert state.exercise == ExerciseState("hp")
+    assert state.exercise == ExerciseState("hp", NOW)
     assert targets(desired, "switch.a_ceiling", "switch.b_ceiling", "switch.c_floor") == [
         ON,
         ON,
@@ -1266,18 +1277,19 @@ def test_an_exercise_runs_one_pump_at_a_time_and_skips_what_it_cannot_run() -> N
     unarmed = [entity for entity in plant.outputs() if entity != "switch.floor_pump"]
     valves_only = replace(overdue, idle_since=_overdue(plant, "switch.c_floor"))
     state, desired, _ = run(plant, observe(plant, mode=Mode.OFF, armed=unarmed), valves_only)
-    assert state.exercise == ExerciseState("floor")
+    assert state.exercise == ExerciseState("floor", NOW)
     ready = observe(plant, mode=Mode.OFF, armed=unarmed, on=["switch.c_floor"])
     state, desired, _ = run(plant, ready, state)
     assert desired.outputs["switch.floor_pump"] == OFF, "an unarmed pump is never run"
     assert state.exercise is None, "its valve alone is exercised, once it is ready"
+    assert state.exercise_ended == {"floor": NOW}
 
 
 def test_an_exercise_after_cooling_passes_only_cooling_loops_whose_guard_permits() -> None:
     plant = _plant(HEAT_PUMP)
     overdue = State(live=True, last_mode=Mode.COOL, idle_since=_overdue(plant, *plant.outputs()))
     state, desired, _ = run(plant, observe(plant, mode=Mode.OFF), overdue)
-    assert state.exercise == ExerciseState("hp"), "the heat-only floor and towel wait"
+    assert state.exercise == ExerciseState("hp", NOW), "the heat-only floor and towel wait"
     assert targets(desired, "switch.a_ceiling", "switch.b_ceiling") == [ON, ON]
     assert state.last_mode is Mode.COOL
 
@@ -1285,3 +1297,200 @@ def test_an_exercise_after_cooling_passes_only_cooling_loops_whose_guard_permits
     state, desired, _ = run(plant, observe(plant, mode=Mode.OFF, sensors=stale), overdue)
     assert state.exercise is None, "a blocked condensation guard passes no exercise"
     assert all(target == OFF for target in desired.outputs.values())
+
+
+# Two pumps: one with a floor and a wall loop, the other with a radiator.
+TWO_PUMPS = """
+hydronicus: 2
+name: Two
+pumps:
+  a: {switch: switch.a, overrun: 0}
+  b: {switch: switch.b, overrun: 0}
+zones:
+  room:
+    temperature: [sensor.room]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
+    loops:
+      floor: {valves: [switch.floor], pump: a}
+      wall: {valves: [switch.wall], pump: a}
+      radiator: {valves: [switch.radiator], pump: b}
+"""
+
+
+def test_the_exercise_grace_is_the_reconcilers_travel_grace() -> None:
+    assert EXERCISE_GRACE == TRAVEL_GRACE
+
+
+def test_an_exercise_gives_up_on_a_valve_that_never_opens_and_the_next_pump_goes_first() -> None:
+    plant = _plant(TWO_PUMPS)
+    overdue = State(live=True, idle_since=_overdue(plant, *plant.outputs()))
+    state, desired, _ = run(plant, observe(plant, mode=Mode.OFF), overdue)
+    assert state.exercise == ExerciseState("a", NOW)
+    assert targets(desired, "switch.floor", "switch.wall", "switch.a") == [ON, ON, OFF]
+
+    # The wall valve's relay no longer responds, and the floor is ready at once.
+    floor = observe(plant, mode=Mode.OFF, on=["switch.floor"])
+    state, desired, _ = run(plant, floor, state, NOW + 5)
+    assert desired.outputs["switch.a"] == ON, "the pump runs once one of its loops is ready"
+    running = observe(plant, mode=Mode.OFF, on=["switch.floor", "switch.a"])
+    state, _, _ = run(plant, running, state, NOW + 10)
+    assert state.exercise == ExerciseState("a", NOW, NOW + 10)
+
+    give_up = NOW + 2 * 180 + 60 + EXERCISE_GRACE
+    state, desired, due = run(plant, running, state, NOW + 70)
+    assert desired.exercise == "a", "after its run time the pump waits for the wall valve"
+    assert due == pytest.approx(give_up - (NOW + 70) + TICK)
+    state, desired, _ = run(plant, running, state, give_up)
+    assert state.exercise == ExerciseState("a", NOW, NOW + 10, done=True)
+    assert state.exercise_ended == {"a": give_up}
+    assert targets(desired, "switch.a", "switch.wall") == [OFF, OFF]
+
+    stopped = observe(plant, mode=Mode.OFF, on=["switch.floor"])
+    state, desired, _ = run(plant, stopped, state, give_up + 5)
+    assert state.exercise == ExerciseState("b", give_up + 5), "not pump a again at once"
+    assert state.exercise_ended == {"a": give_up}
+
+
+def test_an_exercise_skips_a_pump_whose_switch_is_not_observed_and_never_waits_for_it() -> None:
+    plant = _plant(TWO_PUMPS)
+    overdue = State(live=True, idle_since=_overdue(plant, *plant.outputs()))
+    lost = observe(plant, mode=Mode.OFF, unavailable=["switch.a"])
+    state, desired, _ = run(plant, lost, overdue)
+    assert state.exercise == ExerciseState("b", NOW), "pump a may be running unseen"
+    assert targets(desired, "switch.floor", "switch.wall", "switch.radiator") == [OFF, OFF, ON]
+
+    stopping = replace(overdue, exercise=ExerciseState("a", NOW - 300, NOW - 240, done=True))
+    state, _, _ = run(plant, lost, stopping)
+    assert state.exercise == ExerciseState("b", NOW), "a lost switch shows nothing to wait for"
+
+
+def test_an_exercise_sets_no_mode_so_a_new_plant_cools_without_the_dwell() -> None:
+    plant = _plant(COOLED_CEILING)
+
+    def seen(mode: Mode, *on: str) -> Observations:
+        base = cooling(plant, mode=mode)
+        running = {entity: SwitchState(True, LONG_AGO) for entity in on}
+        return replace(base, outputs={**base.outputs, **running})
+
+    overdue = State(live=True, idle_since=_overdue(plant, *plant.outputs()))
+    state, desired, _ = run(plant, seen(Mode.OFF), overdue)
+    assert desired.exercise == "pump" and desired.outputs["switch.ceiling"] == ON
+    state, desired, _ = run(plant, seen(Mode.OFF, "switch.ceiling"), state)
+    assert desired.outputs["switch.pump"] == ON, "a new Plant exercises in heat"
+    state, _, _ = run(plant, seen(Mode.OFF, "switch.ceiling", "switch.pump"), state)
+    assert (state.last_mode, state.flowing, state.flow_ended) == (Mode.OFF, False, None)
+
+    both = seen(Mode.COOL, "switch.ceiling", "switch.pump")
+    state, desired, _ = run(plant, both, state, NOW + 5)
+    assert desired.mode is Mode.OFF
+    assert desired.reasons["mode"] == "stopping the exercise before cool"
+    assert desired.outputs["switch.pump"] == OFF and desired.exercise is None
+    state, desired, _ = run(plant, seen(Mode.COOL, "switch.ceiling"), state, NOW + 10)
+    assert desired.mode is Mode.COOL, "the first mode of a new Plant needs no dwell"
+    assert desired.outputs["switch.ceiling"] == ON
+
+
+def test_an_exercise_after_cooling_needs_only_the_checks_against_condensation() -> None:
+    plant = _plant(COOLED_CEILING)
+    # 19 °C at 30 % has a dew point of 0.9 °C, so only the surface minimum blocks cooling.
+    cold = {"sensor.supply": 24.0, "sensor.room": 19.0, "sensor.room_rh": 30.0}
+    cold["sensor.surface"] = 19.5
+    wet = {**DRY, "binary_sensor.ceiling_dew": True}
+    idle = _overdue(plant, *plant.outputs())
+    for mode in (Mode.OFF, Mode.COOL):
+        after = State(live=True, mode=mode, last_mode=Mode.COOL, idle_since=idle)
+        quiet = cooling(plant, sensors=cold, mode=mode)
+        state, desired, _ = run(plant, quiet, after)
+        assert state.guards["room.ceiling"].blocked, "the guard blocks cooling"
+        assert state.exercise == ExerciseState("pump", NOW), "no chilled water flows"
+        opened = {**quiet.outputs, "switch.ceiling": SwitchState(True, LONG_AGO)}
+        _, desired, _ = run(plant, replace(quiet, outputs=opened), state)
+        assert targets(desired, "switch.ceiling", "switch.pump") == [ON, ON]
+
+        state, _, _ = run(plant, cooling(plant, sensors=cold, mode=mode, switches=wet), after)
+        assert state.exercise is None, "a condensation switch still stops it"
+
+
+def test_idle_clocks_stand_still_in_dry_run_and_an_exercise_follows_control_on() -> None:
+    plant = _plant(RADIATOR)
+    overdue = State(idle_since=_overdue(plant, "switch.pump"))
+    state, desired, _ = run(plant, observe(plant, mode=Mode.OFF, control=False), overdue)
+    assert desired.exercise == "pump", "the exercise is proposed in Dry run"
+
+    both = ["switch.valve", "switch.pump"]
+    proposed = observe(plant, mode=Mode.OFF, control=False, on=both)
+    state, _, _ = run(plant, proposed, state, NOW + 10)
+    state, desired, _ = run(plant, proposed, state, NOW + 70)
+    assert desired.outputs["switch.pump"] == OFF and state.exercise_ended == {"pump": NOW + 70}
+    stopped = observe(
+        plant, mode=Mode.OFF, control=False, on=["switch.valve"], since={"switch.pump": NOW + 75}
+    )
+    state, desired, _ = run(plant, stopped, state, NOW + 80)
+    assert state.exercise is None, "a proposal counts as done"
+    assert state.idle_since == overdue.idle_since, "but never moves the clocks"
+
+    state, desired, _ = run(plant, observe(plant, mode=Mode.OFF), state, NOW + 90)
+    assert state.exercise == ExerciseState("pump", NOW + 90) and state.exercise_ended == {}
+    assert desired.outputs["switch.valve"] == ON, "the equipment is exercised once it is live"
+
+
+def test_a_new_condensation_guard_blocks_until_every_check_releases() -> None:
+    plant = _plant(COOLED_CEILING)
+    fresh = cooling(plant, switched=NOW - 10)
+    state, desired, _ = run(plant, fresh)
+    assert state.guards["room.ceiling"] == GuardState(True, NOW)
+    assert desired.reasons["room.ceiling.guard"] == (
+        "condensation guard blocks: condensation switch binary_sensor.supply_dew off for less "
+        "than 300 s; condensation switch binary_sensor.ceiling_dew off for less than 300 s"
+    )
+    assert desired.outputs["switch.ceiling"] == OFF
+    released, desired, _ = run(plant, fresh, state, NOW + GUARD_MIN_BLOCKED)
+    assert not released.guards["room.ceiling"].blocked
+    assert desired.outputs["switch.ceiling"] == ON
+
+
+def test_the_desired_state_names_the_unusable_condensation_inputs_in_any_mode() -> None:
+    plant = _plant(COOLED_CEILING)
+    lost = cooling(
+        plant,
+        switches={"binary_sensor.ceiling_dew": None},
+        sensors={"sensor.supply": 24.0, "sensor.room_rh": 50.0},
+    )
+    inputs = ("sensor.surface", "binary_sensor.supply_dew", "binary_sensor.ceiling_dew")
+    for mode in (Mode.OFF, Mode.HEAT, Mode.COOL):
+        _, desired, _ = run(plant, replace(lost, mode=mode))
+        assert desired.blocking_condensation_inputs == {"room.ceiling": inputs}
+
+    stale = cooling(plant, sensors={"sensor.surface": 24.0, "sensor.room_rh": 50.0})
+    aged = Reading(24.0, NOW - GUARD_REFERENCE_MAX_AGE - 1)
+    _, desired, _ = run(plant, replace(stale, sensors={**stale.sensors, "sensor.supply": aged}))
+    assert desired.blocking_condensation_inputs == {"room.ceiling": ("sensor.supply",)}
+    assert run(plant, cooling(plant))[1].blocking_condensation_inputs == {}
+
+
+# A zone with no loop of its own, which a plant loop heats.
+SHARED = """
+hydronicus: 2
+name: Shared
+pumps:
+  pump: {switch: switch.pump, overrun: 0}
+loops:
+  floor: {valves: [switch.floor], pump: pump, runs: {with_zones: [room]}}
+zones:
+  room:
+    temperature: [sensor.room]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
+"""
+
+
+def test_frost_protection_heats_only_a_zone_that_a_loop_heats() -> None:
+    cool_only = _plant(COOLED_CEILING.replace("modes: [heat, cool]", "modes: [cool]"))
+    frosty = observe(cool_only, mode=Mode.OFF, temperatures={"room": 3.0})
+    _, desired, _ = run(cool_only, frosty, State(live=True))
+    assert desired.frost_protection == () and desired.mode is Mode.OFF
+
+    shared = _plant(SHARED)
+    frosty = observe(shared, mode=Mode.OFF, temperatures={"room": 3.0})
+    _, desired, _ = run(shared, frosty, State(live=True))
+    assert desired.frost_protection == ("room",), "a plant loop that runs with it heats it"
+    assert desired.outputs["switch.floor"] == ON

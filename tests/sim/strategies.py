@@ -69,7 +69,9 @@ MAX_EVENTS: Final = 16
 # The quiet period after the last event, beyond the Plant's mode dwell.
 SETTLE: Final = 3600.0
 
-_TEMPERATURES = st.integers(32, 54).map(lambda half: half / 2)
+# Room temperatures from 16 to 27 °C, and now and then 9.5 °C, which frost
+# protection at 10 °C reaches.
+_TEMPERATURES = st.integers(31, 54).map(lambda half: 9.5 if half == 31 else half / 2)
 _HUMIDITIES = st.integers(30, 80).map(float)
 _REFERENCES = st.integers(20, 60).map(lambda half: half / 2)
 _TARGETS = st.integers(38, 48).map(lambda half: half / 2)
@@ -187,12 +189,12 @@ def plants(draw: st.DrawFn) -> Plant:
             st.none()
             | st.builds(
                 Exercise,
-                interval=st.sampled_from([1800.0, 7200.0]),
+                interval=st.sampled_from([3600.0, 7200.0]),
                 run=st.sampled_from([30.0, 60.0]),
             )
         ),
-        # 17 °C is within reach of the zone temperatures the traces draw.
-        frost_protection=draw(st.sampled_from([None, 5.0, 17.0])),
+        # 10 °C, the highest a plant file allows, is within reach of the traces.
+        frost_protection=draw(st.sampled_from([None, 5.0, 10.0])),
     )
     validate_plant(plant)
     return plant

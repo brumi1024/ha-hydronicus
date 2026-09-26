@@ -119,6 +119,11 @@ async def test_a_condensation_switch_blocks_cooling_and_a_missing_one_is_a_repai
 ) -> None:
     await async_study(hass, "cool", 26.0)
     reasons = hass.states.get("sensor.flat_status").attributes["reasons"]
+    assert reasons["study.radiator.guard"] == (
+        "condensation guard blocks: condensation switch binary_sensor.dew off for less than 300 s"
+    ), "a new guard waits for the switch to have read off for its minimum time"
+    await async_advance(hass, freezer, 300, step=60)
+    reasons = hass.states.get("sensor.flat_status").attributes["reasons"]
     assert "study.radiator.guard" not in reasons and reasons["study.radiator"] == "wanted"
 
     hass.states.async_set("binary_sensor.dew", "on")

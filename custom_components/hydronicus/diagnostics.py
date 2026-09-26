@@ -66,6 +66,7 @@ def _desired(desired: Desired) -> dict[str, Any]:
         "reasons": dict(desired.reasons),
         "demands": _plain(dict(desired.demands)),
         "blocking_sensors": _plain(dict(desired.blocking_sensors)),
+        "blocking_condensation_inputs": _plain(dict(desired.blocking_condensation_inputs)),
     }
 
 

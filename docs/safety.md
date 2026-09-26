@@ -44,12 +44,12 @@ Switching the **Mode** select to off stops the equipment the same way and keeps 
 
 ## Frost protection and the exercise
 
-Frost protection heats a zone whose coldest reading falls below 5 °C, even while its thermostat or the **Mode** select is off, but only while Home Assistant runs, the zone's sensors report, and its outputs are armed and **Control equipment** is on.
+Frost protection heats a zone whose coldest reading falls below 5 °C, even while its thermostat or the **Mode** select is off, but only when a loop heats the zone, and only while Home Assistant runs, the zone's sensors report, and its outputs are armed and **Control equipment** is on.
 It never acts while the Plant cools.
 It is a comfort safeguard, not frost protection of the plant: keep the source's own frost protection, antifreeze, or drain-down where pipes can freeze.
 
 Hydronicus also exercises a switched pump or a valve that has not been on for a week, only while nothing else runs, one pump at a time, and never with the source asked for heat.
-It never runs a pump through a loop of the other mode or through a blocked condensation guard.
+It never runs a pump through a loop of the other mode, and after cooling only through a loop whose dew point check and condensation switches permit.
 
 ## Failures are retried and surfaced
 

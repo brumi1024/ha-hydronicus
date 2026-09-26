@@ -401,7 +401,7 @@ class Sim:
         state, desired, due = step(runtime.plant, view, runtime.state, now)
         if due is not None and not (math.isfinite(due) and due >= 0):
             raise InvariantViolation("K2", self.t, f"step() returned a due time of {due}")
-        self.checker.on_desired(desired, state.last_mode)
+        self.checker.on_desired(desired, state)
         result = reconcile(
             runtime.plant,
             desired,

@@ -44,6 +44,11 @@ from .model import (
     DEFAULT_SURFACE_MINIMUM,
     DEFAULT_WINDOW_CLOSE_DELAY,
     DEFAULT_WINDOW_OPEN_DELAY,
+    MAX_EXERCISE_RUN,
+    MAX_FROST_PROTECTION,
+    MIN_EXERCISE_INTERVAL,
+    MIN_EXERCISE_RUN,
+    MIN_MAX_HUMIDITY,
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
@@ -153,10 +158,9 @@ _VALVE_DOMAINS: Final = ("switch", "valve")
 _SWITCH_DOMAINS: Final = ("switch",)
 _SELECT_DOMAINS: Final = ("select",)
 _SENSOR_DOMAINS: Final = ("sensor",)
-_READINESS_DOMAINS: Final = ("binary_sensor",)
+# Valve readiness sensors, condensation switches, and windows.
+_BINARY_SENSOR_DOMAINS: Final = ("binary_sensor",)
 _CLIMATE_DOMAINS: Final = ("climate",)
-# Condensation switches and windows.
-_CONTACT_DOMAINS: Final = ("binary_sensor",)
 
 _SLUG: Final = re.compile(r"[a-z][a-z0-9_]*")
 # Home Assistant's entity ID rule: lowercase words joined by single underscores.
@@ -242,27 +246,26 @@ def _check_format(top: Mapping[str, Any]) -> None:
 
 
 def _exercise(value: object, path: str) -> Exercise | None:
-    """Read ``false``, which turns the exercise off, or its interval and run time."""
+    """Read ``false`` or ``null``, which turn the exercise off, or its interval and run time."""
     if value is False or value is None:
         return None
     if not isinstance(value, Mapping):
         raise PlantFileError(path, "Expected a mapping of interval and run, or false.")
     exercise = _mapping(value, path, _EXERCISE_KEYS)
+    interval_path, run_path = _join(path, "interval"), _join(path, "run")
+    interval = _number(exercise.get("interval", DEFAULT_EXERCISE.interval), interval_path)
+    run = _number(exercise.get("run", DEFAULT_EXERCISE.run), run_path)
     return Exercise(
-        interval=_number(
-            exercise.get("interval", DEFAULT_EXERCISE.interval),
-            _join(path, "interval"),
-            positive=True,
-        ),
-        run=_number(exercise.get("run", DEFAULT_EXERCISE.run), _join(path, "run"), positive=True),
+        interval=_within(interval, interval_path, low=MIN_EXERCISE_INTERVAL),
+        run=_within(run, run_path, low=MIN_EXERCISE_RUN, high=MAX_EXERCISE_RUN),
     )
 
 
 def _frost_protection(value: object, path: str) -> float | None:
-    """Read the frost protection temperature, or ``false``, which turns it off."""
+    """Read the frost protection temperature, or ``false`` or ``null``, which turn it off."""
     if value is False or value is None:
         return None
-    return _number(value, path)
+    return _within(_number(value, path), path, high=MAX_FROST_PROTECTION)
 
 
 def _source(value: object, path: str) -> Source:
@@ -410,7 +413,7 @@ def _valve(value: object, path: str) -> Valve:
             valve.get("opening_time", DEFAULT_OPENING_TIME), _join(path, "opening_time")
         ),
         readiness=(
-            _entity(valve["readiness"], _join(path, "readiness"), _READINESS_DOMAINS)
+            _entity(valve["readiness"], _join(path, "readiness"), _BINARY_SENSOR_DOMAINS)
             if "readiness" in valve
             else None
         ),
@@ -445,7 +448,7 @@ def _zone(slug: str, value: object, path: str) -> Zone:
         ),
         name=_name(zone, path),
         windows=tuple(
-            _entity(item, item_path, _CONTACT_DOMAINS)
+            _entity(item, item_path, _BINARY_SENSOR_DOMAINS)
             for item, item_path in _items_of(zone, "windows", path)
         ),
         window_open_delay=_number(
@@ -456,11 +459,16 @@ def _zone(slug: str, value: object, path: str) -> Zone:
             zone.get("window_close_delay", DEFAULT_WINDOW_CLOSE_DELAY),
             _join(path, "window_close_delay"),
         ),
-        max_humidity=_percent(
-            _setting(zone, "max_humidity", DEFAULT_MAX_HUMIDITY, path),
-            _join(path, "max_humidity"),
-        ),
+        max_humidity=_max_humidity(zone, path),
     )
+
+
+def _max_humidity(zone: Mapping[str, Any], path: str) -> float | None:
+    """Read a zone's humidity limit, or ``null``, which turns the cutoff off."""
+    value = _setting(zone, "max_humidity", DEFAULT_MAX_HUMIDITY, path)
+    if value is None:
+        return None
+    return _within(value, _join(path, "max_humidity"), low=MIN_MAX_HUMIDITY, high=100.0)
 
 
 def _area(value: object, path: str) -> ZoneArea:
@@ -590,7 +598,9 @@ def _required(mapping: Mapping[str, Any], key: str, path: str) -> Any:
 
 def _contact(mapping: Mapping[str, Any], key: str, path: str) -> str | None:
     """Read an optional binary sensor, such as a condensation switch."""
-    return _entity(mapping[key], _join(path, key), _CONTACT_DOMAINS) if key in mapping else None
+    if key not in mapping:
+        return None
+    return _entity(mapping[key], _join(path, key), _BINARY_SENSOR_DOMAINS)
 
 
 def _setting(mapping: Mapping[str, Any], key: str, default: float, path: str) -> float | None:
@@ -601,9 +611,13 @@ def _setting(mapping: Mapping[str, Any], key: str, default: float, path: str) ->
     return None if value is None else _number(value, _join(path, key))
 
 
-def _percent(value: float | None, path: str) -> float | None:
-    if value is not None and value > 100:
-        raise PlantFileError(path, "Must be at most 100.")
+def _within(
+    value: float, path: str, *, low: float | None = None, high: float | None = None
+) -> float:
+    if low is not None and value < low:
+        raise PlantFileError(path, f"Must be at least {low:g}.")
+    if high is not None and value > high:
+        raise PlantFileError(path, f"Must be at most {high:g}.")
     return value
 
 

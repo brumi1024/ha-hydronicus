@@ -101,6 +101,16 @@ DEFAULT_FROST_PROTECTION: Final = 5.0
 # Frost protection heats until the coldest reading is this far above its temperature, in kelvin.
 FROST_PROTECTION_RELEASE: Final = 1.0
 
+# The bounds a plant file keeps these settings within. Frost protection above
+# 10 °C would heat rooms whose thermostats are off; a humidity limit below 30 %
+# would block cooling for good; and an exercise more often than hourly, or a
+# pump run outside 10 seconds to 10 minutes, would hardly let the Plant rest.
+MAX_FROST_PROTECTION: Final = 10.0
+MIN_MAX_HUMIDITY: Final = 30.0
+MIN_EXERCISE_INTERVAL: Final = 3600.0
+MIN_EXERCISE_RUN: Final = 10.0
+MAX_EXERCISE_RUN: Final = 600.0
+
 
 def title_from_slug(slug: str) -> str:
     """Return the name a slug reads as, such as ``Living area`` for ``living_area``."""
@@ -445,6 +455,12 @@ class Desired:
     # By zone slug, the required sensors whose readings are not usable, among the
     # readings the zone needs; the zone fails closed until they report again.
     blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # By loop that cools, ``str(LoopRef)``, its condensation inputs that are not
+    # usable, in any mode: its pump's and its own condensation switch while
+    # unavailable, unknown, or missing, and its pump's supply and its own surface
+    # temperature while missing, stale, or not plausible. Its guard blocks until
+    # they report again.
+    blocking_condensation_inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The zones that frost protection heats, whatever their thermostats say.
     frost_protection: tuple[str, ...] = ()
     # The slug of the pump whose idle switch or valves are being exercised, if any.

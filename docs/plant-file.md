@@ -110,8 +110,8 @@ Read it from the top:
 | `id` | no | a new random ID | The Plant ID, a UUID. It forms the unique ID of every entity, so keep it to keep the entity IDs. |
 | `name` | yes | | The Plant name, which also names the Plant's device and its Plant-wide entities. |
 | `mode_dwell` | no | `3600` | Seconds between the end of the old mode's flow and the start of the new mode, after a change between heating and cooling. |
-| `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` to turn it off. |
-| `frost_protection` | no | `5` | The frost protection temperature in °C, or `false` to turn frost protection off. A zone whose coldest reading falls below it is heated whatever its thermostat says, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
+| `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` or `null` to turn it off. |
+| `frost_protection` | no | `5` | The frost protection temperature in °C, at most 10, or `false` or `null` to turn frost protection off. A zone that a loop heats is heated whatever its thermostat says once its coldest reading falls below it, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
 | `pumps` | no | | Slug to [pump](#pumps). |
 | `loops` | no | | Slug to [plant loop](#plant-loops). |
@@ -124,12 +124,12 @@ Numbers must not be negative unless a key says otherwise.
 ## Exercise
 
 A pump or valve that stays off for months can seize, so Hydronicus runs each switched pump and opens each valve that has not been on for a while, as [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves) describes.
-`exercise` is a mapping of two keys, or `false` to turn the exercise off:
+`exercise` is a mapping of two keys, or `false` or `null` to turn the exercise off:
 
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |
-| `interval` | no | `604800` | Seconds a switched pump or a valve may stay off before it is exercised, a week by default. Must be positive. |
-| `run` | no | `60` | Seconds an exercised switched pump runs. Must be positive. |
+| `interval` | no | `604800` | Seconds a switched pump or a valve may stay off before it is exercised, a week by default. Must be at least 3600, an hour. |
+| `run` | no | `60` | Seconds an exercised switched pump runs. Must be from 10 to 600. |
 
 This Plant exercises its pump and valve every three days, and never protects against frost, because its boiler does:
 
@@ -317,7 +317,7 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `windows` | no | | `binary_sensor` entities that are on while a window or door of the zone is open, see [Windows](#windows). |
 | `window_open_delay` | no | `60` | Seconds a window must read open before the zone's demand turns off. |
 | `window_close_delay` | no | `60` | Seconds every window must read closed before the zone's demand comes back. |
-| `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool. `null` turns the cutoff off. |
+| `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool, from 30 to 100. `null` turns the cutoff off. |
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
 A zone with a digital thermostat needs a temperature sensor or an area.
@@ -515,6 +515,7 @@ These are problems in variations of the reference plant, with the path, the word
 | `zones.bedroom_area` | Zone Bedroom area | A digital thermostat needs a temperature sensor or an area. |
 | `zones.living_area.humidity` | Zone Living area, humidity sensors | A zone that cools needs a humidity sensor or an area for its dew point. |
 | `loops.towel_dryer.runs` | Plant loop Towel dryer, runs with | This key is required. |
+| `frost_protection` | Frost protection | Must be at most 10. |
 
 A file that is empty, or is not valid YAML, is reported for the whole file, and so is a mapping that repeats a key.
 

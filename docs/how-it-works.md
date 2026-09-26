@@ -65,7 +65,7 @@ A window sensor that is unavailable or unknown reads as closed, so a lost sensor
 
 The Plant mode is off, heat, or cool, chosen with the **Mode** select, and heating and cooling never run at the same time.
 A change between heating and cooling is sequenced, as described in [mode changes](#mode-changes).
-While the **Mode** select is off, [frost protection](#frost-protection) runs the Plant in heat for the zones it protects, and only for them.
+While the **Mode** select is off, [frost protection](#frost-protection) runs the Plant in heat for the zones it protects: their loops, the plant loops that run with them or with the source, and the min-flow loops of a pump the source drives, and no zone whose thermostat asks for heat.
 
 ### 4. Wanted loops
 
@@ -179,21 +179,24 @@ A change between heating and cooling runs in order:
 4. The new mode starts, and the source's mode select is set to the new mode's option before its request goes on.
 
 Returning to the mode that last ran, or starting the first mode of a new Plant, needs no dwell.
+A change of mode also waits for an [exercise](#exercising-idle-pumps-and-valves) to stop, with the reason `stopping the exercise before cool`, but an exercise's flow starts no dwell and runs in no mode, because no source heats or cools its water.
 Switching the Plant to off stops the current mode with the same sequence.
 
 ## Frost protection
 
 Frost protection keeps a zone from freezing while its thermostat, or the whole Plant, is off.
-A zone whose coldest usable temperature reading is below the frost protection temperature, 5 °C by default, demands heating whatever its thermostat says and even while a window is open, and its demand reads `frost protection: heat to 6.0 °C from 4.0 °C`.
+A zone whose coldest usable temperature reading is below the frost protection temperature, 5 °C by default and at most 10 °C, demands heating whatever its thermostat says and even while a window is open, and its demand reads `frost protection: heat to 6.0 °C from 4.0 °C`.
+Only a zone that a loop heats is protected: one of its own loops, or a plant loop that runs with it, heats.
 The coldest reading counts, not the zone's combined temperature, and every usable sensor of the zone counts, required or optional, so one warm or missing sensor does not hide a cold room.
 A zone without any usable reading gets no frost protection.
 The demand holds until the coldest reading is 1 K above the frost protection temperature.
 
 Frost protection heats as a calling zone does: the zone's loops open, their pumps run, and the source is asked for heat.
-While the **Mode** select is off, it runs the Plant in heat for the zones it protects and only for them, so a zone whose thermostat asks for heat still waits for the **Mode**.
+While the **Mode** select is off, it runs the Plant in heat for the zones it protects: their loops, the plant loops that run with them or with the source, and the min-flow loops of a pump the source drives.
+A zone whose thermostat asks for heat still waits for the **Mode**.
 After cooling, the [mode dwell](#mode-changes) still runs before the Plant heats.
 It never acts while the Plant runs cool or the **Mode** select asks for cool, because a zone that cold while cooling has a broken sensor, which the checks of [stale and implausible readings](configuration.md#observation-units) handle.
-It obeys arming and **Control equipment** as a thermostat's demand does: turning **Control equipment** off still stops the equipment in order, and then frost protection is only proposed in Dry run.
+It obeys arming and **Control equipment** as a thermostat's demand does: turning **Control equipment** off, or stopping a previous configuration, stops the equipment in order without frost protection, and then frost protection is only proposed in Dry run.
 
 The **Status** sensor's `frost_protection` attribute lists the zones it heats, and a digital thermostat that is off shows `heating` while frost protection heats its zone.
 Set `frost_protection` in the [plant file](plant-file.md#top-level-keys), or **Frost protection** in the Plant form, to change the temperature or turn it off.
@@ -202,21 +205,28 @@ Set `frost_protection` in the [plant file](plant-file.md#top-level-keys), or **F
 
 A circulator or a thermoelectric valve actuator that stays off for months can seize, so Hydronicus exercises each switched pump and each valve that has not been seen on for the exercise interval, a week by default.
 The clock of a pump or valve starts when Hydronicus first sees it, so a new Plant is not overdue, and it survives restarts.
+Only what the outputs really show moves the clock, so a Plant that sat in Dry run exercises its equipment soon after **Control equipment** turns on.
 
 An exercise runs only while nothing else does: no loop is wanted, the source is neither requested nor in its post-run, no other switched pump runs, the mode is not changing, and **Control equipment** is not stopping the Plant.
 It exercises one pump at a time, with the same sequence as demand:
 
 1. The pump's loops open.
-2. Once they are ready, its switched pump runs for the exercise's run time, 60 seconds by default.
-3. The pump stops without overrun, and the valves close once it is seen off.
+2. Once one of them is ready, its switched pump runs for the exercise's run time, 60 seconds by default.
+3. Once the pump has run and every loop is ready, the pump stops without overrun, and the valves close once it is seen off.
+
+An exercise gives up on a valve that never becomes ready, such as one whose relay no longer responds: it ends once twice the longest opening time of its valves, the run time, and 70 seconds have passed since it began.
+That pump is then not exercised again before the interval has passed, so the other pumps take their turn, and the valve's own Repair says what is wrong.
+A switched pump whose switch is unavailable or unknown may be running unseen, so it is not exercised, and an exercise never waits for such a pump to stop.
 
 A pump the source drives is never commanded, so the valves of its loops only open until they are ready, and close again.
 An exercise never asks the source for heat or cooling, and it stops at once when any loop is wanted, such as when a zone calls.
 
-An exercise passes water only through loops of the mode that last ran, so it never carries one mode's water through a loop of the other; a Plant that has not run yet exercises its heating loops.
-After cooling, a loop takes part only while its condensation guard permits, and a loop that only heats waits until the Plant has heated again.
+An exercise passes water only through loops of the mode that last ran, so it never carries one mode's water through a loop of the other; a Plant that has not run yet exercises its heating loops, without that counting as heating.
+After cooling, a loop takes part only while the checks of its [condensation guard](#cooling-and-the-condensation-guard) against condensation permit: its dew point check and its condensation switches.
+No source runs in an exercise, so no chilled water flows, and the surface minimum and the humidity limit, which bound what cooling does to a room, do not apply.
+A loop that only heats is not exercised between the end of cooling and the next heating, however long that is.
 A switched pump runs only when it is armed and available and no other loop on it would pass flow; otherwise only its valves are exercised.
-Exercises obey arming and **Control equipment** as demand does: an output that is not armed is never exercised, and in Dry run an exercise is proposed and its proposal counts as done.
+Exercises obey arming and **Control equipment** as demand does: an output that is not armed is never exercised, and in Dry run an exercise is proposed and its proposal counts as done for the interval, without moving any clock.
 
 The **Status** sensor reads `exercising` meanwhile, and its `idle_since` attribute shows since when each switched pump and valve has not been on.
 The exercised loops and pump show the reason `exercise`.
@@ -244,12 +254,13 @@ Three optional inputs add to the dew point check, which stays the primary one an
   A loop still needs a supply or surface temperature sensor to cool at all.
 - A loop's surface minimum, 20 °C by default, which needs its surface temperature sensor.
   The guard blocks while the surface is below it and releases 1 K above it; 20 °C keeps a cooled floor comfortable, and a ceiling may use a lower value.
-- A zone's maximum humidity, 70 % by default.
+- A zone's maximum humidity, 70 % by default and at least 30 %.
   The guard blocks while the highest humidity of a zone whose dew point it reads is above that zone's limit, and releases 5 points below it.
   A humidity limit alone does not protect water at 16 to 18 °C, so it only adds to the dew point check.
 
 The guard releases only once every check releases, and only after it has blocked for at least 5 minutes.
-Its reason names each check that blocks.
+A new guard, such as that of a loop just added, starts blocked unless every check already releases.
+Its reason names each check that blocks, or, while it is held for its minimum time, the reading of every check.
 
 A blocked guard drops the loop, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 Pumps have no overrun in cooling, so a pump stops as soon as its last cooling loop releases.
