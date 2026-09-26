@@ -1,4 +1,8 @@
-"""What the runtime survives: an evaluation that raises, and a stored state it cannot read."""
+"""What the runtime survives.
+
+An evaluation that raises, a stored state it cannot read, and a platform that
+fails to unload.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ from typing import Any
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
@@ -94,3 +99,29 @@ async def test_a_stored_state_of_the_wrong_shape_starts_over(
     assert "The persisted state of Plant Home could not be read and starts over" in caplog.text
     assert "The previous configuration of Plant Home could not be read" in caplog.text
     assert hass.states.get("sensor.home_status").state == "off"
+
+
+async def test_a_failed_platform_unload_leaves_the_plant_running(
+    hass: HomeAssistant, actuators: Actuators, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    await async_set_options(hass, entry, armed=REFERENCE_OUTPUTS, control=True)
+    await async_call(hass, "select", "select_option", entity_id="select.home_mode", option="heat")
+
+    async def fail(*_args: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(hass.config_entries, "async_unload_platforms", fail)
+    assert not await hass.config_entries.async_unload(entry.entry_id)
+    assert entry.state is ConfigEntryState.FAILED_UNLOAD
+
+    await async_call(
+        hass, "climate", "set_hvac_mode", entity_id="climate.living_area", hvac_mode="heat"
+    )
+    set_zone_temperature(hass, "living_area", 19.0)
+    await hass.async_block_till_done()
+
+    assert "switch.home_living_area_floor_heating_valve:on" in actuators.shorts()
+    # Home Assistant will not unload an entry that failed to unload; stop it for the test.
+    await entry.runtime_data.async_stop()

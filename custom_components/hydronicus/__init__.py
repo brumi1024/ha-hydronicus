@@ -167,10 +167,15 @@ async def _async_update_listener(hass: HomeAssistant, entry: HydronicusConfigEnt
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -> bool:
-    """Unload a Plant without sending a command; the equipment stays as it is."""
-    runtime = entry.runtime_data
-    await runtime.async_stop()
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    """Unload a Plant without sending a command; the equipment stays as it is.
+
+    The platforms unload first, so a platform that fails to unload leaves the
+    Plant loaded and running rather than loaded with its runtime stopped.
+    """
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    await entry.runtime_data.async_stop()
+    return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
