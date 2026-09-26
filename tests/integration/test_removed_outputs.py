@@ -22,6 +22,7 @@ from homeassistant.helpers import issue_registry as ir
 from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
 from custom_components.hydronicus.issues import IssueKind
+from custom_components.hydronicus.storage import stored_document
 from tests.integration.helpers import (
     BASEMENT_CEILING,
     FLOOR_PUMP,
@@ -137,7 +138,7 @@ async def test_deleting_the_zone_of_the_only_min_flow_loop_stops_everything_then
         await async_remove_zone(hass, entry, "living_area")
 
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.data["pumps"]["heat_pump"]["min_flow_loops"] == []
+    assert stored_document(entry)["pumps"]["heat_pump"]["min_flow_loops"] == []
     assert not [record for record in caplog.records if record.exc_info], "no traceback"
     assert "is not valid" in caplog.text
     issues = [
