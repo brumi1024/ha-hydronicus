@@ -545,6 +545,12 @@
       },
       "dew_point": {
         "name": "Dew point"
+      },
+      "duty_cycle": {
+        "name": "Duty cycle"
+      },
+      "loop_runtime": {
+        "name": "{loop} runtime"
       }
     },
     "switch": {

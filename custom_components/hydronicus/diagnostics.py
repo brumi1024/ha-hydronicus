@@ -1,7 +1,8 @@
 """Diagnostics of one Plant (contract K5).
 
 They hold the configuration as its plant file, the last observations, the
-desired state, the reconciler state, and the recent Dry run proposals. A Plant
+desired state, the reconciler state, the flow counters, and the recent Dry run
+proposals. A Plant
 holds no secret, and its names and entity IDs are what makes a report
 readable, so nothing is redacted; the troubleshooting guide says so.
 """
@@ -85,6 +86,7 @@ async def async_get_config_entry_diagnostics(
         "state": runtime.state.to_dict(),
         "reconcile": runtime.reconcile_state.to_dict(),
         "blocking_sensors": runtime.blocking.to_dict(),
+        "flow": runtime.flow.to_dict(),
         "repairs": [] if view is None else sorted(view.reconciled.repairs),
         "retry_at": None if view is None else view.reconciled.retry_at,
         "proposals": [

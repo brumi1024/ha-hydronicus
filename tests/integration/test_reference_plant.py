@@ -37,12 +37,13 @@ IMMEDIATE_LIVING_AREA = REFERENCE_PLANT.replace(
     _LIVING_AREAS, _LIVING_AREAS + "    thermostat: {digital: {min_on: 0, min_off: 0}}\n"
 )
 
-# The entity contract of the reference plant (contract K7): 24 entities.
+# The entity contract of the reference plant (contract K7): 32 entities.
 REFERENCE_ENTITIES = {
     "select.home_mode",
     "switch.home_control_equipment",
     "sensor.home_status",
     "binary_sensor.home_towel_dryer_flowing",
+    "sensor.home_towel_dryer_runtime",
     "binary_sensor.heat_pump_requested",
     *(
         entity
@@ -53,14 +54,17 @@ REFERENCE_ENTITIES = {
             f"binary_sensor.{zone}_cooling_demand",
             f"sensor.{zone}_combined_temperature",
             f"sensor.{zone}_dew_point",
+            f"sensor.{zone}_duty_cycle",
             f"binary_sensor.{zone}_ceiling_flowing",
+            f"sensor.{zone}_ceiling_runtime",
         )
     ),
     "binary_sensor.living_area_floor_flowing",
+    "sensor.living_area_floor_runtime",
 }
 
 
-async def test_the_reference_plant_publishes_about_25_entities(hass: HomeAssistant) -> None:
+async def test_the_reference_plant_publishes_about_30_entities(hass: HomeAssistant) -> None:
     reference_world(hass)
     entry = await async_import(hass, REFERENCE_PLANT)
 
@@ -75,7 +79,7 @@ async def test_the_reference_plant_publishes_about_25_entities(hass: HomeAssista
     } == {"basement": "Basement", "bedroom_area": "Bedroom area", "living_area": "Living area"}
     entities = plant_entities(hass, entry)
     assert set(entities.values()) == REFERENCE_ENTITIES
-    assert len(entities) == 24
+    assert len(entities) == 32
     assert all(unique_id.startswith(REFERENCE_PLANT_ID) for unique_id in entities)
     # Zone entities belong to their zone's subentry, the rest to the Plant.
     registry = er.async_get(hass)

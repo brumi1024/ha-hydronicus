@@ -19,11 +19,10 @@ from .entity import (
     HydronicusEntity,
     ZoneEntity,
     async_add_plant_entities,
+    loop_device,
     loop_unique_id,
-    plant_device,
     plant_unique_id,
     source_device,
-    zone_device,
 )
 from .runtime import PlantRuntime
 
@@ -68,13 +67,11 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, runtime: PlantRuntime, loop: Loop) -> None:
-        plant = runtime.plant
-        device = (
-            plant_device(plant)
-            if loop.zone is None
-            else zone_device(runtime, plant.zone(loop.zone))
+        super().__init__(
+            runtime,
+            loop_unique_id(runtime.plant.id, loop.ref, "flowing"),
+            loop_device(runtime, loop),
         )
-        super().__init__(runtime, loop_unique_id(plant.id, loop.ref, "flowing"), device)
         self._attr_translation_placeholders = {"loop": loop.title}
         self._loop = loop
 
