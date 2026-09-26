@@ -56,6 +56,7 @@ from ..storage import (
 )
 from . import documents as docs
 from . import forms
+from .edits import DocumentEdits
 from .settings import PlantSettingsFlow
 from .zone import ZoneSubentryFlow
 
@@ -64,7 +65,7 @@ ZONING_GROUPED: Final = "zoning_grouped"
 ZONING_SCRATCH: Final = "zoning_scratch"
 
 
-class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
+class HydronicusConfigFlow(DocumentEdits, ConfigFlow, domain=DOMAIN):
     """Set up a Plant by guided setup or from a plant file, and reconfigure it."""
 
     VERSION = CONFIG_ENTRY_VERSION
@@ -355,20 +356,11 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             values = user_input
         schema = forms.zone_schema(self.hass, values, areas=self._zoning != ZONING_SCRATCH)
-        checked: forms.Checked | None = None
-        if user_input is not None:
-            if (name := forms.zone_name(self.hass, user_input)) is None:
-                checked = forms.Checked(None, {"name": "zone_name_required"})
-            else:
-                document, slug = docs.with_zone(self._document, None, user_input, name)
-                checked = self._check(
-                    document, f"zones.{slug}", forms.shown(forms.ZONE_FIELDS, schema)
-                )
-                if checked.plant is not None:
-                    self._document, self._zone = document, slug
-                    if per_area:
-                        self._areas.pop(0)
-                    return await self.async_step_zone_loop()
+        checked = None if user_input is None else self._submit_zone(None, user_input, schema)
+        if user_input is not None and checked is None:
+            if per_area:
+                self._areas.pop(0)
+            return await self.async_step_zone_loop()
         zones = ", ".join(forms.zone_names(self._document).values()) or "none yet"
         return self._form("zone", schema, checked, {"progress": progress, "zones": zones})
 
@@ -380,20 +372,9 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
         assert zone is not None
         values = docs.loop_values(self._document, zone, None) if user_input is None else user_input
         schema = forms.loop_schema(self.hass, values, forms.pump_labels(self._document))
-        checked: forms.Checked | None = None
-        if user_input is not None:
-            if not user_input.get("pump"):
-                if not user_input.get("valves"):
-                    return await self.async_step_zone_menu()
-                checked = forms.Checked(None, {"pump": "pump_required"})
-            else:
-                document, slug = docs.with_loop(self._document, zone, None, user_input)
-                checked = self._check(
-                    document, forms.loop_path(zone, slug), forms.shown(forms.LOOP_FIELDS, schema)
-                )
-                if checked.plant is not None:
-                    self._document = document
-                    return await self.async_step_zone_menu()
+        checked = None if user_input is None else self._submit_loop(zone, None, user_input, schema)
+        if user_input is not None and checked is None:
+            return await self.async_step_zone_menu()
         name = forms.zone_names(self._document)[zone]
         return self._form("zone_loop", schema, checked, {"zone": name})
 
@@ -454,26 +435,11 @@ class HydronicusConfigFlow(ConfigFlow, domain=DOMAIN):
             zones=forms.zone_names(self._document),
             removable=slug is not None,
         )
-        checked: forms.Checked | None = None
-        if user_input is not None:
-            document = self._document
-            if slug is not None and user_input.get("remove"):
-                document = docs.without_loop(self._document, None, slug)
-                checked = self._check(document)
-            elif not user_input.get("pump"):
-                checked = forms.Checked(None, {"pump": "pump_required"})
-            elif user_input.get("runs") == "with_zones" and not user_input.get("with_zones"):
-                checked = forms.Checked(None, {"with_zones": "zones_required"})
-            else:
-                document, slug = docs.with_loop(self._document, None, slug, user_input)
-                checked = self._check(
-                    document, forms.loop_path(None, slug), forms.shown(forms.LOOP_FIELDS, schema)
-                )
-            if checked.plant is not None:
-                self._document = document
-                if self._reconfiguring:
-                    return await self.async_step_reconfigure()
-                return await self.async_step_plant_loops()
+        checked = None if user_input is None else self._submit_loop(None, slug, user_input, schema)
+        if user_input is not None and checked is None:
+            if self._reconfiguring:
+                return await self.async_step_reconfigure()
+            return await self.async_step_plant_loops()
         return self._form("plant_loop", schema, checked)
 
     async def async_step_loops_done(

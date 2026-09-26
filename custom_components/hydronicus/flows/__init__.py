@@ -7,6 +7,8 @@ change goes through the same validation as setup (invariant 9).
 - ``documents`` reads form values from a document and writes them back,
   keeping the settings a form does not show.
 - ``forms`` builds the forms and turns a plant file problem into a form error.
+- ``edits`` keeps a submitted zone or loop form, by the rules the config flow
+  and the zone subentry flow share.
 - ``plant`` is the config flow: guided setup, import, and entry reconfigure.
 - ``zone`` is the zone subentry flow, and ``settings`` the Plant settings.
 """
