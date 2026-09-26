@@ -2,7 +2,7 @@
 
 ``Actuators`` stands in for the devices behind the Plant's outputs: it records
 every call to them and changes their state as a device would, unless the test
-makes one ignore its calls. The reference plant of the redesign plan gets its areas and
+makes one ignore its calls. The reference plant gets its areas and
 sensors from ``reference_world``.
 """
 

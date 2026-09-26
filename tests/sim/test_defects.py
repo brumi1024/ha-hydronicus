@@ -1,7 +1,7 @@
 """The control defects reproduced in v0.1.0, translated to the new model.
 
-Each scenario builds the situation of one defect in ``docs/redesign-plan.md``
-and asserts the behaviour the defect violated. Every scenario also checks the
+Each scenario builds the situation of one defect found in v0.1.0 and asserts
+the behaviour the defect violated. Every scenario also checks the
 invariants after every event.
 """
 

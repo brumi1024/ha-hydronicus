@@ -1,6 +1,6 @@
 # Contributing
 
-Keep changes focused, and consistent with [the redesign plan](docs/redesign-plan.md), which records the decisions, contracts, and invariants of the current design.
+Keep changes focused, and keep [the invariants](docs/development.md#invariants) of the current design.
 
 Put control logic in the pure core, `custom_components/hydronicus/core/`, and keep Home Assistant specifics in the adapter around it, as [the architecture boundaries](docs/development.md#architecture-boundaries) describe.
 

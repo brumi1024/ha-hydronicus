@@ -15,7 +15,7 @@ lists pumps and loops as objects that carry their slugs, which keeps their order
 The canonical export writes every structural and timing key and omits optional
 keys at their defaults: names, sensors, and settings a user left out. Lists and
 small mappings are written in flow style, so ``write_plant_file`` produces the
-compact form that ``docs/redesign-plan.md`` uses.
+compact form of ``docs/examples/reference-plant.yaml``.
 """
 
 from __future__ import annotations

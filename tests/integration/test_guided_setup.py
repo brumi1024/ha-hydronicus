@@ -65,7 +65,7 @@ async def async_create(hass: HomeAssistant, result: dict[str, Any]) -> ConfigEnt
 
 
 async def async_guided_reference(hass: HomeAssistant) -> ConfigEntry:
-    """Set up the reference plant of the redesign plan through guided setup."""
+    """Set up the reference plant through guided setup."""
     flow = hass.config_entries.flow
     result = await async_start(hass)
     result = await async_submit(

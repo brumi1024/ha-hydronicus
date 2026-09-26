@@ -2,7 +2,7 @@
 
 The supported local workflow uses Python 3.14.2 or newer, `uv`, and the commands in the root `Makefile`.
 The lockfile is the source of truth for exact development and test dependency versions.
-[The redesign plan](redesign-plan.md) records the decisions, contracts, and invariants the code implements, and [CONTEXT.md](../CONTEXT.md) is the glossary.
+[CONTEXT.md](../CONTEXT.md) is the glossary, and [the invariants](#invariants) are the rules every change keeps.
 
 ## First setup
 
@@ -106,7 +106,23 @@ make verify
 
 Commit `pyproject.toml` and `uv.lock` together.
 
-## History
+## Invariants
 
-`docs/implementation-plan.md`, `docs/setup-redesign-plan.md`, `docs/zones-and-areas-plan.md`, `docs/ha-modernization-plan.md`, and `docs/home-server-staging.md` are the plans of earlier versions, kept as history.
-Where they conflict with [the redesign plan](redesign-plan.md), the redesign plan wins.
+The simulator under `tests/sim/` checks invariants 1 to 8 on simulated physical state, not on controller belief, after every event of random plants and random traces.
+A trace may delay, reject, or time out any command, restart the runtime, jump the clock, and make a sensor stale or an entity unavailable.
+Only a spontaneous physical change, such as a valve closing by itself, is exempt, and the controller must react to it within one evaluation.
+
+1. Dry run and an unarmed output receive zero service calls.
+2. A pump with `min_flow: path` never runs without an open path, where a loop with no valve is always an open path.
+3. The source is requested only while at least one loop of the current mode is ready and, when its pump is switched, that pump is observed running.
+4. A source-driven pump with `min_flow: path` has an open path while the source is requested, during its post-run, and while it is observed running.
+5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the dwell and for the old mode's loops to stop.
+6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run.
+7. Every difference between desired and observed state is eventually observed resolved or reported as a Repair.
+8. With unchanged observations, the first evaluation after a reload or restart sends no command.
+9. Removing an object first stops the equipment it removes, and a configuration that is not valid stops in order and then only observes, with a Repair.
+10. `custom_components/hydronicus/core/` has no Home Assistant imports and at least 90 percent coverage, and the whole package passes mypy.
+11. Exporting a Plant and importing the file reproduces the Plant, its object IDs, and its entity IDs.
+12. `make verify` is the gate.
+
+The plans of earlier versions are in the git history, not in the repository.

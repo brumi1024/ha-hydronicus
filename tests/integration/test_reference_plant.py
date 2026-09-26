@@ -1,4 +1,4 @@
-"""The reference plant of the redesign plan, set up from its plant file and run end to end."""
+"""The reference plant, set up from its plant file and run end to end."""
 
 from __future__ import annotations
 

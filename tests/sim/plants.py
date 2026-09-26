@@ -130,3 +130,33 @@ zones:
         pump: floor
         modes: [heat, cool]
 """
+
+# The maintainer's house without its source: one switched pump drives every
+# ceiling loop and the underfloor loop, and the towel dryer runs with the zones.
+HEATING_PUMP: Final = FLOOR_PUMP
+HOME: Final = """
+hydronicus: 2
+name: Home
+pumps:
+  heating: {switch: switch.home_underfloor_heating_pump, overrun: 180}
+  towel_dryer: {switch: switch.home_bathrooms_towel_dryer_pump, overrun: 120}
+loops:
+  towel_dryer:
+    pump: towel_dryer
+    runs: {with_zones: [basement, bedroom_area, living_area]}
+    modes: [heat]
+zones:
+  basement:
+    areas: [basement, workshop]
+    loops:
+      ceiling: {valves: [switch.home_basement_ceiling_heating_valve], pump: heating}
+  bedroom_area:
+    areas: [main_bedroom, lilla_bedroom]
+    loops:
+      ceiling: {valves: [switch.home_bedroom_area_ceiling_heating_valve], pump: heating}
+  living_area:
+    areas: [living_room, dining_room, kitchen, hallway]
+    loops:
+      ceiling: {valves: [switch.home_living_area_ceiling_heating_valve], pump: heating}
+      floor: {valves: [switch.home_living_area_floor_heating_valve], pump: heating}
+"""
