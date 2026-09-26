@@ -1,4 +1,4 @@
-"""What the runtime survives: an evaluation that raises."""
+"""What the runtime survives: an evaluation that raises, and a stored state it cannot read."""
 
 from __future__ import annotations
 
@@ -74,3 +74,23 @@ async def test_a_failed_evaluation_raises_a_repair_and_is_retried(
 
     assert issues(hass, IssueKind.EVALUATION_FAILED) == []
     assert "switch.home_living_area_floor_heating_valve:on" in actuators.shorts()
+
+
+async def test_a_stored_state_of_the_wrong_shape_starts_over(
+    hass: HomeAssistant, hass_storage: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    stored = hass_storage[f"{DOMAIN}.{entry.entry_id}"]["data"]
+    stored["state"] = ["not", "a", "mapping"]
+    stored["outputs"] = {"switch.a": "not a mapping"}
+    stored["commanding"] = {"plant": {"zones": "not a mapping"}, "outputs": []}
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert "The persisted state of Plant Home could not be read and starts over" in caplog.text
+    assert "The previous configuration of Plant Home could not be read" in caplog.text
+    assert hass.states.get("sensor.home_status").state == "off"

@@ -73,7 +73,7 @@ from .core.model import (
     SwitchTarget,
     Zone,
 )
-from .core.plant_file import PlantFileError, entity_paths, export_plant, parse_plant
+from .core.plant_file import entity_paths, export_plant, parse_plant
 from .core.reconcile import Reconciled, ReconcileState, reconcile, step_view
 from .core.step import (
     DigitalThermostatState,
@@ -243,7 +243,7 @@ class PlantRuntime:
             self.reconcile_state = ReconcileState.from_dict(data.get("reconcile", {}))
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
-        except (KeyError, TypeError, ValueError) as error:
+        except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
                 "The persisted state of Plant %s could not be read and starts over: %s",
                 self.entry.title,
@@ -254,7 +254,7 @@ class PlantRuntime:
         if (commanding := data.get("commanding")) is not None:
             try:
                 self.previous = Commanding.from_dict(commanding)
-            except (KeyError, TypeError, ValueError, PlantFileError) as error:
+            except Exception as error:  # Whatever is wrong with it, nothing is stopped.
                 _LOGGER.warning(
                     "The previous configuration of Plant %s could not be read, so outputs it "
                     "removed are not stopped: %s",
