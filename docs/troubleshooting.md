@@ -44,6 +44,7 @@ Common reasons:
 | `idle: thermostat not restored` | The zone's digital thermostat has not loaded, or its entity is disabled. |
 | `idle: no usable temperature` | A required sensor of the zone is missing or stale, or the zone has no usable reading at all. |
 | `idle: thermostat unavailable` | The zone's external thermostat is unavailable or reports an action Hydronicus does not know. |
+| `idle: window open` | A window of the zone has read open for its open delay, so the zone's demand is off until every window has read closed for its close delay. |
 | `demands: ..., held for its minimum on time` | The zone's digital thermostat keeps its demand for its minimum on time, 600 seconds by default, although the zone has reached its target; `idle: ..., held for its minimum off time` is the same after a demand ends. |
 | `dropped: ... unarmed or unavailable` | The loop needs an output that is not armed or not available. |
 | `dropped: condensation guard blocks` | The loop cools and its condensation guard blocks; the loop's `.guard` reason gives the reference and the threshold. |
@@ -60,7 +61,8 @@ Common reasons:
 | `stopping heat before cool` | The mode is changing, and the old mode is still stopping. |
 | `waiting for the mode dwell before cool` | The mode is changing, and the dwell has not passed. |
 
-`blocked_zones` lists each zone that cannot get what its thermostat asks for, such as `thermostat asks to cool while the Plant runs heat`.
+`blocked_zones` lists each zone that cannot get what its thermostat asks for, such as `thermostat asks to cool while the Plant runs heat`, or `window open` while its windows turn its demand off.
+A zone that frost protection heats is not blocked, even with a window open.
 
 ## Repairs
 

@@ -58,7 +58,7 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | `running_mode` | The mode the outputs run in now; during a changeover it is the old mode, then `off` during the dwell. |
 | `live` | Whether outputs are commanded, as on the **Control equipment** switch. |
 | `active_loops` | The loops that pass flow now, such as `living_area.floor` or `towel_dryer`. |
-| `blocked_zones` | Each zone that cannot get what its thermostat asks for, with the reason. |
+| `blocked_zones` | Each zone that cannot get what its thermostat asks for, with the reason, such as `no usable temperature` or `window open`; a zone that frost protection heats is not listed. |
 | `unarmed_outputs` | The outputs that are not armed. |
 | `source_requested` | Whether the source's request is on. |
 | `outputs_not_responding` | The outputs whose change was sent three times and never observed. |
