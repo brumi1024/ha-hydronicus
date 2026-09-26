@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Desired,
     DigitalThermostat,
     ExternalThermostat,
@@ -17,8 +18,7 @@ from hydronicus_core.model import (
     ValueTarget,
     title_from_slug,
 )
-from hydronicus_core.plant_file import read_plant_file
-
+from custom_components.hydronicus.core.plant_file import read_plant_file
 from tests.core.plant_files import REFERENCE_PLANT
 
 

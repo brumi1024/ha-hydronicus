@@ -9,10 +9,10 @@ from __future__ import annotations
 import os
 
 import pytest
-from hydronicus_core.model import MinFlow, Plant, RunKind
 from hypothesis import HealthCheck, Phase, find, given, settings
 from hypothesis import strategies as st
 
+from custom_components.hydronicus.core.model import MinFlow, Plant, RunKind
 from tests.sim.strategies import Trace, plants, run, seasonal_traces, traces
 
 # Hypothesis 6.156 on Python 3.14 misjudges its own PRNG as garbage when it

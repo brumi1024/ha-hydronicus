@@ -12,7 +12,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 
 import pytest
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Desired,
     Mode,
     OptionTarget,
@@ -21,7 +22,7 @@ from hydronicus_core.model import (
     SwitchTarget,
     ValueTarget,
 )
-from hydronicus_core.reconcile import (
+from custom_components.hydronicus.core.reconcile import (
     CALL_TIMEOUT,
     Action,
     Attempt,
@@ -29,7 +30,7 @@ from hydronicus_core.reconcile import (
     ReconcileState,
     step_view,
 )
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.step import (
     DemandState,
     GuardState,
     Observations,
@@ -40,7 +41,6 @@ from hydronicus_core.step import (
     SwitchState,
     ValueState,
 )
-
 from tests.sim import harness
 from tests.sim.harness import Sim
 from tests.sim.invariants import InvariantViolation, dew_point

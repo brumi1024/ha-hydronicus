@@ -5,8 +5,7 @@ Every scenario also checks the invariants after every event.
 
 from __future__ import annotations
 
-from hydronicus_core.model import Mode
-
+from custom_components.hydronicus.core.model import Mode
 from tests.sim.harness import Sim
 from tests.sim.plants import (
     BASEMENT_CEILING,

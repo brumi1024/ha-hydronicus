@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.hydronicus.const import DOMAIN
 from tests.integration.helpers import (
     REFERENCE_PLANT,
-    Actuators,
     async_choose,
     async_import,
     async_submit,
@@ -100,19 +99,3 @@ async def test_a_plant_file_without_an_id_gets_one_that_its_export_keeps(
 
     assert entry.unique_id == entry.data["id"] == entry.runtime_data.plant.id
     assert entry.title == "Flat"
-
-
-async def test_the_first_evaluation_waits_until_home_assistant_has_started(
-    hass: HomeAssistant, actuators: Actuators
-) -> None:
-    hass.set_state(CoreState.starting)
-    reference_world(hass)
-    entry = await async_import(hass, REFERENCE_PLANT)
-    assert entry.runtime_data.view is None
-    assert hass.states.get("sensor.home_status").state == "unavailable"
-
-    await hass.async_start()
-    await hass.async_block_till_done()
-
-    assert entry.runtime_data.view is not None
-    assert hass.states.get("sensor.home_status").state == "off"

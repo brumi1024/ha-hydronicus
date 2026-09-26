@@ -21,10 +21,10 @@ make hooks
 - `make test-core` runs the pure tests of the model, the plant file, `step()`, and the reconciler, with core coverage.
 - `make test-integration` runs the Home Assistant tests of setup, the runtime, persistence, arming, areas, entities, flows, and Repairs.
 - `make test-sim` runs the plant simulator: the invariants over generated Plants and event traces, the reproduced defects, and the reference plant.
-- `make lint` checks Ruff linting, Python compilation, and the repository's JSON files.
+- `make lint` checks Ruff linting and the repository's JSON files.
 - `make format-check` checks the whole repository with the Ruff formatter.
 - `make typecheck` checks the whole `custom_components/hydronicus` package with mypy.
-- `make release-check` and `make public-beta-check` build and inspect the HACS release archive and check the installation documentation.
+- `make release-check` builds and inspects the HACS release archive.
 - `make test` runs every test with core coverage.
 - `make verify` runs the complete local quality gate that CI runs.
 
@@ -92,7 +92,7 @@ Reload, unload, removal, and Home Assistant stop are command-free lifecycle boun
 
 - `tests/core/` holds pure tests of the model, the plant file, `step()`'s stages, and the reconciler's ordering, backoff, and Repairs.
 - `tests/integration/` holds Home Assistant tests of setup, the runtime, persistence, arming, areas, entities, flows, and Repairs, with mocked actuators from `tests/integration/helpers.py`.
-- `tests/sim/` holds the simulator, which owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts the plan's invariants after every event, with the reference plant and the reproduced defects as named scenarios.
+- `tests/sim/` holds the simulator, which owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts [the invariants](#invariants) after every event, with the reference plant and the reproduced defects as named scenarios.
 - Root-level tests cover isolated units that need no Home Assistant harness, the release package, and the documentation.
 
 `tests/test_docs_examples.py` keeps the user documentation true: every plant file example imports, the documented error paths and messages are the real ones, the reference plant example matches the test fixture, and every bold UI label exists in `strings.json` or Home Assistant.

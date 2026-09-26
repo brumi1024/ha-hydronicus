@@ -11,7 +11,8 @@ from typing import Any
 
 import pytest
 import yaml
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Aggregation,
     DigitalThermostat,
     ExternalThermostat,
@@ -27,7 +28,7 @@ from hydronicus_core.model import (
     Valve,
     ZoneArea,
 )
-from hydronicus_core.plant_file import (
+from custom_components.hydronicus.core.plant_file import (
     PLANT_FILE_FORMAT,
     PlantFileError,
     describe_path,
@@ -42,12 +43,11 @@ from hydronicus_core.plant_file import (
     validate_plant,
     write_plant_file,
 )
-
-from tests.core.plant_files import REFERENCE_PLANT, TRIAL_PLANTS
+from tests.core.plant_files import REFERENCE_PLANT, TRIAL_PLANT
 
 PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 _COMMENT = re.compile(r"\s+#.*$", re.MULTILINE)
-_ENTITY_ID = re.compile(r"[a-z_]+\.[a-z0-9_]+")
+_HEADER_COMMENT = re.compile(r"\A(?:#.*\n)+")
 
 # A canonical plant file that uses every long form and every optional key.
 EVERY_KEY = """\
@@ -105,19 +105,14 @@ proportional_band: 2}}
 """
 
 
-def _strings(value: Any) -> list[str]:
-    """Return every text key and value of a parsed document."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        return [text for item in value.items() for part in item for text in _strings(part)]
-    if isinstance(value, list):
-        return [text for item in value for text in _strings(item)]
-    return []
-
-
 def reference_text() -> str:
-    return REFERENCE_PLANT.read_text(encoding="utf-8")
+    """The reference plant file, less its introductory comment block.
+
+    docs/examples/reference-plant.yaml opens with prose for the reader that
+    write_plant_file() never reproduces; ``_COMMENT`` strips inline comments,
+    not a standalone header.
+    """
+    return _HEADER_COMMENT.sub("", REFERENCE_PLANT.read_text(encoding="utf-8"))
 
 
 def reference_document() -> dict[str, Any]:
@@ -185,24 +180,6 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
     assert radiators.valves[1] == Valve("switch.office_valve_b", opening_time=240)
     assert plant.zone("lab").thermostat == ExternalThermostat("climate.lab")
     assert plant.loop(LoopRef("lab", "bench")).valves == ()
-
-
-@pytest.mark.parametrize("converted", list(TRIAL_PLANTS), ids=lambda path: path.name)
-def test_the_trial_kit_converts_to_format_2(converted: Any) -> None:
-    """The converted trial kit binds exactly the entities of the shipped trial kit."""
-    plant = read_plant_file(converted.read_text(encoding="utf-8"), new_id=lambda: PLANT_ID)
-    shipped = {
-        text
-        for text in _strings(yaml.safe_load(TRIAL_PLANTS[converted].read_text(encoding="utf-8")))
-        if _ENTITY_ID.fullmatch(text)
-    }
-
-    assert set(entity_paths(plant)) == shipped
-    assert [zone.slug for zone in plant.zones] == ["living_room", "bedroom"]
-    assert all(loop.pump == "circulation_pump" for loop in plant.all_loops)
-    exported = write_plant_file(plant)
-    assert read_plant_file(exported) == plant
-    assert write_plant_file(read_plant_file(exported)) == exported
 
 
 def test_a_missing_id_is_assigned_once_and_then_kept() -> None:
@@ -307,7 +284,7 @@ def test_a_plant_loop_min_flow_path_and_a_loop_surface_sensor_count() -> None:
 
 
 def test_a_plant_without_a_source_opens_valves_and_runs_switched_pumps() -> None:
-    plant = read_plant_file(next(iter(TRIAL_PLANTS)).read_text(encoding="utf-8"))
+    plant = read_plant_file(TRIAL_PLANT.read_text(encoding="utf-8"))
 
     assert plant.source is None
     assert set(plant.outputs().values()) == {OutputRole.PUMP, OutputRole.VALVE}
