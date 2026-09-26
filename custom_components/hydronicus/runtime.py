@@ -381,8 +381,8 @@ class PlantRuntime:
         plant = self.control_plant
         self._resolve_areas()
         observations = self._observe(now, plant)
-        view = step_view(observations, self.reconcile_state)
-        state, desired, due = step(plant, view, self.state, now)
+        seen = step_view(observations, self.reconcile_state)
+        state, desired, due = step(plant, seen, self.state, now)
         result = reconcile(
             plant,
             desired,
@@ -394,8 +394,7 @@ class PlantRuntime:
         )
         self.state, self.reconcile_state = state, result.state
         self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
-        stopping = self.previous.stopping
-        if stopping is not None and not state.live:
+        if self.previous.stopping is not None and not state.live:
             self.previous.stopped()
             self.request_evaluation()
         self._save()
@@ -407,7 +406,7 @@ class PlantRuntime:
             plant=self.plant,
             at=now,
             observations=observations,
-            seen=view,
+            seen=seen,
             desired=desired,
             reconciled=result,
             zones={
@@ -416,7 +415,7 @@ class PlantRuntime:
             },
             missing=missing,
             problem=self.problem,
-            stopping=stopping,
+            stopping=self.previous.stopping,
         )
         self._publish()
         if result.proposed:
