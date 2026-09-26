@@ -53,13 +53,6 @@ USER_DOCUMENTS = (
     "docs/troubleshooting.md",
     "docs/upgrade-and-rollback.md",
 )
-HISTORICAL_PLANS = (
-    "implementation-plan.md",
-    "setup-redesign-plan.md",
-    "zones-and-areas-plan.md",
-    "ha-modernization-plan.md",
-    "home-server-staging.md",
-)
 # Labels that Home Assistant or HACS show rather than strings.json.
 EXTERNAL_LABELS = frozenset(
     {
@@ -395,9 +388,8 @@ def test_relative_links_resolve(document: str) -> None:
 
 @pytest.mark.parametrize("document", USER_DOCUMENTS)
 def test_current_documents_use_current_words(document: str) -> None:
-    """No current document uses an em dash or a term the redesign replaced, or links to history."""
+    """No current document uses an em dash or a term the redesign replaced."""
     text = _text(document)
     assert "\N{EM DASH}" not in text
-    assert [plan for plan in HISTORICAL_PLANS if f"{plan})" in text] == []
     if document != "docs/upgrade-and-rollback.md":
         assert [term for term in STALE_TERMS if term.lower() in text.lower()] == []

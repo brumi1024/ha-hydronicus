@@ -1,4 +1,4 @@
-"""The reference plant of the redesign plan, run through its operating scenarios.
+"""The reference plant, run through its operating scenarios.
 
 Every scenario also checks the invariants after every event.
 """

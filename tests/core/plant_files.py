@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
-# The reference plant of docs/redesign-plan.md, contract K1, verbatim.
+# The reference plant, the same Plant as docs/examples/reference-plant.yaml.
 REFERENCE_PLANT = FIXTURES / "reference_plant.yaml"
 # The trial kit of docs/examples/trial, converted to format 2.
 TRIAL_PLANTS = {
