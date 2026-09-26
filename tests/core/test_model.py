@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Desired,
     DigitalThermostat,
     ExternalThermostat,
@@ -14,11 +15,9 @@ from hydronicus_core.model import (
     Plant,
     Preset,
     SwitchTarget,
-    ValueTarget,
     title_from_slug,
 )
-from hydronicus_core.plant_file import read_plant_file
-
+from custom_components.hydronicus.core.plant_file import read_plant_file
 from tests.core.plant_files import REFERENCE_PLANT
 
 
@@ -108,12 +107,9 @@ def test_desired_state_holds_one_target_per_output() -> None:
         outputs={
             "switch.valve": SwitchTarget(on=True),
             "select.heat_pump_mode": OptionTarget("Heat"),
-            "number.flow_setpoint": ValueTarget(35.0),
         },
         source_request=True,
         mode=Mode.HEAT,
-        flow_setpoint=None,
         reasons={"living_area": "Heating demand."},
     )
     assert desired.outputs["switch.valve"] == SwitchTarget(True)
-    assert desired.flow_setpoint is None

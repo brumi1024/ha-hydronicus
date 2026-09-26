@@ -30,10 +30,11 @@ from .core.demand import external_action
 from .core.step import ExternalThermostatState, Reading
 
 # A switch or valve is on while it shows one of these, and off while it shows one
-# of the others. A valve that is opening was commanded open and one that is
-# closing was commanded closed, as a switch would show.
+# of the others. A valve that is opening is on its way to open, and one that is
+# closing on its way to closed; it moves until it shows open or closed.
 _ON_STATES: Final = frozenset({"on", "open", "opening"})
 _OFF_STATES: Final = frozenset({"off", "closed", "closing"})
+_MOVING_STATES: Final = frozenset({"opening", "closing"})
 _MISSING: Final = frozenset({STATE_UNAVAILABLE, STATE_UNKNOWN})
 
 
@@ -75,22 +76,25 @@ def switch_value(state: State | None) -> bool | None:
     return None
 
 
+def switch_moving(state: State | None) -> bool:
+    """Return whether a valve reports that it is still opening or closing."""
+    return state is not None and state.state in _MOVING_STATES
+
+
+def switch_memory_value(state: State | None) -> bool | str | None:
+    """Return the value the output memory keeps for a switch or valve.
+
+    A valve's travel is a value of its own, so arriving open or closed is a
+    change, and its opening time counts from when it shows open.
+    """
+    return state.state if state is not None and switch_moving(state) else switch_value(state)
+
+
 def option_value(state: State | None) -> str | None:
     """Return a select's option; None while it is unavailable or unknown."""
     if state is None or state.state in _MISSING:
         return None
     return state.state
-
-
-def number_value(state: State | None) -> float | None:
-    """Return a number entity's finite value, or None."""
-    if state is None:
-        return None
-    try:
-        value = float(state.state)
-    except ValueError:
-        return None
-    return value if isfinite(value) else None
 
 
 def celsius_from_unit(value: float, unit: object) -> float | None:
@@ -152,7 +156,7 @@ def external_thermostat(state: State | None) -> ExternalThermostatState:
 class Remembered:
     """An output's last known value and when it took that value."""
 
-    value: bool | str | float
+    value: bool | str
     since: float
 
 
@@ -170,7 +174,7 @@ class OutputMemory:
     def __init__(self, remembered: Mapping[str, Remembered] | None = None) -> None:
         self._remembered: dict[str, Remembered] = dict(remembered or {})
 
-    def since(self, entity: str, value: bool | str | float | None, changed: float) -> float:
+    def since(self, entity: str, value: bool | str | None, changed: float) -> float:
         """Record an observed value and return when the output took it.
 
         ``changed`` is Home Assistant's ``last_changed`` of the state. An unknown
@@ -202,6 +206,6 @@ class OutputMemory:
             if not isinstance(known, Mapping):
                 continue
             value, since = known.get("value"), known.get("since")
-            if isinstance(value, bool | str | int | float) and isinstance(since, int | float):
+            if isinstance(value, bool | str) and isinstance(since, int | float):
                 remembered[entity] = Remembered(value, float(since))
         return cls(remembered)

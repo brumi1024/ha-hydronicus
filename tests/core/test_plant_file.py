@@ -11,9 +11,11 @@ from typing import Any
 
 import pytest
 import yaml
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Aggregation,
     DigitalThermostat,
+    Exercise,
     ExternalThermostat,
     LoopRef,
     LoopRun,
@@ -27,7 +29,7 @@ from hydronicus_core.model import (
     Valve,
     ZoneArea,
 )
-from hydronicus_core.plant_file import (
+from custom_components.hydronicus.core.plant_file import (
     PLANT_FILE_FORMAT,
     PlantFileError,
     describe_path,
@@ -42,12 +44,11 @@ from hydronicus_core.plant_file import (
     validate_plant,
     write_plant_file,
 )
-
-from tests.core.plant_files import REFERENCE_PLANT, TRIAL_PLANTS
+from tests.core.plant_files import REFERENCE_PLANT, TRIAL_PLANT
 
 PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 _COMMENT = re.compile(r"\s+#.*$", re.MULTILINE)
-_ENTITY_ID = re.compile(r"[a-z_]+\.[a-z0-9_]+")
+_HEADER_COMMENT = re.compile(r"\A(?:#.*\n)+")
 
 # A canonical plant file that uses every long form and every optional key.
 EVERY_KEY = """\
@@ -56,7 +57,6 @@ id: 00000000-0000-4000-8000-000000000001
 name: Workshop
 mode_dwell: 1800
 source:
-  strategy: request
   request: switch.boiler_request
   post_run: 60
   min_on: 300
@@ -67,6 +67,7 @@ pumps:
     driven_by: source
     min_flow: guaranteed
     supply_temperature: sensor.primary_supply
+    condensation_switch: binary_sensor.primary_dew
   secondary:
     switch: switch.secondary_pump
     overrun: 0
@@ -79,6 +80,8 @@ loops:
     runs: {with_zones: [office, lab]}
     modes: [heat, cool]
     surface_temperature: sensor.garage_floor
+    surface_minimum: 18.5
+    condensation_switch: binary_sensor.garage_dew
 zones:
   office:
     name: Front office
@@ -87,8 +90,11 @@ zones:
     humidity: [sensor.office_humidity]
     aggregation: max
     thermostat: {digital: {target: 20.5, presets: {eco: 18}, heat_start_delta: 0.5, \
-heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, min_off: 600, \
-proportional_band: 2}}
+heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, min_off: 900}}
+    windows: [binary_sensor.office_window, binary_sensor.office_door]
+    window_open_delay: 30
+    window_close_delay: 120
+    max_humidity: 65
     loops:
       radiators:
         valves: [switch.office_valve_a, {entity: switch.office_valve_b, opening_time: 240}]
@@ -98,6 +104,7 @@ proportional_band: 2}}
     temperature: [sensor.lab]
     humidity: [sensor.lab_humidity]
     thermostat: {external: climate.lab}
+    max_humidity: null
     loops:
       bench:
         pump: secondary
@@ -105,19 +112,14 @@ proportional_band: 2}}
 """
 
 
-def _strings(value: Any) -> list[str]:
-    """Return every text key and value of a parsed document."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        return [text for item in value.items() for part in item for text in _strings(part)]
-    if isinstance(value, list):
-        return [text for item in value for text in _strings(item)]
-    return []
-
-
 def reference_text() -> str:
-    return REFERENCE_PLANT.read_text(encoding="utf-8")
+    """The reference plant file, less its introductory comment block.
+
+    docs/examples/reference-plant.yaml opens with prose for the reader that
+    write_plant_file() never reproduces; ``_COMMENT`` strips inline comments,
+    not a standalone header.
+    """
+    return _HEADER_COMMENT.sub("", REFERENCE_PLANT.read_text(encoding="utf-8"))
 
 
 def reference_document() -> dict[str, Any]:
@@ -159,6 +161,7 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
         min_flow=MinFlow.GUARANTEED,
         supply_temperature="sensor.primary_supply",
         name="Primary circulator",
+        condensation_switch="binary_sensor.primary_dew",
     )
     assert plant.pump("secondary").overrun == 0
     garage = plant.loop(LoopRef(None, "garage"))
@@ -168,6 +171,8 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
     assert garage.runs == LoopRun(RunKind.WITH_ZONES, ("office", "lab"))
     assert garage.modes == frozenset({Mode.HEAT, Mode.COOL})
     assert garage.surface_temperature == "sensor.garage_floor"
+    assert garage.surface_minimum == 18.5
+    assert garage.condensation_switch == "binary_sensor.garage_dew"
     office = plant.zone("office")
     assert office.title == "Front office"
     assert office.areas == (ZoneArea("office"), ZoneArea("hall", required=True, max_age=600))
@@ -179,30 +184,16 @@ def test_a_plant_file_with_every_key_decodes_every_key() -> None:
     assert office.aggregation is Aggregation.MAX
     assert isinstance(office.thermostat, DigitalThermostat)
     assert office.thermostat.target == 20.5
-    assert office.thermostat.proportional_band == 2
+    assert (office.thermostat.min_on, office.thermostat.min_off) == (300, 900)
+    assert office.windows == ("binary_sensor.office_window", "binary_sensor.office_door")
+    assert (office.window_open_delay, office.window_close_delay) == (30, 120)
+    assert office.max_humidity == 65
+    assert plant.zone("lab").max_humidity is None, "null turns the humidity cutoff off"
     radiators = plant.loop(LoopRef("office", "radiators"))
     assert radiators.runs == LoopRun(RunKind.ZONE)
     assert radiators.valves[1] == Valve("switch.office_valve_b", opening_time=240)
     assert plant.zone("lab").thermostat == ExternalThermostat("climate.lab")
     assert plant.loop(LoopRef("lab", "bench")).valves == ()
-
-
-@pytest.mark.parametrize("converted", list(TRIAL_PLANTS), ids=lambda path: path.name)
-def test_the_trial_kit_converts_to_format_2(converted: Any) -> None:
-    """The converted trial kit binds exactly the entities of the shipped trial kit."""
-    plant = read_plant_file(converted.read_text(encoding="utf-8"), new_id=lambda: PLANT_ID)
-    shipped = {
-        text
-        for text in _strings(yaml.safe_load(TRIAL_PLANTS[converted].read_text(encoding="utf-8")))
-        if _ENTITY_ID.fullmatch(text)
-    }
-
-    assert set(entity_paths(plant)) == shipped
-    assert [zone.slug for zone in plant.zones] == ["living_room", "bedroom"]
-    assert all(loop.pump == "circulation_pump" for loop in plant.all_loops)
-    exported = write_plant_file(plant)
-    assert read_plant_file(exported) == plant
-    assert write_plant_file(read_plant_file(exported)) == exported
 
 
 def test_a_missing_id_is_assigned_once_and_then_kept() -> None:
@@ -232,6 +223,10 @@ def test_defaults() -> None:
     room = plant.zone("room")
     assert room.thermostat == DigitalThermostat()
     assert room.aggregation is Aggregation.MEAN
+    assert room.windows == ()
+    assert (room.window_open_delay, room.window_close_delay, room.max_humidity) == (60, 60, 70)
+    assert room.loops[0].surface_minimum == 20
+    assert room.loops[0].condensation_switch is None
     assert room.loops[0].modes == frozenset({Mode.HEAT})
     assert room.loops[0].valves == ()
     assert export_plant(plant) == {
@@ -244,6 +239,27 @@ def test_defaults() -> None:
             "room": {"areas": ["room"], "loops": {"loop": {"pump": "pump", "modes": ["heat"]}}}
         },
     }
+
+
+def test_the_exercise_and_frost_protection_are_on_by_default_and_can_be_changed() -> None:
+    empty = {"hydronicus": 2, "id": PLANT_ID, "name": "Empty"}
+    plant = parse_plant(empty)
+    assert plant.exercise == Exercise(interval=604800, run=60)
+    assert plant.frost_protection == 5.0
+    assert "exercise" not in export_plant(plant) and "frost_protection" not in export_plant(plant)
+
+    changed = parse_plant({**empty, "exercise": {"interval": 86400}, "frost_protection": 10})
+    assert changed.exercise == Exercise(interval=86400, run=60)
+    text = write_plant_file(changed)
+    assert "exercise: {interval: 86400, run: 60}\nfrost_protection: 10\n" in text
+    assert read_plant_file(text) == changed
+
+    off = parse_plant({**empty, "exercise": False, "frost_protection": None})
+    assert (off.exercise, off.frost_protection) == (None, None)
+    nulls = parse_plant({**empty, "exercise": None, "frost_protection": False})
+    assert (nulls.exercise, nulls.frost_protection) == (None, None), "null turns them off too"
+    assert export_plant(off)["exercise"] is False and export_plant(off)["frost_protection"] is False
+    assert read_plant_file(write_plant_file(off)) == off
 
 
 def test_an_empty_plant_is_valid() -> None:
@@ -307,7 +323,7 @@ def test_a_plant_loop_min_flow_path_and_a_loop_surface_sensor_count() -> None:
 
 
 def test_a_plant_without_a_source_opens_valves_and_runs_switched_pumps() -> None:
-    plant = read_plant_file(next(iter(TRIAL_PLANTS)).read_text(encoding="utf-8"))
+    plant = read_plant_file(TRIAL_PLANT.read_text(encoding="utf-8"))
 
     assert plant.source is None
     assert set(plant.outputs().values()) == {OutputRole.PUMP, OutputRole.VALVE}
@@ -384,6 +400,22 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
     ("negative mode dwell", _set("mode_dwell", -1), "mode_dwell", "negative"),
     ("boolean mode dwell", _set("mode_dwell", True), "mode_dwell", "number"),
     ("infinite mode dwell", _set("mode_dwell", float("inf")), "mode_dwell", "number"),
+    ("exercise turned on", _set("exercise", True), "exercise", "false"),
+    ("unknown exercise key", _set("exercise", {"every": 60}), "exercise.every", "Unknown key"),
+    ("zero exercise interval", _set("exercise", {"interval": 0}), "exercise.interval", "least"),
+    (
+        "exercise interval under an hour",
+        _set("exercise", {"interval": 3599}),
+        "exercise.interval",
+        "Must be at least 3600.",
+    ),
+    ("negative exercise run", _set("exercise", {"run": -1}), "exercise.run", "negative"),
+    ("short exercise run", _set("exercise", {"run": 5}), "exercise.run", "Must be at least 10."),
+    ("long exercise run", _set("exercise", {"run": 601}), "exercise.run", "Must be at most 600."),
+    ("frost protection as text", _set("frost_protection", "5"), "frost_protection", "number"),
+    ("frost protection turned on", _set("frost_protection", True), "frost_protection", "number"),
+    ("negative frost protection", _set("frost_protection", -2), "frost_protection", "negative"),
+    ("warm frost protection", _set("frost_protection", 21), "frost_protection", "at most 10."),
     ("pumps as a list", _set("pumps", ["floor"]), "pumps", "mapping"),
     ("invalid pump slug", _set("pumps.Floor", {"switch": "switch.x"}), "pumps.Floor", "slug"),
     ("numeric pump slug", _set("pumps", {1: {"switch": "switch.x"}}), "pumps", "text"),
@@ -392,8 +424,7 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
     ("source without request", _delete("source.request"), "source.request", "required"),
     ("request in the wrong domain", _set("source.request", "light.x"), "source.request", "switch"),
     ("malformed request", _set("source.request", "switch"), "source.request", "entity ID"),
-    ("setpoint strategy", _set("source.strategy", "setpoint"), "source.strategy", "setpoint"),
-    ("unknown strategy", _set("source.strategy", "curve"), "source.strategy", "request"),
+    ("strategy is not a key", _set("source.strategy", "request"), "source.strategy", "Unknown key"),
     ("mode without cool", _delete("source.mode.cool"), "source.mode.cool", "required"),
     ("same mode options", _set("source.mode.cool", "Heat"), "source.mode.cool", "differ"),
     ("mode option as bool", _set("source.mode.heat", True), "source.mode.heat", "text"),
@@ -550,6 +581,39 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         f"{HEAT_PUMP}.supply_temperature",
         "sensor",
     ),
+    (
+        "condensation switch in the wrong domain",
+        _set(f"{HEAT_PUMP}.condensation_switch", "sensor.dew"),
+        f"{HEAT_PUMP}.condensation_switch",
+        "binary_sensor",
+    ),
+    (
+        "loop condensation switch in the wrong domain",
+        _set(f"{CEILING}.condensation_switch", "switch.dew"),
+        f"{CEILING}.condensation_switch",
+        "binary_sensor",
+    ),
+    (
+        "surface minimum without a surface sensor",
+        _set(f"{CEILING}.surface_minimum", 18),
+        f"{CEILING}.surface_minimum",
+        "surface_temperature",
+    ),
+    (
+        "surface minimum turned off without a surface sensor",
+        _set(f"{CEILING}.surface_minimum", None),
+        f"{CEILING}.surface_minimum",
+        "surface_temperature",
+    ),
+    (
+        "surface minimum as text",
+        _both(
+            _set(f"{CEILING}.surface_temperature", "sensor.ceiling"),
+            _set(f"{CEILING}.surface_minimum", "low"),
+        ),
+        f"{CEILING}.surface_minimum",
+        "number",
+    ),
     # Valves and roles
     ("valves as text", _set(f"{FLOOR}.valves", "switch.x"), f"{FLOOR}.valves", "list"),
     (
@@ -641,6 +705,42 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         _set("zones.basement.aggregation", "median"),
         "zones.basement.aggregation",
         "mean",
+    ),
+    (
+        "window in the wrong domain",
+        _set("zones.basement.windows", ["sensor.window"]),
+        "zones.basement.windows.0",
+        "binary_sensor",
+    ),
+    (
+        "window twice",
+        _set("zones.basement.windows", ["binary_sensor.a", "binary_sensor.a"]),
+        "zones.basement.windows.1",
+        "twice",
+    ),
+    (
+        "negative window delay",
+        _set("zones.basement.window_open_delay", -1),
+        "zones.basement.window_open_delay",
+        "negative",
+    ),
+    (
+        "window close delay turned off",
+        _set("zones.basement.window_close_delay", None),
+        "zones.basement.window_close_delay",
+        "number",
+    ),
+    (
+        "humidity limit above 100",
+        _set("zones.basement.max_humidity", 101),
+        "zones.basement.max_humidity",
+        "at most 100",
+    ),
+    (
+        "humidity limit that blocks cooling for good",
+        _set("zones.basement.max_humidity", 0),
+        "zones.basement.max_humidity",
+        "Must be at least 30.",
     ),
     (
         "digital thermostat without a temperature source",
@@ -747,10 +847,10 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         "number",
     ),
     (
-        "zero proportional band",
-        _set("zones.basement.thermostat", {"digital": {"proportional_band": 0}}),
+        "proportional band is not a key",
+        _set("zones.basement.thermostat", {"digital": {"proportional_band": 1}}),
         "zones.basement.thermostat.digital.proportional_band",
-        "positive",
+        "Unknown key",
     ),
     (
         "negative target is allowed but not NaN",
@@ -1015,13 +1115,17 @@ def test_entity_paths_name_where_each_entity_is_bound() -> None:
         "switch.boiler_request": "source.request",
         "select.boiler_mode": "source.mode.entity",
         "sensor.primary_supply": "pumps.primary.supply_temperature",
+        "binary_sensor.primary_dew": "pumps.primary.condensation_switch",
         "switch.secondary_pump": "pumps.secondary.switch",
         "valve.garage": "loops.garage.valves.0",
         "binary_sensor.garage_open": "loops.garage.valves.0.readiness",
         "sensor.garage_floor": "loops.garage.surface_temperature",
+        "binary_sensor.garage_dew": "loops.garage.condensation_switch",
         "sensor.office": "zones.office.temperature.0",
         "sensor.office_desk": "zones.office.temperature.1",
         "sensor.office_humidity": "zones.office.humidity.0",
+        "binary_sensor.office_window": "zones.office.windows.0",
+        "binary_sensor.office_door": "zones.office.windows.1",
         "switch.office_valve_a": "zones.office.loops.radiators.valves.0",
         "switch.office_valve_b": "zones.office.loops.radiators.valves.1",
         "sensor.lab": "zones.lab.temperature.0",
@@ -1089,6 +1193,8 @@ def test_a_source_without_a_mode_select_binds_only_its_request() -> None:
         ("", "The plant file"),
         ("name", "Plant name"),
         ("mode_dwell", "Mode dwell"),
+        ("exercise.interval", "Exercise, interval"),
+        ("frost_protection", "Frost protection"),
         ("hydronicus", "Plant file format"),
         ("source.mode.cool", "Source, mode select, cool option"),
         ("source.request", "Source, request switch"),
@@ -1104,6 +1210,17 @@ def test_a_source_without_a_mode_select_binds_only_its_request() -> None:
         ("zones.basement.areas.1", "Zone Basement, area 2"),
         ("zones.basement.temperature.0", "Zone Basement, temperature sensor 1"),
         ("zones.basement.humidity", "Zone Basement, humidity sensors"),
+        ("zones.basement.windows.0", "Zone Basement, window 1"),
+        ("zones.basement.max_humidity", "Zone Basement, maximum humidity"),
+        ("zones.basement.window_close_delay", "Zone Basement, window close delay"),
+        (
+            "zones.basement.loops.ceiling.condensation_switch",
+            "Zone Basement, loop Ceiling, condensation switch",
+        ),
+        (
+            "zones.basement.loops.ceiling.surface_minimum",
+            "Zone Basement, loop Ceiling, surface minimum",
+        ),
         (
             "zones.basement.thermostat.digital.presets.eco",
             "Zone Basement, thermostat, digital, presets, eco",

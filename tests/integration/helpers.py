@@ -27,8 +27,8 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from custom_components.hydronicus.const import DOMAIN, OPTION_ARMED_OUTPUTS, OPTION_CONTROL
 from custom_components.hydronicus.core.plant_file import read_plant_file
 
-FIXTURES = Path(__file__).parents[1] / "fixtures"
-REFERENCE_PLANT = (FIXTURES / "reference_plant.yaml").read_text(encoding="utf-8")
+DOCS_EXAMPLES = Path(__file__).parents[2] / "docs" / "examples"
+REFERENCE_PLANT = (DOCS_EXAMPLES / "reference-plant.yaml").read_text(encoding="utf-8")
 REFERENCE_PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 REFERENCE_AREAS = {
     "basement": "Basement",

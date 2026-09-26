@@ -28,6 +28,7 @@ When a zone calls for heat and nothing moves, check these in order:
 | `off` | The **Mode** select is off, and nothing runs. | Set the **Mode**. |
 | `idle` | The Plant is in a mode, and nothing is asked to run. | The zones' demand and `blocked_zones`. |
 | `heating` or `cooling` | Something runs, or is asked to run, in that mode. | `active_loops`, and `proposed` in Dry run. |
+| `exercising` | Nothing else runs, and an idle pump or its valves are exercised so they do not seize. | `exercising` and `idle_since`. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. | `reasons`, under `mode`. |
 | `degraded` | An output does not respond, or an entity the Plant binds does not exist. | `outputs_not_responding`, `missing_entities`, and the Repairs. |
 | `stopping` | A change removed outputs that were running, or left a configuration that is not valid, and the equipment of the previous configuration is being stopped. | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
@@ -43,11 +44,15 @@ Common reasons:
 | `idle: thermostat not restored` | The zone's digital thermostat has not loaded, or its entity is disabled. |
 | `idle: no usable temperature` | A required sensor of the zone is missing or stale, or the zone has no usable reading at all. |
 | `idle: thermostat unavailable` | The zone's external thermostat is unavailable or reports an action Hydronicus does not know. |
+| `idle: window open` | A window of the zone has read open for its open delay, so the zone's demand is off until every window has read closed for its close delay. |
+| `demands: ..., held for its minimum on time` | The zone's digital thermostat keeps its demand for its minimum on time, 600 seconds by default, although the zone has reached its target; `idle: ..., held for its minimum off time` is the same after a demand ends. |
 | `dropped: ... unarmed or unavailable` | The loop needs an output that is not armed or not available. |
 | `dropped: condensation guard blocks` | The loop cools and its condensation guard blocks; the loop's `.guard` reason gives the reference and the threshold. |
 | `min-flow path` | The loop is held open for a pump the source drives. |
 | `held open as a path` | The loop stays open because a pump that may still run needs it. |
 | `overrun` | A switched pump runs its overrun after heating ended. |
+| `demands: frost protection: ...` | The zone's coldest reading is below the frost protection temperature, so it is heated whatever its thermostat says. |
+| `exercise` | The loop or pump is exercised because it has not been on for the exercise interval; `exercise over` is its pump stopping without overrun. |
 | `waiting for the source mode` | The source's mode select does not show the Plant mode's option yet. |
 | `waiting for a path for every source-driven pump` | A pump the source drives has no ready loop yet. |
 | `held for its minimum on time` | The source request stays on for its minimum on time. |
@@ -56,7 +61,8 @@ Common reasons:
 | `stopping heat before cool` | The mode is changing, and the old mode is still stopping. |
 | `waiting for the mode dwell before cool` | The mode is changing, and the dwell has not passed. |
 
-`blocked_zones` lists each zone that cannot get what its thermostat asks for, such as `thermostat asks to cool while the Plant runs heat`.
+`blocked_zones` lists each zone that cannot get what its thermostat asks for, such as `thermostat asks to cool while the Plant runs heat`, or `window open` while its windows turn its demand off.
+A zone that frost protection heats is not blocked, even with a window open.
 
 ## Repairs
 
@@ -66,6 +72,7 @@ Diagnostics list the current Repairs by the key in the second column.
 | Repair | Key | Severity |
 | --- | --- | --- |
 | Plant is not valid | `invalid_plant` | Error |
+| A Plant cannot evaluate | `evaluation_failed` | Error |
 | An output does not respond | `output_not_responding` | Error |
 | Outputs awaiting confirmation | `outputs_awaiting_confirmation` | Warning |
 | An entity does not exist | `missing_binding` | Error |
@@ -73,6 +80,8 @@ Diagnostics list the current Repairs by the key in the second column.
 | A zone covers a missing area | `zone_area_missing` | Error |
 | A zone has no temperature sensor | `zone_without_temperature_source` | Error |
 | An area names a Hydronicus sensor | `zone_area_self_feed` | Warning |
+| A sensor blocks its zone | `zone_sensor_unusable` | Error |
+| A condensation input blocks cooling | `condensation_input_unusable` | Error |
 
 ### Plant is not valid
 
@@ -83,9 +92,17 @@ This happens when a zone that the Plant still needs is deleted, such as the zone
 The Repair names the problem; select **Submit** to open the Plant's **Reconfigure**, and fix it there, for example by choosing other **Min-flow loops** or with **Replace from a plant file**.
 Saving a valid Plant runs it again.
 
+### A Plant cannot evaluate
+
+An evaluation of the Plant failed with an error, which is a defect in Hydronicus.
+While it fails, the Plant sends no new command, so the outputs stay as they were last commanded, and its entities keep their last state.
+It tries again every minute, and after any change it observes, and the Repair clears after the next evaluation that succeeds.
+Report the problem with the error from the log and the Plant's diagnostics.
+If the equipment must not stay as it is meanwhile, stop it by hand or with its own controls.
+
 ### An output does not respond
 
-Hydronicus asked an output to change three times and never saw the change.
+Hydronicus asked an output to change three times and never saw the change, or a `valve` entity still shows opening or closing 70 seconds after its opening time.
 It keeps retrying, up to every 5 minutes, and the Repair clears once the output shows what the Plant asks for.
 Check that the device is powered and reachable, and that its state in Home Assistant follows it.
 Meanwhile a pump whose stop is not seen keeps its path open, and a valve whose opening is not seen keeps its loop from counting as ready.
@@ -124,6 +141,29 @@ Select **Submit** to open the zone's settings and add a sensor or another area, 
 A covered area's settings name a sensor that Hydronicus provides, such as a zone's **Combined temperature**.
 Following it would feed the Plant back into itself, so the zone ignores it.
 Choose a sensor that measures the room in the area settings.
+
+### A sensor blocks its zone
+
+A sensor that the zone requires has had no usable reading for at least 10 minutes: it is unavailable, stale, in an unsupported unit, or outside its plausible range.
+A zone fails closed without a required reading, so its digital thermostat does not call, and the loops that cool by its dew point do not cool.
+The Repair names the Plant, the zone, and the sensor, and clears once the sensor reports a usable reading again.
+Check the sensor, its battery, and its connection.
+If it reports only on change and its heartbeat is rarer than its `max_age`, raise `max_age` in the [plant file](plant-file.md#sensors).
+An extra sensor is required unless the plant file makes it optional, while an area's sensors block the zone only when the area is marked `required`.
+
+The 10 minutes keep a restart or a short dropout from raising the Repair, and they count across a restart, because the Plant stores when each block began.
+A sensor that does not exist raises [An entity does not exist](#an-entity-does-not-exist) or [An area names a missing sensor](#an-area-names-a-missing-sensor) instead.
+
+### A condensation input blocks cooling
+
+A condensation input of a loop that cools has had no usable state for at least 10 minutes, so the loop's condensation guard blocks and the loop cannot cool.
+The inputs are the condensation switches of the loop and of its pump, which are unusable while unavailable or unknown, and its pump's supply temperature and its own surface temperature, which are unusable while unavailable, not reported for 1800 seconds, in an unsupported unit, or outside their plausible range.
+The Repair names the Plant, the input, and every loop that cools with it, and clears once the input reports a usable state again.
+It shows whatever the Plant mode is, because cooling cannot start without the input.
+Check the device, its battery, and its connection.
+
+The 10 minutes count as for [A sensor blocks its zone](#a-sensor-blocks-its-zone), across a restart too.
+An input that does not exist raises [An entity does not exist](#an-entity-does-not-exist) instead.
 
 ## Setup and forms
 
@@ -171,9 +211,10 @@ A zone that cools also needs a humidity sensor or an area, and so does each zone
 
 ### A zone does not call
 
-- A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone.
+- A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone, and after 10 minutes the [A sensor blocks its zone](#a-sensor-blocks-its-zone) Repair names it.
   The [observation units](configuration.md#observation-units) list the accepted units and ranges.
-- A sensor is stale 1800 seconds after its last report by default; a battery sensor that reports only on change may need a longer maximum age in the [plant file](plant-file.md#sensors).
+- A sensor is stale 3600 seconds after its last report by default, changed or not.
+  A sensor that reports only on change and sends its heartbeat less often than hourly needs a longer `max_age` in the [plant file](plant-file.md#sensors); one that reports every few minutes can have a shorter one, so a failure is noticed sooner.
 - A sensor without a unit is taken as °C.
 
 ### The combined temperature is unexpected
@@ -190,33 +231,46 @@ If the area names a sensor that does not exist, a Repair says so.
 
 The loop's condensation guard blocks when its coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
 The **Dew point** sensor shows the zone's worst-case dew point, and the `.guard` reason in the **Status** sensor's `reasons` shows the reference and the threshold.
-A missing or stale reference, or a zone without a usable humidity reading, also blocks.
+A missing reference, one that has not reported for 1800 seconds, or a zone without a usable humidity reading, also blocks.
+A condensation switch that is on, unavailable, or unknown blocks too, and after 10 minutes the [A condensation input blocks cooling](#a-condensation-input-blocks-cooling) Repair names an input that is unusable.
 For a plant loop that cools, the dew points of the zones it runs with count, or of every zone when it runs with the source, so each of those zones needs a humidity reading.
+
+## Balancing
+
+### A zone runs nearly all day
+
+A zone's **Duty cycle** sensor shows the share of the last 24 hours in which its loops passed flow, and each loop's runtime sensor how long that loop has run in total; [the entity reference](entities.md#each-zone) says what counts.
+Compare the zones over a few days of similar weather in the same mode, since the duty cycle follows the load.
+A zone that stays near 100 percent while the others run much less gets too little heat or cooling for its needs: its loops are undersized, or the hydraulic balancing gives it too little flow.
+Open its balancing valves or raise its flow, or throttle the zones that reach their targets easily, then watch the duty cycles settle over the following days.
+Only real flow counts, so the duty cycle reads 0 in Dry run.
 
 ## Logs and diagnostics
 
 Open **Settings > System > Logs** and filter for `hydronicus`.
 Hydronicus logs a warning when a command fails or does not return in time, when the persisted state of a Plant cannot be read, when the thermostats of a Plant do not load, when the stored configuration is not valid, and when it stops the outputs of a previous configuration.
-It logs an error when it refuses a Plant created by an earlier version.
+It logs an error when it refuses a Plant created by an earlier version, and when an evaluation fails.
 
 Download diagnostics with **Download diagnostics** on the Plant's entry.
 They hold:
 
 | Key | Content |
 | --- | --- |
-| `plant` | The Plant as its plant file. |
+| `plant` | The Plant as its plant file, or, while the configuration is not valid, the plant file as it is stored. |
 | `options` | The armed outputs and **Control equipment**. |
 | `requested_mode` and `status` | The **Mode** select and the **Status** sensor. |
 | `observations` | What the last evaluation read: outputs, readiness sensors, sensors, areas, and thermostats. |
-| `desired` | What the last evaluation decided, with its reasons and each zone's demand. |
+| `desired` | What the last evaluation decided, with its reasons, each zone's demand, and the required sensors that block each zone. |
 | `state` and `reconcile` | The stored timers and the commands waiting for a result. |
+| `unusable_inputs` | By Repair key, when each required sensor that blocks its zone and each condensation input that blocks a loop became unusable, which starts the 10 minutes before its Repair. |
+| `flow` | Each loop's runtime in seconds under `runtimes`, and each zone's seconds of flow in each hour of the duty cycle's window under `hours`, keyed by the hour's number since 1970 in UTC. |
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |
 | `missing` | The bound entities that do not exist. |
 | `configuration_problem` | Why the stored configuration is not valid, or none. |
 | `stopping` | While the previous configuration stops: that configuration, the outputs it stops, and those not yet seen off. |
 
-Diagnostics leave out the Plant ID and every name, but they keep entity IDs, area IDs, and slugs.
+Diagnostics hold no secrets, and nothing in them is redacted: they include the Plant ID, entity IDs, area IDs, and the names of the Plant, its zones, and its other objects.
 Review them before you share them, and remove anything that identifies your household.
 Use the [diagnostic bug report template](../.github/ISSUE_TEMPLATE/diagnostic-bug-report.md) to report a problem.
 

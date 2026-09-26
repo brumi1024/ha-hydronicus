@@ -7,6 +7,7 @@ import json
 import re
 import sys
 import tempfile
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -19,13 +20,14 @@ INTEGRATION_NAME = "Hydronicus"
 MINIMUM_HOME_ASSISTANT = "2026.9.0"
 ARCHIVE_NAME = "hydronicus.zip"
 INTEGRATION_ROOT = Path("custom_components") / DOMAIN
+RELEASES_DIR = Path("docs") / "releases"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
     r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
-IGNORED_PARTS = {"__pycache__"}
+IGNORED_PARTS = {"__pycache__", ".ruff_cache"}
 
 
 class ReleaseValidationError(ValueError):
@@ -100,6 +102,21 @@ def validate_repository(root: Path) -> ReleaseMetadata:
     version = normalize_version(
         _string_field(manifest, "version", "manifest.json"), source="manifest version"
     )
+
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject_version = normalize_version(
+        _string_field(pyproject.get("project", {}), "version", "pyproject.toml"),
+        source="pyproject.toml version",
+    )
+    if pyproject_version != version:
+        raise ReleaseValidationError(
+            f"pyproject.toml version {pyproject_version!r} does not match "
+            f"manifest.json version {version!r}"
+        )
+
+    release_notes = root / RELEASES_DIR / f"v{version}.md"
+    if not release_notes.is_file():
+        raise ReleaseValidationError(f"Missing release notes: {release_notes.relative_to(root)}")
 
     if _string_field(hacs, "name", "hacs.json") != INTEGRATION_NAME:
         raise ReleaseValidationError(f"hacs.json name must be {INTEGRATION_NAME!r}")

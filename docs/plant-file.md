@@ -38,7 +38,6 @@ name: Home
 mode_dwell: 3600
 source:
   name: Heat pump
-  strategy: request
   request: switch.heat_pump_heat_request
   mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}
   post_run: 180
@@ -111,6 +110,8 @@ Read it from the top:
 | `id` | no | a new random ID | The Plant ID, a UUID. It forms the unique ID of every entity, so keep it to keep the entity IDs. |
 | `name` | yes | | The Plant name, which also names the Plant's device and its Plant-wide entities. |
 | `mode_dwell` | no | `3600` | Seconds between the end of the old mode's flow and the start of the new mode, after a change between heating and cooling. |
+| `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` or `null` to turn it off. |
+| `frost_protection` | no | `5` | The frost protection temperature in °C, at most 10, or `false` or `null` to turn frost protection off. A zone that a loop heats is heated whatever its thermostat says once its coldest reading falls below it, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
 | `pumps` | no | | Slug to [pump](#pumps). |
 | `loops` | no | | Slug to [plant loop](#plant-loops). |
@@ -119,6 +120,35 @@ Read it from the top:
 Unknown keys are errors at every level of the file.
 Times are in seconds and temperatures in °C.
 Numbers must not be negative unless a key says otherwise.
+
+## Exercise
+
+A pump or valve that stays off for months can seize, so Hydronicus runs each switched pump and opens each valve that has not been on for a while, as [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves) describes.
+`exercise` is a mapping of two keys, or `false` or `null` to turn the exercise off:
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `interval` | no | `604800` | Seconds a switched pump or a valve may stay off before it is exercised, a week by default. Must be at least 3600, an hour. |
+| `run` | no | `60` | Seconds an exercised switched pump runs. Must be from 10 to 600. |
+
+This Plant exercises its pump and valve every three days, and never protects against frost, because its boiler does:
+
+```yaml
+hydronicus: 2
+name: Barn
+exercise: {interval: 259200, run: 120}
+frost_protection: false
+pumps:
+  pump:
+    switch: switch.barn_pump
+zones:
+  barn:
+    temperature: [sensor.barn_temperature]
+    loops:
+      radiators:
+        valves: [switch.barn_radiator_valve]
+        pump: pump
+```
 
 ## Slugs and names
 
@@ -142,7 +172,6 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |
 | `name` | no | `Heat source` | The source's name, which names its device. |
-| `strategy` | no | `request` | How Hydronicus asks for heat: `request` switches the request and lets the source choose its own flow temperature. `setpoint` is reserved for weather compensation and is refused for now. |
 | `request` | yes | | The `switch` that asks the source for heat or cooling. |
 | `mode` | no | | The `select` that switches the source between heating and cooling, as a mapping of `entity`, the select, `heat`, its option for heating, and `cool`, its option for cooling, such as `{entity: select.heat_pump_mode, heat: Heat, cool: Cool}`. The two options must differ. |
 | `post_run` | no | `180` | How long the source keeps its own pumps running after the request ends. Hydronicus keeps their loops open for that long. |
@@ -165,6 +194,7 @@ Every loop runs on exactly one pump, and a pump can drive any number of loops.
 | `min_flow` | no | `path` | `path` when the pump needs an open loop while it runs, `guaranteed` when a hydraulic separator, buffer, or bypass gives it a path whatever the loops do. |
 | `min_flow_loops` | see below | | For a source-driven pump with `min_flow: path`: the loops Hydronicus holds open whenever none of the pump's other loops is ready while the pump may run. |
 | `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. |
+| `condensation_switch` | no | | A `binary_sensor` on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on, unavailable, or unknown, none of the pump's loops cools. |
 
 A pump has either `switch` or `driven_by: source`, never both.
 A switched pump with `min_flow: path` simply never runs without a ready loop, so it takes no `min_flow_loops`.
@@ -205,6 +235,7 @@ A loop's `valves` list holds entity IDs of `switch` or `valve` entities, or mapp
 
 `valves: [switch.floor_valve]` is the short form of `valves: [{entity: switch.floor_valve}]`.
 Every valve of a loop opens together, and the loop is ready once each of them is.
+A `valve` entity may show opening or closing while it moves: it is not ready while it shows opening, its opening time counts from when it shows open, and it counts as possibly open until it shows closed.
 
 An output entity has exactly one role in a Plant: a valve of one loop, a pump's switch, or a source output.
 A valve entity is never shared by two loops, and a pump's switch is never also a valve or the source request.
@@ -221,10 +252,16 @@ A loop with no valve is always an open path, and its pump is its only control.
 | `pump` | yes | | The slug of the pump that moves the loop's water. |
 | `modes` | no | `[heat]` | `[heat]`, `[cool]`, or `[heat, cool]`. |
 | `surface_temperature` | no | | A `sensor` of the floor or ceiling surface temperature, the loop's own condensation reference. |
+| `surface_minimum` | no | `20` | Only with `surface_temperature`: the lowest surface temperature while the loop cools, in °C. `null` turns it off. |
+| `condensation_switch` | no | | A `binary_sensor` that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on, unavailable, or unknown, the loop does not cool. |
 | `runs` | plant loops only | | When a [plant loop](#plant-loops) runs. |
 
 A loop may cool only with a condensation reference: its pump's `supply_temperature` or its own `surface_temperature`.
 A loop without either is heat only.
+A condensation switch never replaces that reference; it only adds to the [condensation guard](how-it-works.md#cooling-and-the-condensation-guard).
+
+The default `surface_minimum` of 20 °C keeps a cooled floor comfortable to stand on, as ISO 7730 and REHVA advise.
+A ceiling nobody touches may run colder, so a ceiling loop may use a lower value, such as `17`, as long as the dew point allows it.
 
 ### Plant loops
 
@@ -277,6 +314,10 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `humidity` | no | | Extra humidity sensors, see [Sensors](#sensors). |
 | `aggregation` | no | `mean` | How the zone combines its temperatures: `mean`, `min`, or `max`. |
 | `thermostat` | no | a digital thermostat | See [Thermostats](#thermostats). |
+| `windows` | no | | `binary_sensor` entities that are on while a window or door of the zone is open, see [Windows](#windows). |
+| `window_open_delay` | no | `60` | Seconds a window must read open before the zone's demand turns off. |
+| `window_close_delay` | no | `60` | Seconds every window must read closed before the zone's demand comes back. |
+| `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool, from 30 to 100. `null` turns the cutoff off. |
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
 A zone with a digital thermostat needs a temperature sensor or an area.
@@ -292,7 +333,7 @@ An item of `areas` is the ID of a Home Assistant area, or a mapping:
 | --- | --- | --- | --- |
 | `area` | yes | | The area ID. |
 | `required` | no | `false` | Whether a stale or unavailable sensor of the area blocks the zone. |
-| `max_age` | no | `1800` | Seconds after which a reading of the area's sensors is stale. Must be positive. |
+| `max_age` | no | `3600` | Seconds after which a reading of the area's sensors is stale. Must be positive. |
 
 A zone follows the temperature sensor and the humidity sensor that each of its areas names in its area settings, after its extra sensors.
 The area ID is the one Home Assistant made from the area's name when the area was created, such as `living_room`; renaming an area keeps its ID.
@@ -306,9 +347,22 @@ An item of `temperature` or `humidity` is a `sensor` entity ID, or a mapping:
 | --- | --- | --- | --- |
 | `entity` | yes | | The sensor. |
 | `required` | no | `true` | Whether the sensor being stale or unavailable blocks the zone. An optional sensor is left out instead. |
-| `max_age` | no | `1800` | Seconds after which a reading is stale. Must be positive. |
+| `max_age` | no | `3600` | Seconds after which a reading is stale. Must be positive. |
+
+A reading is stale once its sensor has not reported for `max_age`, whether or not its value changed.
+Many battery sensors report only when their value changes, with a heartbeat about once an hour, so the default is an hour.
+Raise `max_age` for a sensor whose heartbeat is rarer, so a steady room does not count as stale.
+Lower it for a sensor that reports every few minutes, so a sensor that stops is noticed sooner.
+The condensation guard's references, a pump's `supply_temperature` and a loop's `surface_temperature`, are stale after 1800 seconds, because cooling needs a fresh reference.
 
 Calibrate a sensor at its source; the plant file has no offsets or weights.
+
+### Windows
+
+Once any window of `windows` has read open for `window_open_delay`, the zone's demand is off, in heating and in cooling, with the reason `window open`.
+It comes back once every window has read closed for `window_close_delay`.
+The thermostat keeps its target and mode meanwhile, and a demand that comes back holds for its `min_on` from then.
+A window sensor that is unavailable or unknown reads as closed, so a lost sensor never stops the heating.
 
 ### Thermostats
 
@@ -327,9 +381,8 @@ A digital thermostat accepts these keys:
 | `heat_stop_delta` | `0.1` | Heating demand stops this far above the target. |
 | `cool_start_delta` | `0.3` | Cooling demand starts this far above the target. |
 | `cool_stop_delta` | `0.1` | Cooling demand stops this far below the target. |
-| `min_on` | `0` | The shortest time demand stays on, in seconds. |
-| `min_off` | `0` | The shortest time demand stays off, in seconds. |
-| `proportional_band` | `1` | The distance to target, in kelvin, over which the demand level rises from 0 to 1. Must be positive. |
+| `min_on` | `600` | The shortest time demand stays on, in seconds, so a short call does not open a slow valve and close it again before its pump has run. |
+| `min_off` | `600` | The shortest time demand stays off after it ends, in seconds, so a valve that has just closed is not opened again at once. A zone that has not called since its thermostat started or changed mode may call at once. |
 
 This zone has an external thermostat, and a radiator loop with no valve whose pump is its only control:
 
@@ -369,7 +422,7 @@ zones:
         target: 21.5
         presets: {comfort: 22, eco: 19}
         heat_start_delta: 0.5
-        min_on: 600
+        min_on: 900
     loops:
       floor:
         valves:
@@ -379,7 +432,8 @@ zones:
 
 ## A small cooling Plant
 
-A loop that cools needs a condensation reference, and its zone needs a humidity reading:
+A loop that cools needs a condensation reference, and its zone needs a humidity reading.
+This one also stops cooling when the dew point switch on the circulator's supply pipe trips, and stops the zone's demand while its window is open:
 
 ```yaml
 hydronicus: 2
@@ -390,10 +444,12 @@ source:
 pumps:
   circulator:
     switch: switch.office_circulator
+    condensation_switch: binary_sensor.office_dew_point_switch
 zones:
   office:
     temperature: [sensor.office_temperature]
     humidity: [sensor.office_humidity]
+    windows: [binary_sensor.office_window]
     loops:
       ceiling:
         valves: [switch.office_ceiling_valve]
@@ -428,7 +484,7 @@ A zone references only the Plant's pumps and source, so removing a zone removes 
 An export writes the canonical form of the file:
 
 - Every structural and timing key is written, such as `mode_dwell`, a switched pump's `overrun`, and each loop's `modes`.
-- Optional keys at their defaults are left out: names that read the same as their slug, sensor and area settings you did not change, and digital thermostat settings at their defaults.
+- Optional keys at their defaults are left out: names that read the same as their slug, sensor and area settings you did not change, digital thermostat settings at their defaults, and `exercise` and `frost_protection` at theirs.
 - A source-driven pump always states its `min_flow`, because it is a safety decision.
 - Lists and short mappings are written on one line.
 
@@ -447,7 +503,7 @@ These are problems in variations of the reference plant, with the path, the word
 | --- | --- | --- |
 | `hydronicus` | Plant file format | Plant file format 1 is no longer read; describe the Plant in format 2. |
 | `zones.Living room` | Zone Living room | A slug starts with a lowercase letter and holds only lowercase letters, digits, and underscores. |
-| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature. |
+| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature, surface_minimum, condensation_switch. |
 | `zones.living_area.loops.floor.pump` | Zone Living area, loop Floor, pump | There is no pump underfloor. |
 | `zones.living_area.loops.floor.modes` | Zone Living area, loop Floor, modes | A loop that cools needs a condensation reference: a supply_temperature on pump floor or the loop's surface_temperature. Without one the loop is heat only. |
 | `pumps.heat_pump.min_flow_loops` | Pump Heat pump, min-flow loops | A source-driven pump with min_flow: path needs min_flow_loops, the loops held open while it may run, or min_flow: guaranteed when a separator protects it. |
@@ -459,7 +515,7 @@ These are problems in variations of the reference plant, with the path, the word
 | `zones.bedroom_area` | Zone Bedroom area | A digital thermostat needs a temperature sensor or an area. |
 | `zones.living_area.humidity` | Zone Living area, humidity sensors | A zone that cools needs a humidity sensor or an area for its dew point. |
 | `loops.towel_dryer.runs` | Plant loop Towel dryer, runs with | This key is required. |
-| `source.strategy` | Source, strategy | The setpoint strategy arrives with weather compensation; use request. |
+| `frost_protection` | Frost protection | Must be at most 10. |
 
 A file that is empty, or is not valid YAML, is reported for the whole file, and so is a mapping that repeats a key.
 

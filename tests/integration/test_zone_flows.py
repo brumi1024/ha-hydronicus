@@ -8,10 +8,12 @@ with the same rules as setup.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.hydronicus.core.model import ExternalThermostat
 from tests.integration.helpers import (
@@ -85,6 +87,28 @@ async def test_add_a_zone_through_its_subentry(hass: HomeAssistant) -> None:
     }
     assert hass.states.get("climate.guest_room") is not None
     assert entry.options["armed_outputs"] == [FLOOR_PUMP], "adding a zone never changes arming"
+
+
+async def test_adding_a_zone_sets_up_again_a_plant_that_failed_to_set_up(
+    hass: HomeAssistant,
+) -> None:
+    """A Plant that failed has no update listener, so the new zone itself retries it."""
+    reference_world(hass)
+    with patch.object(
+        hass.config_entries, "async_forward_entry_setups", side_effect=HomeAssistantError
+    ):
+        entry = await async_import(hass, REFERENCE_PLANT)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.subentries
+    result = await async_open(hass, entry)
+    result = await async_submit(flows, result, {"name": "Study", "temperature": ["sensor.study"]})
+    result = await async_submit(flows, result, {})
+    result = await async_choose(flows, result, "save")
+    assert result["type"] is FlowResultType.CREATE_ENTRY, result
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("climate.study") is not None
 
 
 async def test_reconfigure_a_zone_edits_its_settings_and_its_loops(hass: HomeAssistant) -> None:
@@ -257,8 +281,150 @@ async def test_removing_a_zone_subentry_removes_exactly_its_objects(hass: HomeAs
     assert [zone.slug for zone in entry.runtime_data.plant.zones] == ["basement", "living_area"]
 
 
+async def test_a_zone_is_not_saved_over_a_plant_changed_meanwhile(hass: HomeAssistant) -> None:
+    """The zone's loop uses a pump that the Plant's reconfigure removed while the form was open."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    zones = hass.config_entries.subentries
+    zone = await async_open(hass, entry)
+    zone = await async_submit(zones, zone, {"name": "Laundry", "temperature": ["sensor.laundry"]})
+    zone = await async_submit(
+        zones, zone, {"name": "Rail", "valves": ["switch.laundry_valve"], "pump": "towel_dryer"}
+    )
+
+    flow = hass.config_entries.flow
+    plant = await flow.async_init(
+        entry.domain, context={"source": "reconfigure", "entry_id": entry.entry_id}
+    )
+    plant = await async_choose(flow, plant, "plant_loop_pick")
+    plant = await async_submit(flow, plant, {"loop": "towel_dryer"})
+    plant = await async_submit(
+        flow, plant, {"name": "Towel dryer", "pump": "towel_dryer", "remove": True}
+    )
+    plant = await async_choose(flow, plant, "pump_pick")
+    plant = await async_submit(flow, plant, {"pump": "towel_dryer"})
+    plant = await async_submit(flow, plant, {"name": "Towel dryer", "remove": True})
+    plant = await async_choose(flow, plant, "save")
+    plant = await async_submit(flow, plant)
+    assert plant["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    zone = await async_choose(zones, zone, "save")
+
+    assert zone["type"] is FlowResultType.ABORT and zone["reason"] == "plant_changed"
+    await hass.async_block_till_done()
+    assert "laundry" not in stored(entry)[1]
+    assert [pump.slug for pump in entry.runtime_data.plant.pumps] == ["heat_pump", "floor"]
+
+
 def _options(result: dict[str, Any], field: str) -> list[dict[str, str]]:
     for key, value in result["data_schema"].schema.items():
         if str(key) == field:
             return value.serialize()["selector"]["select"]["options"]
     raise AssertionError(field)
+
+
+COOLED_STUDY = """
+hydronicus: 2
+name: Flat
+pumps:
+  pump: {switch: switch.pump, supply_temperature: sensor.supply}
+zones:
+  study:
+    temperature: [sensor.study]
+    humidity: [sensor.study_rh]
+    loops:
+      ceiling: {valves: [switch.study_valve], pump: pump, modes: [heat, cool]}
+"""
+
+
+async def test_a_zone_takes_its_windows_and_cooling_limits_and_a_loop_its_switch(
+    hass: HomeAssistant,
+) -> None:
+    entry = await async_import(hass, COOLED_STUDY)
+    flows = hass.config_entries.subentries
+    result = await async_open(hass, entry, "study")
+    assert [suggested(result, key) for key in ("window_open_delay", "max_humidity")] == [60, 70]
+    result = await async_submit(
+        flows,
+        result,
+        {
+            "name": "Study",
+            "temperature": ["sensor.study"],
+            "humidity": ["sensor.study_rh"],
+            "windows": ["binary_sensor.study_window"],
+            "window_open_delay": 30,
+            "window_close_delay": 60,
+            "max_humidity": 65,
+        },
+    )
+    result = await async_choose(flows, result, "loop_pick")
+    result = await async_submit(flows, result, {"loop": "ceiling"})
+    assert suggested(result, "surface_minimum") == 20
+    result = await async_submit(
+        flows,
+        result,
+        {
+            "name": "Ceiling",
+            "valves": ["switch.study_valve"],
+            "pump": "pump",
+            "modes": ["heat", "cool"],
+            "surface_temperature": "sensor.study_ceiling",
+            "surface_minimum": 18,
+            "condensation_switch": "binary_sensor.study_ceiling_dew_point",
+        },
+    )
+    result = await async_choose(flows, result, "save")
+    await hass.async_block_till_done()
+
+    zone = entry.runtime_data.plant.zone("study")
+    assert zone.windows == ("binary_sensor.study_window",)
+    assert (zone.window_open_delay, zone.window_close_delay, zone.max_humidity) == (30, 60, 65)
+    ceiling = zone.loops[0]
+    assert (ceiling.surface_minimum, ceiling.condensation_switch) == (
+        18,
+        "binary_sensor.study_ceiling_dew_point",
+    )
+    _data, zones = stored(entry)
+    assert "window_close_delay" not in zones["study"][1], "a default is left out"
+
+
+async def test_a_limit_the_plant_file_turns_off_stays_off_and_a_cleared_one_is_the_default(
+    hass: HomeAssistant,
+) -> None:
+    text = COOLED_STUDY.replace(
+        "    humidity: [sensor.study_rh]\n",
+        "    humidity: [sensor.study_rh]\n    max_humidity: null\n",
+    ).replace(
+        "modes: [heat, cool]}",
+        "modes: [heat, cool], surface_temperature: sensor.study_ceiling, surface_minimum: 17}",
+    )
+    entry = await async_import(hass, text)
+    flows = hass.config_entries.subentries
+    result = await async_open(hass, entry, "study")
+    assert suggested(result, "max_humidity") is None
+    result = await async_submit(
+        flows,
+        result,
+        {"name": "Study", "temperature": ["sensor.study"], "humidity": ["sensor.study_rh"]},
+    )
+    result = await async_choose(flows, result, "loop_pick")
+    result = await async_submit(flows, result, {"loop": "ceiling"})
+    assert suggested(result, "surface_minimum") == 17
+    result = await async_submit(
+        flows,
+        result,
+        {
+            "name": "Ceiling",
+            "valves": ["switch.study_valve"],
+            "pump": "pump",
+            "modes": ["heat", "cool"],
+            "surface_temperature": "sensor.study_ceiling",
+        },
+    )
+    result = await async_choose(flows, result, "save")
+    await hass.async_block_till_done()
+
+    zone = entry.runtime_data.plant.zone("study")
+    assert zone.max_humidity is None
+    assert zone.loops[0].surface_minimum == 20

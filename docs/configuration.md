@@ -14,6 +14,8 @@ Have these entities ready:
 - Optionally, a `switch` that asks the heat pump or boiler for heat or cooling, and a `select` that switches it between heating and cooling.
 - A temperature sensor for every zone, either named in the settings of the zone's Home Assistant areas, as described in [Areas](#areas), or chosen in the zone form.
 - For cooling: a humidity sensor for every zone that cools, and a supply temperature or surface temperature sensor as the condensation reference of every loop that cools.
+- Optionally, for cooling: a `binary_sensor` for each dew point or condensation switch on a cooling pipe, which is on when it detects condensation.
+- Optionally, a `binary_sensor` for each window or door whose opening should stop its zone, which is on while it is open.
 
 Hydronicus never offers its own entities in these forms, because a Plant that reads its own output would feed back into itself.
 
@@ -33,6 +35,8 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Leave the request switch empty for a source that runs on its own controls; valves and switched pumps still run on demand.
    If the source switches between heating and cooling through a select, choose it as the **Source mode select**; it needs a request switch.
    The collapsed **Timing** section holds the **Mode dwell** (3600 seconds), the **Source post-run** (180 seconds), and the **Source minimum on time** and **Source minimum off time** (600 seconds each).
+   The collapsed **Protection** section holds **Exercise idle pumps and valves**, on by default, with the **Exercise interval** (604800 seconds, a week, and at least an hour) and the **Exercise pump run** (60 seconds, from 10 to 600), and **Frost protection**, on by default, with the **Frost protection temperature** (5 °C, at most 10 °C).
+   See [frost protection](how-it-works.md#frost-protection) and [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves).
 2. **Source modes**, only with a mode select.
    Choose the **Heating option** and the **Cooling option** of the select.
    The form lists the options the select offers now.
@@ -42,6 +46,7 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Set the **Overrun**, how long a switched pump keeps running after heating ends (180 seconds).
    Set the **Minimum flow** to **Needs an open loop**, or to **A separator guarantees its flow** when a hydraulic separator, buffer, or bypass gives the pump a path whatever the loops do.
    Optionally choose the **Supply temperature sensor**, the water temperature this pump supplies, which lets its loops cool.
+   Optionally choose the **Condensation switch** on the pump's supply pipe; while it is on or unavailable, none of the pump's loops cools.
    Turn on **Add another pump** to add the next one.
 4. **How is your home zoned?**
    Choose **One zone per area** to give each chosen Home Assistant area a zone of its own, **Zones that cover several areas** to group areas into zones, such as one zone per floor, or **Zones without areas** for zones with their own sensors or an existing thermostat.
@@ -52,12 +57,16 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Add **Extra temperature sensors** and **Extra humidity sensors** that are not named by the chosen areas, such as a floor probe.
    Choose how to **Combine temperatures by**: **Mean**, **Minimum**, or **Maximum**.
    Choose an **Existing thermostat** to let an existing climate entity own the zone's demand, or leave it empty for a digital thermostat that Hydronicus provides.
+   Optionally choose the zone's **Windows**, and set the **Window open delay** and the **Window close delay** (60 seconds each), as [Windows](#windows) describes.
+   Set the **Maximum humidity for cooling** (70 %, from 30 to 100 %), above which the zone's loops stop cooling, as [Cooling limits](#cooling-limits) describes.
    The collapsed **Digital thermostat presets** section sets the **Comfort**, **Eco**, and **Away** targets; leave a preset empty to leave it out.
 6. The loop form.
    Enter the **Loop name**, such as `Ceiling` or `Floor`.
    Choose the **Valves** that open together for the loop, or none for a loop whose pump is its only control.
    Choose the **Pump** that moves the loop's water.
    Choose the **Modes**: **Heating**, **Cooling**, or both; cooling needs the pump's supply temperature sensor or the loop's **Surface temperature sensor**.
+   With a surface sensor, set the **Cooling surface minimum** (20 °C), the coldest the surface may get while the loop cools.
+   Optionally choose a **Condensation switch** that covers this loop alone.
    Set the **Valve opening time**, how long every valve of the loop takes to open before its pump may start (180 seconds).
    Leave **Valves** and **Pump** empty to give the zone no loop of its own, for a zone that only a plant loop serves.
 7. The zone's menu.
@@ -123,6 +132,7 @@ The menu says whether the stored Plant is valid, and offers:
 
 Nothing is stored until you submit **Save the changes**.
 The Plant then reloads.
+If the Plant changed while the flow was open, such as a zone saved or deleted meanwhile, the flow stops without storing anything, because saving would undo that change; open **Reconfigure** again.
 Removed outputs are disarmed, and new outputs wait for you to arm them.
 If a removed output was running, the Plant first stops the equipment of its previous configuration, as [safety limits](safety.md#reloads-restarts-and-changes) describe.
 
@@ -144,6 +154,7 @@ Each zone is a subentry of the Plant, listed under the Plant's entry.
 - **Delete** on a zone removes it with exactly its own loops and valves.
 
 A zone is saved only as part of a valid Plant, checked with the same rules as setup, and saving it reloads the Plant.
+If the Plant changed while the zone's form was open, such as a pump removed in the Plant's **Reconfigure**, the zone is not saved; open the form again.
 A new zone's valves are new outputs, so its loops wait until you arm them, while the rest of the Plant keeps running.
 Editing a thermostat, a sensor, a name, or a timing never changes what is armed.
 
@@ -166,7 +177,7 @@ A zone that covers an area follows the sensors the area names:
 - An area sensor that Hydronicus itself provides, such as a zone's **Combined temperature**, is ignored, and a Repair names it.
 
 By default an area's sensors are optional: a stale or unavailable one is left out, so one flat battery in a zone of five rooms does not stop the other four.
-A reading is stale after 1800 seconds without a report.
+A reading is stale after 3600 seconds without a report, which suits a battery sensor that reports only on change with an hourly heartbeat.
 The [plant file](plant-file.md#areas) can make an area's sensors required or change their maximum age; the forms keep those settings when you edit the zone.
 
 A zone that covers exactly one area puts its thermostat in that area when the thermostat is first created, so it appears on the area's page and answers voice commands such as "set the bedroom to 21".
@@ -191,7 +202,8 @@ A zone has exactly one thermostat.
 A digital thermostat is the zone's climate entity, which Hydronicus provides.
 It restores its target, preset, and mode after a restart, starts off with a target of 21 °C when new, and offers heating, plus cooling when a loop of the zone cools.
 It demands heating 0.3 K below its target and stops 0.1 K above it, and cooling the same way the other side.
-The [plant file](plant-file.md#thermostats) can change these deltas, add minimum on and off times, and change the proportional band of the demand level.
+It holds each decision for at least 600 seconds, so a short call does not open a slow thermoelectric valve and close it again before the pump has run.
+The [plant file](plant-file.md#thermostats) can change these deltas and the minimum on and off times.
 
 An existing thermostat is an existing Home Assistant climate entity that owns the zone's demand.
 Hydronicus reads only its `hvac_action`: heating or preheating calls for heat, cooling calls for cooling, and idle or off calls for nothing.
@@ -199,6 +211,29 @@ Hydronicus never commands it, and an unavailable or unknown action blocks the zo
 Make sure the existing thermostat does not itself switch a valve or pump that Hydronicus commands.
 
 A zone's thermostat mode counts only when it matches the Plant mode.
+[Frost protection](how-it-works.md#frost-protection) overrides both: a zone whose coldest reading falls below 5 °C is heated even while its thermostat or the Plant's **Mode** select is off.
+
+## Windows
+
+A zone's **Windows** are binary sensors that are on while a window or door of the zone is open, such as contact sensors.
+Once one of them has been open for the **Window open delay**, the zone's demand is off, in heating and in cooling, and its demand sensors and thermostat show the reason `window open`.
+The demand comes back once every window has been closed for the **Window close delay**.
+The delays keep a door walked through, or a window opened for a moment, from closing valves that take minutes to open again.
+
+The thermostat keeps its target and mode while a window is open, and a demand that comes back holds for its minimum on time from then.
+A window sensor that is unavailable or unknown counts as closed, so a flat battery never stops the heating; a window sensor that does not exist raises a Repair.
+
+## Cooling limits
+
+The [condensation guard](how-it-works.md#cooling-and-the-condensation-guard) stops a loop's cooling below the dew point, and three limits add to it:
+
+- A **Condensation switch** on a pump or a loop, such as a dew point switch on the cooling supply pipe, stops cooling at once while it is on, unavailable, or unknown, and cooling resumes only once it has read off for 5 minutes.
+  It does not replace the supply or surface temperature sensor that a loop needs to cool.
+- The **Cooling surface minimum** of a loop with a surface sensor, 20 °C by default, keeps a cooled floor comfortable to stand on.
+  A ceiling may use a lower value.
+- The **Maximum humidity for cooling** of a zone, 70 % by default, stops the loops that read the zone's dew point while the zone's highest humidity is above it, and they cool again once it is 5 points below.
+
+Empty fields mean the defaults, and only the [plant file](plant-file.md) turns the surface minimum or the humidity limit off, with `null`.
 
 ## Observation units
 
@@ -225,6 +260,92 @@ The ranges are inclusive and catch sensor faults, such as -127 °C from a discon
 
 An unusable reading counts like an unavailable one: a required sensor blocks its zone, an optional one is left out, and a condensation reference blocks its loop's cooling.
 
+## Automatic heat and cool changeover
+
+The **Mode** select has no automatic option, by design: [mode changes](how-it-works.md#mode-changes) leaves picking heat or cool to you or to an automation you write.
+This recipe drives it from a slow outdoor temperature, so the Plant does not change mode on a passing cold snap or a sunny afternoon.
+
+### A slow outdoor temperature
+
+Smooth a fast outdoor sensor before you threshold it.
+The [`statistics`](https://www.home-assistant.io/integrations/statistics/) integration's `mean` characteristic over the last 24 hours works well, configured in YAML:
+
+```yaml
+sensor:
+  - platform: statistics
+    name: "Outdoor temperature 24h mean"
+    entity_id: sensor.outdoor_temperature
+    state_characteristic: mean
+    max_age:
+      hours: 24
+```
+
+Replace `sensor.outdoor_temperature` with your own outdoor sensor.
+A trend of a filter sensor works too, if you would rather act on a rate of change than a plain mean; either way, feed the automation below a sensor that moves over a day, not a minute.
+
+### Thresholds with a neutral band
+
+Heat pump and room controller vendors usually switch on a neutral band rather than a single crossover point, so the mode does not chatter around one threshold.
+The numbers below are examples: tune them to your climate, your emitters, and how far ahead the Plant needs to change mode.
+
+- Below about 15 °C: heat.
+- Above about 22 °C: cool.
+- Between them: off, so neither mode runs while the weather is mild.
+
+### The automation
+
+```yaml
+automation:
+  - alias: "Home: automatic heat/cool changeover"
+    triggers:
+      - trigger: state
+        entity_id: sensor.outdoor_temperature_24h_mean
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.automatic_changeover
+        state: "on"
+    actions:
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.outdoor_temperature_24h_mean
+                below: 15
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.home_mode
+                data:
+                  option: "heat"
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.outdoor_temperature_24h_mean
+                above: 22
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.home_mode
+                data:
+                  option: "cool"
+        default:
+          - action: select.select_option
+            target:
+              entity_id: select.home_mode
+            data:
+              option: "off"
+    mode: single
+```
+
+Replace `select.home_mode` with your own Plant's **Mode** select, following the `select.<plant>_mode` pattern from [the entities](entities.md#the-plant).
+Triggering on the mean sensor's own state changes acts as soon as a slow crossing happens, and triggering on Home Assistant start applies a value that is already past a threshold after a restart, before the mean sensor has changed again.
+
+Hydronicus itself enforces the [mode dwell](how-it-works.md#mode-changes) and the stop sequence between heating and cooling, so the automation needs no delay or extra condition of its own around the change.
+Setting the **Mode** select at the wrong moment only makes Hydronicus queue the change behind its own sequence; it never skips it.
+
+Because the automation sets the same select you might set by hand, whichever wrote it last wins: a manual change is overridden the next time the mean sensor crosses a threshold.
+Add an `input_boolean`, such as `input_boolean.automatic_changeover`, and the condition above to opt out of that: turn it off to hold the mode where you left it by hand, and back on to hand the select back to the automation.
+
 ## Checklist
 
 Before you turn **Control equipment** on:
@@ -232,6 +353,7 @@ Before you turn **Control equipment** on:
 - Every armed output is the entity of the device its role names.
 - Every zone shows the temperature you expect on its **Combined temperature** sensor.
 - Every loop that cools has a condensation reference, and every zone that cools shows a plausible **Dew point**.
+- Every condensation switch reads off while its pipe is dry, and every window reads open and closed as it is.
 - Every pump the source runs has **A separator guarantees its flow** only if a separator, buffer, or bypass really protects it.
 - The Dry run proposals follow the order you expect: valves, then pumps, then the source.
 - The physical protections of the plant work without Home Assistant, as [safety limits](safety.md) describes.

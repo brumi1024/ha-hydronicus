@@ -44,6 +44,24 @@
               "min_on": "The shortest time the source request stays on.",
               "min_off": "The shortest time the source request stays off."
             }
+          },
+          "protection": {
+            "name": "Protection",
+            "description": "Keeps idle pumps and valves from seizing and rooms from freezing.",
+            "data": {
+              "exercise": "Exercise idle pumps and valves",
+              "exercise_interval": "Exercise interval",
+              "exercise_run": "Exercise pump run",
+              "frost_protection": "Frost protection",
+              "frost_temperature": "Frost protection temperature"
+            },
+            "data_description": {
+              "exercise": "While nothing else runs, open a valve and run a switched pump that has not been on for the exercise interval, so it does not seize.",
+              "exercise_interval": "How long a pump or valve may stay off before it is exercised.",
+              "exercise_run": "How long an exercised switched pump runs.",
+              "frost_protection": "Heat a zone whose coldest temperature falls below the frost protection temperature, even when its thermostat or the Plant mode is off.",
+              "frost_temperature": "Frost protection heats until the coldest temperature is 1 °C above this."
+            }
           }
         }
       },
@@ -68,6 +86,7 @@
           "overrun": "Overrun",
           "min_flow": "Minimum flow",
           "supply_temperature": "Supply temperature sensor",
+          "condensation_switch": "Condensation switch",
           "add_another": "Add another pump",
           "min_flow_loops": "Min-flow loops",
           "remove": "Remove this pump"
@@ -78,6 +97,7 @@
           "overrun": "Only for a pump with a switch: how long it keeps running after heating demand ends, before its loops close. Cooling stops a pump without overrun, and the source's post-run covers a pump the source runs.",
           "min_flow": "Whether the pump needs an open loop while it runs, or a hydraulic separator, buffer, or bypass guarantees its flow.",
           "supply_temperature": "Optional. The water temperature this pump supplies. It is the condensation reference that lets its loops cool.",
+          "condensation_switch": "Optional. A binary sensor on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on or unavailable, none of the pump's loops cools.",
           "add_another": "Show this form again for the next pump.",
           "min_flow_loops": "For a pump the source runs that needs an open loop: the loops Hydronicus holds open while it may run.",
           "remove": "Remove the pump from the Plant. A pump that a loop still uses cannot be removed."
@@ -116,7 +136,11 @@
           "temperature": "Extra temperature sensors",
           "humidity": "Extra humidity sensors",
           "aggregation": "Combine temperatures by",
-          "thermostat": "Existing thermostat"
+          "thermostat": "Existing thermostat",
+          "windows": "Windows",
+          "window_open_delay": "Window open delay",
+          "window_close_delay": "Window close delay",
+          "max_humidity": "Maximum humidity for cooling"
         },
         "data_description": {
           "name": "Names the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
@@ -124,7 +148,11 @@
           "temperature": "Temperature sensors outside the chosen areas, such as a floor probe. A zone with a digital thermostat needs one unless a chosen area names one.",
           "humidity": "Humidity sensors outside the chosen areas. A zone with a loop that cools needs one unless it covers an area.",
           "aggregation": "How the zone combines its temperature readings.",
-          "thermostat": "Optional. An existing climate entity that owns the zone's demand; Hydronicus only reads it. Leave it empty for a digital thermostat that Hydronicus provides."
+          "thermostat": "Optional. An existing climate entity that owns the zone's demand; Hydronicus only reads it. Leave it empty for a digital thermostat that Hydronicus provides.",
+          "windows": "Optional. Binary sensors that are on while a window or door of the zone is open. Once one has been open for the open delay, the zone stops heating and cooling until every one has been closed for the close delay. A window sensor that is unavailable reads closed.",
+          "window_open_delay": "How long a window must be open before the zone stops. Empty means the default of 60 seconds.",
+          "window_close_delay": "How long every window must be closed before the zone runs again. Empty means the default of 60 seconds.",
+          "max_humidity": "The loops that read this zone's dew point stop cooling above this humidity, and start again 5 points below it. Empty means the default of 70 %. Only the plant file turns it off."
         },
         "sections": {
           "presets": {
@@ -147,6 +175,8 @@
           "pump": "Pump",
           "modes": "Modes",
           "surface_temperature": "Surface temperature sensor",
+          "surface_minimum": "Cooling surface minimum",
+          "condensation_switch": "Condensation switch",
           "opening_time": "Valve opening time"
         },
         "data_description": {
@@ -155,6 +185,8 @@
           "pump": "The Plant pump that moves water through this loop.",
           "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
           "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
+          "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
+          "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
           "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait."
         }
       },
@@ -193,6 +225,8 @@
           "pump": "Pump",
           "modes": "Modes",
           "surface_temperature": "Surface temperature sensor",
+          "surface_minimum": "Cooling surface minimum",
+          "condensation_switch": "Condensation switch",
           "opening_time": "Valve opening time",
           "runs": "Runs",
           "with_zones": "Zones",
@@ -204,6 +238,8 @@
           "pump": "The Plant pump that moves water through this loop.",
           "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
           "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
+          "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
+          "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
           "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
           "runs": "With the source runs the loop whenever the source is requested. With zones runs it while any of the chosen zones demands.",
           "with_zones": "Only for With zones: the zones this loop runs with.",
@@ -317,7 +353,8 @@
     "abort": {
       "already_configured": "This Plant is already set up. Remove it first to import its plant file again.",
       "already_in_progress": "A setup flow for this Plant is already in progress.",
-      "reconfigure_successful": "The Plant is saved."
+      "reconfigure_successful": "The Plant is saved.",
+      "plant_changed": "The Plant changed while this form was open, so nothing was saved. Start again from the stored Plant."
     }
   },
   "config_subentries": {
@@ -337,7 +374,11 @@
             "temperature": "Extra temperature sensors",
             "humidity": "Extra humidity sensors",
             "aggregation": "Combine temperatures by",
-            "thermostat": "Existing thermostat"
+            "thermostat": "Existing thermostat",
+            "windows": "Windows",
+            "window_open_delay": "Window open delay",
+            "window_close_delay": "Window close delay",
+            "max_humidity": "Maximum humidity for cooling"
           },
           "data_description": {
             "name": "Names the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
@@ -345,7 +386,11 @@
             "temperature": "Temperature sensors outside the chosen areas, such as a floor probe. A zone with a digital thermostat needs one unless a chosen area names one.",
             "humidity": "Humidity sensors outside the chosen areas. A zone with a loop that cools needs one unless it covers an area.",
             "aggregation": "How the zone combines its temperature readings.",
-            "thermostat": "Optional. An existing climate entity that owns the zone's demand; Hydronicus only reads it. Leave it empty for a digital thermostat that Hydronicus provides."
+            "thermostat": "Optional. An existing climate entity that owns the zone's demand; Hydronicus only reads it. Leave it empty for a digital thermostat that Hydronicus provides.",
+            "windows": "Optional. Binary sensors that are on while a window or door of the zone is open. Once one has been open for the open delay, the zone stops heating and cooling until every one has been closed for the close delay. A window sensor that is unavailable reads closed.",
+            "window_open_delay": "How long a window must be open before the zone stops. Empty means the default of 60 seconds.",
+            "window_close_delay": "How long every window must be closed before the zone runs again. Empty means the default of 60 seconds.",
+            "max_humidity": "The loops that read this zone's dew point stop cooling above this humidity, and start again 5 points below it. Empty means the default of 70 %. Only the plant file turns it off."
           },
           "sections": {
             "presets": {
@@ -389,6 +434,8 @@
             "pump": "Pump",
             "modes": "Modes",
             "surface_temperature": "Surface temperature sensor",
+            "surface_minimum": "Cooling surface minimum",
+            "condensation_switch": "Condensation switch",
             "opening_time": "Valve opening time",
             "remove": "Remove this loop"
           },
@@ -398,6 +445,8 @@
             "pump": "The Plant pump that moves water through this loop.",
             "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
             "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
+            "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
+            "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
             "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
             "remove": "Remove the loop from the zone."
           }
@@ -413,7 +462,8 @@
       },
       "abort": {
         "reconfigure_successful": "The zone is saved.",
-        "invalid_plant": "The Plant is not valid, so the zone cannot be saved. {where}: {problem}"
+        "invalid_plant": "The Plant is not valid, so the zone cannot be saved. {where}: {problem}",
+        "plant_changed": "The Plant changed while this form was open, so nothing was saved. Start again from the stored Plant."
       }
     }
   },
@@ -494,9 +544,6 @@
       "heating_demand": {
         "name": "Heating demand",
         "state_attributes": {
-          "level": {
-            "name": "Level"
-          },
           "reason": {
             "name": "Reason"
           }
@@ -505,9 +552,6 @@
       "cooling_demand": {
         "name": "Cooling demand",
         "state_attributes": {
-          "level": {
-            "name": "Level"
-          },
           "reason": {
             "name": "Reason"
           }
@@ -539,6 +583,7 @@
           "heating": "Heating",
           "cooling": "Cooling",
           "changing_over": "Changing over",
+          "exercising": "Exercising",
           "degraded": "Degraded",
           "stopping": "Stopping removed outputs",
           "invalid": "Configuration not valid"
@@ -549,6 +594,12 @@
       },
       "dew_point": {
         "name": "Dew point"
+      },
+      "duty_cycle": {
+        "name": "Duty cycle"
+      },
+      "loop_runtime": {
+        "name": "{loop} runtime"
       }
     },
     "switch": {
@@ -573,9 +624,13 @@
         }
       }
     },
+    "evaluation_failed": {
+      "title": "Plant {plant} cannot evaluate",
+      "description": "Plant {plant} failed to evaluate: {error}\n\nHydronicus sends no new command while it cannot evaluate, so the outputs stay as they were last commanded, and it tries again every minute. The repair clears automatically after the next evaluation that succeeds. The Home Assistant log has the details; report the problem with that log and the Plant's diagnostics."
+    },
     "output_not_responding": {
       "title": "{plant}: {entity_id} does not respond",
-      "description": "Plant {plant} asked {role} {entity_id} to change three times, and the change was never observed. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
+      "description": "Plant {plant} asked {role} {entity_id} to change, and the change was never observed: three attempts went unanswered, or a valve still showed that it was opening or closing well after its opening time. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
     },
     "outputs_awaiting_confirmation": {
       "title": "{plant}: outputs awaiting confirmation",
@@ -654,6 +709,14 @@
     "zone_area_self_feed": {
       "title": "{plant}, zone {zone}: area {area} names a Hydronicus sensor",
       "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
+    },
+    "zone_sensor_unusable": {
+      "title": "{plant}, zone {zone}: sensor {entity_id} blocks the zone",
+      "description": "In Plant {plant}, zone {zone} requires {entity_id}, and for at least 10 minutes its reading has been unavailable, stale, in an unsupported unit, or outside its plausible range. A zone without a required reading fails closed: while this lasts, its digital thermostat does not call, and the loops that cool by its dew point do not cool. Check the sensor, its battery, and its connection. A battery sensor that reports only on change may need a longer max_age in the plant file, and an area's sensors block the zone only when the area is marked required. The repair clears automatically once the sensor reports a usable reading."
+    },
+    "condensation_input_unusable": {
+      "title": "{plant}: {entity_id} blocks cooling",
+      "description": "In Plant {plant}, the {input} {entity_id} has had no usable state for at least 10 minutes, so {loops} cannot cool: the condensation guard blocks without it. A condensation switch is unusable while it is unavailable or unknown, and a supply or surface temperature sensor while it is unavailable, has not reported for 30 minutes, is in an unsupported unit, or is outside its plausible range. This repair shows whatever the Plant mode is, because cooling cannot start without it. Check the device, its battery, and its connection. The repair clears automatically once it reports a usable state."
     }
   },
   "exceptions": {
@@ -662,9 +725,6 @@
     },
     "plant_not_found": {
       "message": "Config entry {config_entry_id} is not a Hydronicus Plant. Choose a Hydronicus Plant to export."
-    },
-    "invalid_target_temperature": {
-      "message": "The zone target temperature {temperature} is not valid. Choose a value between {minimum} °C and {maximum} °C."
     },
     "unsupported_hvac_mode": {
       "message": "The zone thermostat has no mode {mode}. Choose one of: {modes}."

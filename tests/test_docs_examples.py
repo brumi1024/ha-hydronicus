@@ -34,8 +34,6 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 DOCS = REPOSITORY_ROOT / "docs"
 PLANT_FILE_REFERENCE = DOCS / "plant-file.md"
 REFERENCE_EXAMPLE = DOCS / "examples" / "reference-plant.yaml"
-TRIAL_KIT = DOCS / "examples" / "trial"
-FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures"
 PACKAGE = REPOSITORY_ROOT / "custom_components" / "hydronicus"
 STRINGS = PACKAGE / "strings.json"
 PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
@@ -181,20 +179,6 @@ def test_example_plant_files_import(path: Path) -> None:
     parse_plant(document, new_id=lambda: PLANT_ID)
 
 
-@pytest.mark.parametrize(
-    ("example", "fixture"),
-    [
-        (REFERENCE_EXAMPLE, FIXTURES / "reference_plant.yaml"),
-        (TRIAL_KIT / "plant.yaml", FIXTURES / "trial_plant.yaml"),
-        (TRIAL_KIT / "plant-areas.yaml", FIXTURES / "trial_plant_areas.yaml"),
-    ],
-    ids=lambda path: path.name,
-)
-def test_examples_match_the_tested_fixtures(example: Path, fixture: Path) -> None:
-    """The documented examples describe exactly the Plants the tests run."""
-    assert _load(example) == _load(fixture)
-
-
 def test_the_reference_is_the_main_example() -> None:
     """The plant file reference shows the reference plant in full."""
     blocks = [yaml.safe_load(block) for block in _YAML_BLOCK.findall(_text(PLANT_FILE_REFERENCE))]
@@ -210,7 +194,7 @@ def test_the_reference_documents_every_key() -> None:
         if name.endswith("_KEYS")
         for key in getattr(plant_file, name)
     }
-    assert keys > {"min_flow_loops", "readiness", "proportional_band"}
+    assert keys > {"min_flow_loops", "readiness", "max_age"}
     assert sorted(key for key in keys if f"`{key}`" not in text) == []
 
 
@@ -283,7 +267,7 @@ ERROR_CASES: dict[str, Callable[[dict[str, Any]], None]] = {
     "digital_without_temperature": _drop("zones", "bedroom_area", "areas"),
     "cooling_without_humidity": _cooling_zone_without_humidity,
     "missing_runs": _drop("loops", "towel_dryer", "runs"),
-    "setpoint_strategy": _set("source", "strategy", value="setpoint"),
+    "warm_frost_protection": _set("frost_protection", value=21),
 }
 
 
@@ -391,5 +375,4 @@ def test_current_documents_use_current_words(document: str) -> None:
     """No current document uses an em dash or a term the redesign replaced."""
     text = _text(document)
     assert "\N{EM DASH}" not in text
-    if document != "docs/upgrade-and-rollback.md":
-        assert [term for term in STALE_TERMS if term.lower() in text.lower()] == []
+    assert [term for term in STALE_TERMS if term.lower() in text.lower()] == []

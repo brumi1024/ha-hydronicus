@@ -4,7 +4,8 @@ These are the parts of ``step()`` that read sensors and thermostats, carried
 over from the v0.1 controller: fail-closed aggregation of fresh readings, the
 Magnus dew point and the worst-case dew point from the warmest and most humid
 readings, digital thermostat hysteresis with minimum durations, and the
-normalization of an external thermostat's ``hvac_action``.
+normalization of an external thermostat's ``hvac_action``. Frost protection's
+demand overrides a thermostat's, from the coldest usable reading.
 
 Every time-based decision goes through a ``reached`` callback, which answers
 whether a deadline has passed and otherwise records it, so the evaluation can
@@ -18,7 +19,15 @@ from dataclasses import dataclass
 from math import fsum, isfinite, log
 from typing import Final
 
-from .model import Aggregation, Demand, DigitalThermostat, Mode, Preset, Zone
+from .model import (
+    FROST_PROTECTION_RELEASE,
+    Aggregation,
+    Demand,
+    DigitalThermostat,
+    Mode,
+    Preset,
+    Zone,
+)
 
 type Reached = Callable[[float], bool]
 
@@ -73,7 +82,9 @@ class DemandState:
 
     mode: Mode
     on: bool
-    since: float
+    # None for an off decision that no on decision in this mode came before: no
+    # valve has closed for it, so no minimum off time holds it.
+    since: float | None
 
 
 def external_action(hvac_action: str | None, hvac_mode: str | None) -> Mode | None:
@@ -143,6 +154,25 @@ def zone_values(
     return values or None
 
 
+def unusable_sensors(
+    zone: Zone,
+    areas: Mapping[str, AreaSensors],
+    sensors: Mapping[str, Reading],
+    reached: Reached,
+    *,
+    humidity: bool = False,
+) -> list[str]:
+    """Return a zone's required temperature or humidity sensors that are not usable.
+
+    These are the sensors that make ``zone_values`` fail closed.
+    """
+    return [
+        entity
+        for entity, required, max_age in _zone_sensors(zone, areas, humidity)
+        if required and fresh(sensors.get(entity), max_age, reached) is None
+    ]
+
+
 def aggregate(values: list[float], aggregation: Aggregation) -> float:
     match aggregation:
         case Aggregation.MIN:
@@ -197,7 +227,7 @@ def zone_demand(
             return _settle(previous, Mode.OFF, False, now), _off(Mode.OFF, "thermostat unavailable")
         on = action is not Mode.OFF
         reason = f"thermostat {action.value}" if on else "thermostat idle"
-        return _settle(previous, action, on, now), Demand(action, on, 1.0 if on else 0.0, reason)
+        return _settle(previous, action, on, now), Demand(action, on, reason)
     config = zone.thermostat
     if not isinstance(thermostat, DigitalThermostatState) or not isinstance(
         config, DigitalThermostat
@@ -221,12 +251,11 @@ def zone_demand(
     was_on = previous is not None and previous.mode is mode and previous.on
     requested = below >= start or (was_on and below > -stop)
     state = _apply_timing(previous, mode, requested, config, now, reached)
-    level = min(1.0, max(0.0, below / config.proportional_band)) if state.on else 0.0
     verb = "heat" if mode is Mode.HEAT else "cool"
     reason = f"{verb} to {target:.1f} °C from {temperature:.1f} °C"
     if state.on != requested:
         reason += ", held for its minimum " + ("on" if state.on else "off") + " time"
-    return state, Demand(mode, state.on, level, reason)
+    return state, Demand(mode, state.on, reason)
 
 
 def _apply_timing(
@@ -238,22 +267,55 @@ def _apply_timing(
     reached: Reached,
 ) -> DemandState:
     """Hold a decision for its minimum on or off time after hysteresis."""
-    if previous is None or previous.mode is not mode:
-        return DemandState(mode, requested, now)
-    if requested == previous.on:
-        return previous
+    if previous is None or previous.mode is not mode or requested == previous.on:
+        return _settle(previous, mode, requested, now)
     duration = config.min_on if previous.on else config.min_off
-    if duration > 0 and not reached(previous.since + duration):
+    if previous.since is not None and duration > 0 and not reached(previous.since + duration):
         return previous
     return DemandState(mode, requested, now)
 
 
 def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> DemandState:
     """A decision without minimum durations, keeping the time of the last change."""
-    if previous is not None and previous.mode is mode and previous.on == on:
-        return previous
-    return DemandState(mode, on, now)
+    if previous is not None and previous.mode is mode:
+        return previous if previous.on == on else DemandState(mode, on, now)
+    return DemandState(mode, on, now if on else None)
 
 
 def _off(mode: Mode, reason: str) -> Demand:
-    return Demand(mode, False, 0.0, reason)
+    return Demand(mode, False, reason)
+
+
+# Frost protection
+
+
+def coldest_temperature(
+    zone: Zone, areas: Mapping[str, AreaSensors], sensors: Mapping[str, Reading], reached: Reached
+) -> float | None:
+    """Return a zone's coldest usable temperature, from required and optional sensors alike.
+
+    Frost protection reads every usable reading, so a sensor that is not usable
+    never hides a room that freezes; None when no reading is usable.
+    """
+    values = [
+        value
+        for entity, _, max_age in _zone_sensors(zone, areas, False)
+        if (value := fresh(sensors.get(entity), max_age, reached)) is not None
+    ]
+    return min(values, default=None)
+
+
+def frost_demand(frost: float, coldest: float | None, active: bool) -> Demand | None:
+    """Return the heating demand of frost protection, or None while it does not act.
+
+    It starts once the coldest reading is below the frost protection temperature,
+    and holds until that reading is ``FROST_PROTECTION_RELEASE`` above it.
+    """
+    if coldest is None:
+        return None
+    stop = frost + FROST_PROTECTION_RELEASE
+    if coldest < frost or (active and coldest < stop):
+        return Demand(
+            Mode.HEAT, True, f"frost protection: heat to {stop:.1f} °C from {coldest:.1f} °C"
+        )
+    return None

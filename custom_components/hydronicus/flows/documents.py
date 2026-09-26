@@ -21,6 +21,10 @@ from uuid import uuid4
 from homeassistant.util import slugify
 
 from ..core.model import (
+    DEFAULT_EXERCISE_INTERVAL,
+    DEFAULT_EXERCISE_RUN,
+    DEFAULT_FROST_PROTECTION,
+    DEFAULT_MAX_HUMIDITY,
     DEFAULT_MIN_OFF,
     DEFAULT_MIN_ON,
     DEFAULT_MODE_DWELL,
@@ -28,6 +32,9 @@ from ..core.model import (
     DEFAULT_OVERRUN,
     DEFAULT_POST_RUN,
     DEFAULT_SOURCE_TITLE,
+    DEFAULT_SURFACE_MINIMUM,
+    DEFAULT_WINDOW_CLOSE_DELAY,
+    DEFAULT_WINDOW_OPEN_DELAY,
     LoopRef,
     MinFlow,
     Mode,
@@ -47,10 +54,20 @@ DEFAULT_PLANT_NAME: Final = "Home"
 DEFAULT_LOOP_NAME: Final = "Loop"
 _SLUG: Final = re.compile(r"[a-z][a-z0-9_]*")
 _MODES: Final = (Mode.HEAT.value, Mode.COOL.value)
-_STRUCTURE: Final = ("name", "mode_dwell", "source", "pumps", "loops")
+_STRUCTURE: Final = (
+    "name",
+    "mode_dwell",
+    "exercise",
+    "frost_protection",
+    "source",
+    "pumps",
+    "loops",
+)
 _STRUCTURE_WORDS: Final = {
     "name": "name",
     "mode_dwell": "mode dwell",
+    "exercise": "exercise",
+    "frost_protection": "frost protection",
     "source": "source",
     "pumps": "pumps",
     "loops": "plant loops",
@@ -122,6 +139,19 @@ def _put(target: dict[str, Any], key: str, value: Any) -> None:
         target[key] = value
 
 
+def _put_setting(target: dict[str, Any], key: str, value: Any, old: Mapping[str, Any]) -> None:
+    """Set a setting that ``null`` turns off, from a form that shows its value.
+
+    An empty field leaves the key out, which is its default, except where the
+    stored document turns the setting off: the form shows that as empty, and
+    leaving it empty keeps it off. Only the plant file turns a setting off.
+    """
+    if value is not None:
+        target[key] = value
+    elif key in old and old[key] is None:
+        target[key] = None
+
+
 def zones(document: Mapping[str, Any]) -> dict[str, Any]:
     return _mapping(document, "zones")
 
@@ -151,6 +181,22 @@ def plant_values(document: Mapping[str, Any]) -> dict[str, Any]:
             "min_on": source.get("min_on", DEFAULT_MIN_ON),
             "min_off": source.get("min_off", DEFAULT_MIN_OFF),
         },
+        "protection": _protection_values(document),
+    }
+
+
+def _protection_values(document: Mapping[str, Any]) -> dict[str, Any]:
+    """The exercise and frost protection as the form shows them, on or off with their settings."""
+    exercise = document.get("exercise", {})
+    settings = exercise if isinstance(exercise, Mapping) else {}
+    frost = document.get("frost_protection", DEFAULT_FROST_PROTECTION)
+    frost_on = frost not in (None, False)
+    return {
+        "exercise": exercise not in (None, False),
+        "exercise_interval": settings.get("interval", DEFAULT_EXERCISE_INTERVAL),
+        "exercise_run": settings.get("run", DEFAULT_EXERCISE_RUN),
+        "frost_protection": frost_on,
+        "frost_temperature": frost if frost_on else DEFAULT_FROST_PROTECTION,
     }
 
 
@@ -172,6 +218,16 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     }
     result["name"] = str(values.get("name", "")).strip()
     result["mode_dwell"] = timing["mode_dwell"]
+    # Without the protection section the stored exercise and frost protection stay.
+    protection = {**_protection_values(document), **(values.get("protection") or {})}
+    result["exercise"] = (
+        {"interval": protection["exercise_interval"], "run": protection["exercise_run"]}
+        if protection["exercise"]
+        else False
+    )
+    result["frost_protection"] = (
+        protection["frost_temperature"] if protection["frost_protection"] else False
+    )
     request = values.get("request")
     if not request:
         result.pop("source", None)
@@ -180,7 +236,6 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     name = str(values.get("source_name") or "").strip()
     if name and name != DEFAULT_SOURCE_TITLE:
         source["name"] = name
-    source["strategy"] = old.get("strategy", "request")
     source["request"] = request
     if isinstance(mode := old.get("mode"), Mapping) and mode.get("entity") == values.get(
         "mode_select"
@@ -207,7 +262,7 @@ def with_mode(document: Mapping[str, Any], entity: str, heat: str, cool: str) ->
     # Keep the canonical key order: the mode follows the request.
     result["source"] = {
         key: source[key]
-        for key in ("name", "strategy", "request", "mode", "post_run", "min_on", "min_off")
+        for key in ("name", "request", "mode", "post_run", "min_on", "min_off")
         if key in source
     }
     return result
@@ -227,6 +282,7 @@ def pump_values(document: Mapping[str, Any], slug: str | None) -> dict[str, Any]
         "min_flow": pump.get("min_flow", MinFlow.PATH.value),
         "min_flow_loops": list(pump.get("min_flow_loops", [])),
         "supply_temperature": pump.get("supply_temperature"),
+        "condensation_switch": pump.get("condensation_switch"),
     }
 
 
@@ -254,6 +310,7 @@ def with_pump(
     if not switch and min_flow == MinFlow.PATH.value:
         _put(pump, "min_flow_loops", list(values.get("min_flow_loops") or []))
     _put(pump, "supply_temperature", values.get("supply_temperature"))
+    _put(pump, "condensation_switch", values.get("condensation_switch"))
     table[slug] = pump
     return result, slug
 
@@ -353,7 +410,11 @@ def _loop_table(document: Document, zone: str | None) -> dict[str, Any]:
 
 def loop_values(document: Mapping[str, Any], zone: str | None, slug: str | None) -> dict[str, Any]:
     if slug is None:
-        return {"modes": [Mode.HEAT.value], "opening_time": DEFAULT_OPENING_TIME}
+        return {
+            "modes": [Mode.HEAT.value],
+            "opening_time": DEFAULT_OPENING_TIME,
+            "surface_minimum": DEFAULT_SURFACE_MINIMUM,
+        }
     owner = document if zone is None else zones(document).get(zone, {})
     loop = _mapping(owner, "loops").get(slug, {})
     valves = loop.get("valves", [])
@@ -370,6 +431,8 @@ def loop_values(document: Mapping[str, Any], zone: str | None, slug: str | None)
         "modes": [mode for mode in _MODES if mode in loop.get("modes", [Mode.HEAT.value])],
         "surface_temperature": loop.get("surface_temperature"),
         "opening_time": opening[0] if opening else DEFAULT_OPENING_TIME,
+        "surface_minimum": loop.get("surface_minimum", DEFAULT_SURFACE_MINIMUM),
+        "condensation_switch": loop.get("condensation_switch"),
     }
     if zone is None:
         values["runs"] = (
@@ -407,6 +470,10 @@ def with_loop(
     modes = values.get("modes") or [Mode.HEAT.value]
     loop["modes"] = [mode for mode in _MODES if mode in modes]
     _put(loop, "surface_temperature", values.get("surface_temperature"))
+    # A surface minimum reads the surface sensor, so it goes with it.
+    if "surface_temperature" in loop:
+        _put_setting(loop, "surface_minimum", values.get("surface_minimum"), old)
+    _put(loop, "condensation_switch", values.get("condensation_switch"))
     table[slug] = loop
     return result, slug
 
@@ -431,7 +498,12 @@ def loops_using(document: Mapping[str, Any], pump: str) -> list[str]:
 
 def zone_values(document: Mapping[str, Any], slug: str | None) -> dict[str, Any]:
     if slug is None:
-        return {"aggregation": "mean"}
+        return {
+            "aggregation": "mean",
+            "window_open_delay": DEFAULT_WINDOW_OPEN_DELAY,
+            "window_close_delay": DEFAULT_WINDOW_CLOSE_DELAY,
+            "max_humidity": DEFAULT_MAX_HUMIDITY,
+        }
     zone = zones(document).get(slug, {})
     thermostat = _mapping(zone, "thermostat")
     presets = _mapping(_mapping(thermostat, "digital"), "presets")
@@ -443,6 +515,10 @@ def zone_values(document: Mapping[str, Any], slug: str | None) -> dict[str, Any]
         "aggregation": zone.get("aggregation", "mean"),
         "thermostat": thermostat.get("external"),
         "presets": {preset.value: presets[preset.value] for preset in Preset if preset in presets},
+        "windows": list(zone.get("windows", [])),
+        "window_open_delay": zone.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY),
+        "window_close_delay": zone.get("window_close_delay", DEFAULT_WINDOW_CLOSE_DELAY),
+        "max_humidity": zone.get("max_humidity", DEFAULT_MAX_HUMIDITY),
     }
 
 
@@ -477,6 +553,10 @@ def with_zone(
         )
         if digital:
             zone["thermostat"] = {"digital": digital}
+    _put(zone, "windows", list(dict.fromkeys(values.get("windows") or [])))
+    _put(zone, "window_open_delay", values.get("window_open_delay"))
+    _put(zone, "window_close_delay", values.get("window_close_delay"))
+    _put_setting(zone, "max_humidity", values.get("max_humidity"), old)
     if "loops" in old:
         zone["loops"] = deepcopy(old["loops"])
     table[slug] = zone

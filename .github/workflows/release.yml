@@ -27,7 +27,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve release version
         id: version
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload dry-run artifact
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hydronicus-${{ steps.version.outputs.version }}
           path: dist/hydronicus.zip
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload release package for publishing
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hydronicus-release-package
           path: dist/hydronicus.zip
@@ -89,10 +89,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download release archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: hydronicus-release-package
           path: dist
@@ -104,6 +104,10 @@ jobs:
           RELEASE_VERSION: ${{ needs.package.outputs.version }}
         run: |
           set -eu
-          sed "s/{{VERSION}}/$RELEASE_VERSION/g" RELEASE_NOTES.md > "$RUNNER_TEMP/release-notes.md"
-          gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          notes="docs/releases/v${RELEASE_VERSION}.md"
+          if [ ! -f "$notes" ]; then
+            echo "Missing release notes: $notes" >&2
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --notes-file "$notes"
           gh release upload "$RELEASE_TAG" dist/hydronicus.zip --clobber

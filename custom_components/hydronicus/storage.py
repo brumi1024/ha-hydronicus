@@ -14,7 +14,7 @@ to a removed zone, in a pump's ``min_flow_loops`` and a plant loop's
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from types import MappingProxyType
 from typing import Any
@@ -34,26 +34,26 @@ from .core.plant_file import PlantFileError, from_storage, plant_file_from_stora
 _SLUG = "slug"
 
 
-def zone_data(entry: ConfigEntry) -> dict[str, Mapping[str, Any]]:
-    """Return each zone subentry's data by zone slug."""
-    zones: dict[str, Mapping[str, Any]] = {}
+def _zone_subentries(entry: ConfigEntry) -> dict[str, ConfigSubentry]:
+    """Return each zone subentry by zone slug."""
+    zones: dict[str, ConfigSubentry] = {}
     for subentry in entry.subentries.values():
         if subentry.subentry_type != SUBENTRY_TYPE_ZONE:
             continue
         slug = subentry.unique_id or subentry.data.get(_SLUG)
         if isinstance(slug, str):
-            zones[slug] = subentry.data
+            zones[slug] = subentry
     return zones
+
+
+def zone_data(entry: ConfigEntry) -> dict[str, Mapping[str, Any]]:
+    """Return each zone subentry's data by zone slug."""
+    return {slug: subentry.data for slug, subentry in _zone_subentries(entry).items()}
 
 
 def zone_subentry_ids(entry: ConfigEntry) -> dict[str, str]:
     """Return each zone subentry's ID by zone slug."""
-    return {
-        slug: subentry.subentry_id
-        for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_TYPE_ZONE
-        and isinstance(slug := subentry.unique_id or subentry.data.get(_SLUG), str)
-    }
+    return {slug: subentry.subentry_id for slug, subentry in _zone_subentries(entry).items()}
 
 
 def stored_document(entry: ConfigEntry) -> dict[str, Any]:
@@ -105,11 +105,7 @@ def async_store_plant(hass: HomeAssistant, entry: ConfigEntry, plant: Plant) -> 
     listener never prunes one. The listener reloads a loaded Plant once.
     """
     data, zones = to_storage(plant)
-    subentries = {
-        subentry.unique_id: subentry
-        for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_TYPE_ZONE
-    }
+    subentries = _zone_subentries(entry)
     for slug, zone in zones.items():
         title = plant.zone(slug).title
         if (subentry := subentries.get(slug)) is None:
@@ -136,9 +132,16 @@ def async_reload_if_failed(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Set up again a Plant that failed to set up, after its configuration changed.
 
     A loaded Plant reloads from its update listener; one that failed has none.
+    The retry waits one turn of the event loop, because Home Assistant stores
+    the subentry that a zone flow creates only after the flow's last step returns.
     """
-    if entry.state in (ConfigEntryState.SETUP_ERROR, ConfigEntryState.SETUP_RETRY):
-        hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    @callback
+    def retry() -> None:
+        if entry.state in (ConfigEntryState.SETUP_ERROR, ConfigEntryState.SETUP_RETRY):
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    hass.loop.call_soon(retry)
 
 
 def new_options() -> dict[str, Any]:
@@ -150,6 +153,16 @@ def armed_outputs(entry: ConfigEntry) -> frozenset[str]:
     """Return the output entities the owner has confirmed."""
     armed = entry.options.get(OPTION_ARMED_OUTPUTS, ())
     return frozenset(entity for entity in armed if isinstance(entity, str))
+
+
+def with_armed(entry: ConfigEntry, plant: Plant, outputs: Iterable[str]) -> dict[str, Any]:
+    """Return the entry's options with exactly ``outputs`` armed, in the Plant's order.
+
+    An entity that is not an output of the Plant is never armed.
+    """
+    chosen = set(outputs)
+    armed = [entity for entity in plant.outputs() if entity in chosen]
+    return {**entry.options, OPTION_ARMED_OUTPUTS: armed}
 
 
 def control(entry: ConfigEntry) -> bool:

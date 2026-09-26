@@ -17,6 +17,8 @@ from custom_components.hydronicus.observe import (
     external_thermostat,
     option_value,
     reading,
+    switch_memory_value,
+    switch_moving,
     switch_value,
 )
 
@@ -65,20 +67,34 @@ def test_a_missing_sensor_reads_as_reported_now() -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
+    ("value", "expected", "moving"),
     [
-        ("on", True),
-        ("open", True),
-        ("opening", True),
-        ("off", False),
-        ("closed", False),
-        ("closing", False),
-        ("unavailable", None),
-        ("unknown", None),
+        ("on", True, False),
+        ("open", True, False),
+        ("opening", True, True),
+        ("off", False, False),
+        ("closed", False, False),
+        ("closing", False, True),
+        ("unavailable", None, False),
+        ("unknown", None, False),
     ],
 )
-def test_switches_and_valves_read_as_commanded(value: str, expected: bool | None) -> None:
+def test_switches_and_valves_read_as_where_they_are_or_are_going(
+    value: str, expected: bool | None, moving: bool
+) -> None:
     assert switch_value(state(value)) is expected
+    assert switch_moving(state(value)) is moving
+
+
+def test_the_output_memory_takes_arriving_as_a_change() -> None:
+    """A valve's opening time counts from when it shows open, not from when it began to move."""
+    assert switch_memory_value(state("opening")) == "opening"
+    assert switch_memory_value(state("open")) is True
+    assert switch_memory_value(None) is None
+    memory = OutputMemory()
+    assert memory.since("valve.x", switch_memory_value(state("opening")), 10.0) == 10.0
+    assert memory.since("valve.x", switch_memory_value(state("open")), 70.0) == 70.0
+    assert memory.since("valve.x", switch_memory_value(state("open")), 99.0) == 70.0
 
 
 def test_selects_and_external_thermostats() -> None:

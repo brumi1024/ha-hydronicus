@@ -1,8 +1,9 @@
 """The digital thermostat of a zone (decision 9).
 
 It owns the zone's target, preset, and mode, restores them across restarts, and
-reports the zone's demand as its action. The exact Celsius target is persisted
-beside the restored state, because the display unit may round it.
+reports as its action what the equipment does for the zone. The exact Celsius
+target is persisted beside the restored state, because the display unit may
+round it.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ from . import HydronicusConfigEntry
 from .const import DOMAIN
 from .core.model import DigitalThermostat, Mode, Preset, Zone
 from .core.step import DigitalThermostatState
-from .entity import HydronicusEntity, async_add_plant_entities, zone_device, zone_unique_id
-from .runtime import PlantRuntime, ZoneReadings
+from .entity import ZoneEntity, async_add_plant_entities
+from .runtime import PlantRuntime
 
 # The runtime evaluates thermostat changes itself.
 PARALLEL_UPDATES = 0
@@ -48,7 +49,7 @@ _BASE_FEATURES: Final = (
 )
 
 
-class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
+class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
     """A Hydronicus-owned digital thermostat for one zone."""
 
     # No name: the thermostat is the zone device's main feature and takes its name.
@@ -57,14 +58,10 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
     _attr_min_temp = MIN_TARGET
     _attr_max_temp = MAX_TARGET
     _attr_target_temperature_step = 0.5
+    _unrecorded_attributes = frozenset({"reason"})
 
     def __init__(self, runtime: PlantRuntime, zone: Zone, config: DigitalThermostat) -> None:
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, "climate"),
-            zone_device(runtime, zone),
-        )
-        self._zone = zone.slug
+        super().__init__(runtime, zone, "climate")
         self._config = config
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
         if zone.cools:
@@ -129,10 +126,6 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
         )
 
     @property
-    def _readings(self) -> ZoneReadings:
-        return self.runtime.zone_readings.get(self._zone, ZoneReadings())
-
-    @property
     def current_temperature(self) -> float | None:
         return self._readings.temperature
 
@@ -160,15 +153,22 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        desired = self.runtime.desired
-        if desired is None:
+        """What the equipment does for the zone; the demand sensors show what it asks for."""
+        view = self.runtime.view
+        if view is None:
             return None
-        if self._thermostat.hvac_mode is Mode.OFF:
+        action = HVACAction(view.zone_action(self._zone))
+        # Frost protection heats a zone whose thermostat is off.
+        if self._thermostat.hvac_mode is Mode.OFF and action is HVACAction.IDLE:
             return HVACAction.OFF
-        demand = desired.demands.get(self._zone)
-        if demand is None or not demand.on:
-            return HVACAction.IDLE
-        return HVACAction.HEATING if demand.mode is Mode.HEAT else HVACAction.COOLING
+        return action
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Why the zone demands or not, as its demand sensors show it."""
+        view = self.runtime.view
+        demand = None if view is None else view.desired.demands.get(self._zone)
+        return {} if demand is None else {"reason": demand.reason}
 
     @callback
     def _set(self, thermostat: DigitalThermostatState) -> None:
@@ -179,19 +179,10 @@ class ZoneClimate(HydronicusEntity, ClimateEntity, RestoreEntity):
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set a manual target in Celsius, which leaves any preset, and the mode it names."""
+        # Home Assistant has already refused a target outside min_temp and max_temp.
         temperature = kwargs.get(ATTR_TEMPERATURE)
         hvac_mode = kwargs.get(ATTR_HVAC_MODE)
-        target = None if temperature is None else _usable_target(float(temperature))
-        if temperature is not None and target is None:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="invalid_target_temperature",
-                translation_placeholders={
-                    "temperature": str(temperature),
-                    "minimum": str(MIN_TARGET),
-                    "maximum": str(MAX_TARGET),
-                },
-            )
+        target = None if temperature is None else float(temperature)
         if hvac_mode is not None and hvac_mode not in self.hvac_modes:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,

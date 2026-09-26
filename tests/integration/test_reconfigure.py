@@ -9,10 +9,12 @@ Plant.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.hydronicus.core.model import MinFlow, RunKind
 from custom_components.hydronicus.core.plant_file import read_plant_file
@@ -82,6 +84,13 @@ async def test_reconfigure_the_plant_and_its_source(hass: HomeAssistant) -> None
             "request": SOURCE_REQUEST,
             "mode_select": "select.heat_pump_mode",
             "timing": {"mode_dwell": 1800, "post_run": 240, "min_on": 600, "min_off": 900},
+            "protection": {
+                "exercise": False,
+                "exercise_interval": 604800,
+                "exercise_run": 60,
+                "frost_protection": True,
+                "frost_temperature": 7.5,
+            },
         },
     )
     assert result["step_id"] == "source_mode"
@@ -96,6 +105,7 @@ async def test_reconfigure_the_plant_and_its_source(hass: HomeAssistant) -> None
     assert (plant.name, plant.mode_dwell) == ("House", 1800.0)
     assert plant.source is not None
     assert (plant.source.post_run, plant.source.min_off) == (240.0, 900.0)
+    assert (plant.exercise, plant.frost_protection) == (None, 7.5)
     assert plant.zones == read_plant_file(REFERENCE_PLANT).zones
 
 
@@ -154,6 +164,20 @@ async def test_reconfigure_adds_a_pump_and_a_plant_loop_and_edits_a_pump(
         "living_area.ceiling",
     ]
     assert "switch.garage_valve" in plant.outputs()
+
+
+async def test_saving_sets_up_again_a_plant_that_failed_to_set_up(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    with patch.object(
+        hass.config_entries, "async_forward_entry_setups", side_effect=HomeAssistantError
+    ):
+        entry = await async_import(hass, REFERENCE_PLANT)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    result = await async_reconfigure(hass, entry)
+
+    await async_save(hass, result)
+
+    assert entry.state is ConfigEntryState.LOADED
 
 
 async def test_a_pump_that_a_loop_uses_cannot_be_removed(hass: HomeAssistant) -> None:
@@ -442,3 +466,77 @@ async def test_a_new_source_driven_pump_without_a_loop_is_explained_at_save(
     result = await async_submit(flow, result, {"name": "Primary", "min_flow": "guaranteed"})
     result = await async_save(hass, result)
     assert entry.runtime_data.plant.pump("primary").min_flow is MinFlow.GUARANTEED
+
+
+async def test_a_zone_deleted_while_reconfiguring_stops_the_save(hass: HomeAssistant) -> None:
+    """Saving the Plant as the flow read it would bring the deleted zone back."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "save")
+    assert result["step_id"] == "save"
+
+    hass.config_entries.async_remove_subentry(entry, zone_subentry_id(entry, "bedroom_area"))
+    await hass.async_block_till_done()
+    result = await async_submit(flow, result)
+
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "plant_changed"
+    await hass.async_block_till_done()
+    _data, zones = stored(entry)
+    assert set(zones) == {"basement", "living_area"}
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_a_zone_saved_while_reconfiguring_stops_the_save(hass: HomeAssistant) -> None:
+    """Saving the Plant as the flow read it would undo the zone's change."""
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "plant_loop_pick")
+    result = await async_submit(flow, result, {"loop": "towel_dryer"})
+    result = await async_submit(
+        flow, result, {"name": "Towels", "pump": "towel_dryer", "runs": "with_source"}
+    )
+
+    zones = hass.config_entries.subentries
+    zone = await zones.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone_subentry_id(entry, "living_area")},
+    )
+    zone = await async_submit(zones, zone, {"name": "Living", "areas": ["living_room"]})
+    zone = await async_choose(zones, zone, "save")
+    assert zone["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+    result = await async_choose(flow, result, "save")
+
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "plant_changed"
+    await hass.async_block_till_done()
+    assert entry.subentries[zone_subentry_id(entry, "living_area")].title == "Living"
+    assert [loop.title for loop in entry.runtime_data.plant.loops] == ["Towel dryer"]
+
+
+async def test_a_pump_takes_a_condensation_switch_on_its_supply_pipe(hass: HomeAssistant) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    result = await async_reconfigure(hass, entry)
+    result = await async_choose(flow, result, "pump_pick")
+    result = await async_submit(flow, result, {"pump": "heat_pump"})
+    assert suggested(result, "condensation_switch") is None
+    result = await async_submit(
+        flow,
+        result,
+        {
+            "name": "Heat pump",
+            "min_flow": "path",
+            "min_flow_loops": ["living_area.ceiling"],
+            "supply_temperature": "sensor.ceiling_supply_temperature",
+            "condensation_switch": "binary_sensor.ceiling_supply_dew_point",
+        },
+    )
+    await async_save(hass, result)
+
+    pump = entry.runtime_data.plant.pump("heat_pump")
+    assert pump.condensation_switch == "binary_sensor.ceiling_supply_dew_point"

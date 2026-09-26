@@ -21,10 +21,10 @@ make hooks
 - `make test-core` runs the pure tests of the model, the plant file, `step()`, and the reconciler, with core coverage.
 - `make test-integration` runs the Home Assistant tests of setup, the runtime, persistence, arming, areas, entities, flows, and Repairs.
 - `make test-sim` runs the plant simulator: the invariants over generated Plants and event traces, the reproduced defects, and the reference plant.
-- `make lint` checks Ruff linting, Python compilation, and the repository's JSON files.
+- `make lint` checks Ruff linting and the repository's JSON files.
 - `make format-check` checks the whole repository with the Ruff formatter.
 - `make typecheck` checks the whole `custom_components/hydronicus` package with mypy.
-- `make release-check` and `make public-beta-check` build and inspect the HACS release archive and check the installation documentation.
+- `make release-check` builds and inspects the HACS release archive.
 - `make test` runs every test with core coverage.
 - `make verify` runs the complete local quality gate that CI runs.
 
@@ -44,7 +44,8 @@ Config entry version 5.0 is the supported persisted contract.
 The entry's data is the format 2 plant file without `zones`, and each zone is a `zone` subentry whose data is that zone's mapping plus its `slug`; the subentry's unique ID is the slug and its title is the zone's name.
 Home Assistant stores a config entry with sorted keys, so `pumps`, `loops`, and each zone's `loops` are stored as lists of objects that carry their `slug`, which keeps the order the owner chose.
 The entry's options hold `armed_outputs`, the confirmed output entity IDs, and `control`, the **Control equipment** state.
-The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, and the last valid Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
+The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, when each required sensor or condensation input became unusable, the flow counters, and the last valid Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
+The flow counters change every minute while a loop flows, so a change of only them is saved at most every 15 minutes, and when the Plant stops or Home Assistant stops.
 
 Entries of earlier versions are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
 Do not add schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
@@ -57,17 +58,23 @@ Do not add schema aliases or migration paths without a concrete persisted predec
 - `core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into entry data and zone subentry data with its slug-keyed objects listed in order, `from_storage` joins them again, and `describe_path` puts a problem's path in words.
 - `core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
 - `core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
-- `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
+- `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, waits for a valve that shows it is opening or closing toward its target, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
 
 A decision never counts on a call having acted: a call that no observation has confirmed may act until `CALL_TIMEOUT` after it was sent.
 
 The Home Assistant adapter lives beside the core:
 
-- `runtime.py` runs one Plant: it observes, calls `step()` and `reconcile()`, sends the actions outside the evaluation, persists the State, raises the Repairs, publishes the entities, and schedules the next evaluation.
+- `runtime.py` runs one Plant: it observes, calls `step()` and `reconcile()`, hands the actions to the dispatcher, persists the State, raises the Repairs, builds the view, publishes the entities, and schedules the next evaluation.
   Evaluations are coalesced and never await, so they need no lock.
+  An evaluation that raises is logged, raises the `evaluation_failed` Repair, and is retried after a minute.
   Setup restores the stored State and the digital thermostats before the first evaluation, and stopping only cancels, never commands.
-  When a new configuration removes an output that is on, or is not valid, the first evaluation runs the stored previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
   A configuration that is not valid still loads, as an empty Plant with its stored ID and name that only observes, next to the `invalid_plant` Repair.
+- `dispatch.py` sends the actions outside the evaluation from one task at a time, in the order they were decided and each within `CALL_TIMEOUT` of its evaluation, and stopping drops the queue and cancels that task, so no call starts once stopping has begun.
+- `previous.py` persists the last valid Plant with the outputs it was commanding.
+  When a new configuration removes an output that is on, or is not valid, the first evaluation runs that previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
+- `view.py` is the read model: the `PlantView` of each evaluation, from which the entities and diagnostics derive the status, the blocked zones, the flowing loops, the zone readings, and each thermostat's action.
+- `flow_history.py` counts each loop's runtime and each zone's flow by hour for the runtime and duty cycle sensors, from the flow that each evaluation observes while the Plant is live.
+  The runtime refreshes it once a minute while a loop flows, and at each hour while the duty cycle's window holds flow; a refresh publishes the entities and never evaluates.
 - `observe.py` reads Home Assistant states as observations: output feedback, units and plausibility of sensors, external thermostats, and the output memory that keeps when an output last changed across restarts.
 - `areas.py` owns every area and floor registry read: it resolves the sensors that covered areas name on every evaluation, drops sensors Hydronicus provides, and reports area problems for the runtime, the reviews, and Repairs.
   `zone_area.py` puts a new zone climate entity in the one area its zone covers.
@@ -78,9 +85,9 @@ The Home Assistant adapter lives beside the core:
   Every flow edits a plant file document with the helpers in `flows/documents.py`, which keep the settings a form does not show, and checks the whole resulting Plant with `flows/forms.py`, which maps a problem onto the field its path belongs to.
   A select's fixed options are translated through its `translation_key`, such as the add option of a pick form, whose value `add-new` is a valid translation key that no slug can be.
   What the code writes into a form stays English: labels of options whose values are slugs or entity IDs, such as `Living area / Ceiling` or a pump driven by the source, and description placeholders, such as the reviews, the change summary, and the reconfigure status, because Home Assistant translates neither.
-- `issues.py` computes the Repairs of a Plant, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
-- `entity.py` and the platforms publish the [entity contract](entities.md); unique IDs derive from the Plant ID and object slugs.
-- `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` redacts the configuration, the last observations, the desired state, and the reconciler state.
+- `issues.py` computes the Repairs of a Plant, including a required sensor that `step()` reports blocking its zone and an unusable condensation input that `step()` reports blocking the cooling of a loop, each once it has lasted 10 minutes, and `repairs.py` holds their fix flows: arming unconfirmed outputs, and opening the entry's or a zone's reconfigure flow through `next_flow`, with a missing binding's path as the flow's init data so that it opens at the form that binds it.
+- `entity.py` and the platforms publish the [entity contract](entities.md) from the view; unique IDs and device identifiers derive from the Plant ID and object slugs.
+- `services.py` registers the `hydronicus.export_plant` action, and `diagnostics.py` returns the configuration, the last observations, the desired state, and the reconciler state, unredacted, since a Plant holds no secret.
 
 Reload, unload, removal, and Home Assistant stop are command-free lifecycle boundaries and must never claim that physical shutdown occurred.
 
@@ -88,7 +95,7 @@ Reload, unload, removal, and Home Assistant stop are command-free lifecycle boun
 
 - `tests/core/` holds pure tests of the model, the plant file, `step()`'s stages, and the reconciler's ordering, backoff, and Repairs.
 - `tests/integration/` holds Home Assistant tests of setup, the runtime, persistence, arming, areas, entities, flows, and Repairs, with mocked actuators from `tests/integration/helpers.py`.
-- `tests/sim/` holds the simulator, which owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts the plan's invariants after every event, with the reference plant and the reproduced defects as named scenarios.
+- `tests/sim/` holds the simulator, which owns physical state, drives `step()` and `reconcile()` as the runtime does, and asserts [the invariants](#invariants) after every event, with the reference plant and the reproduced defects as named scenarios.
 - Root-level tests cover isolated units that need no Home Assistant harness, the release package, and the documentation.
 
 `tests/test_docs_examples.py` keeps the user documentation true: every plant file example imports, the documented error paths and messages are the real ones, the reference plant example matches the test fixture, and every bold UI label exists in `strings.json` or Home Assistant.
@@ -109,6 +116,7 @@ Commit `pyproject.toml` and `uv.lock` together.
 ## Invariants
 
 The simulator under `tests/sim/` checks invariants 1 to 8 on simulated physical state, not on controller belief, after every event of random plants and random traces.
+It also checks that an exercise never requests the source, and that a Plant left idle exercises every pump and valve it may.
 A trace may delay, reject, or time out any command, restart the runtime, jump the clock, and make a sensor stale or an entity unavailable.
 Only a spontaneous physical change, such as a valve closing by itself, is exempt, and the controller must react to it within one evaluation.
 
@@ -116,8 +124,8 @@ Only a spontaneous physical change, such as a valve closing by itself, is exempt
 2. A pump with `min_flow: path` never runs without an open path, where a loop with no valve is always an open path.
 3. The source is requested only while at least one loop of the current mode is ready and, when its pump is switched, that pump is observed running.
 4. A source-driven pump with `min_flow: path` has an open path while the source is requested, during its post-run, and while it is observed running.
-5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the dwell and for the old mode's loops to stop.
-6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run.
+5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the old mode's loops to stop and for the dwell after the old mode's flow; an exercise's flow starts no dwell, since no source heats or cools it.
+6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run, and an exercise, which needs only the guard's checks against condensation.
 7. Every difference between desired and observed state is eventually observed resolved or reported as a Repair.
 8. With unchanged observations, the first evaluation after a reload or restart sends no command.
 9. Removing an object first stops the equipment it removes, and a configuration that is not valid stops in order and then only observes, with a Repair.

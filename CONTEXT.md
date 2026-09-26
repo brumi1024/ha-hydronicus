@@ -28,6 +28,7 @@ A Loop is a flow path: zero or more valves that open together, and exactly one P
 A Loop with no valve is always an open path, and its Pump is its only control.
 
 A Loop runs in heating, cooling, or both, and it may cool only with a condensation reference: its Pump's supply temperature sensor or its own surface sensor.
+A condensation switch on its Pump or on the Loop, a surface minimum, and its Zones' humidity limits only add to that reference; none of them replaces it.
 
 ## Zone
 
@@ -69,7 +70,9 @@ Heating and cooling never run at the same time, and a change of Mode is sequence
 
 ## Demand
 
-Demand is a Zone's request in the current Mode, with an on or off decision and a level from 0 to 1.
+Demand is a Zone's request in the current Mode: an on or off decision.
+
+A Zone's windows act after its thermostat: while one is open, the Zone's Demand is off in either Mode.
 
 ## Min-flow path
 

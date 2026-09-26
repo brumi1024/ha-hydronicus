@@ -12,16 +12,16 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 
 import pytest
-from hydronicus_core.model import (
+
+from custom_components.hydronicus.core.model import (
     Desired,
     Mode,
     OptionTarget,
     OutputTarget,
     Plant,
     SwitchTarget,
-    ValueTarget,
 )
-from hydronicus_core.reconcile import (
+from custom_components.hydronicus.core.reconcile import (
     CALL_TIMEOUT,
     Action,
     Attempt,
@@ -29,7 +29,7 @@ from hydronicus_core.reconcile import (
     ReconcileState,
     step_view,
 )
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.step import (
     DemandState,
     GuardState,
     Observations,
@@ -38,9 +38,7 @@ from hydronicus_core.step import (
     Sent,
     State,
     SwitchState,
-    ValueState,
 )
-
 from tests.sim import harness
 from tests.sim.harness import Sim
 from tests.sim.invariants import InvariantViolation, dew_point
@@ -92,6 +90,27 @@ def test_a_valve_passes_flow_only_once_fully_open_and_until_fully_closed() -> No
     _send(world, valve, OFF)
     world.advance_to(world.t + LATENCY + 180.0)
     assert not world.valve_passes(valve)
+
+
+def test_a_valve_entity_shows_its_travel_and_may_stall_on_its_way() -> None:
+    world = _world(SMALL.replace("switch.room_floor_valve", "valve.room_floor"))
+    valve = "valve.room_floor"
+    _send(world, valve, ON)
+    world.advance_to(LATENCY)
+    version = world.version
+    assert world.observe().outputs[valve] == SwitchState(True, world.wall(), moving=True)
+    world.advance_to(LATENCY + 180.0)
+    assert world.observe().outputs[valve] == SwitchState(True, world.wall(), moving=False)
+    assert world.version > version, "arriving is a change of state"
+    assert world.valve_passes(valve)
+
+    world.faults.append(Fault(valve, world.t, world.t + 100.0, FaultKind.STALL))
+    _send(world, valve, OFF)
+    world.advance_to(world.t + 1000.0)
+    assert world.moving(valve) and world.valve_passes(valve), "a stalled closing valve passes flow"
+    _send(world, valve, OFF)
+    world.advance_to(world.t + LATENCY + 180.0)
+    assert not world.moving(valve) and not world.valve_passes(valve), "asked again, it closes"
 
 
 def test_a_readiness_sensor_confirms_a_fully_open_valve() -> None:
@@ -211,14 +230,11 @@ def test_step_and_reconcile_states_round_trip_through_json() -> None:
         "switch.b": SwitchState(None, 2.0),
         "select.c": OptionState("Heat", 3.0),
         "select.d": OptionState(None, 3.5),
-        "number.e": ValueState(35.0, 4.0),
-        "number.f": ValueState(None, 5.0),
     }
     reconciled = ReconcileState(
         attempts={
             "switch.a": Attempt(ON, 2, 6.0),
             "select.c": Attempt(OptionTarget("Cool"), 1, 7.0),
-            "number.e": Attempt(ValueTarget(35.0), 1, 8.0),
         },
         dry_run=dry,
     )
@@ -265,10 +281,11 @@ class Scripted:
             outputs=dict(self.outputs),
             source_request=False,
             mode=self.mode,
-            flow_setpoint=None,
             reasons={},
         )
-        return replace(state, live=self.live), desired, None
+        # Like step(), it labels flows with the last heat or cool mode it declared.
+        label = self.mode if self.mode is not Mode.OFF else state.last_mode
+        return replace(state, live=self.live, last_mode=label), desired, None
 
     def reconcile(
         self,

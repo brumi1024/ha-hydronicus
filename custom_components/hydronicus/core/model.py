@@ -32,15 +32,6 @@ class MinFlow(StrEnum):
     GUARANTEED = "guaranteed"
 
 
-class SourceStrategy(StrEnum):
-    """How Hydronicus asks the source for heat or cooling."""
-
-    # Ask for heat or cooling and let the source choose its flow temperature.
-    REQUEST = "request"
-    # Also write a flow setpoint; reserved for iteration 2.
-    SETPOINT = "setpoint"
-
-
 class Aggregation(StrEnum):
     """How a zone combines its temperature readings."""
 
@@ -81,10 +72,44 @@ DEFAULT_MODE_DWELL: Final = 3600.0
 DEFAULT_POST_RUN: Final = 180.0
 DEFAULT_MIN_ON: Final = 600.0
 DEFAULT_MIN_OFF: Final = 600.0
+# A digital thermostat holds each demand decision this long, in seconds, so a
+# short dip does not open a slow thermoelectric valve, which takes about three
+# minutes, and close it again before its pump ever starts.
+DEFAULT_DEMAND_MIN_ON: Final = 600.0
+DEFAULT_DEMAND_MIN_OFF: Final = 600.0
 DEFAULT_OVERRUN: Final = 180.0
 DEFAULT_OPENING_TIME: Final = 180.0
-DEFAULT_MAX_AGE: Final = 1800.0
+# A zone or area sensor's reading is stale this long after its last report. Many
+# battery sensors report only on change, with a heartbeat about once an hour.
+DEFAULT_MAX_AGE: Final = 3600.0
 DEFAULT_SOURCE_TITLE: Final = "Heat source"
+# While cooling, a loop's surface stays at or above this, in °C: the comfortable
+# floor minimum of ISO 7730 and REHVA. A ceiling may run colder.
+DEFAULT_SURFACE_MINIMUM: Final = 20.0
+# While cooling, a zone's highest humidity stays at or below this, in percent.
+DEFAULT_MAX_HUMIDITY: Final = 70.0
+# A window counts as open once it has read open this long, and as closed once
+# every window of the zone has read closed this long, in seconds.
+DEFAULT_WINDOW_OPEN_DELAY: Final = 60.0
+DEFAULT_WINDOW_CLOSE_DELAY: Final = 60.0
+# An idle switched pump or valve is exercised once it has not been seen on for a
+# week, and an exercised pump runs for a minute, so neither seizes.
+DEFAULT_EXERCISE_INTERVAL: Final = 604800.0
+DEFAULT_EXERCISE_RUN: Final = 60.0
+# A zone whose coldest reading falls below this, in °C, is heated whatever its thermostat says.
+DEFAULT_FROST_PROTECTION: Final = 5.0
+# Frost protection heats until the coldest reading is this far above its temperature, in kelvin.
+FROST_PROTECTION_RELEASE: Final = 1.0
+
+# The bounds a plant file keeps these settings within. Frost protection above
+# 10 °C would heat rooms whose thermostats are off; a humidity limit below 30 %
+# would block cooling for good; and an exercise more often than hourly, or a
+# pump run outside 10 seconds to 10 minutes, would hardly let the Plant rest.
+MAX_FROST_PROTECTION: Final = 10.0
+MIN_MAX_HUMIDITY: Final = 30.0
+MIN_EXERCISE_INTERVAL: Final = 3600.0
+MIN_EXERCISE_RUN: Final = 10.0
+MAX_EXERCISE_RUN: Final = 600.0
 
 
 def title_from_slug(slug: str) -> str:
@@ -146,6 +171,9 @@ class Pump:
     min_flow_loops: tuple[LoopRef, ...] = ()
     supply_temperature: str | None = None
     name: str | None = None
+    # A binary sensor on the pump's supply pipe that reads on at condensation; it
+    # blocks the cooling of every loop of the pump.
+    condensation_switch: str | None = None
 
     @property
     def driven_by_source(self) -> bool:
@@ -168,6 +196,11 @@ class Loop:
     # The loop's own condensation reference, besides its pump's supply sensor.
     surface_temperature: str | None = None
     name: str | None = None
+    # A binary sensor that reads on at condensation, besides its pump's.
+    condensation_switch: str | None = None
+    # The lowest surface temperature while cooling, in °C; None turns it off. It
+    # needs ``surface_temperature``.
+    surface_minimum: float | None = DEFAULT_SURFACE_MINIMUM
 
     @property
     def slug(self) -> str:
@@ -204,7 +237,6 @@ class Source:
     """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
 
     request: str
-    strategy: SourceStrategy = SourceStrategy.REQUEST
     mode: SourceModeSelect | None = None
     post_run: float = DEFAULT_POST_RUN
     min_on: float = DEFAULT_MIN_ON
@@ -245,10 +277,8 @@ class DigitalThermostat:
     heat_stop_delta: float = 0.1
     cool_start_delta: float = 0.3
     cool_stop_delta: float = 0.1
-    min_on: float = 0.0
-    min_off: float = 0.0
-    # The distance to target, in kelvin, over which the demand level rises from 0 to 1.
-    proportional_band: float = 1.0
+    min_on: float = DEFAULT_DEMAND_MIN_ON
+    min_off: float = DEFAULT_DEMAND_MIN_OFF
 
     @property
     def preset_targets(self) -> Mapping[Preset, float]:
@@ -277,6 +307,14 @@ class Zone:
     aggregation: Aggregation = Aggregation.MEAN
     thermostat: Thermostat = DigitalThermostat()
     name: str | None = None
+    # Binary sensors that read on while a window is open; an open window turns
+    # the zone's demand off.
+    windows: tuple[str, ...] = ()
+    window_open_delay: float = DEFAULT_WINDOW_OPEN_DELAY
+    window_close_delay: float = DEFAULT_WINDOW_CLOSE_DELAY
+    # The highest humidity at which the loops that read the zone's dew point may
+    # cool, in percent; None turns the cutoff off.
+    max_humidity: float | None = DEFAULT_MAX_HUMIDITY
 
     @property
     def cools(self) -> bool:
@@ -285,6 +323,19 @@ class Zone:
     @property
     def title(self) -> str:
         return self.name or title_from_slug(self.slug)
+
+
+@dataclass(frozen=True, slots=True)
+class Exercise:
+    """How often an idle pump or valve is exercised so it does not seize."""
+
+    # Seconds a switched pump or a valve may stay unseen on before it is exercised.
+    interval: float = DEFAULT_EXERCISE_INTERVAL
+    # Seconds an exercised switched pump runs.
+    run: float = DEFAULT_EXERCISE_RUN
+
+
+DEFAULT_EXERCISE: Final = Exercise()
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +350,10 @@ class Plant:
     # Plant loops, which no zone owns.
     loops: tuple[Loop, ...] = ()
     zones: tuple[Zone, ...] = ()
+    # None turns the exercise of idle pumps and valves off.
+    exercise: Exercise | None = DEFAULT_EXERCISE
+    # The frost protection temperature in °C, or None to turn frost protection off.
+    frost_protection: float | None = DEFAULT_FROST_PROTECTION
 
     @property
     def all_loops(self) -> tuple[Loop, ...]:
@@ -372,23 +427,15 @@ class OptionTarget:
     option: str
 
 
-@dataclass(frozen=True, slots=True)
-class ValueTarget:
-    """A number that should hold a value."""
-
-    value: float
-
-
-type OutputTarget = SwitchTarget | OptionTarget | ValueTarget
+type OutputTarget = SwitchTarget | OptionTarget
 
 
 @dataclass(frozen=True, slots=True)
 class Demand:
-    """A zone's request: on or off in a thermostat mode, with a level from 0 to 1."""
+    """A zone's request: on or off in a thermostat mode."""
 
     mode: Mode
     on: bool
-    level: float
     reason: str
 
 
@@ -401,9 +448,20 @@ class Desired:
     # The mode the outputs run in now: during a changeover it stays the old mode
     # until the old mode's loops have stopped, and it is off during the dwell.
     mode: Mode
-    # Always None until the setpoint strategy arrives in iteration 2.
-    flow_setpoint: float | None
     # Why, per zone, loop, and output.
     reasons: Mapping[str, str]
-    # Each zone's demand, by zone slug, which the entities publish with its level.
+    # Each zone's demand, by zone slug, which the entities publish.
     demands: Mapping[str, Demand] = field(default_factory=dict)
+    # By zone slug, the required sensors whose readings are not usable, among the
+    # readings the zone needs; the zone fails closed until they report again.
+    blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # By loop that cools, ``str(LoopRef)``, its condensation inputs that are not
+    # usable, in any mode: its pump's and its own condensation switch while
+    # unavailable, unknown, or missing, and its pump's supply and its own surface
+    # temperature while missing, stale, or not plausible. Its guard blocks until
+    # they report again.
+    blocking_condensation_inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # The zones that frost protection heats, whatever their thermostats say.
+    frost_protection: tuple[str, ...] = ()
+    # The slug of the pump whose idle switch or valves are being exercised, if any.
+    exercise: str | None = None

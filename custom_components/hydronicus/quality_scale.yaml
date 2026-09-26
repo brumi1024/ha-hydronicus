@@ -1,0 +1,151 @@
+rules:
+  # Bronze
+  action-setup: done
+  appropriate-polling:
+    status: exempt
+    comment: |
+      Every entity sets should_poll = False; state is pushed from
+      PlantRuntime's own evaluation, never polled.
+  brands:
+    status: todo
+    comment: |
+      custom_components/hydronicus/brand/ ships local icons, but the
+      integration is not yet registered in home-assistant/brands.
+  common-modules: done
+  config-flow-test-coverage:
+    status: todo
+    comment: |
+      config_flow.py and most of flows/ measure 95-100%, but
+      flows/zone.py (91%) and flows/settings.py (87%) fall short of
+      full coverage.
+  config-flow: done
+  dependency-transparency: done
+  docs-actions:
+    status: todo
+    comment: |
+      hydronicus.export_plant is named in docs/plant-file.md and
+      services.yaml, but is not documented as a service action with
+      its fields the way docs-actions expects.
+  docs-triggers:
+    status: exempt
+    comment: Hydronicus provides no device triggers.
+  docs-conditions:
+    status: exempt
+    comment: Hydronicus provides no device conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions:
+    status: todo
+    comment: |
+      Removing a Plant or the equipment stop sequence is only
+      mentioned in passing in docs/troubleshooting.md and
+      docs/upgrade-and-rollback.md; there is no dedicated removal
+      section.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: exempt
+    comment: |
+      The flow binds existing Home Assistant entities; there is no
+      remote device or service to test connectivity against.
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable:
+    status: todo
+    comment: |
+      Nothing logs an entity's own transition to unavailable; a
+      non-responding output becomes a Repair instead, which is a
+      different signal.
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: |
+      Hydronicus authenticates nothing; it only binds existing local
+      entities that other integrations already set up.
+  test-coverage:
+    status: todo
+    comment: |
+      custom_components/hydronicus overall measures 96%, but several
+      modules sit under the 95% this rule wants per module:
+      flows/settings.py and services.py (87%), storage.py and
+      repairs.py (89%), diagnostics.py (89%).
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery-update-info:
+    status: exempt
+    comment: Nothing is discovered; see discovery.
+  discovery:
+    status: exempt
+    comment: |
+      A Plant binds entities the owner already set up in Home
+      Assistant; there is no device on the network to discover.
+  docs-data-update: done
+  docs-examples:
+    status: todo
+    comment: |
+      docs/entities.md and docs/how-it-works.md mention that an
+      automation can use the entities, but neither gives a worked
+      automation example.
+  docs-known-limitations:
+    status: todo
+    comment: |
+      Known limitations live only in a release's own notes
+      (docs/releases/v0.2.0.md), which the next release will not
+      repeat; there is no durable, version-independent section.
+  docs-supported-devices:
+    status: exempt
+    comment: |
+      Hydronicus is device-agnostic: any switch, sensor, or climate
+      entity of any integration can fill a role.
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices: done
+  entity-category:
+    status: todo
+    comment: |
+      The loop runtime and zone duty cycle sensors are diagnostic;
+      Control equipment and the Mode select read as arguable
+      config-category controls.
+  entity-device-class: done
+  entity-disabled-by-default:
+    status: todo
+    comment: |
+      No entity is registered disabled by default; a Plant with many
+      zones and loops gets no less noisy by default than a small one.
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues: done
+  stale-devices: done
+
+  # Platinum
+  async-dependency:
+    status: exempt
+    comment: |
+      No external client library; Hydronicus only calls Home
+      Assistant's own async APIs and the entities other integrations
+      provide.
+  inject-websession:
+    status: exempt
+    comment: Hydronicus opens no websession or HTTP client of its own.
+  strict-typing:
+    status: todo
+    comment: |
+      mypy already runs with disallow_untyped_defs,
+      disallow_any_generics, and warn_return_any, but not the full
+      strict set: disallow_untyped_calls, disallow_incomplete_defs,
+      no_implicit_reexport, and strict_equality are not enabled.

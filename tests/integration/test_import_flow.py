@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.hydronicus.const import DOMAIN
 from tests.integration.helpers import (
     REFERENCE_PLANT,
-    Actuators,
     async_choose,
     async_import,
     async_submit,
@@ -102,17 +101,71 @@ async def test_a_plant_file_without_an_id_gets_one_that_its_export_keeps(
     assert entry.title == "Flat"
 
 
-async def test_the_first_evaluation_waits_until_home_assistant_has_started(
-    hass: HomeAssistant, actuators: Actuators
+async def test_the_review_names_windows_switches_and_settings_off_their_defaults(
+    hass: HomeAssistant,
 ) -> None:
-    hass.set_state(CoreState.starting)
-    reference_world(hass)
-    entry = await async_import(hass, REFERENCE_PLANT)
-    assert entry.runtime_data.desired is None
-    assert hass.states.get("sensor.home_status").state == "unavailable"
+    text = """
+hydronicus: 2
+name: Flat
+exercise: false
+frost_protection: 8
+pumps:
+  pump:
+    switch: switch.pump
+    supply_temperature: sensor.supply
+    condensation_switch: binary_sensor.dew
+zones:
+  study:
+    temperature: [sensor.study]
+    humidity: [sensor.study_rh]
+    windows: [binary_sensor.study_window, binary_sensor.study_door]
+    max_humidity: 65
+    loops:
+      floor:
+        valves: [switch.study_valve]
+        pump: pump
+        modes: [heat, cool]
+        surface_temperature: sensor.study_floor
+        surface_minimum: 18
+        condensation_switch: binary_sensor.study_dew
+      ceiling:
+        valves: [switch.study_ceiling_valve]
+        pump: pump
+        modes: [heat, cool]
+        surface_temperature: sensor.study_ceiling
+  hall:
+    temperature: [sensor.hall]
+    humidity: [sensor.hall_rh]
+    max_humidity: null
+"""
+    result = await _submit(hass, text)
 
-    await hass.async_start()
-    await hass.async_block_till_done()
+    assert result["step_id"] == "review"
+    assert result["description_placeholders"]["summary"].splitlines() == [
+        "Plant Flat",
+        "- Protection: no exercise; frost protection at 8 °C",
+        "- No source: valves open and switched pumps run on demand.",
+        "- Pump Pump: switch switch.pump, runs only with a ready loop, "
+        "condensation switch binary_sensor.dew",
+        "- Zone Study, digital thermostat, "
+        "windows binary_sensor.study_window and binary_sensor.study_door, "
+        "humidity limit 65 %; loops: "
+        "Floor (heat and cool, pump Pump, 1 valve, surface minimum 18 °C, "
+        "condensation switch binary_sensor.study_dew); "
+        "Ceiling (heat and cool, pump Pump, 1 valve)",
+        "- Zone Hall, digital thermostat, no humidity limit; no loop of its own",
+        "- Outputs: 3",
+    ]
 
-    assert entry.runtime_data.desired is not None
-    assert hass.states.get("sensor.home_status").state == "off"
+
+async def test_the_review_leaves_out_settings_at_their_defaults(hass: HomeAssistant) -> None:
+    result = await _submit(hass, TWO_ZONES)
+
+    assert result["step_id"] == "review"
+    assert result["description_placeholders"]["summary"].splitlines() == [
+        "Plant Flat",
+        "- No source: valves open and switched pumps run on demand.",
+        "- Pump Pump: switch switch.pump, runs only with a ready loop",
+        "- Zone Study, digital thermostat; loops: Radiator (heat, pump Pump, 1 valve)",
+        "- Outputs: 2",
+    ]

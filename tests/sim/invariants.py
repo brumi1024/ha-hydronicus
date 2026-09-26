@@ -1,23 +1,26 @@
 """The plan's invariants 1 to 8, checked on the simulated physical state.
 
 Each check reads the world, not the controller's belief, with two exceptions
-that the controller declares: the mode label of a flow is the last heat or cool
-``Desired.mode`` before the flow started, and the Repairs are what
-``reconcile()`` reports. The condensation guard is judged on the sensor values
-the controller could see, since no controller can act on a reading it never
-received.
+that the controller declares: the mode label of a flow is the State's
+``last_mode`` before the flow started, the last heat or cool mode that ran, or
+heat for an exercise of a Plant that never ran one, and the Repairs are what
+``reconcile()`` reports. A flow that starts while the State's exercise names
+its pump is the exercise's: no source heats or cools it, so its end starts no
+dwell and only the checks against condensation guard it. The condensation
+guard is judged on the sensor values the controller could see, since no
+controller can act on a reading it never received.
 
 Exemptions and bounds, all in physical seconds:
 
 - A spontaneous physical change, such as a relay turning off by itself, exempts
   invariant 3 for ``SPONTANEOUS_GRACE`` after it; invariants 2 and 4 need no
   exemption because a valve closing by itself still passes flow for its travel
-  time, which is when the controller must have reacted. When the controller may
-  command neither the pump's stop output nor the valve that closed by itself,
-  because they are unarmed, unavailable, or the Plant is in Dry run, it cannot
-  react without breaking invariant 1, and invariants 2 and 4 are exempt for that
-  pump until one reaction, ``SPONTANEOUS_GRACE``, after one of them could be
-  commanded again.
+  time, which is when the controller must have reacted. When, after a valve of
+  a pump closed by itself, the controller may command neither the pump's stop
+  output nor enough valves to open any of its loops again, because each loop
+  has a shut valve that is unarmed, unavailable, or in Dry run, it cannot react
+  without breaking invariant 1, and invariants 2 and 4 are exempt for that pump
+  until one reaction, ``SPONTANEOUS_GRACE``, after that changes.
 - Invariant 3 is exempt while the controller desires the source request off
   but cannot get it off: the request has been unarmed, unavailable, or under a
   call fault within the last ``CALL_TIMEOUT + LATENCY``, or an off call to it
@@ -35,7 +38,10 @@ Exemptions and bounds, all in physical seconds:
   evaluations can run.
 - Invariant 7 requires an output whose target is unmet after
   ``REPAIR_AFTER`` failed calls to be reported ``REPAIR_GRACE`` after the last
-  one, and every armed output to match its target once the trace has settled.
+  one, and a valve that has shown for its opening time and ``TRAVEL_GRACE``
+  that it moves to its target without arriving to be reported
+  ``REPAIR_GRACE`` after that, in wall time and while evaluations can run.
+  Every armed output must match its target, arrived, once the trace has settled.
 """
 
 from __future__ import annotations
@@ -45,8 +51,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from hydronicus_core.model import (
-    DEFAULT_MAX_AGE,
+from custom_components.hydronicus.core.model import (
     Desired,
     DigitalThermostat,
     Loop,
@@ -61,13 +66,14 @@ from hydronicus_core.model import (
     SwitchTarget,
     Zone,
 )
-from hydronicus_core.reconcile import CALL_TIMEOUT, REPAIR_AFTER
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, REPAIR_AFTER, TRAVEL_GRACE
+from custom_components.hydronicus.core.step import (
     CONDENSATION_MARGIN,
+    GUARD_REFERENCE_MAX_AGE,
     DigitalThermostatState,
     ExternalThermostatState,
+    State,
 )
-
 from tests.sim.world import EPSILON, LATENCY, WALL_BASE, Call, World
 
 if TYPE_CHECKING:
@@ -111,6 +117,9 @@ class Flow:
     label: Mode
     start: float
     end: float | None = None
+    # It started while its pump was exercised, so no source heats or cools it,
+    # and its end starts no dwell.
+    exercise: bool = False
 
 
 @dataclass(slots=True)
@@ -130,6 +139,8 @@ class Checker:
         self.world = world
         self._repairs = repairs
         self.label: Mode | None = None
+        # The pump of the exercise the State holds, running or stopping.
+        self.exercised: str | None = None
         self.flows: dict[LoopRef, Flow] = {}
         self.flow_log: list[Flow] = []
         self.last_end: dict[Mode, float] = {}
@@ -176,8 +187,12 @@ class Checker:
         for ref, since in self.blocked_since.items():
             self.blocked_since[ref] = since + pause
 
-    def on_desired(self, desired: Desired) -> None:
-        """Check the shape of a desired state and take its mode as the label of new flows."""
+    def on_desired(self, desired: Desired, state: State) -> None:
+        """Check the shape of a desired state and take the label of new flows from the State.
+
+        That is its ``last_mode``, and its exercise, whose flows run in heat
+        before any mode ran.
+        """
         outputs = self.plant.outputs()
         for entity, target in desired.outputs.items():
             role = outputs.get(entity)
@@ -186,9 +201,14 @@ class Checker:
             expected = OptionTarget if role is OutputRole.SOURCE_MODE else SwitchTarget
             if not isinstance(target, expected):
                 raise InvariantViolation("K2", self.world.t, f"Desired {entity}: {target}")
-        label = _mode_label(desired.mode)
+        if desired.exercise is not None and desired.source_request:
+            raise InvariantViolation(
+                "exercise", self.world.t, f"exercising {desired.exercise} requests the source"
+            )
+        label = _mode_label(state.last_mode)
         if label is not None:
             self.label = label
+        self.exercised = None if state.exercise is None else state.exercise.pump
         self.release_wanted = not desired.source_request
 
     def on_dispatch(self, call: Call) -> None:
@@ -261,11 +281,15 @@ class Checker:
             if ref not in flowing:
                 flow = self.flows.pop(ref)
                 flow.end = t
-                self.last_end[flow.label] = t
+                if not flow.exercise:
+                    self.last_end[flow.label] = t
         for ref, loop in flowing.items():
             if ref in self.flows:
                 continue
+            exercise = loop.pump == self.exercised
             label = self.label
+            if label is None and exercise:
+                label = Mode.HEAT
             if label is None:
                 raise InvariantViolation(5, t, f"loop {ref} flows before any mode ran")
             if label not in loop.modes:
@@ -288,7 +312,7 @@ class Checker:
                     f"loop {ref} flows in {label} {t - ended:.0f}s after the last {opposite} flow "
                     f"ended; the dwell is {self.plant.mode_dwell:.0f}s",
                 )
-            flow = Flow(ref, label, t)
+            flow = Flow(ref, label, t, exercise=exercise)
             self.flows[ref] = flow
             self.flow_log.append(flow)
         source_mode = self.world.source_mode()
@@ -321,17 +345,26 @@ class Checker:
         within one reaction, ``SPONTANEOUS_GRACE``.
         """
         world = self.world
-        valves = {
-            valve.entity for loop in self.plant.pump_loops(pump.slug) for valve in loop.valves
-        }
-        closed = {entity for _, entity in world.spontaneous if entity in valves}
+        loops = self.plant.pump_loops(pump.slug)
+        valves = {valve.entity for loop in loops for valve in loop.valves}
+        if not any(entity in valves for _, entity in world.spontaneous):
+            return False
         source = self.plant.source
         stop = pump.switch or (source.request if source is not None else None)
-        return bool(closed) and all(
-            t - self.uncommandable_at.get(entity, -math.inf) <= SPONTANEOUS_GRACE
-            for entity in (*closed, stop)
-            if entity is not None
+        if stop is not None and not self._uncommandable(stop, t):
+            return False
+        # No loop can be opened again: each has a shut valve no call can reach,
+        # so reopening its other valves would not give the pump a path.
+        return all(
+            any(
+                not world.valve_passes(valve.entity) and self._uncommandable(valve.entity, t)
+                for valve in loop.valves
+            )
+            for loop in loops
         )
+
+    def _uncommandable(self, entity: str, t: float) -> bool:
+        return t - self.uncommandable_at.get(entity, -math.inf) <= SPONTANEOUS_GRACE
 
     def _release_impossible(self, t: float) -> bool:
         """The controller desires the source request off, and nothing it sends can do that."""
@@ -369,7 +402,7 @@ class Checker:
         for loop in self.plant.all_loops:
             if not loop.cools:
                 continue
-            if not self.guard_blocked(loop):
+            if not self.guard_blocked(loop, exercise=loop.pump == self.exercised):
                 self.blocked_since.pop(loop.ref, None)
                 continue
             since = self.blocked_since.setdefault(loop.ref, max(t, self.paused_until))
@@ -403,16 +436,34 @@ class Checker:
     def _check_repairs(self, t: float) -> None:
         """Invariant 7 during a trace: a persistent failure is reported as a Repair."""
         for entity, unmet in self.unmet.items():
-            if unmet.failed < REPAIR_AFTER or t < unmet.last_failed + REPAIR_GRACE:
-                continue
             if self.matches(entity, unmet.target) or entity in self._repairs():
                 continue
-            raise InvariantViolation(
-                7,
-                t,
-                f"{entity} missed {unmet.target} after {unmet.failed} failed calls "
-                "and is not reported as a Repair",
-            )
+            if unmet.failed >= REPAIR_AFTER and t >= unmet.last_failed + REPAIR_GRACE:
+                raise InvariantViolation(
+                    7,
+                    t,
+                    f"{entity} missed {unmet.target} after {unmet.failed} failed calls "
+                    "and is not reported as a Repair",
+                )
+            due = self._travel_report_due(entity, unmet.target)
+            if due is not None and self.world.wall() >= due and t >= self.paused_until:
+                raise InvariantViolation(
+                    7,
+                    t,
+                    f"{entity} has moved to {unmet.target} for longer than its opening time "
+                    "and the retries allow, and is not reported as a Repair",
+                )
+
+    def _travel_report_due(self, entity: str, target: OutputTarget) -> float | None:
+        """The wall time by which a valve on its way to ``target`` must be reported, if it is."""
+        world = self.world
+        if not isinstance(target, SwitchTarget) or not world.moving(entity):
+            return None
+        switch = world.switches[entity]
+        if not switch.available or switch.on is not target.on:
+            return None
+        travel = world.valves[entity].travel
+        return switch.changed + travel + TRAVEL_GRACE + REPAIR_GRACE
 
     def next_check_time(self) -> float | None:
         """The next deadline at which a check can fail without any event."""
@@ -430,6 +481,10 @@ class Checker:
             for unmet in self.unmet.values()
             if unmet.failed >= REPAIR_AFTER
         )
+        for entity, unmet in self.unmet.items():
+            due = self._travel_report_due(entity, unmet.target)
+            if due is not None:
+                times.append(due - WALL_BASE - self.world.wall_offset + EPSILON)
         for entity, max_age in self.max_ages().items():
             sensor = self.world.sensors[entity]
             if sensor.stale:
@@ -499,7 +554,7 @@ class Checker:
     def matches(self, entity: str, target: OutputTarget) -> bool:
         if isinstance(target, SwitchTarget):
             body = self.world.switches[entity]
-            return body.available and body.on == target.on
+            return body.available and body.on == target.on and not self.world.moving(entity)
         if isinstance(target, OptionTarget):
             select = self.world.selects[entity]
             return select.available and select.option == target.option
@@ -516,8 +571,9 @@ class Checker:
                 for entity in (names.temperature, names.humidity):
                     if entity is not None:
                         ages[entity] = area.max_age
+        # The rest are condensation references.
         for entity in self.world.sensors:
-            ages.setdefault(entity, DEFAULT_MAX_AGE)
+            ages.setdefault(entity, GUARD_REFERENCE_MAX_AGE)
         return ages
 
     def fresh(self, entity: str, max_age: float) -> float | None:
@@ -546,13 +602,20 @@ class Checker:
             if entity is not None:
                 yield entity, area.required, area.max_age
 
-    def guard_blocked(self, loop: Loop) -> bool:
-        """Whether the condensation guard must block, on the readings the controller sees."""
+    def guard_blocked(self, loop: Loop, *, exercise: bool = False) -> bool:
+        """Whether the condensation guard must block, on the readings the controller sees.
+
+        An exercise runs no source, so only the checks against condensation, the
+        condensation switches and the dew point, apply to it.
+        """
         pump = self.plant.pump(loop.pump)
+        for entity in (pump.condensation_switch, loop.condensation_switch):
+            if entity is not None and self._contact(entity) is not False:
+                return True
         references = [
             entity for entity in (pump.supply_temperature, loop.surface_temperature) if entity
         ]
-        values = [self.fresh(entity, DEFAULT_MAX_AGE) for entity in references]
+        values = [self.fresh(entity, GUARD_REFERENCE_MAX_AGE) for entity in references]
         if not values or any(value is None for value in values):
             return True
         zones = [self.plant.zone(loop.zone)] if loop.zone is not None else list(self.plant.zones)
@@ -569,11 +632,35 @@ class Checker:
         if worst is None:
             return True
         threshold = worst + CONDENSATION_MARGIN - GUARD_TOLERANCE
-        return any(value < threshold for value in values if value is not None)
+        if any(value < threshold for value in values if value is not None):
+            return True
+        if exercise:
+            return False
+        if loop.surface_temperature is not None and loop.surface_minimum is not None:
+            surface = self.fresh(loop.surface_temperature, GUARD_REFERENCE_MAX_AGE)
+            if surface is not None and surface < loop.surface_minimum - GUARD_TOLERANCE:
+                return True
+        for zone in zones:
+            humidities = self._zone_values(zone, humidity=True)
+            if (
+                zone.max_humidity is not None
+                and humidities is not None
+                and max(humidities) > zone.max_humidity + GUARD_TOLERANCE
+            ):
+                return True
+        return False
+
+    def _contact(self, entity: str) -> bool | None:
+        """A condensation switch or window as the controller sees it; None while unavailable."""
+        body = self.world.contacts[entity]
+        return body.on if body.available else None
 
     def demands_heat(self, zone: Zone) -> bool:
         """Whether the zone surely demands heat, beyond any hysteresis."""
         state = self.world.thermostats.get(zone.slug)
+        if any(self._contact(window) for window in zone.windows):
+            # An open window turns the demand off; the trace has settled past its delays.
+            return False
         if isinstance(state, ExternalThermostatState):
             return state.action is Mode.HEAT
         if not isinstance(state, DigitalThermostatState) or state.hvac_mode is not Mode.HEAT:

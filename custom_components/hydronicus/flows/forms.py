@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 import voluptuous as vol
-from homeassistant.const import UnitOfTemperature, UnitOfTime
+from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
@@ -34,6 +34,15 @@ from ..areas import (
 from ..bindings import output_bound_elsewhere, own_entity
 from ..const import DOMAIN
 from ..core.model import (
+    DEFAULT_EXERCISE,
+    DEFAULT_FROST_PROTECTION,
+    DEFAULT_MAX_HUMIDITY,
+    DEFAULT_SURFACE_MINIMUM,
+    MAX_EXERCISE_RUN,
+    MAX_FROST_PROTECTION,
+    MIN_EXERCISE_INTERVAL,
+    MIN_EXERCISE_RUN,
+    MIN_MAX_HUMIDITY,
     ExternalThermostat,
     OutputRole,
     Plant,
@@ -64,6 +73,7 @@ PUMP_FIELDS: Final = {
     "min_flow": "min_flow",
     "min_flow_loops": "min_flow_loops",
     "supply_temperature": "supply_temperature",
+    "condensation_switch": "condensation_switch",
 }
 LOOP_FIELDS: Final = {
     "name": "name",
@@ -73,6 +83,8 @@ LOOP_FIELDS: Final = {
     "runs.with_zones": "with_zones",
     "modes": "modes",
     "surface_temperature": "surface_temperature",
+    "surface_minimum": "surface_minimum",
+    "condensation_switch": "condensation_switch",
 }
 # A zone's own problem, a missing temperature reading, shows on its sensors.
 ZONE_FIELDS: Final = {
@@ -83,6 +95,10 @@ ZONE_FIELDS: Final = {
     "humidity": "humidity",
     "aggregation": "aggregation",
     "thermostat": "thermostat",
+    "windows": "windows",
+    "window_open_delay": "window_open_delay",
+    "window_close_delay": "window_close_delay",
+    "max_humidity": "max_humidity",
 }
 
 
@@ -197,12 +213,13 @@ def entity(
     return selector.EntitySelector(config)
 
 
-def seconds() -> selector.NumberSelector:
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, step=1, unit_of_measurement=_SECONDS, mode=selector.NumberSelectorMode.BOX
-        )
+def seconds(low: float = 0, high: float | None = None) -> selector.NumberSelector:
+    config = selector.NumberSelectorConfig(
+        min=low, step=1, unit_of_measurement=_SECONDS, mode=selector.NumberSelectorMode.BOX
     )
+    if high is not None:
+        config["max"] = high
+    return selector.NumberSelector(config)
 
 
 def celsius() -> selector.NumberSelector:
@@ -212,6 +229,18 @@ def celsius() -> selector.NumberSelector:
             max=35,
             step=0.5,
             unit_of_measurement=_CELSIUS,
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
+def humidity_limit() -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=MIN_MAX_HUMIDITY,
+            max=100,
+            step=1,
+            unit_of_measurement=PERCENTAGE,
             mode=selector.NumberSelectorMode.BOX,
         )
     )
@@ -268,6 +297,7 @@ def _list(value: Any) -> list[str]:
 
 def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
     timing = values.get("timing") or {}
+    protection = values.get("protection") or {}
     return vol.Schema(
         {
             optional("name", values): _text(),
@@ -285,6 +315,30 @@ def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
                         _default("post_run", timing, 180): seconds(),
                         _default("min_on", timing, 600): seconds(),
                         _default("min_off", timing, 600): seconds(),
+                    }
+                ),
+                {"collapsed": True},
+            ),
+            vol.Optional("protection"): section(
+                vol.Schema(
+                    {
+                        _default("exercise", protection, True): selector.BooleanSelector(),
+                        _default("exercise_interval", protection, 604800): seconds(
+                            MIN_EXERCISE_INTERVAL
+                        ),
+                        _default("exercise_run", protection, 60): seconds(
+                            MIN_EXERCISE_RUN, MAX_EXERCISE_RUN
+                        ),
+                        _default("frost_protection", protection, True): selector.BooleanSelector(),
+                        _default("frost_temperature", protection, 5): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0,
+                                max=MAX_FROST_PROTECTION,
+                                step=0.5,
+                                unit_of_measurement=_CELSIUS,
+                                mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
                     }
                 ),
                 {"collapsed": True},
@@ -347,6 +401,9 @@ def pump_schema(
     schema[optional("supply_temperature", values)] = entity(
         hass, "sensor", shown=_list([values.get("supply_temperature")])
     )
+    schema[optional("condensation_switch", values)] = entity(
+        hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
+    )
     if add_another:
         schema[vol.Optional("add_another", default=False)] = selector.BooleanSelector()
     if removable:
@@ -389,6 +446,12 @@ def zone_schema(
             optional("thermostat", values): entity(
                 hass, "climate", shown=_list([values.get("thermostat")])
             ),
+            optional("windows", values): entity(
+                hass, "binary_sensor", multiple=True, shown=_list(values.get("windows"))
+            ),
+            optional("window_open_delay", values): seconds(),
+            optional("window_close_delay", values): seconds(),
+            optional("max_humidity", values): humidity_limit(),
             vol.Optional("presets"): section(
                 vol.Schema({optional(preset.value, presets): celsius() for preset in Preset}),
                 {"collapsed": True},
@@ -426,6 +489,10 @@ def loop_schema(
             ),
             optional("surface_temperature", values): entity(
                 hass, "sensor", shown=_list([values.get("surface_temperature")])
+            ),
+            optional("surface_minimum", values): celsius(),
+            optional("condensation_switch", values): entity(
+                hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
             ),
             _default("opening_time", values, 180): seconds(),
         }
@@ -520,8 +587,14 @@ def output_labels(plant: Plant) -> dict[str, str]:
 
 
 def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
-    """Describe a Plant for a review: its source, pumps, zones, and plant loops."""
+    """Describe a Plant for a review: its source, pumps, zones, and plant loops.
+
+    Entities are always named, while a setting with a default is named only
+    when it differs from its default.
+    """
     lines = [f"Plant {plant.name}"]
+    if protection := _protection(plant):
+        lines.append(f"- Protection: {protection}")
     source = plant.source
     if source is None:
         lines.append("- No source: valves open and switched pumps run on demand.")
@@ -540,7 +613,10 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             flow = "a separator guarantees its flow"
         else:
             flow = "runs only with a ready loop"
-        lines.append(f"- Pump {pump.title}: {how}, {flow}")
+        switch = (
+            f", condensation switch {pump.condensation_switch}" if pump.condensation_switch else ""
+        )
+        lines.append(f"- Pump {pump.title}: {how}, {flow}{switch}")
     resolution = resolve_area_sensors(hass, covered_area_ids(plant))
     for zone in plant.zones:
         areas = [resolution.name(area.area) for area in zone.areas]
@@ -552,9 +628,16 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             if isinstance(zone.thermostat, ExternalThermostat)
             else "digital thermostat"
         )
+        windows = f", windows {listed(zone.windows)}" if zone.windows else ""
+        if zone.max_humidity == DEFAULT_MAX_HUMIDITY:
+            humidity = ""
+        elif zone.max_humidity is None:
+            humidity = ", no humidity limit"
+        else:
+            humidity = f", humidity limit {zone.max_humidity:g} %"
         loops = [_loop_line(plant, loop.ref) for loop in zone.loops]
         lines.append(
-            f"- Zone {zone.title}{covering}, {thermostat}"
+            f"- Zone {zone.title}{covering}, {thermostat}{windows}{humidity}"
             + (f"; loops: {'; '.join(loops)}" if loops else "; no loop of its own")
         )
     for loop in plant.loops:
@@ -579,8 +662,37 @@ def _loop_line(plant: Plant, ref: Any) -> str:
         mode.value for mode in sorted(loop.modes, key=lambda mode: mode.value != "heat")
     )
     valves = len(loop.valves)
-    valve_words = "no valve" if valves == 0 else f"{valves} valve" + ("s" if valves > 1 else "")
-    return f"{loop.title} ({modes}, pump {plant.pump(loop.pump).title}, {valve_words})"
+    words = [
+        modes,
+        f"pump {plant.pump(loop.pump).title}",
+        "no valve" if valves == 0 else f"{valves} valve" + ("s" if valves > 1 else ""),
+    ]
+    # A surface minimum reads the surface sensor, so without one it has no effect.
+    if loop.surface_temperature is not None and loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        words.append(
+            "no surface minimum"
+            if loop.surface_minimum is None
+            else f"surface minimum {loop.surface_minimum:g} °C"
+        )
+    if loop.condensation_switch is not None:
+        words.append(f"condensation switch {loop.condensation_switch}")
+    return f"{loop.title} ({', '.join(words)})"
+
+
+def _protection(plant: Plant) -> str:
+    """The exercise and frost protection of a Plant where they differ from their defaults."""
+    parts = []
+    exercise = plant.exercise
+    if exercise is None:
+        parts.append("no exercise")
+    elif exercise != DEFAULT_EXERCISE:
+        parts.append(f"exercise interval {exercise.interval:g} s, pump run {exercise.run:g} s")
+    frost = plant.frost_protection
+    if frost is None:
+        parts.append("no frost protection")
+    elif frost != DEFAULT_FROST_PROTECTION:
+        parts.append(f"frost protection at {frost:g} °C")
+    return "; ".join(parts)
 
 
 def review_warnings(hass: HomeAssistant, plant: Plant) -> str:

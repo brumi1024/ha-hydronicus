@@ -7,8 +7,7 @@ after every event.
 
 from __future__ import annotations
 
-from hydronicus_core.model import Mode
-
+from custom_components.hydronicus.core.model import DEFAULT_DEMAND_MIN_ON, Mode
 from tests.sim.harness import Sim
 from tests.sim.plants import (
     BASEMENT_CEILING,
@@ -73,6 +72,7 @@ def test_a_zone_that_is_warm_closes_its_valves_while_the_pump_serves_another() -
         "the pump serves the basement and the living area together",
     )
 
+    sim.run_for(DEFAULT_DEMAND_MIN_ON)
     sim.set_zone_temperature("living_area", 21.5)
     sim.run_until_true(
         lambda: not sim.is_on(FLOOR_VALVE) and not sim.is_on(LIVING_CEILING),
@@ -92,6 +92,7 @@ def test_the_house_stops_with_overrun_and_closes_the_last_valve_after_the_pump()
         "the bedroom area heats",
     )
 
+    sim.run_for(DEFAULT_DEMAND_MIN_ON)
     sim.set_zone_temperature("bedroom_area", 21.5)
     sim.run_until_true(
         lambda: not sim.is_on(HEATING_PUMP) and not sim.is_on(TOWEL_PUMP),
@@ -109,3 +110,25 @@ def test_the_house_stops_with_overrun_and_closes_the_last_valve_after_the_pump()
     assert _last(sim, TOWEL_PUMP, False) < _last(sim, HEATING_PUMP, False), (
         "the towel dryer's shorter overrun ends first"
     )
+
+
+def test_a_short_call_keeps_the_valves_open_until_the_pump_has_run() -> None:
+    """A thermoelectric valve takes minutes to open, so a short call must not close it early."""
+    sim = _warm_house()
+    sim.set_zone_temperature("bedroom_area", 19.5)
+    sim.run_for(30.0)
+    sim.set_zone_temperature("bedroom_area", 21.5)
+    sim.run_until_true(
+        lambda: sim.flowing("bedroom_area.ceiling"),
+        OPENING + REACTION,
+        "the bedroom area heats once its valve has opened, though it is warm again",
+    )
+    sim.run_until_true(
+        lambda: not sim.is_on(HEATING_PUMP),
+        DEFAULT_DEMAND_MIN_ON + OVERRUN + REACTION,
+        "the pump stops after the thermostat's minimum on time and its overrun",
+    )
+    assert [on for _, on in sim.switched(BEDROOM_CEILING)] == [True], (
+        "the valve opened once and stayed open while the pump ran"
+    )
+    assert _last(sim, HEATING_PUMP, False) >= DEFAULT_DEMAND_MIN_ON + OVERRUN - REACTION

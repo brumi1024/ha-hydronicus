@@ -48,6 +48,7 @@
           "idle": "mdi:sleep",
           "heating": "mdi:fire",
           "cooling": "mdi:snowflake",
+          "exercising": "mdi:cog-refresh",
           "changing_over": "mdi:swap-horizontal",
           "degraded": "mdi:alert-outline",
           "stopping": "mdi:stop-circle-outline",
@@ -59,6 +60,12 @@
       },
       "dew_point": {
         "default": "mdi:water-thermometer"
+      },
+      "duty_cycle": {
+        "default": "mdi:chart-donut"
+      },
+      "loop_runtime": {
+        "default": "mdi:timer-outline"
       }
     },
     "switch": {

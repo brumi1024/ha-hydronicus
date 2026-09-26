@@ -3,7 +3,8 @@
 The world owns what really happens, independent of what the controller
 believes: switch outputs, valve travel, switched pumps, the source with its
 source-driven pumps and post-run, the mode select, sensors, thermostats, and
-the service calls in flight with their faults.
+the service calls in flight with their faults, and the binary sensors a
+Plant reads besides valve readiness: condensation switches and windows.
 
 Time ``t`` is physical and monotonic, in seconds from the start of the
 simulation. Home Assistant stamps observations with the wall clock, which is
@@ -13,14 +14,19 @@ Valve model: a valve moves linearly between closed and open over its opening
 time, in both directions. It passes flow only once it has opened fully and
 keeps passing flow until it has closed fully, so opening is judged
 pessimistically and closing realistically, and a controller that waits for a
-valve's opening time after observing it on always finds it passing flow.
+valve's opening time after observing it on always finds it passing flow. A
+switch valve shows on or off at once. A ``valve.*`` entity reports its travel,
+as a motorized valve does: it shows opening or closing until it arrives, and
+then open or closed.
 
 Service call model: a call normally takes effect ``LATENCY`` seconds after it
 is sent. A fault window makes calls to one entity take effect after a longer
-delay, fail at once (rejected), or never take effect (timed out). A delayed
-call always takes effect before ``CALL_TIMEOUT``, and calls to one entity take
-effect in the order they were sent. An unavailable entity rejects calls and
-keeps its physical state.
+delay, fail at once (rejected), or never take effect (timed out), or makes a
+valve that reports its travel stall on its way (stalled): it goes on showing
+opening or closing until a later call, outside the window, starts it again. A
+delayed call always takes effect before ``CALL_TIMEOUT``, and calls to one
+entity take effect in the order they were sent. An unavailable entity rejects
+calls and keeps its physical state.
 """
 
 from __future__ import annotations
@@ -28,11 +34,11 @@ from __future__ import annotations
 import heapq
 import itertools
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
-from hydronicus_core.model import (
+from custom_components.hydronicus.core.model import (
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -45,8 +51,8 @@ from hydronicus_core.model import (
     SwitchTarget,
     Valve,
 )
-from hydronicus_core.reconcile import CALL_TIMEOUT, Action
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, Action
+from custom_components.hydronicus.core.step import (
     AreaSensors,
     DigitalThermostatState,
     ExternalThermostatState,
@@ -73,6 +79,7 @@ class FaultKind(StrEnum):
     DELAY = "delay"
     REJECT = "reject"
     TIMEOUT = "timeout"
+    STALL = "stall"
 
 
 class Outcome(StrEnum):
@@ -104,6 +111,8 @@ class Call:
     target: OutputTarget
     outcome: Outcome
     lands_at: float | None
+    # A valve that reports its travel stalls on its way when the call lands.
+    stalls: bool = False
 
     @property
     def failed(self) -> bool:
@@ -145,23 +154,39 @@ class ValveBody:
     opening: bool = False
     # Passes flow: set when fully open, cleared when fully closed.
     passes: bool = False
-    # Invalidates scheduled end-of-travel events after a reversal.
+    # Invalidates scheduled end-of-travel events after a reversal or a stall.
     version: int = 0
+    # Stopped on its way at ``p0`` by a stall fault.
+    stalled: bool = False
 
     @property
     def travel(self) -> float:
         return self.valve.opening_time
 
+    @property
+    def reports_travel(self) -> bool:
+        """A ``valve.*`` entity shows opening and closing; a switch shows on or off at once."""
+        return self.valve.entity.startswith("valve.")
+
     def position(self, t: float) -> float:
+        if self.stalled:
+            return self.p0
         moved = (t - self.t0) / self.travel
         return min(1.0, self.p0 + moved) if self.opening else max(0.0, self.p0 - moved)
 
     def end_time(self) -> float | None:
+        if self.stalled:
+            return None
         if self.opening and self.p0 < 1.0:
             return self.t0 + (1.0 - self.p0) * self.travel
         if not self.opening and self.p0 > 0.0:
             return self.t0 + self.p0 * self.travel
         return None
+
+    @property
+    def moving(self) -> bool:
+        """On its way, stalled or not, as a valve that reports its travel shows."""
+        return self.stalled or self.end_time() is not None
 
     @property
     def fully_open(self) -> bool:
@@ -200,6 +225,8 @@ class World:
         self.selects: dict[str, SelectBody] = {}
         self.valves: dict[str, ValveBody] = {}
         self.readiness: dict[str, SwitchBody] = {}
+        # Condensation switches and windows, which only a trace changes.
+        self.contacts: dict[str, SwitchBody] = {}
         self.sensors: dict[str, SensorBody] = {}
         self.areas: dict[str, AreaSensors] = {}
         self.thermostats: dict[str, ThermostatState] = {}
@@ -259,6 +286,9 @@ class World:
                     zone.slug, DigitalThermostatState(Mode.OFF, zone.thermostat.target)
                 )
 
+        for entity in contacts(plant):
+            self.contacts.setdefault(entity, SwitchBody(changed=self.wall()))
+
     def _sensor(self, entity: str, value: float) -> None:
         self.sensors.setdefault(entity, SensorBody(value))
 
@@ -313,6 +343,11 @@ class World:
     def valve_passes(self, entity: str) -> bool:
         return self.valves[entity].passes
 
+    def moving(self, entity: str) -> bool:
+        """Whether an output shows that it is still on its way: a valve reporting its travel."""
+        body = self.valves.get(entity)
+        return body is not None and body.reports_travel and body.moving
+
     def path_open(self, loop: Loop) -> bool:
         """A loop with no valve is always open; otherwise every valve passes flow."""
         return all(self.valves[valve.entity].passes for valve in loop.valves)
@@ -332,11 +367,15 @@ class World:
         return bool(self._in_flight)
 
     def all_stopped(self) -> bool:
-        """Every armed switch output is off, the source is not post-running, and no call waits."""
+        """Armed switch outputs are off and not moving, and no post-run or call is waiting."""
         return (
             not self.in_flight()
             and not self.post_running
-            and not any(body.on for entity, body in self.switches.items() if entity in self.armed)
+            and not any(
+                body.on or self.moving(entity)
+                for entity, body in self.switches.items()
+                if entity in self.armed
+            )
         )
 
     # Physical changes
@@ -363,6 +402,7 @@ class World:
         body.p0 = body.position(self.t)
         body.t0 = self.t
         body.opening = opening
+        body.stalled = False
         body.version += 1
         self._set_readiness(body)
         end = body.end_time()
@@ -378,6 +418,24 @@ class World:
         body.t0 = self.t
         body.passes = body.opening
         self._set_readiness(body)
+        self._show_travel(entity)
+
+    def _stall(self, entity: str) -> None:
+        """Stop a valve that reports its travel where it is, still showing that it moves."""
+        body = self.valves[entity]
+        if not body.moving:
+            return
+        body.p0 = body.position(self.t)
+        body.t0 = self.t
+        body.stalled = True
+        body.version += 1
+
+    def _show_travel(self, entity: str) -> None:
+        """A valve that reports its travel shows its arrival as a change of state."""
+        switch = self.switches[entity]
+        if self.valves[entity].reports_travel and switch.available:
+            switch.changed = self.wall()
+            self.changed()
 
     def _set_readiness(self, body: ValveBody) -> None:
         if body.valve.readiness is None:
@@ -448,6 +506,17 @@ class World:
             sensor.available = available
             self.changed()
 
+    def set_contact(self, entity: str, on: bool | None) -> None:
+        """Turn a condensation switch or window on or off, or None for unavailable."""
+        body = self.contacts[entity]
+        available = on is not None
+        if body.available == available and (on is None or body.on == on):
+            return
+        body.available = available
+        body.on = body.on if on is None else on
+        body.changed = self.wall()
+        self.changed()
+
     def set_thermostat(self, zone: str, state: ThermostatState) -> None:
         if self.thermostats.get(zone) != state:
             self.thermostats[zone] = state
@@ -478,6 +547,7 @@ class World:
         if fault is not None and fault.kind is FaultKind.TIMEOUT:
             call.outcome = Outcome.TIMED_OUT
             return call
+        call.stalls = fault is not None and fault.kind is FaultKind.STALL
         delay = LATENCY
         if fault is not None and fault.kind is FaultKind.DELAY:
             delay = min(max(fault.delay, LATENCY), CALL_TIMEOUT - LATENCY)
@@ -507,7 +577,13 @@ class World:
                 return
             assert isinstance(call.target, SwitchTarget)
             call.outcome = Outcome.LANDED
+            body = self.valves.get(entity)
+            if body is not None and body.stalled and self.switches[entity].on is call.target.on:
+                # A stalled valve asked again for where it was going sets off again.
+                self._move_valve(entity, call.target.on)
             self.set_switch(entity, call.target.on)
+            if call.stalls and body is not None and body.reports_travel:
+                self._stall(entity)
             return
         select = self.selects[entity]
         if not select.available:
@@ -530,13 +606,19 @@ class World:
             if role is OutputRole.SOURCE_MODE:
                 outputs[entity] = self.selects[entity].observe()
             else:
-                outputs[entity] = self.switches[entity].observe()
+                observed = self.switches[entity].observe()
+                if observed.on is not None and self.moving(entity):
+                    observed = replace(observed, moving=True)
+                outputs[entity] = observed
         return Observations(
             mode=self.mode,
             control=self.control,
             armed=self.armed,
             outputs=outputs,
-            readiness={entity: body.observe() for entity, body in self.readiness.items()},
+            readiness={
+                entity: body.observe()
+                for entity, body in (*self.readiness.items(), *self.contacts.items())
+            },
             sensors={entity: self.reading(entity, now) for entity in self.sensors},
             areas=dict(self.areas),
             thermostats=dict(self.thermostats),
@@ -550,3 +632,11 @@ class World:
         if sensor.stale:
             return Reading(sensor.stale_value, sensor.stale_since)
         return Reading(sensor.value, now)
+
+
+def contacts(plant: Plant) -> list[str]:
+    """Every condensation switch and window a Plant reads."""
+    found = [pump.condensation_switch for pump in plant.pumps]
+    found.extend(loop.condensation_switch for loop in plant.all_loops)
+    found.extend(window for zone in plant.zones for window in zone.windows)
+    return [entity for entity in dict.fromkeys(found) if entity is not None]

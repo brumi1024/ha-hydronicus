@@ -1,7 +1,11 @@
 """Hypothesis strategies for random Plants and the event traces run over them.
 
 Plants follow contract K9: 1 to 4 pumps of both kinds, 1 to 6 loops with 0 to 3
-valves, 1 to 4 zones, and an optional source. They are valid by construction:
+valves, switches or valve entities that report their travel, 1 to 4 zones, and
+an optional source. Cooling loops and their pumps may have condensation
+switches and surface minimums, and zones windows and humidity limits. A Plant
+may have a short exercise interval and frost protection that a cool zone
+reaches. They are valid by construction:
 the strategy only draws combinations that ``validate_plant`` accepts, and it
 calls ``validate_plant`` to prove it. Plant loops heat only, so a loop that
 cools always belongs to one zone, whose dew point it answers to, and a
@@ -9,10 +13,12 @@ source-driven pump's min-flow loops run in every mode its other loops run in.
 
 A trace starts from initial inputs and optionally from loops found running,
 then applies timed events: mode and Control equipment changes, arming, sensor
-changes, stale and unavailable sensors, thermostat changes, unavailable
-outputs, delayed, rejected, and timed out calls, spontaneous relay drops,
-restarts with and without downtime, backward clock jumps, and blocked event
-loops. Nothing else happens during a downtime or a blocked event loop, and a
+changes, stale and unavailable sensors, thermostat changes, condensation
+switches and windows that turn on, off, or unavailable, unavailable outputs,
+delayed, rejected, and timed out calls, valves that stall on their way,
+spontaneous relay drops, restarts with and without downtime, backward clock jumps, blocked event
+loops, and long idle periods with every thermostat off, in which the exercise
+runs. Nothing else happens during a downtime or a blocked event loop, and a
 spontaneous change never falls near a fault, so the controller always gets one
 fair chance to react to it.
 """
@@ -20,14 +26,17 @@ fair chance to react to it.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Protocol
 
-from hydronicus_core.model import (
+from hypothesis import strategies as st
+
+from custom_components.hydronicus.core.model import (
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
     DigitalThermostat,
+    Exercise,
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -45,24 +54,24 @@ from hydronicus_core.model import (
     Valve,
     Zone,
 )
-from hydronicus_core.plant_file import validate_plant
-from hydronicus_core.step import (
+from custom_components.hydronicus.core.plant_file import validate_plant
+from custom_components.hydronicus.core.step import (
     DigitalThermostatState,
     ExternalThermostatState,
     ThermostatState,
 )
-from hypothesis import strategies as st
-
 from tests.sim.harness import Sim
 from tests.sim.invariants import SPONTANEOUS_GRACE
-from tests.sim.world import FaultKind
+from tests.sim.world import FaultKind, contacts
 
 PLANT_ID: Final = "0b6f3c7a-9a51-4b1e-8d43-6f0c2b9e7d15"
 MAX_EVENTS: Final = 16
 # The quiet period after the last event, beyond the Plant's mode dwell.
 SETTLE: Final = 3600.0
 
-_TEMPERATURES = st.integers(32, 54).map(lambda half: half / 2)
+# Room temperatures from 16 to 27 °C, and now and then 9.5 °C, which frost
+# protection at 10 °C reaches.
+_TEMPERATURES = st.integers(31, 54).map(lambda half: 9.5 if half == 31 else half / 2)
 _HUMIDITIES = st.integers(30, 80).map(float)
 _REFERENCES = st.integers(20, 60).map(lambda half: half / 2)
 _TARGETS = st.integers(38, 48).map(lambda half: half / 2)
@@ -88,7 +97,7 @@ def plants(draw: st.DrawFn) -> Plant:
         prefix = f"{owner or 'plant'}_l{index}"
         valves = tuple(
             Valve(
-                entity=f"switch.{prefix}_valve_{number}",
+                entity=f"{draw(st.sampled_from(['switch', 'valve']))}.{prefix}_valve_{number}",
                 opening_time=draw(st.sampled_from([30.0, 60.0, 180.0])),
                 readiness=f"binary_sensor.{prefix}_valve_{number}_open"
                 if draw(st.booleans())
@@ -121,7 +130,22 @@ def plants(draw: st.DrawFn) -> Plant:
             if surface is not None or supplies[pump]
             else frozenset({Mode.HEAT})
         )
-        zone_loops[owner].append(Loop(ref, valves, f"p{pump}", modes, RUNS_WITH_ZONE, surface))
+        zone_loops[owner].append(
+            Loop(
+                ref,
+                valves,
+                f"p{pump}",
+                modes,
+                RUNS_WITH_ZONE,
+                surface,
+                condensation_switch=f"binary_sensor.{prefix}_dew"
+                if Mode.COOL in modes and draw(st.booleans())
+                else None,
+                surface_minimum=draw(st.sampled_from([20.0, 17.0, None]))
+                if surface is not None
+                else 20.0,
+            )
+        )
 
     all_loops = [*plant_loops, *(loop for loops in zone_loops.values() for loop in loops)]
     pumps = tuple(
@@ -142,6 +166,12 @@ def plants(draw: st.DrawFn) -> Plant:
             humidity=(Sensor(f"sensor.{slug}_humidity"),),
             aggregation=draw(st.sampled_from(list(Aggregation))),
             thermostat=draw(_thermostats(slug)),
+            windows=tuple(
+                f"binary_sensor.{slug}_window_{number}" for number in range(draw(st.integers(0, 2)))
+            ),
+            window_open_delay=draw(st.sampled_from([0.0, 60.0, 300.0])),
+            window_close_delay=draw(st.sampled_from([0.0, 60.0, 300.0])),
+            max_humidity=draw(st.sampled_from([70.0, 60.0, None])),
         )
         for slug in zone_slugs
     )
@@ -155,6 +185,16 @@ def plants(draw: st.DrawFn) -> Plant:
         pumps=pumps,
         loops=tuple(plant_loops),
         zones=zones,
+        exercise=draw(
+            st.none()
+            | st.builds(
+                Exercise,
+                interval=st.sampled_from([3600.0, 7200.0]),
+                run=st.sampled_from([30.0, 60.0]),
+            )
+        ),
+        # 10 °C, the highest a plant file allows, is within reach of the traces.
+        frost_protection=draw(st.sampled_from([None, 5.0, 10.0])),
     )
     validate_plant(plant)
     return plant
@@ -184,6 +224,7 @@ def _pump(draw: st.DrawFn, index: int, driven: bool, supply: bool, loops: list[L
     slug = f"p{index}"
     overrun = draw(st.sampled_from([0.0, 60.0, 180.0]))
     supply_temperature = f"sensor.{slug}_supply" if supply else None
+    condensation_switch = f"binary_sensor.{slug}_dew" if supply and draw(st.booleans()) else None
     if not driven:
         return Pump(
             slug,
@@ -191,6 +232,7 @@ def _pump(draw: st.DrawFn, index: int, driven: bool, supply: bool, loops: list[L
             overrun=overrun,
             min_flow=draw(st.sampled_from(list(MinFlow))),
             supply_temperature=supply_temperature,
+            condensation_switch=condensation_switch,
         )
     own = [loop for loop in loops if loop.pump == slug]
     modes: frozenset[Mode] = frozenset().union(*(loop.modes for loop in own))
@@ -204,6 +246,7 @@ def _pump(draw: st.DrawFn, index: int, driven: bool, supply: bool, loops: list[L
             min_flow=MinFlow.PATH,
             min_flow_loops=refs,
             supply_temperature=supply_temperature,
+            condensation_switch=condensation_switch,
         )
     return Pump(
         slug,
@@ -211,6 +254,7 @@ def _pump(draw: st.DrawFn, index: int, driven: bool, supply: bool, loops: list[L
         overrun=overrun,
         min_flow=MinFlow.GUARANTEED,
         supply_temperature=supply_temperature,
+        condensation_switch=condensation_switch,
     )
 
 
@@ -284,6 +328,17 @@ class SetThermostat:
 
 
 @dataclass(frozen=True)
+class SetContact:
+    """A condensation switch or window turns on or off, or None for unavailable."""
+
+    entity: str
+    on: bool | None
+
+    def apply(self, sim: Sim) -> None:
+        sim.set_contact(self.entity, self.on)
+
+
+@dataclass(frozen=True)
 class Unavailable:
     entity: str
     duration: float
@@ -336,6 +391,26 @@ class Suspend:
 
 
 @dataclass(frozen=True)
+class Idle:
+    """A long quiet period: every thermostat turns off, and the next event waits."""
+
+    seconds: float
+
+    def apply(self, sim: Sim) -> None:
+        idle_thermostats(sim)
+
+
+def idle_thermostats(sim: Sim) -> None:
+    """Turn every thermostat off, so no zone demands."""
+    for zone in sim.plant.zones:
+        state = sim.world.thermostats.get(zone.slug)
+        if isinstance(state, DigitalThermostatState):
+            sim.set_thermostat(zone.slug, replace(state, hvac_mode=Mode.OFF))
+        else:
+            sim.set_action(zone.slug, Mode.OFF)
+
+
+@dataclass(frozen=True)
 class Season:
     """A change of season: the Plant mode with the thermostats, every zone's
     temperature, and every supply and surface temperature."""
@@ -380,7 +455,7 @@ def _window(event: Event) -> float:
     match event:
         case Unavailable(duration=duration) | CallFault(duration=duration):
             return duration
-        case Restart(downtime=seconds) | Suspend(seconds=seconds):
+        case Restart(downtime=seconds) | Suspend(seconds=seconds) | Idle(seconds=seconds):
             return seconds
         case _:
             return 0.0
@@ -415,7 +490,7 @@ def traces(draw: st.DrawFn, plant: Plant) -> Trace:
         t += draw(st.integers(1, 1800))
         event = draw(_events(plant, switches, commandable, disarmable, outages, sensors))
         events.append((t, event))
-        t += _window(event) if isinstance(event, Restart | Suspend) else 0.0
+        t += _window(event) if isinstance(event, Restart | Suspend | Idle) else 0.0
     return Trace(
         mode=mode,
         control=draw(st.sampled_from([True, True, True, False])),
@@ -501,7 +576,7 @@ def _events(
         st.builds(
             CallFault,
             st.sampled_from(commandable),
-            st.sampled_from(list(FaultKind)),
+            st.sampled_from([FaultKind.DELAY, FaultKind.REJECT, FaultKind.TIMEOUT]),
             durations,
             st.sampled_from([2.0, 5.0, 9.0]),
         ),
@@ -509,11 +584,23 @@ def _events(
         st.builds(Restart, st.sampled_from([0.0, 0.0, 30.0, 600.0])),
         st.builds(JumpClock, st.sampled_from([-30.0, -300.0])),
         st.builds(Suspend, st.sampled_from([30.0, 600.0])),
+        st.builds(Idle, st.sampled_from([4000.0, 16000.0])),
     ]
     if disarmable:
         choices.append(st.builds(Arm, st.sampled_from(disarmable), st.just(False)))
     if outages:
         choices.append(st.builds(Unavailable, st.sampled_from(outages), durations))
+    if found := contacts(plant):
+        choices.append(
+            st.builds(
+                SetContact, st.sampled_from(found), st.sampled_from([True, False, False, None])
+            )
+        )
+    travelling = [entity for entity in commandable if entity.startswith("valve.")]
+    if travelling:
+        choices.append(
+            st.builds(CallFault, st.sampled_from(travelling), st.just(FaultKind.STALL), durations)
+        )
     return st.one_of(choices)
 
 

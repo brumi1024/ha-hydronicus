@@ -17,53 +17,46 @@ from .core.model import Loop, Mode, Zone
 from .core.step import value_of
 from .entity import (
     HydronicusEntity,
+    ZoneEntity,
     async_add_plant_entities,
+    loop_device,
     loop_unique_id,
-    plant_device,
     plant_unique_id,
     source_device,
-    zone_device,
-    zone_unique_id,
 )
 from .runtime import PlantRuntime
 
 PARALLEL_UPDATES = 0
 
 
-class ZoneDemandSensor(HydronicusEntity, BinarySensorEntity):
-    """Whether a zone demands heating, or cooling, with the demand level from 0 to 1."""
+class ZoneDemandSensor(ZoneEntity, BinarySensorEntity):
+    """Whether a zone demands heating, or cooling, and why."""
 
     _unrecorded_attributes = frozenset({"reason"})
 
     def __init__(self, runtime: PlantRuntime, zone: Zone, mode: Mode) -> None:
         kind = "heating" if mode is Mode.HEAT else "cooling"
-        super().__init__(
-            runtime,
-            zone_unique_id(runtime.plant.id, zone.slug, f"{kind}_demand"),
-            zone_device(runtime, zone),
-        )
+        super().__init__(runtime, zone, f"{kind}_demand")
         self._attr_translation_key = f"{kind}_demand"
-        self._zone = zone.slug
         self._mode = mode
 
     @property
     def available(self) -> bool:
-        return self.runtime.desired is not None
+        return self.runtime.view is not None
 
     @property
     def is_on(self) -> bool:
-        desired = self.runtime.desired
-        demand = None if desired is None else desired.demands.get(self._zone)
+        view = self.runtime.view
+        demand = None if view is None else view.desired.demands.get(self._zone)
         return demand is not None and demand.on and demand.mode is self._mode
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        desired = self.runtime.desired
-        demand = None if desired is None else desired.demands.get(self._zone)
+        view = self.runtime.view
+        demand = None if view is None else view.desired.demands.get(self._zone)
         if demand is None:
-            return {"level": 0.0}
-        level = demand.level if demand.mode is self._mode else 0.0
-        return {"level": round(level, 3), "reason": demand.reason}
+            return {}
+        return {"reason": demand.reason}
 
 
 class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
@@ -74,13 +67,11 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, runtime: PlantRuntime, loop: Loop) -> None:
-        plant = runtime.plant
-        device = (
-            plant_device(plant)
-            if loop.zone is None
-            else zone_device(runtime, plant.zone(loop.zone))
+        super().__init__(
+            runtime,
+            loop_unique_id(runtime.plant.id, loop.ref, "flowing"),
+            loop_device(runtime, loop),
         )
-        super().__init__(runtime, loop_unique_id(plant.id, loop.ref, "flowing"), device)
         self._attr_translation_placeholders = {"loop": loop.title}
         self._loop = loop
 
@@ -90,13 +81,14 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self.runtime.loop_flowing(self._loop)
+        view = self.runtime.view
+        return view is not None and view.loop_flowing(self._loop)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         runtime, loop = self.runtime, self._loop
         view = runtime.view
-        outputs = {} if view is None else view.outputs
+        outputs = {} if view is None else view.seen.outputs
 
         def shown(entity: str) -> Any:
             state = outputs.get(entity)
@@ -105,12 +97,11 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
         pump = runtime.plant.pump(loop.pump)
         source = runtime.plant.source
         pump_entity = pump.switch or (None if source is None else source.request)
-        desired = runtime.desired
         return {
             "valves": {valve.entity: shown(valve.entity) for valve in loop.valves},
             "pump": pump.slug,
             "pump_running": None if pump_entity is None else shown(pump_entity),
-            "reason": None if desired is None else desired.reasons.get(str(loop.ref)),
+            "reason": None if view is None else view.desired.reasons.get(str(loop.ref)),
         }
 
 
@@ -130,23 +121,23 @@ class SourceRequestedSensor(HydronicusEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.runtime.desired is not None
+        return self.runtime.view is not None
 
     @property
     def is_on(self) -> bool:
-        desired = self.runtime.desired
-        return desired is not None and desired.source_request
+        view = self.runtime.view
+        return view is not None and view.desired.source_request
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         runtime = self.runtime
-        desired, observations = runtime.desired, runtime.observations
+        view = runtime.view
         source = runtime.plant.source
         assert source is not None
-        observed = None if observations is None else observations.outputs.get(source.request)
+        observed = None if view is None else view.observations.outputs.get(source.request)
         return {
             "observed": None if observed is None else value_of(observed),
-            "reason": None if desired is None else desired.reasons.get("source"),
+            "reason": None if view is None else view.desired.reasons.get("source"),
         }
 
 

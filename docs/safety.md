@@ -32,9 +32,8 @@ Hydronicus never commands:
 
 ## Dry run is not a safety proof
 
-While **Control equipment** is off, the Plant runs in Dry run: it evaluates everything against the real states of your entities and records each command as proposed instead of sending it.
-Dry run shows whether the configuration and the sequence are what you intend.
-It does not simulate water, pressure, or temperature, and it cannot prove that a valve opens, that a pump produces flow, or that the source delivers water at a safe temperature.
+While **Control equipment** is off, the Plant runs in Dry run and sends nothing; it only checks the configuration and the sequence.
+Read [what Dry run proves](how-it-works.md#what-dry-run-proves): it cannot prove that a valve opens, that a pump produces flow, or that the source delivers water at a safe temperature.
 
 ## Stopping
 
@@ -42,6 +41,15 @@ Turning **Control equipment** off stops the armed equipment in order: the source
 Only then does the Plant go to Dry run; the switch's `live` attribute shows when it has.
 Switching the **Mode** select to off stops the equipment the same way and keeps it stopped, except that the source's request stays on until it has been on for its minimum on time, as at the end of demand.
 **Control equipment** off, a blocking condensation guard, a lost pump or path, and stopping a previous configuration release the request at once.
+
+## Frost protection and the exercise
+
+Frost protection heats a zone whose coldest reading falls below 5 °C, even while its thermostat or the **Mode** select is off, but only when a loop heats the zone, and only while Home Assistant runs, the zone's sensors report, and its outputs are armed and **Control equipment** is on.
+It never acts while the Plant cools.
+It is a comfort safeguard, not frost protection of the plant: keep the source's own frost protection, antifreeze, or drain-down where pipes can freeze.
+
+Hydronicus also exercises a switched pump or a valve that has not been on for a week, only while nothing else runs, one pump at a time, and never with the source asked for heat.
+It never runs a pump through a loop of the other mode, and after cooling only through a loop whose dew point check and condensation switches permit.
 
 ## Failures are retried and surfaced
 
@@ -64,6 +72,8 @@ A required sensor that is unavailable, stale, in an unsupported unit, or physica
 An optional sensor in the same state is left out.
 Sensors named by a zone's areas are optional unless the [plant file](plant-file.md#areas) makes them required, so a zone with several areas keeps working when one area's sensor is missing.
 For a zone that cools, consider making the humidity of each area required, because a room whose humidity is not observed is where a cooled surface condenses.
+A condensation switch that is unavailable or unknown blocks cooling too.
+A window sensor is the one exception: an unavailable or unknown window reads as closed, because a lost window sensor should not leave a home unheated.
 
 ## Cooling and condensation
 
@@ -72,30 +82,48 @@ Its condensation guard blocks when the coldest reference is below the zone's wor
 A missing or stale reference, or a zone without a usable dew point, blocks cooling.
 Pumps stop without overrun in cooling, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 
+Three secondary inputs only add to that guard:
+
+- A condensation switch on a pump's supply pipe or on a loop blocks cooling at once while it reads on, unavailable, or unknown, and cooling resumes only once it has read off for 5 minutes.
+  A condensation switch that Home Assistant reads works only while Home Assistant runs; wire one to the pump or valves as well, as described below.
+- A loop's surface minimum, 20 °C by default, stops cooling while its surface sensor reads colder.
+- A zone's maximum humidity, 70 % by default, stops cooling while the zone is more humid, whatever its dew point.
+  A humidity limit such as 75 % alone does not protect a surface cooled with 16 to 18 °C water, which is why it never replaces the dew point check.
+
+Turning the surface minimum or the humidity limit off in the plant file removes only that input; the dew point check stays.
+
 The guard is only as good as its sensors.
 A supply temperature measures the water, not the coldest point of a ceiling or floor, and a humidity sensor measures the room it is in.
 Keep physical condensation protection where the emitters require it.
 A pump the source drives with `min_flow: path` may carry chilled water through its min-flow loop during the source's post-run, even when that loop's guard blocks; a separator, buffer, or bypass with `min_flow: guaranteed` avoids that.
 
+See [cooling while Home Assistant is not running](#cooling-while-home-assistant-is-not-running) for what protects the plant when the guard itself is not running.
+
+## Cooling while Home Assistant is not running
+
+The condensation guard only exists while Home Assistant is running and Hydronicus is evaluating.
+If Home Assistant stops or crashes during cooling, the source request, the valves, and the pumps stay exactly as they were, and chilled water keeps flowing with nothing watching the dew point.
+A reload, an unload, and a restart deliberately send no command, as [reloads, restarts, and changes](#reloads-restarts-and-changes) below describes, so nothing closes the loop by itself either.
+
+Protect against this independently of Hydronicus:
+
+- A hardware dew point or condensation switch on the cooling supply pipe, wired to stop the pump or close the valves directly, the way Danfoss and Siemens radiant systems do; such switches typically stop the plant at about 90% surface relative humidity.
+- A relay-level watchdog, such as a Shelly Gen2 switch's `auto_off` set with a delay on the source request or the cooling valves, combined with an automation that re-asserts them periodically while cooling should run.
+  `auto_off` also stops heating if Home Assistant stops, which is usually acceptable, since unmonitored cooling risks condensation while unmonitored heating mostly risks comfort.
+  The re-asserting automation must not fight Hydronicus: it must only refresh a relay that is already on, never turn one on that Hydronicus has not asked for.
+- The heat pump's own minimum supply temperature setting for cooling, typically 16 to 18 °C for floor and ceiling cooling, as the last line of defence.
+
+Treat this the same as the [physical protection](#two-separate-layers) the plant needs regardless of software: it has to work whether or not Home Assistant is running.
+
 ## Reloads, restarts, and changes
 
-A reload, an unload, and a Home Assistant restart never send a command, so the equipment stays exactly as it was while Hydronicus is not running.
-Hydronicus stores its timers, the Plant mode, and its retry state, and restores them before the first evaluation, which waits for Home Assistant to start and for every digital thermostat to restore.
-With unchanged observations, the first evaluation after a reload or restart sends no command.
+A reload, an unload, and a Home Assistant restart never send a command, so the equipment stays exactly as it was while Hydronicus is not running; with unchanged observations, the first evaluation after one sends no command either.
 
-Hydronicus also stores the last valid configuration with the outputs it was commanding.
-When an output leaves the Plant while it may be running, because you delete a zone, remove a loop, a valve, a pump, or the source, or replace the Plant from a plant file, the first evaluation of the new configuration stops the old one first.
-It runs the same off sequence as **Control equipment** off, with the old configuration: the source is released at once, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
-The sequence stops every output of the old configuration, including the ones the new configuration keeps, so a zone deleted while it heats briefly stops the whole Plant, and the source then waits for its minimum off time.
-Once every output of the old configuration is seen off, the new configuration runs, and the **Status** sensor reads `stopping` until then.
-Removing an output that is already off, or that was never armed, or while the Plant is in Dry run, sends nothing.
-An output that is unavailable when the stop begins cannot be reached and is left as it is, and one that becomes unavailable while it stops keeps the old configuration waiting until it is seen off.
-A restart in the middle of the stop continues it.
+Removing a zone, a loop, a pump, or the source, or replacing the Plant from a plant file, first stops the whole equipment of the old configuration, in the same order as **Control equipment** off, before the new configuration runs; the **Status** sensor reads `stopping` until then.
+A Plant left invalid by a removal stops the same way and then only observes, with its **Status** reading `invalid` and a Repair open until a **Reconfigure** fixes it.
+Removing the whole Plant does not stop the equipment it controlled; stop it first with **Control equipment**.
 
-A Plant whose stored configuration is not valid, for example after a zone its pump needed was deleted, stops the equipment of its last valid configuration in the same way, and then only observes.
-It commands nothing more, its **Status** reads `invalid`, and a Repair opens the Plant's **Reconfigure** to fix it; saving a valid Plant runs it again.
-
-Removing the whole Plant, like a reload or an unload, sends no command, so stop its equipment first with **Control equipment**.
+Read [reloads and restarts](how-it-works.md#reloads-and-restarts) for exactly what each evaluation stores, restores, and stops.
 
 ## Safe operating rule
 
