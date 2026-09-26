@@ -27,12 +27,14 @@ The maintainer's home is the reference installation, and v0.1.0 cannot model it.
   There is no buffer tank or bypass valve today; one will be added later.
 - Three zones cover Home Assistant areas: basement, bedroom area, and living area.
 - Each zone has a ceiling heating and cooling loop with one zone valve and no pump that Home Assistant switches.
-- The living area also has an underfloor loop with its own valve and its own pump.
+  The ceiling loops sit on the secondary side of the separator, behind a pump the heat pump controls.
+- The living area also has an underfloor loop with its own valve and its own pump, a mixing valve, its own supply temperature sensor, and a high limit.
 - A bathroom towel dryer circuit has a pump and no valve, and may run whenever the heat pump heats.
+  No chilled water passes through it while its pump is off.
 - Every valve and pump is a channel of a Shelly Pro 4PM with power metering.
 - No physical room thermostats exist, so every zone needs a digital thermostat.
 - A supply temperature sensor for the ceiling circuit will be added; until then ceiling cooling has no condensation reference.
-- Whether the Midea keeps its own heating curve or Hydronicus sets the flow temperature is not decided.
+- Whether the Midea keeps its own heating curve or Hydronicus sets the flow temperature is decided in iteration 2.
 
 ### What blocks that plant in v0.1.0
 
@@ -233,8 +235,8 @@ source:
 pumps:
   heat_pump:
     driven_by: source
-    min_flow: path                 # guaranteed if the separator protects this pump, see O2
-    min_flow_loops: [living_area.ceiling]   # open decision O1
+    min_flow: path                 # secondary side of the separator (O2)
+    min_flow_loops: [living_area.ceiling]   # O1
     supply_temperature: sensor.ceiling_supply_temperature   # added later
   floor:
     switch: switch.home_underfloor_heating_pump
@@ -464,14 +466,20 @@ Report: each done criterion with its evidence; deviations from the contracts and
 - **Room valves inside a zone and proportional or pulse-width valves** use the demand level.
 - **Domestic hot water priority** as a source observation that pauses space heating without counting as a fault.
 
-## Open decisions
+## Plant decisions
 
-- **O1 Min-flow loops.** Which loop keeps the heat pump's circulation path open while no zone calls; the default candidate is one of the ceiling loops.
-  Needed only if O2 leaves that pump at `min_flow: path`.
-- **O2 Ceiling hydraulics.** Whether the ceiling loops sit on the primary side of the separator, where the heat pump's own pump drives them and the separator guarantees its flow, or on the secondary side behind a pump the heat pump controls.
-- **O3 Flow temperature ownership.** Whether the Midea keeps its curve (`request`) or Hydronicus writes the setpoint (`setpoint`); decide in iteration 2 once the register map is known.
-- **O4 Towel dryer in cooling.** Confirm that no chilled water passes through the towel dryer branch while its pump is off, before enabling ceiling cooling.
-- **O5 Floor loop mixing.** Whether the underfloor loop has a mixing valve and its own supply sensor and high limit, which decides whether it can share the heat pump's flow temperature.
+The maintainer answered these on 2026-09-26.
+
+- **O1 Min-flow loops.** The living area's ceiling loop keeps the heat pump's circulation path open while no zone calls, as `min_flow_loops: [living_area.ceiling]`.
+  It is the largest zone and the one most likely to be calling anyway; any other ceiling loop works the same way.
+- **O2 Ceiling hydraulics.** The ceiling loops sit on the secondary side of the separator, behind a pump the heat pump controls.
+  That pump is `driven_by: source` with `min_flow: path`, so it needs O1; it becomes `guaranteed` only if a buffer or bypass later protects it.
+- **O3 Flow temperature ownership.** Still open: whether the Midea keeps its curve (`request`) or Hydronicus writes the setpoint (`setpoint`) is decided in iteration 2 once the register map is known.
+  Until then the source uses `request`.
+- **O4 Towel dryer in cooling.** No chilled water passes through the towel dryer branch while its pump is off, so it does not block ceiling cooling.
+  Ceiling cooling still waits for the ceiling supply temperature sensor, its condensation reference.
+- **O5 Floor loop mixing.** The underfloor loop has a mixing valve, its own supply temperature sensor, and a high limit, so it can share the heat pump's flow temperature.
+  A flow setpoint from iteration 2 therefore serves the ceiling loops, and the floor loop mixes down from it.
 
 ## Out of scope
 

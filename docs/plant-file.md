@@ -94,7 +94,7 @@ Read it from the top:
 
 - The source is an air-to-water heat pump.
   Hydronicus asks it for heat or cooling with `switch.heat_pump_heat_request` and sets `select.heat_pump_mode` to `Heat` or `Cool` to follow the Plant mode.
-- `heat_pump` is the heat pump's own circulator.
+- `heat_pump` is the pump on the secondary side of the separator that the heat pump controls.
   The heat pump runs it, so Hydronicus never switches it, but it needs an open loop while it runs, so Hydronicus holds the living area's ceiling loop open whenever no other loop of that pump is open.
   Its supply temperature sensor is the condensation reference that lets the ceiling loops cool.
 - `floor` and `towel_dryer` are pumps that Hydronicus switches.
