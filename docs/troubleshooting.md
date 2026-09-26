@@ -183,7 +183,8 @@ A zone that cools also needs a humidity sensor or an area, and so does each zone
 
 - A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone.
   The [observation units](configuration.md#observation-units) list the accepted units and ranges.
-- A sensor is stale 1800 seconds after its last report by default; a battery sensor that reports only on change may need a longer maximum age in the [plant file](plant-file.md#sensors).
+- A sensor is stale 3600 seconds after its last report by default, changed or not.
+  A sensor that reports only on change and sends its heartbeat less often than hourly needs a longer `max_age` in the [plant file](plant-file.md#sensors); one that reports every few minutes can have a shorter one, so a failure is noticed sooner.
 - A sensor without a unit is taken as °C.
 
 ### The combined temperature is unexpected
@@ -200,7 +201,7 @@ If the area names a sensor that does not exist, a Repair says so.
 
 The loop's condensation guard blocks when its coldest reference is below the zone's worst-case dew point plus 2 K, and releases only 1 K above that, after at least 5 minutes.
 The **Dew point** sensor shows the zone's worst-case dew point, and the `.guard` reason in the **Status** sensor's `reasons` shows the reference and the threshold.
-A missing or stale reference, or a zone without a usable humidity reading, also blocks.
+A missing reference, one that has not reported for 1800 seconds, or a zone without a usable humidity reading, also blocks.
 For a plant loop that cools, the dew points of the zones it runs with count, or of every zone when it runs with the source, so each of those zones needs a humidity reading.
 
 ## Logs and diagnostics

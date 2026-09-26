@@ -177,7 +177,7 @@ Each loop that cools has a condensation guard, checked on every evaluation:
   Each zone that counts needs a humidity reading and a temperature reading, from its own sensors or its areas.
 - The guard blocks when the coldest reference is below that dew point plus a 2 K margin.
 - It releases only once the coldest reference is at least 1 K above that threshold, and only after it has blocked for at least 5 minutes.
-- A missing or stale reference blocks the guard, and so does a zone without a usable dew point.
+- A missing reference, or one that has not reported for 1800 seconds, blocks the guard, and so does a zone without a usable dew point.
 
 A blocked guard drops the loop, and the source is not asked for cooling while a guard blocks a loop that a source-driven pump would pass water through.
 Pumps have no overrun in cooling, so a pump stops as soon as its last cooling loop releases.

@@ -45,7 +45,6 @@ from .demand import (
     zone_values,
 )
 from .model import (
-    DEFAULT_MAX_AGE,
     Demand,
     Desired,
     Loop,
@@ -65,6 +64,7 @@ __all__ = [
     "CALL_TIMEOUT",
     "CONDENSATION_MARGIN",
     "GUARD_MIN_BLOCKED",
+    "GUARD_REFERENCE_MAX_AGE",
     "GUARD_RELEASE",
     "TICK",
     "AreaSensors",
@@ -91,6 +91,10 @@ CONDENSATION_MARGIN: Final = 2.0
 GUARD_RELEASE: Final = 1.0
 # A blocked guard releases only after it has blocked this long, in seconds.
 GUARD_MIN_BLOCKED: Final = 300.0
+# A condensation reference is stale this long after its last report, in seconds.
+# Supply and surface temperatures fall fast once cooling starts, so a reference
+# must be fresher than a room reading.
+GUARD_REFERENCE_MAX_AGE: Final = 1800.0
 # How long the runtime waits for one service call; one sent longer ago has acted or never will.
 CALL_TIMEOUT: Final = 10.0
 # Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
@@ -508,7 +512,10 @@ class _Evaluation:
         plant, obs, now = self.plant, self.obs, self.now
         pump = self._pumps[loop.pump]
         references = [e for e in (pump.supply_temperature, loop.surface_temperature) if e]
-        values = [fresh(obs.sensors.get(e), DEFAULT_MAX_AGE, self.reached) for e in references]
+        values = [
+            fresh(obs.sensors.get(entity), GUARD_REFERENCE_MAX_AGE, self.reached)
+            for entity in references
+        ]
         points = [
             worst_dew_point(zone, obs.areas, obs.sensors, self.reached)
             for zone in plant.dew_point_zones(loop)

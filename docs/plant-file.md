@@ -290,7 +290,7 @@ An item of `areas` is the ID of a Home Assistant area, or a mapping:
 | --- | --- | --- | --- |
 | `area` | yes | | The area ID. |
 | `required` | no | `false` | Whether a stale or unavailable sensor of the area blocks the zone. |
-| `max_age` | no | `1800` | Seconds after which a reading of the area's sensors is stale. Must be positive. |
+| `max_age` | no | `3600` | Seconds after which a reading of the area's sensors is stale. Must be positive. |
 
 A zone follows the temperature sensor and the humidity sensor that each of its areas names in its area settings, after its extra sensors.
 The area ID is the one Home Assistant made from the area's name when the area was created, such as `living_room`; renaming an area keeps its ID.
@@ -304,7 +304,13 @@ An item of `temperature` or `humidity` is a `sensor` entity ID, or a mapping:
 | --- | --- | --- | --- |
 | `entity` | yes | | The sensor. |
 | `required` | no | `true` | Whether the sensor being stale or unavailable blocks the zone. An optional sensor is left out instead. |
-| `max_age` | no | `1800` | Seconds after which a reading is stale. Must be positive. |
+| `max_age` | no | `3600` | Seconds after which a reading is stale. Must be positive. |
+
+A reading is stale once its sensor has not reported for `max_age`, whether or not its value changed.
+Many battery sensors report only when their value changes, with a heartbeat about once an hour, so the default is an hour.
+Raise `max_age` for a sensor whose heartbeat is rarer, so a steady room does not count as stale.
+Lower it for a sensor that reports every few minutes, so a sensor that stops is noticed sooner.
+The condensation guard's references, a pump's `supply_temperature` and a loop's `surface_temperature`, are stale after 1800 seconds, because cooling needs a fresh reference.
 
 Calibrate a sensor at its source; the plant file has no offsets or weights.
 

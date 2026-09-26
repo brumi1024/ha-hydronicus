@@ -79,7 +79,9 @@ DEFAULT_DEMAND_MIN_ON: Final = 600.0
 DEFAULT_DEMAND_MIN_OFF: Final = 600.0
 DEFAULT_OVERRUN: Final = 180.0
 DEFAULT_OPENING_TIME: Final = 180.0
-DEFAULT_MAX_AGE: Final = 1800.0
+# A zone or area sensor's reading is stale this long after its last report. Many
+# battery sensors report only on change, with a heartbeat about once an hour.
+DEFAULT_MAX_AGE: Final = 3600.0
 DEFAULT_SOURCE_TITLE: Final = "Heat source"
 
 

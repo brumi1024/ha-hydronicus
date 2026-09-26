@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 
 from custom_components.hydronicus.core.model import (
+    DEFAULT_MAX_AGE,
     Desired,
     Mode,
     OptionTarget,
@@ -21,6 +22,7 @@ from custom_components.hydronicus.core.plant_file import read_plant_file
 from custom_components.hydronicus.core.step import (
     CALL_TIMEOUT,
     GUARD_MIN_BLOCKED,
+    GUARD_REFERENCE_MAX_AGE,
     TICK,
     DemandState,
     DigitalThermostatState,
@@ -196,7 +198,7 @@ def test_nothing_runs_while_no_zone_calls_and_the_next_evaluation_is_when_a_read
     assert all(target == OFF for target in desired.outputs.values())
     assert desired.mode is Mode.HEAT and not desired.source_request
     assert desired.reasons["room"].startswith("idle")
-    assert due == pytest.approx(1800.0 + TICK)
+    assert due == pytest.approx(DEFAULT_MAX_AGE + TICK)
     assert state.live and state.mode is Mode.HEAT
 
 
@@ -520,7 +522,7 @@ def test_the_condensation_guard_blocks_a_cooling_loop_and_releases_with_hysteres
     )
     assert not run(plant, ready_clear, blocked, later)[0].guards["a.ceiling"].blocked
 
-    stale = {"sensor.supply": Reading(20.0, NOW - 1801)}
+    stale = {"sensor.supply": Reading(20.0, NOW - GUARD_REFERENCE_MAX_AGE - 1)}
     assert (
         run(plant, replace(ready, sensors={**ready.sensors, **stale}))[0]
         .guards["a.ceiling"]

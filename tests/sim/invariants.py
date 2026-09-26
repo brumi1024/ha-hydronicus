@@ -46,7 +46,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from custom_components.hydronicus.core.model import (
-    DEFAULT_MAX_AGE,
     Desired,
     DigitalThermostat,
     Loop,
@@ -64,6 +63,7 @@ from custom_components.hydronicus.core.model import (
 from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, REPAIR_AFTER
 from custom_components.hydronicus.core.step import (
     CONDENSATION_MARGIN,
+    GUARD_REFERENCE_MAX_AGE,
     DigitalThermostatState,
     ExternalThermostatState,
 )
@@ -515,8 +515,9 @@ class Checker:
                 for entity in (names.temperature, names.humidity):
                     if entity is not None:
                         ages[entity] = area.max_age
+        # The rest are condensation references.
         for entity in self.world.sensors:
-            ages.setdefault(entity, DEFAULT_MAX_AGE)
+            ages.setdefault(entity, GUARD_REFERENCE_MAX_AGE)
         return ages
 
     def fresh(self, entity: str, max_age: float) -> float | None:
@@ -551,7 +552,7 @@ class Checker:
         references = [
             entity for entity in (pump.supply_temperature, loop.surface_temperature) if entity
         ]
-        values = [self.fresh(entity, DEFAULT_MAX_AGE) for entity in references]
+        values = [self.fresh(entity, GUARD_REFERENCE_MAX_AGE) for entity in references]
         if not values or any(value is None for value in values):
             return True
         zones = [self.plant.zone(loop.zone)] if loop.zone is not None else list(self.plant.zones)

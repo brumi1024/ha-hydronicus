@@ -74,6 +74,14 @@ def test_an_external_action_is_normalized_against_its_own_mode(
     assert external_action(action, mode) is expected
 
 
+def test_zone_and_area_sensors_are_stale_after_an_hour_by_default() -> None:
+    """Battery sensors that report only on change send a heartbeat about once an hour."""
+    assert Sensor("sensor.t").max_age == ZoneArea("hall").max_age == 3600.0
+    zone = _zone(temperature=(Sensor("sensor.t"),))
+    assert zone_values(zone, {}, {"sensor.t": Reading(20.0, NOW - 3599)}, Clock()) == [20.0]
+    assert zone_values(zone, {}, {"sensor.t": Reading(20.0, NOW - 3600)}, Clock()) is None
+
+
 def test_a_reading_is_usable_until_it_is_older_than_its_max_age() -> None:
     clock = Clock()
     assert fresh(Reading(20.0, NOW - 100), 600, clock) == 20.0
