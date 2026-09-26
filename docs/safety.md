@@ -83,7 +83,7 @@ A reload, an unload, and a Home Assistant restart never send a command, so the e
 Hydronicus stores its timers, the Plant mode, and its retry state, and restores them before the first evaluation, which waits for Home Assistant to start and for every digital thermostat to restore.
 With unchanged observations, the first evaluation after a reload or restart sends no command.
 
-Hydronicus also stores the last configuration with the outputs it was commanding.
+Hydronicus also stores the last valid configuration with the outputs it was commanding.
 When an output leaves the Plant while it may be running, because you delete a zone, remove a loop, a valve, a pump, or the source, or replace the Plant from a plant file, the first evaluation of the new configuration stops the old one first.
 It runs the same off sequence as **Control equipment** off, with the old configuration: the source is released at once, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
 The sequence stops every output of the old configuration, including the ones the new configuration keeps, so a zone deleted while it heats briefly stops the whole Plant, and the source then waits for its minimum off time.
@@ -92,8 +92,8 @@ Removing an output that is already off, or that was never armed, or while the Pl
 An output that is unavailable when the stop begins cannot be reached and is left as it is, and one that becomes unavailable while it stops keeps the old configuration waiting until it is seen off.
 A restart in the middle of the stop continues it.
 
-A Plant whose stored configuration is not valid, for example after a zone its pump needed was deleted, does not run at all.
-It sends no command, the equipment stays as it was, and a Repair opens the Plant's **Reconfigure** to fix it.
+A Plant whose stored configuration is not valid, for example after a zone its pump needed was deleted, stops the equipment of its last valid configuration in the same way, and then only observes.
+It commands nothing more, its **Status** reads `invalid`, and a Repair opens the Plant's **Reconfigure** to fix it; saving a valid Plant runs it again.
 
 Removing the whole Plant, like a reload or an unload, sends no command, so stop its equipment first with **Control equipment**.
 

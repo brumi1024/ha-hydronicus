@@ -3,20 +3,25 @@
 Deleting a zone, a reconfigure, or a replace from a plant file can remove outputs
 that are on. The runtime persists the last valid Plant with the outputs it was
 commanding, and at setup runs the off sequence of that Plant until its outputs
-are observed off, then switches to the new configuration.
+are observed off, then switches to the new configuration. An invalid
+configuration is stopped the same way and then only observed until it is fixed.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
+from custom_components.hydronicus.issues import IssueKind
 from tests.integration.helpers import (
     BASEMENT_CEILING,
     FLOOR_PUMP,
@@ -117,6 +122,45 @@ async def test_deleting_a_heating_zone_stops_its_valves_after_their_pumps(
     actuators.clear()
     await async_advance(hass, freezer, 600, step=10)
     assert actuators.calls == []
+
+
+async def test_deleting_the_zone_of_the_only_min_flow_loop_stops_everything_then_observes(
+    hass: HomeAssistant,
+    actuators: Actuators,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    entry = await async_heat_living_area(hass, freezer)
+    actuators.clear()
+
+    with caplog.at_level(logging.WARNING):
+        await async_remove_zone(hass, entry, "living_area")
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.data["pumps"]["heat_pump"]["min_flow_loops"] == []
+    assert not [record for record in caplog.records if record.exc_info], "no traceback"
+    assert "is not valid" in caplog.text
+    issues = [
+        issue
+        for (domain, _), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue.translation_key == IssueKind.INVALID_PLANT
+    ]
+    assert len(issues) == 1
+    assert "min_flow_loops" in issues[0].translation_placeholders["error"]
+    assert status(hass).state == "stopping"
+
+    await async_advance(hass, freezer, 600, step=5)
+
+    assert_stopped_in_order(actuators)
+    assert_all_off(hass)
+    invalid = status(hass)
+    assert invalid.state == "invalid"
+    assert "min_flow_loops" in invalid.attributes["configuration_problem"]
+    actuators.clear()
+    set_zone_temperature(hass, "basement", 18.0)
+    await async_advance(hass, freezer, 600, step=10)
+    assert actuators.calls == [], "an invalid Plant only observes"
+    assert len([i for (d, _), i in ir.async_get(hass).issues.items() if d == DOMAIN]) == 1
 
 
 async def test_replacing_the_plant_without_the_floor_pump_stops_it_then_heats_again(

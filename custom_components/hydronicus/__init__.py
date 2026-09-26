@@ -13,7 +13,6 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -25,6 +24,7 @@ from .const import (
     PLATFORMS,
     STORE_VERSION,
 )
+from .core.model import Plant
 from .core.plant_file import PlantFileError, describe_path
 from .entity import async_remove_unprovided_entities
 from .issues import async_delete_issues, async_sync_issues, invalid_plant
@@ -90,21 +90,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
         hass.config_entries.async_update_entry(entry, data=pruned)
     # What the Plant is read from, taken before anything awaits.
     fingerprint = configuration_fingerprint(entry)
+    problem: str | None = None
     try:
         plant = plant_from_entry(entry)
     except PlantFileError as error:
-        # Observe only: without a valid Plant nothing is commanded until it is fixed.
+        # The Plant loads without its objects: the runtime stops what the last valid
+        # configuration commanded, then only observes until a reconfigure fixes it.
         problem = f"{describe_path(stored_document(entry), error.path)}: {error.message}"
+        _LOGGER.warning(
+            "Hydronicus Plant %s is not valid, so it stops what it commanded and then only "
+            "observes until its configuration is fixed: %s",
+            entry.title,
+            problem,
+        )
         async_sync_issues(hass, entry.entry_id, [invalid_plant(entry.title, problem)])
-        raise ConfigEntryError(
-            translation_domain=DOMAIN,
-            translation_key="invalid_plant",
-            translation_placeholders={"plant": entry.title, "error": problem},
-        ) from error
-    if (options := pruned_options(entry, plant)) is not None:
-        hass.config_entries.async_update_entry(entry, options=options)
+        plant = invalid_placeholder(entry)
+    else:
+        # The arming of an invalid Plant is kept for when it is fixed.
+        if (options := pruned_options(entry, plant)) is not None:
+            hass.config_entries.async_update_entry(entry, options=options)
 
-    runtime = PlantRuntime(hass, entry, plant)
+    runtime = PlantRuntime(hass, entry, plant, problem)
     await runtime.async_load()
     entry.runtime_data = runtime
     runtime.plant_device_id = (
@@ -121,8 +127,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     new_climates = zones_without_climate(hass, plant)
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        async_place_new_zone_climates(hass, plant, new_climates)
-        async_remove_unprovided_entities(hass, entry, runtime)
+        if problem is None:
+            # An invalid Plant provides only the Plant's own entities and keeps the rest.
+            async_place_new_zone_climates(hass, plant, new_climates)
+            async_remove_unprovided_entities(hass, entry, runtime)
     except Exception:
         await runtime.async_stop()
         raise
@@ -130,6 +138,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     runtime.async_start()
     return True
+
+
+def invalid_placeholder(entry: ConfigEntry) -> Plant:
+    """Return the empty Plant an invalid configuration shows: its stored ID and name only."""
+    plant_id = entry.unique_id or entry.data.get("id")
+    return Plant(id=plant_id if isinstance(plant_id, str) else entry.entry_id, name=entry.title)
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: HydronicusConfigEntry) -> None:

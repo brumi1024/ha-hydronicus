@@ -23,7 +23,10 @@ class PlantModeSelect(HydronicusEntity, SelectEntity):
         super().__init__(
             runtime, plant_unique_id(runtime.plant.id, "mode"), plant_device(runtime.plant)
         )
-        cools = any(loop.cools for loop in runtime.plant.all_loops)
+        # Cool stays offered while it is chosen, as when the configuration is not valid.
+        cools = runtime.requested_mode is Mode.COOL or any(
+            loop.cools for loop in runtime.plant.all_loops
+        )
         self._attr_options = [
             mode.value
             for mode in (Mode.OFF, Mode.HEAT, Mode.COOL)

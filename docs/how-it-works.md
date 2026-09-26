@@ -216,10 +216,11 @@ A valve that has been open for an hour therefore still counts as ready after a r
 Changing a Plant's configuration reloads it.
 A change in the area settings or the armed outputs does not; the Plant just evaluates again.
 
-Hydronicus also stores the last configuration with the outputs it was commanding.
+Hydronicus also stores the last valid configuration with the outputs it was commanding.
 When a new configuration no longer has an output that is on, or has a command in flight, the first evaluation runs the off sequence of the old configuration, as **Control equipment** off does, until every output of the old configuration is seen off, and the **Status** sensor reads `stopping` meanwhile.
 Only then does the new configuration run.
 The sequence also stops the outputs the new configuration keeps; they start again as the new configuration asks for them.
+A configuration that is not valid stops the old configuration the same way, then only observes and reads `invalid` until a reconfigure fixes it.
 
 ## What Home Assistant shows
 

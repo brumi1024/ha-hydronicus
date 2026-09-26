@@ -87,6 +87,7 @@ async def async_get_config_entry_diagnostics(
             for proposal in runtime.proposals
         ],
         "missing": dict(runtime.missing),
+        "configuration_problem": runtime.problem,
         "stopping": None
         if runtime.stopping is None
         else {

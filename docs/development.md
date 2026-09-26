@@ -43,7 +43,7 @@ HYPOTHESIS_SIM_PROFILE=sim-dev make test-sim
 Config entry version 5.0 is the supported persisted contract.
 The entry's data is the format 2 plant file without `zones`, and each zone is a `zone` subentry whose data is that zone's mapping plus its `slug`; the subentry's unique ID is the slug and its title is the zone's name.
 The entry's options hold `armed_outputs`, the confirmed output entity IDs, and `control`, the **Control equipment** state.
-The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, and the last Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
+The runtime's timers, the Plant mode, the reconciler's retry state, the output memory, and the last valid Plant with the outputs it was commanding are stored per Plant with `homeassistant.helpers.storage.Store`.
 
 Entries of earlier versions are not migrated: `async_migrate_entry` logs that the Plant must be set up again and refuses the entry.
 Do not add schema aliases or migration paths without a concrete persisted predecessor and fixtures that prove the transition.
@@ -65,7 +65,8 @@ The Home Assistant adapter lives beside the core:
 - `runtime.py` runs one Plant: it observes, calls `step()` and `reconcile()`, sends the actions outside the evaluation, persists the State, raises the Repairs, publishes the entities, and schedules the next evaluation.
   Evaluations are coalesced and never await, so they need no lock.
   Setup restores the stored State and the digital thermostats before the first evaluation, and stopping only cancels, never commands.
-  When a new configuration removes an output that is on, the first evaluation runs the stored previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
+  When a new configuration removes an output that is on, or is not valid, the first evaluation runs the stored previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
+  A configuration that is not valid still loads, as an empty Plant with its stored ID and name that only observes, next to the `invalid_plant` Repair.
 - `observe.py` reads Home Assistant states as observations: output feedback, units and plausibility of sensors, external thermostats, and the output memory that keeps when an output last changed across restarts.
 - `areas.py` owns every area and floor registry read: it resolves the sensors that covered areas name on every evaluation, drops sensors Hydronicus provides, and reports area problems for the runtime, the reviews, and Repairs.
   `zone_area.py` puts a new zone climate entity in the one area its zone covers.

@@ -19,11 +19,11 @@ entities before the first evaluation, which waits until Home Assistant has
 started. Stopping, as on unload and reload, only cancels timers, listeners, and
 unsent actions, and saves; it never sends a command.
 
-The persisted state also holds the last Plant with the outputs it was
-commanding. When a new configuration removes an output that is still on, the
-first evaluation runs the off sequence of that previous Plant, as Control
-equipment off would, until its outputs are observed off, and only then runs the
-new Plant.
+The persisted state also holds the last valid Plant with the outputs it was
+commanding. When a new configuration removes an output that is still on, or is
+not valid at all, the first evaluation runs the off sequence of that previous
+Plant, as Control equipment off would, until its outputs are observed off, and
+only then runs the new Plant; an invalid one is then only observed.
 """
 
 from __future__ import annotations
@@ -97,6 +97,7 @@ from .entity import zone_unique_id
 from .issues import (
     Issue,
     async_sync_issues,
+    invalid_plant,
     missing_area_sensor,
     missing_binding,
     output_not_responding,
@@ -188,16 +189,21 @@ def service_call(action: Action) -> tuple[str, str, dict[str, Any]]:
 class PlantRuntime:
     """Runs one Plant: observe, step, reconcile, send, persist, and publish."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, plant: Plant) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, plant: Plant, problem: str | None = None
+    ) -> None:
         self.hass = hass
         self.entry = entry
+        # The Plant the entities show. While the configuration is not valid, it is an
+        # empty Plant with the stored ID and name, and ``problem`` says what is wrong.
         self.plant = plant
+        self.problem = problem
         # The last valid Plant and the outputs it commanded, as persisted.
         self.previous: Commanding | None = None
         # The previous Plant while its off sequence runs, with the outputs it stops.
         self.stopping: Commanding | None = None
         self._decided = False
-        self._export = export_plant(plant)
+        self._export = None if problem is not None else export_plant(plant)
         self._stopping_export: dict[str, Any] | None = None
         self.store: Store[dict[str, Any]] = Store(hass, STORE_VERSION, store_key(entry.entry_id))
         self.state = State()
@@ -474,10 +480,10 @@ class PlantRuntime:
     def _decide(self) -> None:
         """Before the first evaluation, choose whether the previous Plant stops first.
 
-        It does when an output it commanded and the new Plant does not have is
-        observed on or has a call in flight. The off sequence stops every output of
-        the previous Plant that is available now; one that is unavailable cannot be
-        reached and is left as it is.
+        It does when the configuration is not valid, or when an output it
+        commanded and the new Plant does not have is observed on or has a call in
+        flight. The off sequence stops every output of the previous Plant that is
+        available now; one that is unavailable cannot be reached and is left as it is.
         """
         self._decided = True
         previous = self.previous
@@ -493,7 +499,7 @@ class PlantRuntime:
             return switch_value(state)
 
         commanded = {entity for entity in previous.outputs if entity in roles}
-        if not any(
+        if self.problem is None and not any(
             entity in attempts or value(entity) is True for entity in commanded - set(self._outputs)
         ):
             return
@@ -552,11 +558,12 @@ class PlantRuntime:
                 thermostats[zone.slug] = external_thermostat(states.get(zone.thermostat.entity))
             elif (digital := self.thermostats.get(zone.slug)) is not None:
                 thermostats[zone.slug] = digital
-        # A stopping Plant runs its off sequence, as with Control equipment off.
+        # A stopping Plant runs its off sequence, as with Control equipment off, and an
+        # invalid configuration only observes.
         stopping = self.stopping
         return Observations(
             mode=self.requested_mode,
-            control=self.control and stopping is None,
+            control=self.control and stopping is None and self.problem is None,
             armed=self.armed if stopping is None else stopping.outputs,
             outputs=outputs,
             readiness=readiness,
@@ -728,6 +735,9 @@ class PlantRuntime:
             return None if self.previous is None else self.previous.to_dict()
         if self.stopping is not None:
             return self.stopping.to_dict(self._stopping_export)
+        if self._export is None:
+            # A configuration that is not valid commands nothing.
+            return None
         outputs = self.armed if self.state.live else frozenset()
         return Commanding(self.plant, outputs).to_dict(self._export)
 
@@ -744,9 +754,10 @@ class PlantRuntime:
     def _sync_issues(self, result: Reconciled, reconciled: Plant) -> None:
         """Raise the current Repairs; ``reconciled`` is the Plant ``result`` drove."""
         plant, states = self.plant, self.hass.states
-        issues: list[Issue] = [
-            output_not_responding(reconciled, entity) for entity in result.repairs
-        ]
+        issues: list[Issue] = []
+        if self.problem is not None:
+            issues.append(invalid_plant(self.entry.title, self.problem))
+        issues.extend(output_not_responding(reconciled, entity) for entity in result.repairs)
         armed = self.armed
         # A new Plant starts with nothing armed, and its owner arms it in Plant settings,
         # so a Repair then would only repeat that step. Once any output is armed, an
@@ -792,12 +803,14 @@ class PlantRuntime:
         return source is not None and _on(view.outputs.get(source.request))
 
     def status(self) -> str | None:
-        """Off, idle, heating, cooling, changing over, degraded, or stopping."""
+        """Off, idle, heating, cooling, changing over, degraded, stopping, or invalid."""
         desired, result = self.desired, self.reconciled
         if desired is None or result is None:
             return None
         if self.stopping is not None:
             return "stopping"
+        if self.problem is not None:
+            return "invalid"
         if result.repairs or self.missing:
             return "degraded"
         if "mode" in desired.reasons:

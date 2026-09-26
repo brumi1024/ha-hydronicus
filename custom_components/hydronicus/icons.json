@@ -50,7 +50,8 @@
           "cooling": "mdi:snowflake",
           "changing_over": "mdi:swap-horizontal",
           "degraded": "mdi:alert-outline",
-          "stopping": "mdi:stop-circle-outline"
+          "stopping": "mdi:stop-circle-outline",
+          "invalid": "mdi:alert-octagon-outline"
         }
       },
       "combined_temperature": {

@@ -30,7 +30,8 @@ When a zone calls for heat and nothing moves, check these in order:
 | `heating` or `cooling` | Something runs, or is asked to run, in that mode. | `active_loops`, and `proposed` in Dry run. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. | `reasons`, under `mode`. |
 | `degraded` | An output does not respond, or an entity the Plant binds does not exist. | `outputs_not_responding`, `missing_entities`, and the Repairs. |
-| `stopping` | A change removed outputs that were running, and the equipment of the previous configuration is being stopped. | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
+| `stopping` | A change removed outputs that were running, or left a configuration that is not valid, and the equipment of the previous configuration is being stopped. | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
+| `invalid` | The configuration is not valid, and the Plant only observes. | `configuration_problem` and the [Plant is not valid](#plant-is-not-valid) Repair. |
 | unavailable | The Plant has not evaluated yet, or is not loaded. | Whether every digital thermostat has loaded, and the Repairs. |
 
 The **Status** sensor's `reasons` attribute explains every decision, keyed by zone slug, loop, output entity, `source`, and `mode`.
@@ -75,10 +76,12 @@ Diagnostics list the current Repairs by the key in the second column.
 
 ### Plant is not valid
 
-The stored configuration is not a valid Plant, so the Plant does not load, sends no command, and leaves the equipment as it is.
+The stored configuration is not a valid Plant, so the Plant does not run it.
+It stops the equipment of its last valid configuration in order, with the **Status** sensor reading `stopping`, and then only observes, reading `invalid`, with the problem in `configuration_problem`.
+Meanwhile it shows only its **Mode** select, **Control equipment** switch, and **Status** sensor, and the entities of its zones are unavailable.
 This happens when a zone that the Plant still needs is deleted, such as the zone of a pump's only min-flow loop.
 The Repair names the problem; select **Submit** to open the Plant's **Reconfigure**, and fix it there, for example by choosing other **Min-flow loops** or with **Replace from a plant file**.
-Saving a valid Plant loads it again.
+Saving a valid Plant runs it again.
 
 ### An output does not respond
 
@@ -192,7 +195,7 @@ For a plant loop that cools, the dew points of the zones it runs with count, or 
 ## Logs and diagnostics
 
 Open **Settings > System > Logs** and filter for `hydronicus`.
-Hydronicus logs a warning when a command fails or does not return in time, when the persisted state of a Plant cannot be read, when the thermostats of a Plant do not load, and when it stops the outputs of a previous configuration.
+Hydronicus logs a warning when a command fails or does not return in time, when the persisted state of a Plant cannot be read, when the thermostats of a Plant do not load, when the stored configuration is not valid, and when it stops the outputs of a previous configuration.
 It logs an error when it refuses a Plant created by an earlier version.
 
 Download diagnostics with **Download diagnostics** on the Plant's entry.
@@ -209,6 +212,7 @@ They hold:
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |
 | `missing` | The bound entities that do not exist. |
+| `configuration_problem` | Why the stored configuration is not valid, or none. |
 | `stopping` | While the previous configuration stops: that configuration, the outputs it stops, and those not yet seen off. |
 
 Diagnostics leave out the Plant ID and every name, but they keep entity IDs, area IDs, and slugs.
@@ -220,7 +224,7 @@ Use the [diagnostic bug report template](../.github/ISSUE_TEMPLATE/diagnostic-bu
 ### The Plant fails to set up
 
 A Plant created by an earlier version is refused, and the log says it must be set up again; see [upgrade and rollback](upgrade-and-rollback.md).
-A Plant whose stored configuration is not valid raises the [Plant is not valid](#plant-is-not-valid) Repair.
+A Plant whose stored configuration is not valid loads, stops its equipment, and raises the [Plant is not valid](#plant-is-not-valid) Repair.
 
 ### The equipment is in an unexpected state
 

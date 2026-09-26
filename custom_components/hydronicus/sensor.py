@@ -37,6 +37,7 @@ STATUSES = [
     "changing_over",
     "degraded",
     "stopping",
+    "invalid",
 ]
 
 
@@ -80,6 +81,7 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "outputs_not_responding": sorted(reconciled.repairs) if reconciled else [],
             "missing_entities": sorted(runtime.missing),
             "stopping_outputs": runtime.stopping_outputs(),
+            "configuration_problem": runtime.problem,
         }
         if desired is not None:
             attributes["reasons"] = dict(desired.reasons)

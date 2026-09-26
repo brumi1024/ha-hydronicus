@@ -107,7 +107,8 @@ async def test_an_invalid_plant_opens_the_entry_reconfigure_flow(hass: HomeAssis
     entry = await async_import(hass, REFERENCE_PLANT)
     hass.config_entries.async_remove_subentry(entry, zone_subentry_id(entry, "living_area"))
     await hass.async_block_till_done()
-    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.problem is not None
 
     result = await async_fix(hass, IssueKind.INVALID_PLANT)
     assert result["step_id"] == "confirm"

@@ -144,7 +144,7 @@ Editing a thermostat, a sensor, a name, or a timing never changes what is armed.
 
 Deleting a zone also removes it from any plant loop that runs with it and drops its loops from any pump's min-flow loops.
 Deleting a zone whose loops are running first stops the equipment of the previous configuration, then runs the Plant without the zone.
-If that leaves a pump the source runs without a min-flow loop, the Plant is no longer valid: it stops running, and a Repair opens its **Reconfigure** to fix it.
+If that leaves a pump the source runs without a min-flow loop, the Plant is no longer valid: it stops its equipment in order, then only observes, and a Repair opens its **Reconfigure** to fix it.
 
 ## Areas
 

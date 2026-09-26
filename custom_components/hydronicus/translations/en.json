@@ -510,7 +510,8 @@
           "cooling": "Cooling",
           "changing_over": "Changing over",
           "degraded": "Degraded",
-          "stopping": "Stopping removed outputs"
+          "stopping": "Stopping removed outputs",
+          "invalid": "Configuration not valid"
         }
       },
       "combined_temperature": {
@@ -533,7 +534,7 @@
         "step": {
           "confirm": {
             "title": "Plant {plant} is not valid",
-            "description": "The stored configuration of Plant {plant} is not a valid Plant, so Hydronicus does not run it and commands nothing: {error}\n\nThis happens when a zone that the Plant still needs is removed, such as the zone of a pump's min-flow loop. Select Submit to reconfigure the Plant and fix it, for example by choosing other min-flow loops or replacing the Plant from a corrected plant file."
+            "description": "The stored configuration of Plant {plant} is not a valid Plant, so Hydronicus does not run it: {error}\n\nIt stops the equipment that the last valid configuration was running, in order, and then commands nothing until the configuration is fixed. This happens when a zone that the Plant still needs is removed, such as the zone of a pump's min-flow loop. Select Submit to reconfigure the Plant and fix it, for example by choosing other min-flow loops or replacing the Plant from a corrected plant file."
           }
         },
         "abort": {

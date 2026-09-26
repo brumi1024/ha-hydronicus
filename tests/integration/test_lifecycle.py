@@ -15,7 +15,6 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus import runtime as runtime_module
@@ -23,7 +22,6 @@ from custom_components.hydronicus.const import DOMAIN, OPTION_ARMED_OUTPUTS
 from custom_components.hydronicus.core.model import Mode
 from custom_components.hydronicus.core.plant_file import read_plant_file
 from custom_components.hydronicus.core.step import DigitalThermostatState, State
-from custom_components.hydronicus.issues import IssueKind
 from custom_components.hydronicus.storage import new_entry
 from tests.integration.helpers import (
     BASEMENT_CEILING,
@@ -193,28 +191,6 @@ async def test_removing_a_zone_prunes_references_to_it_and_keeps_the_plant_runni
     assert entry.runtime_data.plant.zones[0].slug == "bedroom_area"
     assert not any(e.startswith("climate.basement") for e in plant_entities(hass, entry).values())
     await async_advance(hass, freezer, 300, step=5)
-    assert actuators.calls == []
-
-
-async def test_removing_the_zone_of_a_min_flow_loop_stops_commanding_and_raises_a_repair(
-    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
-) -> None:
-    entry = await async_heat_living_area(hass, freezer)
-    actuators.clear()
-
-    hass.config_entries.async_remove_subentry(entry, zone_subentry(entry, "living_area"))
-    await hass.async_block_till_done()
-
-    assert entry.state is ConfigEntryState.SETUP_ERROR
-    assert entry.data["pumps"]["heat_pump"]["min_flow_loops"] == []
-    issues = [
-        issue
-        for (domain, _), issue in ir.async_get(hass).issues.items()
-        if domain == DOMAIN and issue.translation_key == IssueKind.INVALID_PLANT
-    ]
-    assert len(issues) == 1
-    assert "min_flow_loops" in issues[0].translation_placeholders["error"]
-    await async_advance(hass, freezer, 600, step=10)
     assert actuators.calls == []
 
 
