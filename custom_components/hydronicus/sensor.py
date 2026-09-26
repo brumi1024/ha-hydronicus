@@ -13,6 +13,7 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature, U
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import HydronicusConfigEntry
 from .core.model import Loop, Zone
@@ -37,6 +38,7 @@ STATUSES = [
     "idle",
     "heating",
     "cooling",
+    "exercising",
     "changing_over",
     "degraded",
     "stopping",
@@ -85,6 +87,12 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "missing_entities": sorted(view.missing),
             "stopping_outputs": view.stopping_outputs(),
             "configuration_problem": runtime.problem,
+            "frost_protection": list(view.desired.frost_protection),
+            "exercising": view.desired.exercise,
+            "idle_since": {
+                entity: None if since is None else dt_util.utc_from_timestamp(since).isoformat()
+                for entity, since in sorted(runtime.state.idle_since.items())
+            },
             "reasons": dict(view.desired.reasons),
         }
         if not runtime.state.live:

@@ -3,8 +3,9 @@
 Plants follow contract K9: 1 to 4 pumps of both kinds, 1 to 6 loops with 0 to 3
 valves, switches or valve entities that report their travel, 1 to 4 zones, and
 an optional source. Cooling loops and their pumps may have condensation
-switches and surface minimums, and zones windows and humidity limits. They are
-valid by construction:
+switches and surface minimums, and zones windows and humidity limits. A Plant
+may have a short exercise interval and frost protection that a cool zone
+reaches. They are valid by construction:
 the strategy only draws combinations that ``validate_plant`` accepts, and it
 calls ``validate_plant`` to prove it. Plant loops heat only, so a loop that
 cools always belongs to one zone, whose dew point it answers to, and a
@@ -15,8 +16,9 @@ then applies timed events: mode and Control equipment changes, arming, sensor
 changes, stale and unavailable sensors, thermostat changes, condensation
 switches and windows that turn on, off, or unavailable, unavailable outputs,
 delayed, rejected, and timed out calls, valves that stall on their way,
-spontaneous relay drops, restarts with and without downtime, backward clock jumps, and blocked event
-loops. Nothing else happens during a downtime or a blocked event loop, and a
+spontaneous relay drops, restarts with and without downtime, backward clock jumps, blocked event
+loops, and long idle periods with every thermostat off, in which the exercise
+runs. Nothing else happens during a downtime or a blocked event loop, and a
 spontaneous change never falls near a fault, so the controller always gets one
 fair chance to react to it.
 """
@@ -24,7 +26,7 @@ fair chance to react to it.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Protocol
 
 from hypothesis import strategies as st
@@ -34,6 +36,7 @@ from custom_components.hydronicus.core.model import (
     RUNS_WITH_ZONE,
     Aggregation,
     DigitalThermostat,
+    Exercise,
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -180,6 +183,16 @@ def plants(draw: st.DrawFn) -> Plant:
         pumps=pumps,
         loops=tuple(plant_loops),
         zones=zones,
+        exercise=draw(
+            st.none()
+            | st.builds(
+                Exercise,
+                interval=st.sampled_from([1800.0, 7200.0]),
+                run=st.sampled_from([30.0, 60.0]),
+            )
+        ),
+        # 17 °C is within reach of the zone temperatures the traces draw.
+        frost_protection=draw(st.sampled_from([None, 5.0, 17.0])),
     )
     validate_plant(plant)
     return plant
@@ -376,6 +389,26 @@ class Suspend:
 
 
 @dataclass(frozen=True)
+class Idle:
+    """A long quiet period: every thermostat turns off, and the next event waits."""
+
+    seconds: float
+
+    def apply(self, sim: Sim) -> None:
+        idle_thermostats(sim)
+
+
+def idle_thermostats(sim: Sim) -> None:
+    """Turn every thermostat off, so no zone demands."""
+    for zone in sim.plant.zones:
+        state = sim.world.thermostats.get(zone.slug)
+        if isinstance(state, DigitalThermostatState):
+            sim.set_thermostat(zone.slug, replace(state, hvac_mode=Mode.OFF))
+        else:
+            sim.set_action(zone.slug, Mode.OFF)
+
+
+@dataclass(frozen=True)
 class Season:
     """A change of season: the Plant mode with the thermostats, every zone's
     temperature, and every supply and surface temperature."""
@@ -420,7 +453,7 @@ def _window(event: Event) -> float:
     match event:
         case Unavailable(duration=duration) | CallFault(duration=duration):
             return duration
-        case Restart(downtime=seconds) | Suspend(seconds=seconds):
+        case Restart(downtime=seconds) | Suspend(seconds=seconds) | Idle(seconds=seconds):
             return seconds
         case _:
             return 0.0
@@ -455,7 +488,7 @@ def traces(draw: st.DrawFn, plant: Plant) -> Trace:
         t += draw(st.integers(1, 1800))
         event = draw(_events(plant, switches, commandable, disarmable, outages, sensors))
         events.append((t, event))
-        t += _window(event) if isinstance(event, Restart | Suspend) else 0.0
+        t += _window(event) if isinstance(event, Restart | Suspend | Idle) else 0.0
     return Trace(
         mode=mode,
         control=draw(st.sampled_from([True, True, True, False])),
@@ -549,6 +582,7 @@ def _events(
         st.builds(Restart, st.sampled_from([0.0, 0.0, 30.0, 600.0])),
         st.builds(JumpClock, st.sampled_from([-30.0, -300.0])),
         st.builds(Suspend, st.sampled_from([30.0, 600.0])),
+        st.builds(Idle, st.sampled_from([4000.0, 16000.0])),
     ]
     if disarmable:
         choices.append(st.builds(Arm, st.sampled_from(disarmable), st.just(False)))

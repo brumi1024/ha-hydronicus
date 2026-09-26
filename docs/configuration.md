@@ -35,6 +35,8 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Leave the request switch empty for a source that runs on its own controls; valves and switched pumps still run on demand.
    If the source switches between heating and cooling through a select, choose it as the **Source mode select**; it needs a request switch.
    The collapsed **Timing** section holds the **Mode dwell** (3600 seconds), the **Source post-run** (180 seconds), and the **Source minimum on time** and **Source minimum off time** (600 seconds each).
+   The collapsed **Protection** section holds **Exercise idle pumps and valves**, on by default, with the **Exercise interval** (604800 seconds, a week) and the **Exercise pump run** (60 seconds), and **Frost protection**, on by default, with the **Frost protection temperature** (5 °C).
+   See [frost protection](how-it-works.md#frost-protection) and [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves).
 2. **Source modes**, only with a mode select.
    Choose the **Heating option** and the **Cooling option** of the select.
    The form lists the options the select offers now.
@@ -209,6 +211,7 @@ Hydronicus never commands it, and an unavailable or unknown action blocks the zo
 Make sure the existing thermostat does not itself switch a valve or pump that Hydronicus commands.
 
 A zone's thermostat mode counts only when it matches the Plant mode.
+[Frost protection](how-it-works.md#frost-protection) overrides both: a zone whose coldest reading falls below 5 °C is heated even while its thermostat or the Plant's **Mode** select is off.
 
 ## Windows
 

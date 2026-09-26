@@ -283,7 +283,9 @@ class Scripted:
             mode=self.mode,
             reasons={},
         )
-        return replace(state, live=self.live), desired, None
+        # Like step(), it labels flows with the last heat or cool mode it declared.
+        label = self.mode if self.mode is not Mode.OFF else state.last_mode
+        return replace(state, live=self.live, last_mode=label), desired, None
 
     def reconcile(
         self,

@@ -1,8 +1,9 @@
 """The plan's invariants 1 to 8, checked on the simulated physical state.
 
 Each check reads the world, not the controller's belief, with two exceptions
-that the controller declares: the mode label of a flow is the last heat or cool
-``Desired.mode`` before the flow started, and the Repairs are what
+that the controller declares: the mode label of a flow is the State's
+``last_mode`` before the flow started, the last heat or cool mode that ran or
+that an exercise of an idle Plant runs in, and the Repairs are what
 ``reconcile()`` reports. The condensation guard is judged on the sensor values
 the controller could see, since no controller can act on a reading it never
 received.
@@ -178,8 +179,8 @@ class Checker:
         for ref, since in self.blocked_since.items():
             self.blocked_since[ref] = since + pause
 
-    def on_desired(self, desired: Desired) -> None:
-        """Check the shape of a desired state and take its mode as the label of new flows."""
+    def on_desired(self, desired: Desired, last_mode: Mode) -> None:
+        """Check the shape of a desired state and take ``last_mode`` as the label of new flows."""
         outputs = self.plant.outputs()
         for entity, target in desired.outputs.items():
             role = outputs.get(entity)
@@ -188,7 +189,11 @@ class Checker:
             expected = OptionTarget if role is OutputRole.SOURCE_MODE else SwitchTarget
             if not isinstance(target, expected):
                 raise InvariantViolation("K2", self.world.t, f"Desired {entity}: {target}")
-        label = _mode_label(desired.mode)
+        if desired.exercise is not None and desired.source_request:
+            raise InvariantViolation(
+                "exercise", self.world.t, f"exercising {desired.exercise} requests the source"
+            )
+        label = _mode_label(last_mode)
         if label is not None:
             self.label = label
         self.release_wanted = not desired.source_request

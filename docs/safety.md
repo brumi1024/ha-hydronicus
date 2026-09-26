@@ -42,6 +42,15 @@ Only then does the Plant go to Dry run; the switch's `live` attribute shows when
 Switching the **Mode** select to off stops the equipment the same way and keeps it stopped, except that the source's request stays on until it has been on for its minimum on time, as at the end of demand.
 **Control equipment** off, a blocking condensation guard, a lost pump or path, and stopping a previous configuration release the request at once.
 
+## Frost protection and the exercise
+
+Frost protection heats a zone whose coldest reading falls below 5 °C, even while its thermostat or the **Mode** select is off, but only while Home Assistant runs, the zone's sensors report, and its outputs are armed and **Control equipment** is on.
+It never acts while the Plant cools.
+It is a comfort safeguard, not frost protection of the plant: keep the source's own frost protection, antifreeze, or drain-down where pipes can freeze.
+
+Hydronicus also exercises a switched pump or a valve that has not been on for a week, only while nothing else runs, one pump at a time, and never with the source asked for heat.
+It never runs a pump through a loop of the other mode or through a blocked condensation guard.
+
 ## Failures are retried and surfaced
 
 A command counts as done only when Home Assistant shows its result.

@@ -12,6 +12,7 @@ as a reload or a Home Assistant restart would; the world keeps running.
 
 from __future__ import annotations
 
+import contextlib
 import heapq
 import itertools
 import json
@@ -41,6 +42,8 @@ from tests.sim.world import EPSILON, Call, Fault, FaultKind, World
 MAX_EVALUATIONS_PER_INSTANT: Final = 20
 # The oldest a seeded output is, in seconds.
 SEEDED_SINCE: Final = 3600.0
+# Seconds one exercise may take: the longest opening time, a pump's run, and the calls.
+EXERCISE_BOUND: Final = 600.0
 
 
 @dataclass(slots=True)
@@ -324,12 +327,31 @@ class Sim:
         self._tick(max(end, self.t))
 
     def settle(self, seconds: float) -> None:
-        """Run a quiet period, then check that every difference resolved (invariant 7)."""
+        """Run a quiet period, then check that every difference resolved (invariant 7).
+
+        An idle Plant may exercise its pumps and valves at any time, so the check
+        waits, for as long as the exercises may take, until none runs and every
+        armed output shows its target.
+        """
         self.run_for(seconds)
+        with contextlib.suppress(AssertionError):
+            self.run_until_true(
+                self._quiet, len(self.plant.pumps) * EXERCISE_BOUND, "the Plant is quiet"
+            )
         runtime = self.runtime
         self.checker.check_settled(
             runtime is not None and runtime.state.live,
             None if runtime is None else runtime.desired,
+        )
+
+    def _quiet(self) -> bool:
+        runtime = self.runtime
+        if runtime is None or runtime.desired is None:
+            return True
+        return runtime.state.exercise is None and all(
+            self.checker.matches(entity, target)
+            for entity, target in runtime.desired.outputs.items()
+            if entity in self.world.armed
         )
 
     def _next_time(self) -> float | None:
@@ -379,7 +401,7 @@ class Sim:
         state, desired, due = step(runtime.plant, view, runtime.state, now)
         if due is not None and not (math.isfinite(due) and due >= 0):
             raise InvariantViolation("K2", self.t, f"step() returned a due time of {due}")
-        self.checker.on_desired(desired)
+        self.checker.on_desired(desired, state.last_mode)
         result = reconcile(
             runtime.plant,
             desired,

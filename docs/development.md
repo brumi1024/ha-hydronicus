@@ -116,6 +116,7 @@ Commit `pyproject.toml` and `uv.lock` together.
 ## Invariants
 
 The simulator under `tests/sim/` checks invariants 1 to 8 on simulated physical state, not on controller belief, after every event of random plants and random traces.
+It also checks that an exercise never requests the source, and that a Plant left idle exercises every pump and valve it may.
 A trace may delay, reject, or time out any command, restart the runtime, jump the clock, and make a sensor stale or an entity unavailable.
 Only a spontaneous physical change, such as a valve closing by itself, is exempt, and the controller must react to it within one evaluation.
 

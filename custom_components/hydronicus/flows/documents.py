@@ -21,6 +21,9 @@ from uuid import uuid4
 from homeassistant.util import slugify
 
 from ..core.model import (
+    DEFAULT_EXERCISE_INTERVAL,
+    DEFAULT_EXERCISE_RUN,
+    DEFAULT_FROST_PROTECTION,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_MIN_OFF,
     DEFAULT_MIN_ON,
@@ -51,10 +54,20 @@ DEFAULT_PLANT_NAME: Final = "Home"
 DEFAULT_LOOP_NAME: Final = "Loop"
 _SLUG: Final = re.compile(r"[a-z][a-z0-9_]*")
 _MODES: Final = (Mode.HEAT.value, Mode.COOL.value)
-_STRUCTURE: Final = ("name", "mode_dwell", "source", "pumps", "loops")
+_STRUCTURE: Final = (
+    "name",
+    "mode_dwell",
+    "exercise",
+    "frost_protection",
+    "source",
+    "pumps",
+    "loops",
+)
 _STRUCTURE_WORDS: Final = {
     "name": "name",
     "mode_dwell": "mode dwell",
+    "exercise": "exercise",
+    "frost_protection": "frost protection",
     "source": "source",
     "pumps": "pumps",
     "loops": "plant loops",
@@ -168,6 +181,22 @@ def plant_values(document: Mapping[str, Any]) -> dict[str, Any]:
             "min_on": source.get("min_on", DEFAULT_MIN_ON),
             "min_off": source.get("min_off", DEFAULT_MIN_OFF),
         },
+        "protection": _protection_values(document),
+    }
+
+
+def _protection_values(document: Mapping[str, Any]) -> dict[str, Any]:
+    """The exercise and frost protection as the form shows them, on or off with their settings."""
+    exercise = document.get("exercise", {})
+    settings = exercise if isinstance(exercise, Mapping) else {}
+    frost = document.get("frost_protection", DEFAULT_FROST_PROTECTION)
+    frost_on = frost not in (None, False)
+    return {
+        "exercise": exercise not in (None, False),
+        "exercise_interval": settings.get("interval", DEFAULT_EXERCISE_INTERVAL),
+        "exercise_run": settings.get("run", DEFAULT_EXERCISE_RUN),
+        "frost_protection": frost_on,
+        "frost_temperature": frost if frost_on else DEFAULT_FROST_PROTECTION,
     }
 
 
@@ -189,6 +218,16 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     }
     result["name"] = str(values.get("name", "")).strip()
     result["mode_dwell"] = timing["mode_dwell"]
+    # Without the protection section the stored exercise and frost protection stay.
+    protection = {**_protection_values(document), **(values.get("protection") or {})}
+    result["exercise"] = (
+        {"interval": protection["exercise_interval"], "run": protection["exercise_run"]}
+        if protection["exercise"]
+        else False
+    )
+    result["frost_protection"] = (
+        protection["frost_temperature"] if protection["frost_protection"] else False
+    )
     request = values.get("request")
     if not request:
         result.pop("source", None)

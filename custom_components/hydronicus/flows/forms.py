@@ -287,6 +287,7 @@ def _list(value: Any) -> list[str]:
 
 def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
     timing = values.get("timing") or {}
+    protection = values.get("protection") or {}
     return vol.Schema(
         {
             optional("name", values): _text(),
@@ -304,6 +305,25 @@ def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
                         _default("post_run", timing, 180): seconds(),
                         _default("min_on", timing, 600): seconds(),
                         _default("min_off", timing, 600): seconds(),
+                    }
+                ),
+                {"collapsed": True},
+            ),
+            vol.Optional("protection"): section(
+                vol.Schema(
+                    {
+                        _default("exercise", protection, True): selector.BooleanSelector(),
+                        _default("exercise_interval", protection, 604800): seconds(),
+                        _default("exercise_run", protection, 60): seconds(),
+                        _default("frost_protection", protection, True): selector.BooleanSelector(),
+                        _default("frost_temperature", protection, 5): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0,
+                                step=0.5,
+                                unit_of_measurement=_CELSIUS,
+                                mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
                     }
                 ),
                 {"collapsed": True},

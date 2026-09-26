@@ -25,7 +25,7 @@ Home Assistant makes each entity ID from the device name and the entity name whe
 | --- | --- | --- |
 | **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`. `cool` is offered only when a loop of the Plant cools. |
 | **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. |
-| **Status** sensor | `sensor.<plant>_status` | `off`, `idle`, `heating`, `cooling`, `changing_over`, `degraded`, `stopping`, or `invalid`. |
+| **Status** sensor | `sensor.<plant>_status` | `off`, `idle`, `heating`, `cooling`, `exercising`, `changing_over`, `degraded`, `stopping`, or `invalid`. |
 
 The **Mode** select is the Plant mode that the zones heat or cool in.
 An automation can set it; Hydronicus keeps it across restarts.
@@ -44,6 +44,7 @@ The **Status** sensor reads:
 | `idle` | The Plant is in a mode, and nothing is asked to run. |
 | `heating` | Something runs, or is asked to run, for heating, from a valve opening to a pump's overrun. |
 | `cooling` | The same for cooling. |
+| `exercising` | Nothing else runs, and an idle pump or its valves are [exercised](how-it-works.md#exercising-idle-pumps-and-valves) so they do not seize. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. |
 | `degraded` | An output did not respond, or an entity the Plant binds does not exist. |
 | `stopping` | A changed configuration removed outputs that were running, or is not valid, so the Plant first stops the equipment of its previous configuration. |
@@ -64,6 +65,9 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | `missing_entities` | Each bound entity that does not exist, with where the Plant binds it. |
 | `stopping_outputs` | While `stopping`, the outputs of the previous configuration that are not yet seen off. |
 | `configuration_problem` | Why the configuration is not valid, or none. |
+| `frost_protection` | The zones that [frost protection](how-it-works.md#frost-protection) heats. |
+| `exercising` | The slug of the pump whose exercise runs, or none. |
+| `idle_since` | Each switched pump and valve with the time since which it has not been on, or none while it is on; the exercise counts from it. |
 | `reasons` | Why, for each zone, loop, output, the source, and the mode. It is not recorded in history. |
 | `proposed` | Only in Dry run: the state Hydronicus would give each output. It is not recorded in history. |
 
@@ -85,8 +89,8 @@ Its `hvac_action` shows what the equipment does for the zone, not what the zone 
 
 | Action | When |
 | --- | --- |
-| `off` | The thermostat is off. |
-| `heating` or `cooling` | The zone demands in the mode the outputs run in, and one of its loops, or a plant loop that runs with it, passes flow. |
+| `off` | The thermostat is off, and frost protection does not heat the zone. |
+| `heating` or `cooling` | The zone demands in the mode the outputs run in, and one of its loops, or a plant loop that runs with it, passes flow. Frost protection's demand counts, even while the thermostat is off. |
 | `preheating` | The zone demands heat while the outputs run heat, and a loop it wants does not pass flow yet, such as while its valves open. |
 | `idle` | Anything else, such as while the Plant mode is off or runs the other mode, or while the zone's loops are dropped. |
 
@@ -100,7 +104,7 @@ The demand binary sensors are on while the zone demands heating or cooling, and 
 
 | Attribute | Value |
 | --- | --- |
-| `reason` | Why the zone demands or not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, or `window open` while one of the zone's windows turns its demand off. It is not recorded in history. |
+| `reason` | Why the zone demands or not, such as `heat to 21.0 °C from 19.5 °C`, `frost protection: heat to 6.0 °C from 4.0 °C`, `thermostat off`, or `window open` while one of the zone's windows turns its demand off. It is not recorded in history. |
 
 The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors by its aggregation.
 Its attributes show where the readings come from, and are not recorded in history:
@@ -139,7 +143,7 @@ Its attributes:
 | `valves` | Each valve with its state. |
 | `pump` | The slug of the loop's pump. |
 | `pump_running` | Whether the pump's switch, or the source's request for a source-driven pump, is on. |
-| `reason` | Why the loop runs or not, such as `wanted`, `min-flow path`, or `dropped: condensation guard blocks`. |
+| `reason` | Why the loop runs or not, such as `wanted`, `min-flow path`, `exercise`, or `dropped: condensation guard blocks`. |
 
 The runtime sensor is a diagnostic: how long the loop has passed flow in total, in hours.
 It counts only flow that Hydronicus observes while outputs are commanded, that is while **Control equipment** is on or its off-mode sequence runs, with every valve on and the pump observed running.
