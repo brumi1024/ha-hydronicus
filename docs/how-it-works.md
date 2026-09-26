@@ -179,6 +179,7 @@ A change between heating and cooling runs in order:
 4. The new mode starts, and the source's mode select is set to the new mode's option before its request goes on.
 
 Returning to the mode that last ran, or starting the first mode of a new Plant, needs no dwell.
+A change of mode also waits for an [exercise](#exercising-idle-pumps-and-valves) to stop, with the reason `stopping the exercise before cool`, but an exercise's flow starts no dwell and runs in no mode, because no source heats or cools its water.
 Switching the Plant to off stops the current mode with the same sequence.
 
 ## Frost protection
@@ -204,21 +205,28 @@ Set `frost_protection` in the [plant file](plant-file.md#top-level-keys), or **F
 
 A circulator or a thermoelectric valve actuator that stays off for months can seize, so Hydronicus exercises each switched pump and each valve that has not been seen on for the exercise interval, a week by default.
 The clock of a pump or valve starts when Hydronicus first sees it, so a new Plant is not overdue, and it survives restarts.
+Only what the outputs really show moves the clock, so a Plant that sat in Dry run exercises its equipment soon after **Control equipment** turns on.
 
 An exercise runs only while nothing else does: no loop is wanted, the source is neither requested nor in its post-run, no other switched pump runs, the mode is not changing, and **Control equipment** is not stopping the Plant.
 It exercises one pump at a time, with the same sequence as demand:
 
 1. The pump's loops open.
-2. Once they are ready, its switched pump runs for the exercise's run time, 60 seconds by default.
-3. The pump stops without overrun, and the valves close once it is seen off.
+2. Once one of them is ready, its switched pump runs for the exercise's run time, 60 seconds by default.
+3. Once the pump has run and every loop is ready, the pump stops without overrun, and the valves close once it is seen off.
+
+An exercise gives up on a valve that never becomes ready, such as one whose relay no longer responds: it ends once twice the longest opening time of its valves, the run time, and 70 seconds have passed since it began.
+That pump is then not exercised again before the interval has passed, so the other pumps take their turn, and the valve's own Repair says what is wrong.
+A switched pump whose switch is unavailable or unknown may be running unseen, so it is not exercised, and an exercise never waits for such a pump to stop.
 
 A pump the source drives is never commanded, so the valves of its loops only open until they are ready, and close again.
 An exercise never asks the source for heat or cooling, and it stops at once when any loop is wanted, such as when a zone calls.
 
-An exercise passes water only through loops of the mode that last ran, so it never carries one mode's water through a loop of the other; a Plant that has not run yet exercises its heating loops.
-After cooling, a loop takes part only while its condensation guard permits, and a loop that only heats waits until the Plant has heated again.
+An exercise passes water only through loops of the mode that last ran, so it never carries one mode's water through a loop of the other; a Plant that has not run yet exercises its heating loops, without that counting as heating.
+After cooling, a loop takes part only while the checks of its [condensation guard](#cooling-and-the-condensation-guard) against condensation permit: its dew point check and its condensation switches.
+No source runs in an exercise, so no chilled water flows, and the surface minimum and the humidity limit, which bound what cooling does to a room, do not apply.
+A loop that only heats is not exercised between the end of cooling and the next heating, however long that is.
 A switched pump runs only when it is armed and available and no other loop on it would pass flow; otherwise only its valves are exercised.
-Exercises obey arming and **Control equipment** as demand does: an output that is not armed is never exercised, and in Dry run an exercise is proposed and its proposal counts as done.
+Exercises obey arming and **Control equipment** as demand does: an output that is not armed is never exercised, and in Dry run an exercise is proposed and its proposal counts as done for the interval, without moving any clock.
 
 The **Status** sensor reads `exercising` meanwhile, and its `idle_since` attribute shows since when each switched pump and valve has not been on.
 The exercised loops and pump show the reason `exercise`.

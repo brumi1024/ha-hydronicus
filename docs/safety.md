@@ -49,7 +49,7 @@ It never acts while the Plant cools.
 It is a comfort safeguard, not frost protection of the plant: keep the source's own frost protection, antifreeze, or drain-down where pipes can freeze.
 
 Hydronicus also exercises a switched pump or a valve that has not been on for a week, only while nothing else runs, one pump at a time, and never with the source asked for heat.
-It never runs a pump through a loop of the other mode or through a blocked condensation guard.
+It never runs a pump through a loop of the other mode, and after cooling only through a loop whose dew point check and condensation switches permit.
 
 ## Failures are retried and surfaced
 

@@ -8,12 +8,16 @@ from __future__ import annotations
 import pytest
 
 from custom_components.hydronicus.core.model import DEFAULT_EXERCISE_INTERVAL, Mode
-from custom_components.hydronicus.core.step import DigitalThermostatState
+from custom_components.hydronicus.core.step import EXERCISE_GRACE, DigitalThermostatState
 from tests.sim.harness import Sim
 from tests.sim.plants import (
+    BASEMENT_CEILING,
+    BEDROOM_CEILING,
     BOILER,
     FLOOR_PUMP,
     FLOOR_VALVE,
+    HEATING_PUMP,
+    HOME,
     LIVING_CEILING,
     REQUEST,
     TOWEL_PUMP,
@@ -21,11 +25,13 @@ from tests.sim.plants import (
     plant,
     reference_plant,
 )
+from tests.sim.world import FaultKind
 
 REACTION = 15.0
 OPENING = 180.0
 DWELL = 3600.0
 RUN = 60.0
+DAY = 86400.0
 
 BOILER_REQUEST = "switch.boiler_request"
 CIRCULATOR = "switch.circulator_pump"
@@ -191,3 +197,98 @@ def test_an_exercise_goes_on_after_a_restart_and_yields_to_demand() -> None:
     assert _on_between(sim, CIRCULATOR)[0][1] == sim.t, "the circulator runs on for the demand"
     assert sim.is_on(RADIATOR_VALVE)
     assert sim.switched(BOILER_REQUEST)[0][0] >= sim.switched(CIRCULATOR)[0][0]
+
+
+def _on_time(sim: Sim, entity: str) -> float:
+    return sum(end - start for start, end in _on_between(sim, entity))
+
+
+def test_an_exercise_gives_up_on_a_valve_that_never_opens_and_moves_on() -> None:
+    """The basement valve's relay stops responding just before the heating pump is due."""
+    sim = Sim(plant(HOME), mode=Mode.OFF)
+    sim.start()
+    sim.run_for(DEFAULT_EXERCISE_INTERVAL - 60.0)
+    sim.fault(BASEMENT_CEILING, FaultKind.REJECT, 10 * DAY)
+    sim.run_for(DAY)
+
+    assert _on_time(sim, HEATING_PUMP) <= 2 * OPENING + RUN + EXERCISE_GRACE, (
+        "the heating pump runs until the exercise gives up on the basement valve"
+    )
+    assert len(_on_between(sim, TOWEL_PUMP)) == 1, "the towel dryer's pump goes next"
+    assert sim.state.exercise is None and not any(sim.is_on(e) for e in sim.world.switches)
+
+
+def test_a_pump_whose_switch_is_unavailable_is_not_exercised_and_holds_up_nothing() -> None:
+    sim = Sim(plant(HOME), mode=Mode.OFF)
+    sim.start()
+    sim.unavailable(HEATING_PUMP)
+    sim.run_for(DEFAULT_EXERCISE_INTERVAL + 3600.0)
+
+    assert len(_on_between(sim, TOWEL_PUMP)) == 1, "the towel dryer's pump is exercised"
+    assert not any(sim.switched(valve) for valve in (BASEMENT_CEILING, BEDROOM_CEILING)), (
+        "the valves of a pump that may run unseen are not opened"
+    )
+    assert sim.state.exercise is None
+
+
+def test_a_new_plant_cools_without_the_dwell_after_an_exercise() -> None:
+    sim = Sim(plant(TWO_CEILINGS), mode=Mode.OFF)
+    sim.start()
+    sim.run_for(DEFAULT_EXERCISE_INTERVAL + 3600.0)
+    assert _on_between(sim, "switch.office_pump"), "the office's pump was exercised in heat"
+
+    for zone in ("office", "den"):
+        sim.set_zone_temperature(zone, 26.0)
+    sim.set_mode(Mode.COOL)
+    for zone in ("office", "den"):
+        sim.set_target(zone, 24.0)
+    sim.run_until_true(
+        lambda: sim.flowing("office.ceiling"),
+        OPENING + 2 * REACTION,
+        "the first mode of a new Plant needs no dwell, whatever its exercises did",
+    )
+
+
+def test_a_plant_that_sat_in_dry_run_exercises_its_equipment_once_control_is_on() -> None:
+    sim = _idle_reference_plant(control=False)
+    sim.run_for(2 * DEFAULT_EXERCISE_INTERVAL)
+    assert sim.world.calls == [], "the exercises were only proposed"
+
+    sim.set_control(True)
+    sim.run_until_true(
+        lambda: sim.is_on(FLOOR_PUMP),
+        3 * OPENING + 4 * REACTION,
+        "the floor pump is exercised soon after Control equipment turns on",
+    )
+
+
+# The office's ceiling has its own surface sensor.
+SURFACE_CEILING = TWO_CEILINGS.replace(
+    "ceiling: {valves: [switch.office_ceiling_valve], pump: office, modes: [heat, cool]}",
+    "ceiling: {valves: [switch.office_ceiling_valve], pump: office, modes: [heat, cool], "
+    "surface_temperature: sensor.office_surface}",
+)
+
+
+def test_after_cooling_a_ceiling_below_its_surface_minimum_is_still_exercised() -> None:
+    sim = Sim(plant(SURFACE_CEILING), mode=Mode.COOL)
+    sim.set_sensor("sensor.office_surface", 22.0)
+    for zone in ("office", "den"):
+        sim.set_target(zone, 24.0)
+        sim.set_zone_temperature(zone, 26.0)
+    sim.start()
+    sim.run_until_true(
+        lambda: sim.flowing("office.ceiling"), OPENING + 2 * REACTION, "the office cools"
+    )
+    sim.set_mode(Mode.OFF)
+    ended = sim.run_until_true(
+        lambda: not sim.flowing("office.ceiling"), 2 * REACTION, "cooling stops"
+    )
+    # Below its surface minimum the guard blocks cooling, but the dew point is far below.
+    sim.set_sensor("sensor.office_surface", 19.0)
+    sim.set_zone_humidity("office", 30.0)
+    sim.run_for(DEFAULT_EXERCISE_INTERVAL + 3600.0)
+    assert sim.runtime is not None and sim.state.guards["office.ceiling"].blocked
+    assert any(t > ended and on for t, on in sim.switched("switch.office_pump")), (
+        "no chilled water flows in an exercise, so only the checks against condensation apply"
+    )

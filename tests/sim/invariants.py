@@ -2,11 +2,13 @@
 
 Each check reads the world, not the controller's belief, with two exceptions
 that the controller declares: the mode label of a flow is the State's
-``last_mode`` before the flow started, the last heat or cool mode that ran or
-that an exercise of an idle Plant runs in, and the Repairs are what
-``reconcile()`` reports. The condensation guard is judged on the sensor values
-the controller could see, since no controller can act on a reading it never
-received.
+``last_mode`` before the flow started, the last heat or cool mode that ran, or
+heat for an exercise of a Plant that never ran one, and the Repairs are what
+``reconcile()`` reports. A flow that starts while the State's exercise names
+its pump is the exercise's: no source heats or cools it, so its end starts no
+dwell and only the checks against condensation guard it. The condensation
+guard is judged on the sensor values the controller could see, since no
+controller can act on a reading it never received.
 
 Exemptions and bounds, all in physical seconds:
 
@@ -70,6 +72,7 @@ from custom_components.hydronicus.core.step import (
     GUARD_REFERENCE_MAX_AGE,
     DigitalThermostatState,
     ExternalThermostatState,
+    State,
 )
 from tests.sim.world import EPSILON, LATENCY, WALL_BASE, Call, World
 
@@ -114,6 +117,9 @@ class Flow:
     label: Mode
     start: float
     end: float | None = None
+    # It started while its pump was exercised, so no source heats or cools it,
+    # and its end starts no dwell.
+    exercise: bool = False
 
 
 @dataclass(slots=True)
@@ -133,6 +139,8 @@ class Checker:
         self.world = world
         self._repairs = repairs
         self.label: Mode | None = None
+        # The pump of the exercise the State holds, running or stopping.
+        self.exercised: str | None = None
         self.flows: dict[LoopRef, Flow] = {}
         self.flow_log: list[Flow] = []
         self.last_end: dict[Mode, float] = {}
@@ -179,8 +187,12 @@ class Checker:
         for ref, since in self.blocked_since.items():
             self.blocked_since[ref] = since + pause
 
-    def on_desired(self, desired: Desired, last_mode: Mode) -> None:
-        """Check the shape of a desired state and take ``last_mode`` as the label of new flows."""
+    def on_desired(self, desired: Desired, state: State) -> None:
+        """Check the shape of a desired state and take the label of new flows from the State.
+
+        That is its ``last_mode``, and its exercise, whose flows run in heat
+        before any mode ran.
+        """
         outputs = self.plant.outputs()
         for entity, target in desired.outputs.items():
             role = outputs.get(entity)
@@ -193,9 +205,10 @@ class Checker:
             raise InvariantViolation(
                 "exercise", self.world.t, f"exercising {desired.exercise} requests the source"
             )
-        label = _mode_label(last_mode)
+        label = _mode_label(state.last_mode)
         if label is not None:
             self.label = label
+        self.exercised = None if state.exercise is None else state.exercise.pump
         self.release_wanted = not desired.source_request
 
     def on_dispatch(self, call: Call) -> None:
@@ -268,11 +281,15 @@ class Checker:
             if ref not in flowing:
                 flow = self.flows.pop(ref)
                 flow.end = t
-                self.last_end[flow.label] = t
+                if not flow.exercise:
+                    self.last_end[flow.label] = t
         for ref, loop in flowing.items():
             if ref in self.flows:
                 continue
+            exercise = loop.pump == self.exercised
             label = self.label
+            if label is None and exercise:
+                label = Mode.HEAT
             if label is None:
                 raise InvariantViolation(5, t, f"loop {ref} flows before any mode ran")
             if label not in loop.modes:
@@ -295,7 +312,7 @@ class Checker:
                     f"loop {ref} flows in {label} {t - ended:.0f}s after the last {opposite} flow "
                     f"ended; the dwell is {self.plant.mode_dwell:.0f}s",
                 )
-            flow = Flow(ref, label, t)
+            flow = Flow(ref, label, t, exercise=exercise)
             self.flows[ref] = flow
             self.flow_log.append(flow)
         source_mode = self.world.source_mode()
@@ -376,7 +393,7 @@ class Checker:
         for loop in self.plant.all_loops:
             if not loop.cools:
                 continue
-            if not self.guard_blocked(loop):
+            if not self.guard_blocked(loop, exercise=loop.pump == self.exercised):
                 self.blocked_since.pop(loop.ref, None)
                 continue
             since = self.blocked_since.setdefault(loop.ref, max(t, self.paused_until))
@@ -576,8 +593,12 @@ class Checker:
             if entity is not None:
                 yield entity, area.required, area.max_age
 
-    def guard_blocked(self, loop: Loop) -> bool:
-        """Whether the condensation guard must block, on the readings the controller sees."""
+    def guard_blocked(self, loop: Loop, *, exercise: bool = False) -> bool:
+        """Whether the condensation guard must block, on the readings the controller sees.
+
+        An exercise runs no source, so only the checks against condensation, the
+        condensation switches and the dew point, apply to it.
+        """
         pump = self.plant.pump(loop.pump)
         for entity in (pump.condensation_switch, loop.condensation_switch):
             if entity is not None and self._contact(entity) is not False:
@@ -604,6 +625,8 @@ class Checker:
         threshold = worst + CONDENSATION_MARGIN - GUARD_TOLERANCE
         if any(value < threshold for value in values if value is not None):
             return True
+        if exercise:
+            return False
         if loop.surface_temperature is not None and loop.surface_minimum is not None:
             surface = self.fresh(loop.surface_temperature, GUARD_REFERENCE_MAX_AGE)
             if surface is not None and surface < loop.surface_minimum - GUARD_TOLERANCE:

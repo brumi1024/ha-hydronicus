@@ -124,8 +124,8 @@ Only a spontaneous physical change, such as a valve closing by itself, is exempt
 2. A pump with `min_flow: path` never runs without an open path, where a loop with no valve is always an open path.
 3. The source is requested only while at least one loop of the current mode is ready and, when its pump is switched, that pump is observed running.
 4. A source-driven pump with `min_flow: path` has an open path while the source is requested, during its post-run, and while it is observed running.
-5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the dwell and for the old mode's loops to stop.
-6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run.
+5. Heating loops and cooling loops never flow at the same time, and a mode change waits for the old mode's loops to stop and for the dwell after the old mode's flow; an exercise's flow starts no dwell, since no source heats or cools it.
+6. A cooling loop flows only while its condensation guard permits, except a min-flow path during the source's post-run, and an exercise, which needs only the guard's checks against condensation.
 7. Every difference between desired and observed state is eventually observed resolved or reported as a Repair.
 8. With unchanged observations, the first evaluation after a reload or restart sends no command.
 9. Removing an object first stops the equipment it removes, and a configuration that is not valid stops in order and then only observes, with a Repair.
