@@ -32,9 +32,8 @@ Hydronicus never commands:
 
 ## Dry run is not a safety proof
 
-While **Control equipment** is off, the Plant runs in Dry run: it evaluates everything against the real states of your entities and records each command as proposed instead of sending it.
-Dry run shows whether the configuration and the sequence are what you intend.
-It does not simulate water, pressure, or temperature, and it cannot prove that a valve opens, that a pump produces flow, or that the source delivers water at a safe temperature.
+While **Control equipment** is off, the Plant runs in Dry run and sends nothing; it only checks the configuration and the sequence.
+Read [what Dry run proves](how-it-works.md#what-dry-run-proves): it cannot prove that a valve opens, that a pump produces flow, or that the source delivers water at a safe temperature.
 
 ## Stopping
 
@@ -79,23 +78,13 @@ A pump the source drives with `min_flow: path` may carry chilled water through i
 
 ## Reloads, restarts, and changes
 
-A reload, an unload, and a Home Assistant restart never send a command, so the equipment stays exactly as it was while Hydronicus is not running.
-Hydronicus stores its timers, the Plant mode, and its retry state, and restores them before the first evaluation, which waits for Home Assistant to start and for every digital thermostat to restore.
-With unchanged observations, the first evaluation after a reload or restart sends no command.
+A reload, an unload, and a Home Assistant restart never send a command, so the equipment stays exactly as it was while Hydronicus is not running; with unchanged observations, the first evaluation after one sends no command either.
 
-Hydronicus also stores the last valid configuration with the outputs it was commanding.
-When an output leaves the Plant while it may be running, because you delete a zone, remove a loop, a valve, a pump, or the source, or replace the Plant from a plant file, the first evaluation of the new configuration stops the old one first.
-It runs the same off sequence as **Control equipment** off, with the old configuration: the source is released at once, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
-The sequence stops every output of the old configuration, including the ones the new configuration keeps, so a zone deleted while it heats briefly stops the whole Plant, and the source then waits for its minimum off time.
-Once every output of the old configuration is seen off, the new configuration runs, and the **Status** sensor reads `stopping` until then.
-Removing an output that is already off, or that was never armed, or while the Plant is in Dry run, sends nothing.
-An output that is unavailable when the stop begins cannot be reached and is left as it is, and one that becomes unavailable while it stops keeps the old configuration waiting until it is seen off.
-A restart in the middle of the stop continues it.
+Removing a zone, a loop, a pump, or the source, or replacing the Plant from a plant file, first stops the whole equipment of the old configuration, in the same order as **Control equipment** off, before the new configuration runs; the **Status** sensor reads `stopping` until then.
+A Plant left invalid by a removal stops the same way and then only observes, with its **Status** reading `invalid` and a Repair open until a **Reconfigure** fixes it.
+Removing the whole Plant does not stop the equipment it controlled; stop it first with **Control equipment**.
 
-A Plant whose stored configuration is not valid, for example after a zone its pump needed was deleted, stops the equipment of its last valid configuration in the same way, and then only observes.
-It commands nothing more, its **Status** reads `invalid`, and a Repair opens the Plant's **Reconfigure** to fix it; saving a valid Plant runs it again.
-
-Removing the whole Plant, like a reload or an unload, sends no command, so stop its equipment first with **Control equipment**.
+Read [reloads and restarts](how-it-works.md#reloads-and-restarts) for exactly what each evaluation stores, restores, and stops.
 
 ## Safe operating rule
 

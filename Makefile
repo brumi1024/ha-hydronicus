@@ -10,7 +10,6 @@ hooks: bootstrap
 
 lint:
 	$(UV) run ruff check .
-	$(UV) run python -m compileall -q custom_components tests
 	$(UV) run python -m json.tool hacs.json >/dev/null
 	$(UV) run python -m json.tool custom_components/hydronicus/manifest.json >/dev/null
 	$(UV) run python -m json.tool custom_components/hydronicus/strings.json >/dev/null

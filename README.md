@@ -42,7 +42,7 @@ Use a disposable or staging Home Assistant instance for a first evaluation.
 4. Open **Settings > Devices & services**, choose **Add integration**, and search for **Hydronicus**.
 
 The minimum Home Assistant version declared by this repository is `2026.9.0`.
-A Plant set up with version 0.1.0 has to be set up again; see [upgrade and rollback](docs/upgrade-and-rollback.md).
+A Plant set up with version 0.1.0 has to be set up again; see the [0.2.0 release notes](docs/releases/v0.2.0.md#upgrade).
 
 ## First simulated Plant
 
@@ -132,9 +132,8 @@ See [configuration](docs/configuration.md) for every form, [the plant file](docs
 
 ## Dry run and control
 
-Dry run is where every Plant starts, and where it returns when **Control equipment** is turned off.
-It evaluates the Plant against the real states of your entities and records each command as proposed instead of sending it.
-It is a check of the configuration and the sequence, not a physical simulation of water, pressure, or temperature, and it cannot prove that a valve opens or a pump produces flow.
+Dry run is where every Plant starts, and where it returns when **Control equipment** is turned off: it evaluates the Plant against the real states of your entities and proposes each command instead of sending it.
+Read [what Dry run proves](docs/how-it-works.md#what-dry-run-proves) before you rely on it.
 
 With **Control equipment** on, Hydronicus commands the outputs you armed, and nothing else.
 It never commands an external thermostat or a pump the source drives.
@@ -154,7 +153,8 @@ Read [safety limits](docs/safety.md) before you arm real equipment.
 - [Entities](docs/entities.md): the entities a Plant publishes, for dashboards and automations.
 - [Safety limits](docs/safety.md): what Hydronicus does and does not protect.
 - [Troubleshooting](docs/troubleshooting.md): the status, the reasons, every Repair, and diagnostics.
-- [Upgrade and rollback](docs/upgrade-and-rollback.md): installing, updating, and moving a Plant from version 0.1.0.
+- [Upgrade and rollback](docs/upgrade-and-rollback.md): installing, updating, and rolling back Hydronicus.
+- [Release notes](docs/releases): what changed and how to move to each version.
 - [Development](docs/development.md): the local environment, the tests, and the architecture.
 
 When reporting a problem, use the [diagnostic bug report template](.github/ISSUE_TEMPLATE/diagnostic-bug-report.md), and remove credentials, tokens, private addresses, and household details first.

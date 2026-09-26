@@ -391,5 +391,4 @@ def test_current_documents_use_current_words(document: str) -> None:
     """No current document uses an em dash or a term the redesign replaced."""
     text = _text(document)
     assert "\N{EM DASH}" not in text
-    if document != "docs/upgrade-and-rollback.md":
-        assert [term for term in STALE_TERMS if term.lower() in text.lower()] == []
+    assert [term for term in STALE_TERMS if term.lower() in text.lower()] == []

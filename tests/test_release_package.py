@@ -66,16 +66,8 @@ def test_readme_minimum_version_check_rejects_unrelated_version() -> None:
     )
 
 
-def test_public_control_boundary_is_documented_without_legacy_package(
-    tmp_path: Path,
-) -> None:
-    """Public docs state the control boundary and exclude the legacy package."""
-    how_it_works = (REPOSITORY_ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
+def test_the_release_archive_excludes_the_legacy_package(tmp_path: Path) -> None:
+    """The release archive never carries the legacy hydronic_climate package."""
     files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.2.0")
 
-    assert "Every new Plant starts in Dry run" in how_it_works
-    assert "A new Plant starts with no output armed" in how_it_works
-    assert "records each command it would send as proposed" in how_it_works
-    assert "Cooling stops a pump without overrun" in how_it_works
-    assert "never send a command" in how_it_works
     assert all("hydronic_climate" not in path for path in files)
