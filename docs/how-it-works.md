@@ -92,7 +92,7 @@ The source's request should be on once a loop that a zone calls for is ready in 
 A plant loop that runs with the source never asks for heat by itself.
 The request stays on for at least its minimum on time, 600 seconds by default, while a ready loop remains, and stays off for at least its minimum off time, also 600 seconds, before it is asked again.
 The minimum on time also holds when the **Mode** select changes the mode.
-A blocking condensation guard, a loop that is no longer ready or whose pump stops, and turning **Control equipment** off release the request at once.
+A blocking condensation guard, a loop that is no longer ready or whose pump stops, turning **Control equipment** off, and stopping a previous configuration release the request at once.
 After the request ends, the source's post-run, 180 seconds by default, keeps the loops of its own pumps open.
 
 ### 10. Timers
@@ -215,6 +215,11 @@ A valve that has been open for an hour therefore still counts as ready after a r
 
 Changing a Plant's configuration reloads it.
 A change in the area settings or the armed outputs does not; the Plant just evaluates again.
+
+Hydronicus also stores the last configuration with the outputs it was commanding.
+When a new configuration no longer has an output that is on, or has a command in flight, the first evaluation runs the off sequence of the old configuration, as **Control equipment** off does, until every output of the old configuration is seen off, and the **Status** sensor reads `stopping` meanwhile.
+Only then does the new configuration run.
+The sequence also stops the outputs the new configuration keeps; they start again as the new configuration asks for them.
 
 ## What Home Assistant shows
 

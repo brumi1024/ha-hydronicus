@@ -301,3 +301,36 @@ def plant_entities(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, str]:
         str(entity.unique_id): entity.entity_id
         for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
     }
+
+
+RUNNING = {LIVING_CEILING, LIVING_FLOOR, FLOOR_PUMP, SOURCE_REQUEST, TOWEL_PUMP}
+
+
+async def async_heat_living_area(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, text: str = REFERENCE_PLANT
+) -> ConfigEntry:
+    """Set the reference plant up and let the living area heat until everything runs."""
+    reference_world(hass)
+    entry = await async_import(hass, text)
+    await async_set_options(hass, entry, armed=read_plant_file(text).outputs(), control=True)
+    await async_call(hass, "select", "select_option", entity_id="select.home_mode", option="heat")
+    await async_call(
+        hass, "climate", "set_temperature", entity_id="climate.living_area", temperature=22.0
+    )
+    await async_call(
+        hass, "climate", "set_hvac_mode", entity_id="climate.living_area", hvac_mode="heat"
+    )
+    set_zone_temperature(hass, "living_area", 20.0)
+    await hass.async_block_till_done()
+    await async_advance(hass, freezer, 200, step=5)
+    assert {e for e in REFERENCE_OUTPUTS if hass.states.get(e).state == "on"} == RUNNING
+    return entry
+
+
+def restart_states(hass: HomeAssistant, entity_ids: set[str]) -> None:
+    """Write every state again as a Home Assistant restart does, which resets last_changed."""
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        assert state is not None
+        hass.states.async_remove(entity_id)
+        hass.states.async_set(entity_id, state.state, dict(state.attributes))

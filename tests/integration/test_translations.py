@@ -26,6 +26,7 @@ from custom_components.hydronicus.issues import (
     outputs_awaiting_confirmation,
     zone_area_issue,
 )
+from custom_components.hydronicus.sensor import STATUSES
 from tests.integration.helpers import REFERENCE_PLANT, SOURCE_REQUEST
 
 COMPONENT = Path(__file__).parents[2] / "custom_components" / "hydronicus"
@@ -53,14 +54,11 @@ def test_the_english_translation_is_a_copy_of_strings() -> None:
 def test_every_entity_translation_key_has_a_name_and_an_icon() -> None:
     assert {domain: set(keys) for domain, keys in STRINGS["entity"].items()} == ENTITY_KEYS
     assert {domain: set(keys) for domain, keys in ICONS["entity"].items()} == ENTITY_KEYS
-    assert STRINGS["entity"]["sensor"]["status"]["state"].keys() == {
-        "off",
-        "idle",
-        "heating",
-        "cooling",
-        "changing_over",
-        "degraded",
-    }
+    assert (
+        STRINGS["entity"]["sensor"]["status"]["state"].keys()
+        == ICONS["entity"]["sensor"]["status"]["state"].keys()
+        == set(STATUSES)
+    )
 
 
 def _issues() -> list[Issue]:

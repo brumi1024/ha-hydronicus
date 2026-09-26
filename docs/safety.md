@@ -41,7 +41,7 @@ It does not simulate water, pressure, or temperature, and it cannot prove that a
 Turning **Control equipment** off stops the armed equipment in order: the source is released, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
 Only then does the Plant go to Dry run; the switch's `live` attribute shows when it has.
 Switching the **Mode** select to off stops the equipment the same way and keeps it stopped, except that the source's request stays on until it has been on for its minimum on time, as at the end of demand.
-**Control equipment** off, a blocking condensation guard, and a lost pump or path release the request at once.
+**Control equipment** off, a blocking condensation guard, a lost pump or path, and stopping a previous configuration release the request at once.
 
 ## Failures are retried and surfaced
 
@@ -83,12 +83,19 @@ A reload, an unload, and a Home Assistant restart never send a command, so the e
 Hydronicus stores its timers, the Plant mode, and its retry state, and restores them before the first evaluation, which waits for Home Assistant to start and for every digital thermostat to restore.
 With unchanged observations, the first evaluation after a reload or restart sends no command.
 
+Hydronicus also stores the last configuration with the outputs it was commanding.
+When an output leaves the Plant while it may be running, because you delete a zone, remove a loop, a valve, a pump, or the source, or replace the Plant from a plant file, the first evaluation of the new configuration stops the old one first.
+It runs the same off sequence as **Control equipment** off, with the old configuration: the source is released at once, pumps finish their overrun or the source's post-run, and valves close once their pumps are seen off.
+The sequence stops every output of the old configuration, including the ones the new configuration keeps, so a zone deleted while it heats briefly stops the whole Plant, and the source then waits for its minimum off time.
+Once every output of the old configuration is seen off, the new configuration runs, and the **Status** sensor reads `stopping` until then.
+Removing an output that is already off, or that was never armed, or while the Plant is in Dry run, sends nothing.
+An output that is unavailable when the stop begins cannot be reached and is left as it is, and one that becomes unavailable while it stops keeps the old configuration waiting until it is seen off.
+A restart in the middle of the stop continues it.
+
 A Plant whose stored configuration is not valid, for example after a zone its pump needed was deleted, does not run at all.
 It sends no command, the equipment stays as it was, and a Repair opens the Plant's **Reconfigure** to fix it.
 
-When an output leaves the Plant, because you remove a zone, a loop, a valve, or the source, Hydronicus stops commanding it and leaves it exactly as it is.
-A valve that was open stays open, and a request that was on stays on.
-Before you remove equipment from a running Plant, set the affected zones' thermostats, or the Plant's **Mode**, to off and wait until the equipment has stopped.
+Removing the whole Plant, like a reload or an unload, sends no command, so stop its equipment first with **Control equipment**.
 
 ## Safe operating rule
 

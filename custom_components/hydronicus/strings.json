@@ -509,7 +509,8 @@
           "heating": "Heating",
           "cooling": "Cooling",
           "changing_over": "Changing over",
-          "degraded": "Degraded"
+          "degraded": "Degraded",
+          "stopping": "Stopping removed outputs"
         }
       },
       "combined_temperature": {

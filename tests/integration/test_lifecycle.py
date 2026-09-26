@@ -28,54 +28,22 @@ from custom_components.hydronicus.storage import new_entry
 from tests.integration.helpers import (
     BASEMENT_CEILING,
     FLOOR_PUMP,
-    LIVING_CEILING,
     LIVING_FLOOR,
     REFERENCE_OUTPUTS,
     REFERENCE_PLANT,
-    SOURCE_REQUEST,
+    RUNNING,
     SUPPLY,
-    TOWEL_PUMP,
     Actuators,
     async_advance,
     async_call,
+    async_heat_living_area,
     async_import,
     async_set_options,
     plant_entities,
     reference_world,
+    restart_states,
     set_zone_temperature,
 )
-
-RUNNING = {LIVING_CEILING, LIVING_FLOOR, FLOOR_PUMP, SOURCE_REQUEST, TOWEL_PUMP}
-
-
-async def async_heat_living_area(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, text: str = REFERENCE_PLANT
-) -> ConfigEntry:
-    """Set the reference plant up and let the living area heat until everything runs."""
-    reference_world(hass)
-    entry = await async_import(hass, text)
-    await async_set_options(hass, entry, armed=read_plant_file(text).outputs(), control=True)
-    await async_call(hass, "select", "select_option", entity_id="select.home_mode", option="heat")
-    await async_call(
-        hass, "climate", "set_temperature", entity_id="climate.living_area", temperature=22.0
-    )
-    await async_call(
-        hass, "climate", "set_hvac_mode", entity_id="climate.living_area", hvac_mode="heat"
-    )
-    set_zone_temperature(hass, "living_area", 20.0)
-    await hass.async_block_till_done()
-    await async_advance(hass, freezer, 200, step=5)
-    assert {e for e in REFERENCE_OUTPUTS if hass.states.get(e).state == "on"} == RUNNING
-    return entry
-
-
-def restart_states(hass: HomeAssistant, entity_ids: set[str]) -> None:
-    """Write every state again as a Home Assistant restart does, which resets last_changed."""
-    for entity_id in entity_ids:
-        state = hass.states.get(entity_id)
-        assert state is not None
-        hass.states.async_remove(entity_id)
-        hass.states.async_set(entity_id, state.state, dict(state.attributes))
 
 
 async def test_a_reload_with_slow_actuators_sends_no_command_and_keeps_pumps_running(
@@ -153,7 +121,9 @@ async def test_the_first_evaluation_sees_restored_thermostats_and_persisted_stat
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     stored = hass_storage[f"{DOMAIN}.{entry.entry_id}"]["data"]
-    assert set(stored) == {"state", "reconcile", "outputs", "mode"}
+    assert set(stored) == {"state", "reconcile", "outputs", "mode", "commanding"}
+    assert stored["commanding"]["plant"]["id"] == entry.unique_id
+    assert sorted(stored["commanding"]["outputs"]) == sorted(REFERENCE_OUTPUTS)
     assert stored["mode"] == "heat" and stored["state"]["live"] is True
     assert stored["outputs"][LIVING_FLOOR]["value"] is True
 

@@ -87,6 +87,13 @@ async def async_get_config_entry_diagnostics(
             for proposal in runtime.proposals
         ],
         "missing": dict(runtime.missing),
+        "stopping": None
+        if runtime.stopping is None
+        else {
+            "plant": export_plant(runtime.stopping.plant),
+            "outputs": sorted(runtime.stopping.outputs),
+            "not_off": runtime.stopping_outputs(),
+        },
         "issues": [issue.kind.value for issue in runtime.issues],
     }
     return async_redact_data(data, TO_REDACT)

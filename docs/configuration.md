@@ -122,8 +122,9 @@ The menu says whether the stored Plant is valid, and offers:
 - **Review and save**: **Save the changes** lists the zones added, removed, and changed, the Plant settings that change, and the outputs added and removed, with the warnings of the new Plant.
 
 Nothing is stored until you submit **Save the changes**.
-The Plant then reloads, which never sends a command.
+The Plant then reloads.
 Removed outputs are disarmed, and new outputs wait for you to arm them.
+If a removed output was running, the Plant first stops the equipment of its previous configuration, as [safety limits](safety.md#reloads-restarts-and-changes) describe.
 
 A new pump that the source runs and that needs an open loop has no loops yet to hold open, so the pump form refuses it with **Needs an open loop**.
 Add it with **A separator guarantees its flow**, give it loops, and then change its **Minimum flow** and choose its **Min-flow loops**.
@@ -142,6 +143,7 @@ A new zone's valves are new outputs, so its loops wait until you arm them, while
 Editing a thermostat, a sensor, a name, or a timing never changes what is armed.
 
 Deleting a zone also removes it from any plant loop that runs with it and drops its loops from any pump's min-flow loops.
+Deleting a zone whose loops are running first stops the equipment of the previous configuration, then runs the Plant without the zone.
 If that leaves a pump the source runs without a min-flow loop, the Plant is no longer valid: it stops running, and a Repair opens its **Reconfigure** to fix it.
 
 ## Areas

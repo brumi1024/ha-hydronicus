@@ -29,7 +29,15 @@ from .runtime import PlantRuntime, ZoneReadings
 
 PARALLEL_UPDATES = 0
 
-STATUSES = ["off", "idle", "heating", "cooling", "changing_over", "degraded"]
+STATUSES = [
+    "off",
+    "idle",
+    "heating",
+    "cooling",
+    "changing_over",
+    "degraded",
+    "stopping",
+]
 
 
 class PlantStatusSensor(HydronicusEntity, SensorEntity):
@@ -71,6 +79,7 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "source_requested": desired is not None and desired.source_request,
             "outputs_not_responding": sorted(reconciled.repairs) if reconciled else [],
             "missing_entities": sorted(runtime.missing),
+            "stopping_outputs": runtime.stopping_outputs(),
         }
         if desired is not None:
             attributes["reasons"] = dict(desired.reasons)

@@ -30,6 +30,7 @@ When a zone calls for heat and nothing moves, check these in order:
 | `heating` or `cooling` | Something runs, or is asked to run, in that mode. | `active_loops`, and `proposed` in Dry run. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. | `reasons`, under `mode`. |
 | `degraded` | An output does not respond, or an entity the Plant binds does not exist. | `outputs_not_responding`, `missing_entities`, and the Repairs. |
+| `stopping` | A change removed outputs that were running, and the equipment of the previous configuration is being stopped. | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
 | unavailable | The Plant has not evaluated yet, or is not loaded. | Whether every digital thermostat has loaded, and the Repairs. |
 
 The **Status** sensor's `reasons` attribute explains every decision, keyed by zone slug, loop, output entity, `source`, and `mode`.
@@ -191,7 +192,7 @@ For a plant loop that cools, the dew points of the zones it runs with count, or 
 ## Logs and diagnostics
 
 Open **Settings > System > Logs** and filter for `hydronicus`.
-Hydronicus logs a warning when a command fails or does not return in time, when the persisted state of a Plant cannot be read, and when the thermostats of a Plant do not load.
+Hydronicus logs a warning when a command fails or does not return in time, when the persisted state of a Plant cannot be read, when the thermostats of a Plant do not load, and when it stops the outputs of a previous configuration.
 It logs an error when it refuses a Plant created by an earlier version.
 
 Download diagnostics with **Download diagnostics** on the Plant's entry.
@@ -208,6 +209,7 @@ They hold:
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |
 | `missing` | The bound entities that do not exist. |
+| `stopping` | While the previous configuration stops: that configuration, the outputs it stops, and those not yet seen off. |
 
 Diagnostics leave out the Plant ID and every name, but they keep entity IDs, area IDs, and slugs.
 Review them before you share them, and remove anything that identifies your household.
@@ -223,7 +225,14 @@ A Plant whose stored configuration is not valid raises the [Plant is not valid](
 ### The equipment is in an unexpected state
 
 Turn **Control equipment** off, and wait until its `live` attribute is false.
-If equipment still runs, stop it by hand or with its own controls; Hydronicus never commands an output it does not own, including one that was removed from the Plant.
+If equipment still runs, stop it by hand or with its own controls; Hydronicus never commands an output it does not own, and a removed output only while it stops it.
+
+### Removed equipment keeps running
+
+After a change removes outputs that were running, the **Status** sensor reads `stopping`, and `stopping_outputs` lists the outputs of the previous configuration that are not yet seen off.
+The new configuration runs once that list is empty.
+An output that does not respond keeps the list from emptying and raises the [An output does not respond](#an-output-does-not-respond) Repair; one that is unavailable waits until it returns, so fix the device or stop it by hand.
+An output that was unavailable when the change was saved, or that was never armed, is left as it is; stop it by hand.
 
 ### The test instance is no longer trustworthy
 

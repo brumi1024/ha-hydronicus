@@ -22,7 +22,7 @@ Home Assistant makes each entity ID from the device name and the entity name whe
 | --- | --- | --- |
 | **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`. `cool` is offered only when a loop of the Plant cools. |
 | **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. |
-| **Status** sensor | `sensor.<plant>_status` | `off`, `idle`, `heating`, `cooling`, `changing_over`, or `degraded`. |
+| **Status** sensor | `sensor.<plant>_status` | `off`, `idle`, `heating`, `cooling`, `changing_over`, `degraded`, or `stopping`. |
 
 The **Mode** select is the Plant mode that the zones heat or cool in.
 An automation can set it; Hydronicus keeps it across restarts.
@@ -43,6 +43,7 @@ The **Status** sensor reads:
 | `cooling` | The same for cooling. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. |
 | `degraded` | An output did not respond, or an entity the Plant binds does not exist. |
+| `stopping` | A changed configuration removed outputs that were running, so the Plant first stops the equipment of its previous configuration. |
 
 It is unavailable until the Plant's first evaluation, and it has these attributes:
 
@@ -57,6 +58,7 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | `source_requested` | Whether the source's request is on. |
 | `outputs_not_responding` | The outputs whose change was sent three times and never observed. |
 | `missing_entities` | Each bound entity that does not exist, with where the Plant binds it. |
+| `stopping_outputs` | While `stopping`, the outputs of the previous configuration that are not yet seen off. |
 | `reasons` | Why, for each zone, loop, output, the source, and the mode. It is not recorded in history. |
 | `proposed` | Only in Dry run: the state Hydronicus would give each output. It is not recorded in history. |
 

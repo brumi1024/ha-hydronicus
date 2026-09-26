@@ -18,6 +18,12 @@ Setup loads the persisted State and the digital thermostats restore their
 entities before the first evaluation, which waits until Home Assistant has
 started. Stopping, as on unload and reload, only cancels timers, listeners, and
 unsent actions, and saves; it never sends a command.
+
+The persisted state also holds the last Plant with the outputs it was
+commanding. When a new configuration removes an output that is still on, the
+first evaluation runs the off sequence of that previous Plant, as Control
+equipment off would, until its outputs are observed off, and only then runs the
+new Plant.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ import asyncio
 import logging
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Final
 
@@ -73,7 +79,7 @@ from .core.model import (
     ValueTarget,
     Zone,
 )
-from .core.plant_file import entity_paths
+from .core.plant_file import PlantFileError, entity_paths, export_plant, parse_plant
 from .core.reconcile import Action, Reconciled, ReconcileState, reconcile, step_view
 from .core.step import (
     CALL_TIMEOUT,
@@ -123,6 +129,32 @@ class Proposal:
 
 
 @dataclass(frozen=True, slots=True)
+class Commanding:
+    """A valid Plant and the armed outputs it commanded, persisted across setups.
+
+    A new configuration compares itself with it, so that outputs it no longer
+    has are stopped by the Plant that started them.
+    """
+
+    plant: Plant
+    outputs: frozenset[str]
+
+    def to_dict(self, document: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Return JSON-friendly data, with the Plant's export when already made."""
+        return {
+            "plant": dict(document) if document is not None else export_plant(self.plant),
+            "outputs": sorted(self.outputs),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Commanding:
+        outputs = data["outputs"]
+        if not isinstance(outputs, list):
+            raise TypeError("outputs is not a list")
+        return cls(parse_plant(data["plant"]), frozenset(str(entity) for entity in outputs))
+
+
+@dataclass(frozen=True, slots=True)
 class ZoneReadings:
     """What a zone's sensors show now, for its entities."""
 
@@ -160,6 +192,13 @@ class PlantRuntime:
         self.hass = hass
         self.entry = entry
         self.plant = plant
+        # The last valid Plant and the outputs it commanded, as persisted.
+        self.previous: Commanding | None = None
+        # The previous Plant while its off sequence runs, with the outputs it stops.
+        self.stopping: Commanding | None = None
+        self._decided = False
+        self._export = export_plant(plant)
+        self._stopping_export: dict[str, Any] | None = None
         self.store: Store[dict[str, Any]] = Store(hass, STORE_VERSION, store_key(entry.entry_id))
         self.state = State()
         self.reconcile_state = ReconcileState()
@@ -226,7 +265,20 @@ class PlantRuntime:
             )
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
-        self.memory.forget_except(set(self._outputs))
+        if (commanding := data.get("commanding")) is not None:
+            try:
+                self.previous = Commanding.from_dict(commanding)
+            except (KeyError, TypeError, ValueError, PlantFileError) as error:
+                _LOGGER.warning(
+                    "The previous configuration of Plant %s could not be read, so outputs it "
+                    "removed are not stopped: %s",
+                    self.entry.title,
+                    error,
+                )
+        kept = set(self._outputs)
+        if self.previous is not None:
+            kept |= self.previous.outputs
+        self.memory.forget_except(kept)
         self._saved = self._data()
 
     @callback
@@ -362,16 +414,24 @@ class PlantRuntime:
         if not self._stopped:
             self.evaluate()
 
+    @property
+    def control_plant(self) -> Plant:
+        """The Plant whose outputs the evaluations drive: the previous one while it stops."""
+        return self.plant if self.stopping is None else self.stopping.plant
+
     @callback
     def evaluate(self) -> None:
         """Run one evaluation now."""
         now = dt_util.utcnow().timestamp()
+        if not self._decided:
+            self._decide()
+        plant = self.control_plant
         self._resolve_areas()
-        observations = self._observe(now)
+        observations = self._observe(now, plant)
         view = step_view(observations, self.reconcile_state)
-        state, desired, due = step(self.plant, view, self.state, now)
+        state, desired, due = step(plant, view, self.state, now)
         result = reconcile(
-            self.plant,
+            plant,
             desired,
             observations.outputs,
             self.reconcile_state,
@@ -392,21 +452,80 @@ class PlantRuntime:
             zone.slug: _zone_readings(zone, observations, self.areas, now)
             for zone in self.plant.zones
         }
+        if self.stopping is not None and not state.live:
+            # Every output of the previous Plant is observed off: the new one takes over.
+            _LOGGER.info(
+                "Plant %s stopped the outputs of its previous configuration", self.entry.title
+            )
+            self.stopping = self._stopping_export = None
+            self.request_evaluation()
         self._save()
         if result.send:
             self._send(result.send, now)
         self._schedule(now, due, result.retry_at)
-        self._sync_issues(result)
+        self._sync_issues(result, plant)
         self._publish()
         if result.proposed:
             # A Dry run proposal counts as observed, so it is a change that evaluates
             # again, as the observed result of a live call would be.
             self.request_evaluation()
 
-    def _observe(self, now: float) -> Observations:
+    @callback
+    def _decide(self) -> None:
+        """Before the first evaluation, choose whether the previous Plant stops first.
+
+        It does when an output it commanded and the new Plant does not have is
+        observed on or has a call in flight. The off sequence stops every output of
+        the previous Plant that is available now; one that is unavailable cannot be
+        reached and is left as it is.
+        """
+        self._decided = True
+        previous = self.previous
+        if previous is None or not previous.outputs:
+            return
+        roles = previous.plant.outputs()
+        states, attempts = self.hass.states, self.reconcile_state.attempts
+
+        def value(entity: str) -> bool | str | None:
+            state = states.get(entity)
+            if roles[entity] is OutputRole.SOURCE_MODE:
+                return option_value(state)
+            return switch_value(state)
+
+        commanded = {entity for entity in previous.outputs if entity in roles}
+        if not any(
+            entity in attempts or value(entity) is True for entity in commanded - set(self._outputs)
+        ):
+            return
+        reachable = frozenset(
+            entity for entity in commanded if entity in attempts or value(entity) is not None
+        )
+        if not reachable:
+            return
+        _LOGGER.warning(
+            "Plant %s stops the outputs of its previous configuration before it runs the new one",
+            self.entry.title,
+        )
+        self.stopping = Commanding(previous.plant, reachable)
+        self._stopping_export = export_plant(previous.plant)
+        # The persisted Plant was live, so its off sequence commands.
+        self.state = replace(self.state, live=True)
+
+    def _plants(self) -> tuple[Plant, ...]:
+        """The Plants the runtime reads: the configured one and one that is stopping."""
+        return (self.plant,) if self.stopping is None else (self.plant, self.stopping.plant)
+
+    def _roles(self) -> dict[str, OutputRole]:
+        """Every output of the Plants the runtime reads, with its role."""
+        roles = dict(self._outputs)
+        if self.stopping is not None:
+            roles.update(self.stopping.plant.outputs())
+        return roles
+
+    def _observe(self, now: float, plant: Plant) -> Observations:
         states = self.hass.states
         outputs: dict[str, OutputState] = {}
-        for entity, role in self._outputs.items():
+        for entity, role in plant.outputs().items():
             state = states.get(entity)
             changed = now if state is None else state.last_changed_timestamp
             if role is OutputRole.SOURCE_MODE:
@@ -416,7 +535,7 @@ class PlantRuntime:
                 on = switch_value(state)
                 outputs[entity] = SwitchState(on, self.memory.since(entity, on, changed))
         readiness: dict[str, SwitchState] = {}
-        for loop in self.plant.all_loops:
+        for loop in plant.all_loops:
             for valve in loop.valves:
                 if valve.readiness is not None:
                     state = states.get(valve.readiness)
@@ -428,15 +547,17 @@ class PlantRuntime:
             for entity, kind in self._sensor_kinds().items()
         }
         thermostats: dict[str, ThermostatState] = {}
-        for zone in self.plant.zones:
+        for zone in plant.zones:
             if isinstance(zone.thermostat, ExternalThermostat):
                 thermostats[zone.slug] = external_thermostat(states.get(zone.thermostat.entity))
             elif (digital := self.thermostats.get(zone.slug)) is not None:
                 thermostats[zone.slug] = digital
+        # A stopping Plant runs its off sequence, as with Control equipment off.
+        stopping = self.stopping
         return Observations(
             mode=self.requested_mode,
-            control=self.control,
-            armed=self.armed,
+            control=self.control and stopping is None,
+            armed=self.armed if stopping is None else stopping.outputs,
             outputs=outputs,
             readiness=readiness,
             sensors=sensors,
@@ -445,15 +566,20 @@ class PlantRuntime:
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
-        """Every numeric sensor the Plant reads now, with what it measures."""
+        """Every numeric sensor the Plants read now, with what it measures."""
         kinds: dict[str, SensorKind] = {}
-        for pump in self.plant.pumps:
+        for plant in self._plants():
+            self._add_sensor_kinds(plant, kinds)
+        return kinds
+
+    def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
+        for pump in plant.pumps:
             if pump.supply_temperature is not None:
                 kinds[pump.supply_temperature] = SensorKind.WATER
-        for loop in self.plant.all_loops:
+        for loop in plant.all_loops:
             if loop.surface_temperature is not None:
                 kinds[loop.surface_temperature] = SensorKind.AIR
-        for zone in self.plant.zones:
+        for zone in plant.zones:
             for sensor in zone.temperature:
                 kinds[sensor.entity] = SensorKind.AIR
             for sensor in zone.humidity:
@@ -466,20 +592,22 @@ class PlantRuntime:
                     kinds[names.temperature] = SensorKind.AIR
                 if names.humidity is not None:
                     kinds[names.humidity] = SensorKind.HUMIDITY
-        return kinds
 
     # Areas and the state listener
 
     @callback
     def _resolve_areas(self) -> None:
         """Re-read the covered areas and follow what they name now, without a reload."""
-        areas = resolve_area_sensors(self.hass, covered_area_ids(self.plant))
+        covered = tuple(
+            dict.fromkeys(area for plant in self._plants() for area in covered_area_ids(plant))
+        )
+        areas = resolve_area_sensors(self.hass, covered)
         if areas != self.areas or self._area_listener is None:
             self.areas = areas
             if self._area_listener is not None:
                 self._area_listener()
             self._area_listener = async_track_area_changes(
-                self.hass, covered_area_ids(self.plant), areas, self.request_evaluation
+                self.hass, covered, areas, self.request_evaluation
             )
         tracked = self._tracked_entities()
         if tracked != self._tracked or self._state_listener is None:
@@ -491,18 +619,19 @@ class PlantRuntime:
             )
 
     def _tracked_entities(self) -> frozenset[str]:
-        tracked = set(self._outputs) | set(self._sensor_kinds())
-        for loop in self.plant.all_loops:
-            tracked.update(valve.readiness for valve in loop.valves if valve.readiness)
-        for zone in self.plant.zones:
-            if isinstance(zone.thermostat, ExternalThermostat):
-                tracked.add(zone.thermostat.entity)
+        tracked = set(self._roles()) | set(self._sensor_kinds())
+        for plant in self._plants():
+            for loop in plant.all_loops:
+                tracked.update(valve.readiness for valve in loop.valves if valve.readiness)
+            for zone in plant.zones:
+                if isinstance(zone.thermostat, ExternalThermostat):
+                    tracked.add(zone.thermostat.entity)
         return frozenset(tracked)
 
     @callback
     def _on_state_change(self, event: Event[EventStateChangedData]) -> None:
         entity = event.data["entity_id"]
-        role = self._outputs.get(entity)
+        role = self._roles().get(entity)
         new_state: HassState | None = event.data["new_state"]
         if role is not None and new_state is not None:
             # Every change of an output is remembered, so no change goes unseen
@@ -589,7 +718,18 @@ class PlantRuntime:
             "reconcile": self.reconcile_state.to_dict(),
             "outputs": self.memory.to_dict(),
             "mode": self.requested_mode.value,
+            "commanding": self._commanding(),
         }
+
+    def _commanding(self) -> dict[str, Any] | None:
+        """The Plant whose outputs may be on and the outputs it commands, to persist."""
+        if not self._decided:
+            # Nothing has run yet: keep what the previous setup left.
+            return None if self.previous is None else self.previous.to_dict()
+        if self.stopping is not None:
+            return self.stopping.to_dict(self._stopping_export)
+        outputs = self.armed if self.state.live else frozenset()
+        return Commanding(self.plant, outputs).to_dict(self._export)
 
     @callback
     def _save(self) -> None:
@@ -601,9 +741,12 @@ class PlantRuntime:
     # Repairs
 
     @callback
-    def _sync_issues(self, result: Reconciled) -> None:
+    def _sync_issues(self, result: Reconciled, reconciled: Plant) -> None:
+        """Raise the current Repairs; ``reconciled`` is the Plant ``result`` drove."""
         plant, states = self.plant, self.hass.states
-        issues: list[Issue] = [output_not_responding(plant, entity) for entity in result.repairs]
+        issues: list[Issue] = [
+            output_not_responding(reconciled, entity) for entity in result.repairs
+        ]
         armed = self.armed
         # A new Plant starts with nothing armed, and its owner arms it in Plant settings,
         # so a Repair then would only repeat that step. Once any output is armed, an
@@ -649,10 +792,12 @@ class PlantRuntime:
         return source is not None and _on(view.outputs.get(source.request))
 
     def status(self) -> str | None:
-        """Off, idle, heating, cooling, changing over, or degraded."""
+        """Off, idle, heating, cooling, changing over, degraded, or stopping."""
         desired, result = self.desired, self.reconciled
         if desired is None or result is None:
             return None
+        if self.stopping is not None:
+            return "stopping"
         if result.repairs or self.missing:
             return "degraded"
         if "mode" in desired.reasons:
@@ -665,6 +810,18 @@ class PlantRuntime:
         ):
             return "heating" if desired.mode is Mode.HEAT else "cooling"
         return "idle"
+
+    def stopping_outputs(self) -> list[str]:
+        """The outputs of a stopping previous Plant that are not yet observed off."""
+        stopping, observations = self.stopping, self.observations
+        if stopping is None or observations is None:
+            return []
+        return sorted(
+            entity
+            for entity in stopping.outputs
+            if isinstance(state := observations.outputs.get(entity), SwitchState)
+            and state.on is not False
+        )
 
     def blocked_zones(self) -> dict[str, str]:
         """Each zone that cannot get what its thermostat asks for, with the reason."""

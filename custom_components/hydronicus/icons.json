@@ -49,7 +49,8 @@
           "heating": "mdi:fire",
           "cooling": "mdi:snowflake",
           "changing_over": "mdi:swap-horizontal",
-          "degraded": "mdi:alert-outline"
+          "degraded": "mdi:alert-outline",
+          "stopping": "mdi:stop-circle-outline"
         }
       },
       "combined_temperature": {

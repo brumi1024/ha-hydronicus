@@ -82,7 +82,8 @@ Never edit `.storage` by hand.
 
 Reload, unload, removal, and Home Assistant stop never send a command, so the equipment stays exactly as it was.
 Hydronicus stores its timers and restores them on the next start, so a reload or restart continues where it left off, and with unchanged observations the first evaluation sends no command.
-Removing a Plant, a zone, or an output does not stop the equipment it controlled; stop it first, as [safety limits](safety.md#reloads-restarts-and-changes) describes.
+Removing a zone or an output that is running makes the first evaluation of the new configuration stop the previous one in order, as [safety limits](safety.md#reloads-restarts-and-changes) describes.
+Removing the whole Plant does not stop the equipment it controlled; stop it first with **Control equipment**.
 
 ## If rollback is incomplete
 
