@@ -30,6 +30,13 @@ from tests.integration.helpers import (
     set_zone_temperature,
 )
 
+# The reference plant with a living area thermostat that follows the temperature
+# at once, so the end-to-end sequence is the Plant's own.
+_LIVING_AREAS = "    areas: [living_room, dining_room, kitchen, hallway]\n"
+IMMEDIATE_LIVING_AREA = REFERENCE_PLANT.replace(
+    _LIVING_AREAS, _LIVING_AREAS + "    thermostat: {digital: {min_on: 0, min_off: 0}}\n"
+)
+
 # The entity contract of the reference plant (contract K7): 24 entities.
 REFERENCE_ENTITIES = {
     "select.home_mode",
@@ -89,7 +96,8 @@ async def test_the_reference_plant_heats_a_zone_end_to_end(
 ) -> None:
     """Valves open, then the floor pump runs, then the heat pump is asked; then all stops."""
     reference_world(hass, temperature=21.0)
-    entry = await async_import(hass, REFERENCE_PLANT)
+    assert IMMEDIATE_LIVING_AREA != REFERENCE_PLANT
+    entry = await async_import(hass, IMMEDIATE_LIVING_AREA)
     await async_set_options(hass, entry, armed=REFERENCE_OUTPUTS, control=True)
     await async_call(hass, "select", "select_option", entity_id="select.home_mode", option="heat")
     await async_call(

@@ -72,6 +72,11 @@ DEFAULT_MODE_DWELL: Final = 3600.0
 DEFAULT_POST_RUN: Final = 180.0
 DEFAULT_MIN_ON: Final = 600.0
 DEFAULT_MIN_OFF: Final = 600.0
+# A digital thermostat holds each demand decision this long, in seconds, so a
+# short dip does not open a slow thermoelectric valve, which takes about three
+# minutes, and close it again before its pump ever starts.
+DEFAULT_DEMAND_MIN_ON: Final = 600.0
+DEFAULT_DEMAND_MIN_OFF: Final = 600.0
 DEFAULT_OVERRUN: Final = 180.0
 DEFAULT_OPENING_TIME: Final = 180.0
 DEFAULT_MAX_AGE: Final = 1800.0
@@ -235,8 +240,8 @@ class DigitalThermostat:
     heat_stop_delta: float = 0.1
     cool_start_delta: float = 0.3
     cool_stop_delta: float = 0.1
-    min_on: float = 0.0
-    min_off: float = 0.0
+    min_on: float = DEFAULT_DEMAND_MIN_ON
+    min_off: float = DEFAULT_DEMAND_MIN_OFF
 
     @property
     def preset_targets(self) -> Mapping[Preset, float]:

@@ -31,6 +31,7 @@ pumps:
 zones:
   study:
     areas: [study]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
     loops:
       radiator: {valves: [switch.study_valve], pump: pump}
 """

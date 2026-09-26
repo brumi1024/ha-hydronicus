@@ -325,8 +325,8 @@ A digital thermostat accepts these keys:
 | `heat_stop_delta` | `0.1` | Heating demand stops this far above the target. |
 | `cool_start_delta` | `0.3` | Cooling demand starts this far above the target. |
 | `cool_stop_delta` | `0.1` | Cooling demand stops this far below the target. |
-| `min_on` | `0` | The shortest time demand stays on, in seconds. |
-| `min_off` | `0` | The shortest time demand stays off, in seconds. |
+| `min_on` | `600` | The shortest time demand stays on, in seconds, so a short call does not open a slow valve and close it again before its pump has run. |
+| `min_off` | `600` | The shortest time demand stays off after it ends, in seconds, so a valve that has just closed is not opened again at once. A zone that has not called since its thermostat started or changed mode may call at once. |
 
 This zone has an external thermostat, and a radiator loop with no valve whose pump is its only control:
 
@@ -366,7 +366,7 @@ zones:
         target: 21.5
         presets: {comfort: 22, eco: 19}
         heat_start_delta: 0.5
-        min_on: 600
+        min_on: 900
     loops:
       floor:
         valves:

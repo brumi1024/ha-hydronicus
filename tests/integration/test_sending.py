@@ -133,8 +133,9 @@ async def test_valves_are_opened_and_closed_through_the_valve_services(
     assert [call.service for call in actuators.to("valve.den")] == ["open_valve"]
     assert hass.states.get("valve.den").state == "open"
 
+    # The den's thermostat holds its demand for its minimum on time, 600 seconds.
     set_temperature(hass, "sensor.den", 22.0)
-    await async_advance(hass, freezer, 30, step=5)
+    await async_advance(hass, freezer, 420, step=5)
 
     assert actuators.shorts()[2:] == ["switch.pump:off", "valve.den:off"]
     assert [call.service for call in actuators.to("valve.den")] == ["open_valve", "close_valve"]

@@ -151,7 +151,7 @@ def _demand(
     target: float = 21.0,
     preset: Preset | None = None,
     clock: Clock | None = None,
-) -> tuple[DemandState, bool, float]:
+) -> tuple[DemandState, bool]:
     state, demand = zone_demand(
         zone,
         DigitalThermostatState(mode, target, preset),
@@ -164,7 +164,7 @@ def _demand(
 
 
 def test_heating_demand_has_hysteresis() -> None:
-    zone = _digital()
+    zone = _digital(min_on=0.0, min_off=0.0)
     state, on = _demand(zone, 20.7)
     assert on and state == DemandState(Mode.HEAT, True, NOW)
     assert _demand(zone, 20.8)[1] is False, "inside the band a zone that was off stays off"
@@ -173,7 +173,7 @@ def test_heating_demand_has_hysteresis() -> None:
 
 
 def test_cooling_demand_mirrors_heating() -> None:
-    zone = _digital()
+    zone = _digital(min_on=0.0, min_off=0.0)
     state, on = _demand(zone, 21.3, mode=Mode.COOL)
     assert on and state.mode is Mode.COOL
     assert _demand(zone, 20.95, state, mode=Mode.COOL)[1] is True
@@ -200,6 +200,34 @@ def test_minimum_on_and_off_times_hold_a_decision() -> None:
     off = DemandState(Mode.HEAT, False, NOW - 60)
     assert _demand(zone, 19.0, off)[1] is False
     assert _demand(zone, 19.0, DemandState(Mode.HEAT, False, NOW - 120))[1] is True
+
+
+def test_a_thermostat_holds_its_decisions_for_ten_minutes_by_default() -> None:
+    """A thermoelectric valve takes minutes to open, so a short call must not close it early."""
+    zone = _digital()
+    assert (DigitalThermostat().min_on, DigitalThermostat().min_off) == (600.0, 600.0)
+    on = DemandState(Mode.HEAT, True, NOW - 30)
+    assert _demand(zone, 22.0, on) == (on, True), "a short call is held"
+    assert _demand(zone, 22.0, DemandState(Mode.HEAT, True, NOW - 600)) == (
+        DemandState(Mode.HEAT, False, NOW),
+        False,
+    )
+    closed = DemandState(Mode.HEAT, False, NOW - 30)
+    assert _demand(zone, 19.0, closed) == (closed, False), "a valve that just closed stays closed"
+
+
+def test_a_first_off_decision_holds_no_minimum_off_time() -> None:
+    """No valve closed for a decision that was never on, so the zone may call at once."""
+    zone = _digital()
+    state, on = _demand(zone, 22.0)
+    assert not on and state == DemandState(Mode.HEAT, False, None)
+    assert _demand(zone, 19.0, state) == (DemandState(Mode.HEAT, True, NOW), True)
+    heating = DemandState(Mode.HEAT, True, NOW - 30)
+    state, on = _demand(zone, 20.0, heating, mode=Mode.COOL)
+    assert state == DemandState(Mode.COOL, False, None), "a change of mode starts afresh"
+    assert _demand(zone, None, heating)[0] == DemandState(Mode.HEAT, False, NOW), (
+        "a zone that stops calling for want of a temperature closes a valve"
+    )
 
 
 def test_demand_fails_closed_without_temperature_or_thermostat() -> None:

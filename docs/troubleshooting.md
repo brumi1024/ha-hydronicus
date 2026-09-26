@@ -43,6 +43,7 @@ Common reasons:
 | `idle: thermostat not restored` | The zone's digital thermostat has not loaded, or its entity is disabled. |
 | `idle: no usable temperature` | A required sensor of the zone is missing or stale, or the zone has no usable reading at all. |
 | `idle: thermostat unavailable` | The zone's external thermostat is unavailable or reports an action Hydronicus does not know. |
+| `demands: ..., held for its minimum on time` | The zone's digital thermostat keeps its demand for its minimum on time, 600 seconds by default, although the zone has reached its target; `idle: ..., held for its minimum off time` is the same after a demand ends. |
 | `dropped: ... unarmed or unavailable` | The loop needs an output that is not armed or not available. |
 | `dropped: condensation guard blocks` | The loop cools and its condensation guard blocks; the loop's `.guard` reason gives the reference and the threshold. |
 | `min-flow path` | The loop is held open for a pump the source drives. |

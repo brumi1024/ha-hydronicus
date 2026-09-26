@@ -73,7 +73,9 @@ class DemandState:
 
     mode: Mode
     on: bool
-    since: float
+    # None for an off decision that no on decision in this mode came before: no
+    # valve has closed for it, so no minimum off time holds it.
+    since: float | None
 
 
 def external_action(hvac_action: str | None, hvac_mode: str | None) -> Mode | None:
@@ -237,21 +239,19 @@ def _apply_timing(
     reached: Reached,
 ) -> DemandState:
     """Hold a decision for its minimum on or off time after hysteresis."""
-    if previous is None or previous.mode is not mode:
-        return DemandState(mode, requested, now)
-    if requested == previous.on:
-        return previous
+    if previous is None or previous.mode is not mode or requested == previous.on:
+        return _settle(previous, mode, requested, now)
     duration = config.min_on if previous.on else config.min_off
-    if duration > 0 and not reached(previous.since + duration):
+    if previous.since is not None and duration > 0 and not reached(previous.since + duration):
         return previous
     return DemandState(mode, requested, now)
 
 
 def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> DemandState:
     """A decision without minimum durations, keeping the time of the last change."""
-    if previous is not None and previous.mode is mode and previous.on == on:
-        return previous
-    return DemandState(mode, on, now)
+    if previous is not None and previous.mode is mode:
+        return previous if previous.on == on else DemandState(mode, on, now)
+    return DemandState(mode, on, now if on else None)
 
 
 def _off(mode: Mode, reason: str) -> Demand:

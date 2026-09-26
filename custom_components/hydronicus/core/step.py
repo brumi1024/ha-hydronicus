@@ -263,7 +263,9 @@ class State:
             source_request=bool(data.get("source_request", False)),
             source_changed=_optional_float(data.get("source_changed")),
             demands={
-                slug: DemandState(Mode(value["mode"]), bool(value["on"]), float(value["since"]))
+                slug: DemandState(
+                    Mode(value["mode"]), bool(value["on"]), _optional_float(value["since"])
+                )
                 for slug, value in data.get("demands", {}).items()
             },
             guards={

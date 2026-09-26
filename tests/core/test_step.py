@@ -42,7 +42,8 @@ LONG_AGO = NOW - 3600.0
 ON = SwitchTarget(True)
 OFF = SwitchTarget(False)
 
-# A boiler, a circulator, and one radiator zone.
+# A boiler, a circulator, and one radiator zone whose thermostat follows the
+# temperature at once.
 RADIATOR = """
 hydronicus: 2
 name: Flat
@@ -53,6 +54,7 @@ zones:
   room:
     temperature: [sensor.room]
     humidity: [sensor.room_rh]
+    thermostat: {digital: {min_on: 0, min_off: 0}}
     loops:
       radiator: {valves: [switch.valve], pump: pump}
 """
@@ -172,7 +174,10 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         flow_ended=NOW,
         source_request=True,
         source_changed=NOW - 5,
-        demands={"room": DemandState(Mode.HEAT, True, NOW)},
+        demands={
+            "room": DemandState(Mode.HEAT, True, NOW),
+            "hall": DemandState(Mode.OFF, False, None),
+        },
         guards={"room.radiator": GuardState(True, NOW)},
         overruns={"pump": NOW},
         ready={"switch.valve": LONG_AGO},
@@ -643,7 +648,7 @@ def test_a_first_evaluation_adopts_the_requested_mode_for_loops_found_running() 
 
 def test_an_external_thermostat_demands_only_in_the_plant_mode() -> None:
     plant = read_plant_file(
-        RADIATOR.replace("temperature: [sensor.room]", "thermostat: {external: climate.room}")
+        RADIATOR.replace("{digital: {min_on: 0, min_off: 0}}", "{external: climate.room}")
     )
     base = observe(plant)
     heat = replace(base, thermostats={"room": ExternalThermostatState(Mode.HEAT)})
