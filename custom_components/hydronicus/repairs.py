@@ -22,11 +22,11 @@ from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
-from .const import DOMAIN, INIT_PATH, OPTION_ARMED_OUTPUTS, SUBENTRY_TYPE_ZONE
+from .const import DOMAIN, INIT_PATH, SUBENTRY_TYPE_ZONE
 from .core.plant_file import PlantFileError
 from .flows.forms import arm_schema, output_labels
 from .issues import DATA_ENTRY_ID, DATA_KIND, DATA_PATH, DATA_ZONE, IssueKind
-from .storage import armed_outputs, plant_from_entry, zone_subentry_ids
+from .storage import armed_outputs, plant_from_entry, with_armed, zone_subentry_ids
 
 
 class _IssueFlow(RepairsFlow):
@@ -69,15 +69,8 @@ class ArmOutputsFlow(_IssueFlow):
             if not chosen:
                 # Nothing confirmed: the Repair stays.
                 return self.async_abort(reason="nothing_armed")
-            outputs = list(plant.outputs())
             self.hass.config_entries.async_update_entry(
-                entry,
-                options={
-                    **entry.options,
-                    OPTION_ARMED_OUTPUTS: [
-                        entity for entity in outputs if entity in armed or entity in chosen
-                    ],
-                },
+                entry, options=with_armed(entry, plant, armed | chosen)
             )
             return self.async_create_entry(data={})
         return self.async_show_form(
