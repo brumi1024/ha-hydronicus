@@ -145,6 +145,25 @@ def zone_values(
     return values or None
 
 
+def unusable_sensors(
+    zone: Zone,
+    areas: Mapping[str, AreaSensors],
+    sensors: Mapping[str, Reading],
+    reached: Reached,
+    *,
+    humidity: bool = False,
+) -> list[str]:
+    """Return a zone's required temperature or humidity sensors that are not usable.
+
+    These are the sensors that make ``zone_values`` fail closed.
+    """
+    return [
+        entity
+        for entity, required, max_age in _zone_sensors(zone, areas, humidity)
+        if required and fresh(sensors.get(entity), max_age, reached) is None
+    ]
+
+
 def aggregate(values: list[float], aggregation: Aggregation) -> float:
     match aggregation:
         case Aggregation.MIN:

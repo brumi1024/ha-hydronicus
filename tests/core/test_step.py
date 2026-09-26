@@ -234,6 +234,20 @@ def test_the_desired_state_reports_each_zone_demand() -> None:
     assert not desired.demands["room"].on
 
 
+def test_the_desired_state_names_the_required_sensors_that_block_each_zone() -> None:
+    plant = _plant(HEAT_PUMP)
+    unusable = {entity: Reading(None, NOW) for entity in ("sensor.a_rh", "sensor.c", "sensor.c_rh")}
+    _, desired, _ = run(plant, observe(plant, sensors=unusable))
+    assert desired.blocking_sensors == {"a": ("sensor.a_rh",), "c": ("sensor.c",)}, (
+        "a humidity sensor blocks only a zone whose dew point guards a loop that cools"
+    )
+    external = read_plant_file(
+        RADIATOR.replace("{digital: {min_on: 0, min_off: 0}}", "{external: climate.room}")
+    )
+    _, desired, _ = run(external, observe(external, sensors={"sensor.room": Reading(None, NOW)}))
+    assert desired.blocking_sensors == {}, "an external thermostat needs no temperature to heat"
+
+
 def test_readiness_is_confirmed_by_a_sensor_and_kept_across_a_backward_clock_step() -> None:
     plant = read_plant_file(
         RADIATOR.replace(

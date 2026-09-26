@@ -75,6 +75,7 @@ Diagnostics list the current Repairs by the key in the second column.
 | A zone covers a missing area | `zone_area_missing` | Error |
 | A zone has no temperature sensor | `zone_without_temperature_source` | Error |
 | An area names a Hydronicus sensor | `zone_area_self_feed` | Warning |
+| A sensor blocks its zone | `zone_sensor_unusable` | Error |
 
 ### Plant is not valid
 
@@ -135,6 +136,18 @@ A covered area's settings name a sensor that Hydronicus provides, such as a zone
 Following it would feed the Plant back into itself, so the zone ignores it.
 Choose a sensor that measures the room in the area settings.
 
+### A sensor blocks its zone
+
+A sensor that the zone requires has had no usable reading for at least 10 minutes: it is unavailable, stale, in an unsupported unit, or outside its plausible range.
+A zone fails closed without a required reading, so its digital thermostat does not call, and the loops that cool by its dew point do not cool.
+The Repair names the Plant, the zone, and the sensor, and clears once the sensor reports a usable reading again.
+Check the sensor, its battery, and its connection.
+If it reports only on change and its heartbeat is rarer than its `max_age`, raise `max_age` in the [plant file](plant-file.md#sensors).
+An extra sensor is required unless the plant file makes it optional, while an area's sensors block the zone only when the area is marked `required`.
+
+The 10 minutes keep a restart or a short dropout from raising the Repair, and they count across a restart, because the Plant stores when each block began.
+A sensor that does not exist raises [An entity does not exist](#an-entity-does-not-exist) or [An area names a missing sensor](#an-area-names-a-missing-sensor) instead.
+
 ## Setup and forms
 
 ### Hydronicus is not listed
@@ -181,7 +194,7 @@ A zone that cools also needs a humidity sensor or an area, and so does each zone
 
 ### A zone does not call
 
-- A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone.
+- A required sensor that is unavailable, not a number, stale, in an unsupported unit, or outside its plausible range blocks the zone, and after 10 minutes the [A sensor blocks its zone](#a-sensor-blocks-its-zone) Repair names it.
   The [observation units](configuration.md#observation-units) list the accepted units and ranges.
 - A sensor is stale 3600 seconds after its last report by default, changed or not.
   A sensor that reports only on change and sends its heartbeat less often than hourly needs a longer `max_age` in the [plant file](plant-file.md#sensors); one that reports every few minutes can have a shorter one, so a failure is noticed sooner.
@@ -219,8 +232,9 @@ They hold:
 | `options` | The armed outputs and **Control equipment**. |
 | `requested_mode` and `status` | The **Mode** select and the **Status** sensor. |
 | `observations` | What the last evaluation read: outputs, readiness sensors, sensors, areas, and thermostats. |
-| `desired` | What the last evaluation decided, with its reasons and each zone's demand. |
+| `desired` | What the last evaluation decided, with its reasons, each zone's demand, and the required sensors that block each zone. |
 | `state` and `reconcile` | The stored timers and the commands waiting for a result. |
+| `blocking_sensors` | When each required sensor that blocks its zone began to, which starts the 10 minutes before its Repair. |
 | `repairs` and `issues` | The outputs that do not respond, and the current Repairs by key. |
 | `proposals` | The last 50 commands Dry run proposed, with their times. |
 | `missing` | The bound entities that do not exist. |

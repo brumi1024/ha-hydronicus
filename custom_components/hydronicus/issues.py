@@ -1,9 +1,10 @@
 """The Repairs the runtime raises for one Plant.
 
-A failed evaluation, output faults, missing bindings, unconfirmed outputs, and
-zone area problems are Repairs, not entities (contract K7). The runtime computes the current set
-after every evaluation and ``async_sync_issues`` creates the new ones and
-deletes the resolved ones.
+A failed evaluation, output faults, missing bindings, unconfirmed outputs, zone
+area problems, and required sensors that block their zone are Repairs, not
+entities (contract K7). The runtime computes the current set after every
+evaluation and ``async_sync_issues`` creates the new ones and deletes the
+resolved ones.
 
 The kinds in ``FIXABLE`` have a fix flow in ``repairs``, which their issue data
 leads to: the Plant's entry, and for a zone's problem its subentry. The others
@@ -16,7 +17,7 @@ import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -25,6 +26,7 @@ from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
 from .core.model import OutputRole, Plant
 from .core.plant_file import describe_path
+from .core.step import TICK
 
 
 class IssueKind(StrEnum):
@@ -39,6 +41,7 @@ class IssueKind(StrEnum):
     ZONE_AREA_MISSING = "zone_area_missing"
     ZONE_WITHOUT_TEMPERATURE_SOURCE = "zone_without_temperature_source"
     ZONE_AREA_SELF_FEED = "zone_area_self_feed"
+    ZONE_SENSOR_UNUSABLE = "zone_sensor_unusable"
 
 
 # Kinds with a fix flow; hassfest wants their translations to carry the fix flow
@@ -64,6 +67,10 @@ _WARNINGS = frozenset(
         IssueKind.ZONE_AREA_SELF_FEED,
     }
 )
+# How long a required sensor blocks its zone before its Repair is raised, in
+# seconds, so that a restart or a short spell of unavailability raises nothing.
+SENSOR_REPAIR_AFTER: Final = 600.0
+
 _ROLE_NAMES = {
     OutputRole.SOURCE_REQUEST: "source request",
     OutputRole.SOURCE_MODE: "source mode select",
@@ -182,6 +189,64 @@ def missing_area_sensor(plant: Plant, area: str, entity_id: str) -> Issue:
         f"{area}|{entity_id}",
         {"plant": plant.name, "area": area, "entity_id": entity_id},
     )
+
+
+def zone_sensor_unusable(plant: Plant, zone: str, entity_id: str) -> Issue:
+    return Issue(
+        IssueKind.ZONE_SENSOR_UNUSABLE,
+        f"{zone}|{entity_id}",
+        {"plant": plant.name, "zone": plant.zone(zone).title, "entity_id": entity_id},
+    )
+
+
+class BlockingSensors:
+    """When each required sensor began to block its zone, which delays its Repair.
+
+    The runtime updates it from ``Desired.blocking_sensors`` after every
+    evaluation and persists it, so a restart neither raises the Repair early
+    nor starts the delay over.
+    """
+
+    def __init__(self, since: Mapping[tuple[str, str], float] | None = None) -> None:
+        # By zone slug and sensor entity ID.
+        self._since: dict[tuple[str, str], float] = dict(since or {})
+
+    def update(self, blocking: Mapping[str, Iterable[str]], now: float) -> None:
+        """Keep the blocks that go on, start the new ones now, and drop the ended ones."""
+        self._since = {
+            (zone, entity): self._since.get((zone, entity), now)
+            for zone, entities in blocking.items()
+            for entity in entities
+        }
+
+    def reported(self, now: float) -> list[tuple[str, str]]:
+        """The zone and sensor of each block that has lasted ``SENSOR_REPAIR_AFTER``."""
+        return [key for key, since in self._since.items() if now >= since + SENSOR_REPAIR_AFTER]
+
+    def next_report(self, now: float) -> float | None:
+        """Just after the next block that still waits becomes a Repair, if any does."""
+        waiting = [
+            since + SENSOR_REPAIR_AFTER + TICK
+            for since in self._since.values()
+            if now < since + SENSOR_REPAIR_AFTER
+        ]
+        return min(waiting, default=None)
+
+    def to_dict(self) -> dict[str, dict[str, float]]:
+        data: dict[str, dict[str, float]] = {}
+        for (zone, entity), since in self._since.items():
+            data.setdefault(zone, {})[entity] = since
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> BlockingSensors:
+        return cls(
+            {
+                (zone, entity): float(since)
+                for zone, entities in data.items()
+                for entity, since in entities.items()
+            }
+        )
 
 
 def zone_area_issue(plant: Plant, problem: ZoneAreaProblem, areas: AreaResolution) -> Issue:

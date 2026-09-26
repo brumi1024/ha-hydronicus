@@ -654,6 +654,10 @@
     "zone_area_self_feed": {
       "title": "{plant}, zone {zone}: area {area} names a Hydronicus sensor",
       "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
+    },
+    "zone_sensor_unusable": {
+      "title": "{plant}, zone {zone}: sensor {entity_id} blocks the zone",
+      "description": "In Plant {plant}, zone {zone} requires {entity_id}, and for at least 10 minutes its reading has been unavailable, stale, in an unsupported unit, or outside its plausible range. A zone without a required reading fails closed: while this lasts, its digital thermostat does not call, and the loops that cool by its dew point do not cool. Check the sensor, its battery, and its connection. A battery sensor that reports only on change may need a longer max_age in the plant file, and an area's sensors block the zone only when the area is marked required. The repair clears automatically once the sensor reports a usable reading."
     }
   },
   "exceptions": {

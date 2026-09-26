@@ -392,3 +392,6 @@ class Desired:
     reasons: Mapping[str, str]
     # Each zone's demand, by zone slug, which the entities publish.
     demands: Mapping[str, Demand] = field(default_factory=dict)
+    # By zone slug, the required sensors whose readings are not usable, among the
+    # readings the zone needs; the zone fails closed until they report again.
+    blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)

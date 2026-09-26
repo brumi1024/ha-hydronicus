@@ -40,6 +40,7 @@ from .demand import (
     ThermostatState,
     aggregate,
     fresh,
+    unusable_sensors,
     worst_dew_point,
     zone_demand,
     zone_values,
@@ -47,6 +48,7 @@ from .demand import (
 from .model import (
     Demand,
     Desired,
+    DigitalThermostat,
     Loop,
     MinFlow,
     Mode,
@@ -474,6 +476,7 @@ class _Evaluation:
             mode=mode,
             reasons=self.reasons,
             demands=demands,
+            blocking_sensors=self.blocking_sensors(),
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
@@ -498,6 +501,35 @@ class _Evaluation:
             demand = demands[zone.slug]
             self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
         return demands, states
+
+    def blocking_sensors(self) -> dict[str, tuple[str, ...]]:
+        """Each zone's required sensors that are not usable, among the readings it needs.
+
+        A digital thermostat needs its zone's temperature, and a condensation
+        guard needs the temperature and humidity of each zone whose dew point it reads.
+        """
+        plant, obs = self.plant, self.obs
+        guarded = {
+            zone.slug
+            for loop in plant.all_loops
+            if loop.cools
+            for zone in plant.dew_point_zones(loop)
+        }
+        blocking: dict[str, tuple[str, ...]] = {}
+        for zone in plant.zones:
+            needs = [False] if isinstance(zone.thermostat, DigitalThermostat) else []
+            if zone.slug in guarded:
+                needs = [False, True]
+            entities = [
+                entity
+                for humidity in needs
+                for entity in unusable_sensors(
+                    zone, obs.areas, obs.sensors, self.reached, humidity=humidity
+                )
+            ]
+            if entities:
+                blocking[zone.slug] = tuple(dict.fromkeys(entities))
+        return blocking
 
     def guards(self) -> dict[str, GuardState]:
         """The condensation guard of every loop that cools."""

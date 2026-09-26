@@ -81,6 +81,7 @@ from .core.step import (
 from .dispatch import Dispatcher
 from .entity import zone_unique_id
 from .issues import (
+    BlockingSensors,
     Issue,
     IssueKind,
     async_sync_issues,
@@ -91,6 +92,7 @@ from .issues import (
     output_not_responding,
     outputs_awaiting_confirmation,
     zone_area_issue,
+    zone_sensor_unusable,
 )
 from .observe import (
     OutputMemory,
@@ -143,6 +145,7 @@ class PlantRuntime:
         self.reconcile_state = ReconcileState()
         self.requested_mode = Mode.OFF
         self.memory = OutputMemory()
+        self.blocking = BlockingSensors()
         self.thermostats: dict[str, DigitalThermostatState] = {}
         self.areas = AreaResolution()
         # The last evaluation, as the entities read it; None until the first one.
@@ -189,6 +192,7 @@ class PlantRuntime:
             self.state = State.from_dict(data.get("state", {}))
             self.reconcile_state = ReconcileState.from_dict(data.get("reconcile", {}))
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
+            self.blocking = BlockingSensors.from_dict(data.get("blocking_sensors", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
@@ -198,6 +202,7 @@ class PlantRuntime:
             )
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
+            self.blocking = BlockingSensors()
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -352,8 +357,7 @@ class PlantRuntime:
         The outputs keep what they were last sent, and the next evaluation that
         succeeds clears the Repair.
         """
-        now = dt_util.utcnow().timestamp()
-        self._schedule(now, EVALUATION_RETRY, None)
+        self._schedule(dt_util.utcnow().timestamp() + EVALUATION_RETRY)
         failed = evaluation_failed(self.plant.name, f"{type(error).__name__}: {error}")
         current = (
             *(issue for issue in self.issues if issue.kind is not IssueKind.EVALUATION_FAILED),
@@ -393,6 +397,7 @@ class PlantRuntime:
             live=state.live,
         )
         self.state, self.reconcile_state = state, result.state
+        self.blocking.update(desired.blocking_sensors, now)
         self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
         if self.previous.stopping is not None and not state.live:
             self.previous.stopped()
@@ -400,8 +405,10 @@ class PlantRuntime:
         self._save()
         if result.send:
             self._dispatcher.send(result.send, now)
-        self._schedule(now, due, result.retry_at)
-        missing = self._sync_issues(result, plant)
+        self._schedule(
+            None if due is None else now + due, result.retry_at, self.blocking.next_report(now)
+        )
+        missing = self._sync_issues(result, plant, now)
         self.view = PlantView(
             plant=self.plant,
             at=now,
@@ -561,13 +568,12 @@ class PlantRuntime:
     # Scheduling and persistence
 
     @callback
-    def _schedule(self, now: float, due: float | None, retry_at: float | None) -> None:
+    def _schedule(self, *at: float | None) -> None:
+        """Evaluate again at the earliest of the given timestamps, if any."""
         if self._timer is not None:
             self._timer()
             self._timer = None
-        times = [
-            time for time in (None if due is None else now + due, retry_at) if time is not None
-        ]
+        times = [time for time in at if time is not None]
         if times:
             self._timer = async_track_point_in_utc_time(
                 self.hass, self._on_timer, dt_util.utc_from_timestamp(min(times))
@@ -583,6 +589,7 @@ class PlantRuntime:
             "state": self.state.to_dict(),
             "reconcile": self.reconcile_state.to_dict(),
             "outputs": self.memory.to_dict(),
+            "blocking_sensors": self.blocking.to_dict(),
             "mode": self.requested_mode.value,
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
         }
@@ -597,7 +604,7 @@ class PlantRuntime:
     # Repairs
 
     @callback
-    def _sync_issues(self, result: Reconciled, reconciled: Plant) -> dict[str, str]:
+    def _sync_issues(self, result: Reconciled, reconciled: Plant, now: float) -> dict[str, str]:
         """Raise the current Repairs; ``reconciled`` is the Plant ``result`` drove.
 
         Return each bound entity that does not exist, with where the Plant binds it.
@@ -629,6 +636,12 @@ class PlantRuntime:
         issues.extend(
             zone_area_issue(plant, problem, self.areas)
             for problem in zone_area_problems(plant, self.areas)
+        )
+        # A sensor that does not exist already has its own Repair.
+        issues.extend(
+            zone_sensor_unusable(reconciled, zone, entity)
+            for zone, entity in self.blocking.reported(now)
+            if entity not in missing
         )
         current = tuple(issues)
         if current != self.issues or not self._issues_synced:

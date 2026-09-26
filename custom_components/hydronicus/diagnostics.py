@@ -60,6 +60,7 @@ def _desired(desired: Desired) -> dict[str, Any]:
         "outputs": {entity: target_to_dict(target) for entity, target in desired.outputs.items()},
         "reasons": dict(desired.reasons),
         "demands": _plain(dict(desired.demands)),
+        "blocking_sensors": _plain(dict(desired.blocking_sensors)),
     }
 
 
@@ -79,6 +80,7 @@ async def async_get_config_entry_diagnostics(
         "desired": None if view is None else _desired(view.desired),
         "state": runtime.state.to_dict(),
         "reconcile": runtime.reconcile_state.to_dict(),
+        "blocking_sensors": runtime.blocking.to_dict(),
         "repairs": [] if view is None else sorted(view.reconciled.repairs),
         "retry_at": None if view is None else view.reconciled.retry_at,
         "proposals": [

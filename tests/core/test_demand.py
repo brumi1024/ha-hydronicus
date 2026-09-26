@@ -16,6 +16,7 @@ from custom_components.hydronicus.core.demand import (
     dew_point,
     external_action,
     fresh,
+    unusable_sensors,
     worst_dew_point,
     zone_demand,
     zone_values,
@@ -72,6 +73,18 @@ def test_an_external_action_is_normalized_against_its_own_mode(
     action: str | None, mode: str | None, expected: Mode | None
 ) -> None:
     assert external_action(action, mode) is expected
+
+
+def test_the_required_sensors_that_fail_a_zone_closed_are_named() -> None:
+    zone = _zone(
+        temperature=(Sensor("sensor.a"), Sensor("sensor.b", required=False)),
+        areas=(ZoneArea("hall", required=True), ZoneArea("attic")),
+    )
+    areas = {"hall": AreaSensors("sensor.hall"), "attic": AreaSensors("sensor.attic")}
+    assert unusable_sensors(zone, areas, {}, Clock()) == ["sensor.a", "sensor.hall"]
+    fresh_hall = {"sensor.hall": Reading(20.0, NOW)}
+    assert unusable_sensors(zone, areas, fresh_hall, Clock()) == ["sensor.a"]
+    assert unusable_sensors(zone, areas, {}, Clock(), humidity=True) == []
 
 
 def test_zone_and_area_sensors_are_stale_after_an_hour_by_default() -> None:
