@@ -1,0 +1,10 @@
+# Enforces invariant 10: core/ has no Home Assistant imports.
+# Extends the repository's root configuration, which Ruff would otherwise
+# stop looking for once it finds this file.
+extend = "../../../pyproject.toml"
+
+[lint]
+extend-select = ["TID251"]
+
+[lint.flake8-tidy-imports.banned-api]
+"homeassistant".msg = "custom_components/hydronicus/core/ must have no Home Assistant imports (invariant 10)."
