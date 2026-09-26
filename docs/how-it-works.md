@@ -22,7 +22,7 @@ It has:
   A loop heats, cools, or both.
 - Plant loops: loops that no zone owns, which run whenever the source is requested, such as a towel dryer, or with a set of zones, such as a loop that several zones share.
 
-The [reference plant](examples/reference-plant.yaml) shows all of it: an air-to-water heat pump with its own circulator, three zones over Home Assistant areas with a ceiling loop each, an underfloor loop with its own pump, and a towel dryer with a pump and no valve.
+The [reference plant](examples/reference-plant.yaml) shows all of it: an air-to-water heat pump that runs the pump of its ceiling loops, three zones over Home Assistant areas with a ceiling loop each, an underfloor loop with its own pump, and a towel dryer with a pump and no valve.
 
 Each output entity has exactly one role in one Plant: a valve of one loop, a pump's switch, or a source output.
 Hydronicus commands an output only once you have armed it.
@@ -142,8 +142,8 @@ A pump that the source drives is different, because the source can run it at any
 Such a pump with `path` names its min-flow loops, and Hydronicus holds them open whenever none of the pump's other loops is ready while the pump may run.
 Before the source is asked for heat, a min-flow loop is opened and becomes ready first.
 
-In the reference plant, the heat pump's own circulator holds the living area's ceiling loop open while no zone calls.
-If the separator protects that circulator, `min_flow: guaranteed` makes the min-flow loop unnecessary.
+In the reference plant, the pump the heat pump controls on the secondary side of the separator holds the living area's ceiling loop open while no zone calls.
+A pump that a separator, buffer, or bypass protects uses `min_flow: guaranteed` instead, and needs no min-flow loop.
 
 In cooling, a min-flow loop may carry chilled water during the source's post-run even when its condensation guard blocks, because the pump may still be running; a `guaranteed` pump avoids that.
 

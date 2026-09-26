@@ -13,8 +13,8 @@ source:
 pumps:
   heat_pump:
     driven_by: source
-    min_flow: path                 # guaranteed if the separator protects this pump, see O2
-    min_flow_loops: [living_area.ceiling]   # open decision O1
+    min_flow: path                 # secondary side of the separator (O2)
+    min_flow_loops: [living_area.ceiling]   # O1
     supply_temperature: sensor.ceiling_supply_temperature   # added later
   floor:
     switch: switch.home_underfloor_heating_pump

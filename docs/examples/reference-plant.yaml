@@ -18,8 +18,8 @@ source:
   min_off: 600
 pumps:
   heat_pump:
-    driven_by: source                      # the heat pump's own circulator
-    min_flow: path                         # guaranteed when the separator protects it
+    driven_by: source                      # the secondary pump the heat pump controls
+    min_flow: path                         # guaranteed when a separator, buffer, or bypass protects it
     min_flow_loops: [living_area.ceiling]  # held open while it may run and no zone calls
     supply_temperature: sensor.ceiling_supply_temperature   # lets the ceiling loops cool
   floor:
