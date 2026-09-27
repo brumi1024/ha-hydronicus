@@ -13,19 +13,22 @@ from scripts.package_release import (
     build_archive,
     inspect_archive,
     normalize_version,
+    validate_repository,
 )
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
+# The version the repository is at, so a version bump never needs a test edit.
+VERSION = validate_repository(REPOSITORY_ROOT).version
 
 
 def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> None:
     """HACS can extract the release directly into its integration directory."""
 
     archive_path = tmp_path / "hydronicus.zip"
-    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.2.0")
+    files = build_archive(REPOSITORY_ROOT, archive_path, f"v{VERSION}")
     install_path = tmp_path / "config" / "custom_components" / "hydronicus"
 
-    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.2.0") == files
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, VERSION) == files
     with ZipFile(archive_path) as archive:
         assert archive.namelist() == files
         assert "manifest.json" in archive.namelist()
@@ -68,6 +71,6 @@ def test_readme_minimum_version_check_rejects_unrelated_version() -> None:
 
 def test_the_release_archive_excludes_the_legacy_package(tmp_path: Path) -> None:
     """The release archive never carries the legacy hydronic_climate package."""
-    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.2.0")
+    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", VERSION)
 
     assert all("hydronic_climate" not in path for path in files)
