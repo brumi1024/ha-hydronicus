@@ -25,6 +25,38 @@ jobs:
       - run: uv sync --frozen --extra test
       - run: make verify
 
+  # The deterministic sim-ci profile of make verify sees the same examples on
+  # every run; the weekly run explores 1000 random examples per property and
+  # keeps Hypothesis's example database, so a failure it finds is replayed first
+  # on the next run until it is fixed.
+  sim-explore:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.19"
+          enable-cache: true
+      - run: uv sync --frozen --extra test
+      - uses: actions/cache/restore@v6
+        with:
+          path: .hypothesis
+          key: hypothesis-sim-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: hypothesis-sim-
+      - run: uv run pytest tests/sim
+        env:
+          HYPOTHESIS_SIM_PROFILE: sim-dev
+      # Save after a failure too, since the failing example is what to keep.
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: .hypothesis
+          key: hypothesis-sim-${{ github.run_id }}-${{ github.run_attempt }}
+
   hassfest:
     runs-on: ubuntu-latest
     permissions:
