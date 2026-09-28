@@ -32,11 +32,15 @@ Run the narrowest relevant target while developing, and `make verify` before han
 The pre-commit hook formats changed Python files with Ruff, runs `make lint`, and runs the core tests.
 
 The simulator's property tests use the Hypothesis profile `sim-ci`, which is deterministic, so CI sees the same examples on every run.
-Set `HYPOTHESIS_SIM_PROFILE=sim-dev` to explore many more examples locally:
+Set `HYPOTHESIS_SIM_PROFILE=sim-dev` to explore 1000 random examples per property, which takes a few minutes:
 
 ```console
 HYPOTHESIS_SIM_PROFILE=sim-dev make test-sim
 ```
+
+`sim-dev` keeps each failing example in `.hypothesis/`, replays it first on the next run, and prints a `@reproduce_failure` decorator that replays it anywhere.
+Run it after a change to the core or the simulator, since it finds what the deterministic examples miss.
+The `sim-explore` job of the Validate workflow runs it every Monday and on a manual run of the workflow, and keeps its `.hypothesis/` database in the Actions cache between runs, so a failure stays red until it is fixed.
 
 ## Stored configuration
 

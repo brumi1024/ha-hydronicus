@@ -1,7 +1,9 @@
 """The invariants over random Plants and random event traces.
 
 The profile ``sim-ci`` is deterministic, so CI sees the same examples on every
-run; set ``HYPOTHESIS_SIM_PROFILE=sim-dev`` to explore many more.
+run; set ``HYPOTHESIS_SIM_PROFILE=sim-dev`` to explore many more, as the weekly
+``sim-explore`` job of the Validate workflow does. ``sim-dev`` keeps failing
+examples in ``.hypothesis/`` and prints a ``@reproduce_failure`` blob for each.
 """
 
 from __future__ import annotations
@@ -41,7 +43,11 @@ settings.register_profile(
     suppress_health_check=_HEALTH,
 )
 settings.register_profile(
-    "sim-dev", max_examples=1000, deadline=None, suppress_health_check=_HEALTH
+    "sim-dev",
+    max_examples=1000,
+    deadline=None,
+    print_blob=True,
+    suppress_health_check=_HEALTH,
 )
 SIM = settings.get_profile(os.environ.get("HYPOTHESIS_SIM_PROFILE", "sim-ci"))
 # Finding an example is enough to show a strategy reaches it; no need to shrink it.
