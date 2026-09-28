@@ -20,12 +20,7 @@ rules:
       full coverage.
   config-flow: done
   dependency-transparency: done
-  docs-actions:
-    status: todo
-    comment: |
-      hydronicus.export_plant is named in docs/plant-file.md and
-      services.yaml, but is not documented as a service action with
-      its fields the way docs-actions expects.
+  docs-actions: done
   docs-triggers:
     status: exempt
     comment: Hydronicus provides no device triggers.
@@ -34,13 +29,7 @@ rules:
     comment: Hydronicus provides no device conditions.
   docs-high-level-description: done
   docs-installation-instructions: done
-  docs-removal-instructions:
-    status: todo
-    comment: |
-      Removing a Plant or the equipment stop sequence is only
-      mentioned in passing in docs/troubleshooting.md and
-      docs/upgrade-and-rollback.md; there is no dedicated removal
-      section.
+  docs-removal-instructions: done
   entity-event-setup: done
   entity-unique-id: done
   has-entity-name: done
@@ -92,18 +81,8 @@ rules:
       A Plant binds entities the owner already set up in Home
       Assistant; there is no device on the network to discover.
   docs-data-update: done
-  docs-examples:
-    status: todo
-    comment: |
-      docs/entities.md and docs/how-it-works.md mention that an
-      automation can use the entities, but neither gives a worked
-      automation example.
-  docs-known-limitations:
-    status: todo
-    comment: |
-      Known limitations live only in a release's own notes
-      (docs/releases/v0.2.0.md), which the next release will not
-      repeat; there is no durable, version-independent section.
+  docs-examples: done
+  docs-known-limitations: done
   docs-supported-devices:
     status: exempt
     comment: |

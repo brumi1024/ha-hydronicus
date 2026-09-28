@@ -1,34 +1,26 @@
 # Plant file
 
-A plant file describes one whole Plant in YAML: its source, its pumps, its plant loops, and its zones with their loops.
-It is the portable form of a Plant, and it uses the same schema as the Plant that Home Assistant stores.
-Importing an exported plant file rebuilds the Plant with the same Plant ID, the same object slugs, and therefore the same entity IDs.
+A plant file describes a whole Plant in YAML: its source, its pumps, its plant loops, and its zones with their loops.
+Use it to share a Plant, keep a copy of it, or change many things at once.
+Importing a Plant's own file rebuilds it with the same entity IDs.
 
-Hydronicus never reads a plant file from `configuration.yaml`.
-A Plant you import is stored in Home Assistant like any other config entry, and you change it afterwards in the UI or by replacing it from an edited file.
+A plant file is pasted into a form; Hydronicus never reads one from `configuration.yaml`.
 
-## Where plant files are used
-
-| Task | Where |
+| To | Go to |
 | --- | --- |
 | Create a Plant from a file | **Settings > Devices & services > Add integration > Hydronicus**, then **Import a plant file**. |
-| See the file of an existing Plant | **Configure** on the Plant's entry, then **Show the plant file**. |
-| Get the file from a script or automation | The **Export plant file** action, `hydronicus.export_plant`. |
+| See the file of a Plant | **Configure** on the Plant's entry, then **Show the plant file**. |
 | Change the whole Plant, zones included | **Reconfigure** on the Plant's entry, then **Replace from a plant file**. |
+| Get the file in a script | The [Export plant file](entities.md#export-plant-file) action, `hydronicus.export_plant`. |
 
-Paste the file into the **Plant file** field.
-Both import and replace check the whole file and show the Plant before anything is stored: import shows **Review the Plant**, and replace shows **Save the changes** with the zones and outputs that are added, removed, or changed.
+Import and replace both check the whole file and show what changes before anything is stored.
 
-The **Export plant file** action is available to administrators.
-Run it from **Settings > Tools > Actions** with the Plant selected.
-It returns `document`, the plant file as data, and `yaml`, the same file as text.
-
-A plant file does not carry anything that belongs to one installation: which outputs are armed, whether **Control equipment** is on, the Plant mode, the targets and modes of the zone thermostats, and the timers of a running Plant.
-A Plant created from a file therefore starts like any new Plant, with nothing armed and **Control equipment** off.
+A plant file describes the plant, not how it is running: which outputs are armed, **Control equipment**, the Plant mode, the thermostats' targets, and the timers are not in it.
+So a Plant created from a file starts like any new Plant, with nothing armed and **Control equipment** off.
 
 ## The reference plant
 
-This is the plant the maintainer runs, and the tests use it as their end-to-end example.
+This is the plant the maintainer runs, and a good starting point for your own.
 It is also in [examples/reference-plant.yaml](examples/reference-plant.yaml).
 
 ```yaml
@@ -123,7 +115,7 @@ Numbers must not be negative unless a key says otherwise.
 
 ## Exercise
 
-A pump or valve that stays off for months can seize, so Hydronicus runs each switched pump and opens each valve that has not been on for a while, as [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves) describes.
+A pump or valve that stays off for months can seize, so Hydronicus runs each switched pump and opens each valve that has not been on for a while, as [exercising idle pumps and valves](how-it-works.md#exercise) describes.
 `exercise` is a mapping of two keys, or `false` or `null` to turn the exercise off:
 
 | Key | Required | Default | Value |
@@ -258,7 +250,7 @@ A loop with no valve is always an open path, and its pump is its only control.
 
 A loop may cool only with a condensation reference: its pump's `supply_temperature` or its own `surface_temperature`.
 A loop without either is heat only.
-A condensation switch never replaces that reference; it only adds to the [condensation guard](how-it-works.md#cooling-and-the-condensation-guard).
+A condensation switch never replaces that reference; it only adds to the [condensation guard](how-it-works.md#cooling-and-condensation).
 
 The default `surface_minimum` of 20 °C keeps a cooled floor comfortable to stand on, as ISO 7730 and REHVA advise.
 A ceiling nobody touches may run colder, so a ceiling loop may use a lower value, such as `17`, as long as the dew point allows it.
@@ -470,14 +462,6 @@ A file for **Replace from a plant file** must carry the Plant's own `id`, or no 
 Home Assistant makes an entity ID from the names when the entity is created, such as `climate.living_area` for zone `Living area`.
 Renaming an object later changes what the entity shows, not its entity ID.
 See [the entities](entities.md) for every entity a Plant publishes.
-
-## How it is stored
-
-The plant file is also the storage schema.
-The Plant's config entry holds everything except `zones`, and edits of it go through the Plant's **Reconfigure**.
-Each zone is a `zone` subentry of the Plant: it holds that zone's mapping plus its slug, its title is the zone's name, and its unique ID is the slug.
-Storage lists pumps and loops as objects that carry their slug, because Home Assistant sorts the keys it stores; an export writes them back in the order you gave them.
-A zone references only the Plant's pumps and source, so removing a zone removes exactly its own loops and valves.
 
 ## The exported form
 
