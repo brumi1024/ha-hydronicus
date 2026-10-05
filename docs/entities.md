@@ -1,75 +1,62 @@
-# Entities
+# Entities and actions
 
-A Plant publishes a small, stable set of entities, and they are the interface for dashboards, automations, and voice assistants.
+A Plant publishes a small, stable set of entities for dashboards, automations, and voice assistants, and one action.
 Hydronicus ships no dashboard of its own; build one from these entities with Home Assistant's own cards.
 
-Every entity is created from the Plant's configuration, and its unique ID is made from the Plant ID and the slugs of its objects.
-A Plant rebuilt from its [plant file](plant-file.md) therefore gets the same entities with the same entity IDs.
+Each entity's unique ID comes from the Plant ID and the slugs of its objects, so a Plant rebuilt from its [plant file](plant-file.md) gets the same entity IDs.
+Home Assistant makes an entity ID from the device name and the entity name when the entity is created, so the patterns below assume names you have not changed since.
 
 ## Devices
 
-| Device | Name | Holds |
-| --- | --- | --- |
-| Plant | The Plant name | The Plant's mode, **Control equipment**, status, and plant loops. |
-| Zone | The zone name | The zone's thermostat, demand, temperature, dew point, duty cycle, and loops. It sits under the Plant device and belongs to the zone's subentry. |
-| Source | The source name | Whether the source is requested. It sits under the Plant device. |
+| Device | Holds |
+| --- | --- |
+| The Plant | The **Mode** select, the **Control equipment** switch, the **Status** sensor, and the plant loops. |
+| Each zone | The zone's thermostat, demand, temperature, dew point, duty cycle, and loops. |
+| The source | Whether the source is requested. |
 
-A device goes with its object: removing the source removes the source device, and removing a zone removes the zone device.
-Home Assistant lets you delete a Hydronicus device by hand only when the Plant no longer has its object.
-
-Home Assistant makes each entity ID from the device name and the entity name when the entity is created, so the patterns below assume names that have not been changed since.
+A device goes with its object: removing a zone removes its device.
 
 ## The Plant
 
 | Entity | Entity ID | State |
 | --- | --- | --- |
-| **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`. `cool` is offered only when a loop of the Plant cools. |
-| **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. |
-| **Status** sensor | `sensor.<plant>_status` | `off`, `idle`, `heating`, `cooling`, `exercising`, `changing_over`, `degraded`, `stopping`, or `invalid`. |
+| **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`, where `cool` exists only when a loop cools. An automation can set it, and it survives restarts. |
+| **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. Its `live` attribute stays true after you turn it off until the equipment has stopped. |
+| **Status** sensor | `sensor.<plant>_status` | What the Plant does now, in the table below. It is unavailable until the Plant's first evaluation. |
 
-The **Mode** select is the Plant mode that the zones heat or cool in.
-An automation can set it; Hydronicus keeps it across restarts.
-
-The **Control equipment** switch has one attribute:
-
-| Attribute | Value |
+| Status | Meaning |
 | --- | --- |
-| `live` | Whether outputs are commanded now. It stays true after the switch is turned off until the off-mode sequence has finished. |
-
-The **Status** sensor reads:
-
-| State | Meaning |
-| --- | --- |
-| `off` | The Plant mode is off and nothing runs. |
+| `off` | The **Mode** is off, and nothing runs. |
 | `idle` | The Plant is in a mode, and nothing is asked to run. |
 | `heating` | Something runs, or is asked to run, for heating, from a valve opening to a pump's overrun. |
 | `cooling` | The same for cooling. |
-| `exercising` | Nothing else runs, and an idle pump or its valves are [exercised](how-it-works.md#exercising-idle-pumps-and-valves) so they do not seize. |
+| `exercising` | Nothing else runs, and an idle pump or its valves are [exercised](how-it-works.md#exercise). |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. |
-| `degraded` | An output did not respond, a bound entity does not exist, or the latest evaluation failed. |
-| `stopping` | A changed configuration removed outputs that were running, or is not valid, so the Plant first stops the equipment of its previous configuration. |
-| `invalid` | The configuration is not valid; the equipment it ran has stopped, and the Plant only observes until a reconfigure fixes it. |
+| `degraded` | An output does not respond, a bound entity does not exist, or the latest evaluation failed. |
+| `stopping` | A change removed outputs that were running, so the Plant first stops the equipment of its old configuration. |
+| `invalid` | The configuration is not valid; the equipment has stopped, and the Plant only observes until you fix it. |
 
-It is unavailable until the Plant's first evaluation, and it has these attributes:
+The **Status** sensor's attributes explain the state:
 
 | Attribute | Value |
 | --- | --- |
 | `requested_mode` | The mode the **Mode** select asks for. |
-| `running_mode` | The mode the outputs run in now; during a changeover it is the old mode, then `off` during the dwell. |
-| `live` | Whether outputs are commanded, as on the **Control equipment** switch. |
+| `running_mode` | The mode the outputs run in now; during a changeover, the old mode, then `off` during the dwell. |
+| `live` | Whether outputs are commanded, as on **Control equipment**. |
 | `active_loops` | The loops that pass flow now, such as `living_area.floor` or `towel_dryer`. |
-| `blocked_zones` | Each zone that cannot get what its thermostat asks for, with the reason, such as `no usable temperature` or `window open`; a zone that frost protection heats is not listed. |
+| `blocked_zones` | Each zone that cannot get what its thermostat asks for, with the reason, such as `window open`. |
 | `unarmed_outputs` | The outputs that are not armed. |
 | `source_requested` | Whether the source's request is on. |
-| `outputs_not_responding` | The outputs whose change was sent three times and never observed. |
-| `missing_entities` | Each bound entity that does not exist, with where the Plant binds it. |
-| `stopping_outputs` | While `stopping`, the outputs of the previous configuration that are not yet seen off. |
+| `outputs_not_responding` | The outputs whose change was sent three times and never seen. |
+| `missing_entities` | Each entity the Plant uses that does not exist, with where it is used. |
+| `stopping_outputs` | While `stopping`, the outputs of the old configuration not yet seen off. |
 | `configuration_problem` | Why the configuration is not valid, or none. |
 | `frost_protection` | The zones that [frost protection](how-it-works.md#frost-protection) heats. |
-| `exercising` | The slug of the pump whose exercise runs, or none. |
-| `idle_since` | Each switched pump and valve with the time since which it has not been on, or none while it is on; the exercise counts from it. |
-| `reasons` | Why, for each zone, loop, output, the source, and the mode. It is not recorded in history. |
-| `proposed` | Only in Dry run: the state Hydronicus would give each output. It is not recorded in history. |
+| `exercising` | The slug of the pump being exercised, or none. |
+| `idle_since` | Each switched pump and valve with the time since which it has been off. |
+| `reasons` | Why, for each zone, loop, output, the source, and the mode. Not recorded in history. |
+| `proposed` | Only in Dry run: the state Hydronicus would give each output. Not recorded in history. |
+
 | `blocking_reason` | The current leading reason the Plant cannot proceed, or none. |
 | `evaluated_at` | ISO timestamp of the last successful evaluation. |
 | `evaluation_age_seconds` | Age of that evaluation when the entity attributes were published. It is not a continuously ticking sensor. |
@@ -87,28 +74,24 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | --- | --- | --- |
 | Thermostat | `climate.<zone>` | The zone has a digital thermostat. |
 | **Heating demand** binary sensor | `binary_sensor.<zone>_heating_demand` | Always. |
-| **Cooling demand** binary sensor | `binary_sensor.<zone>_cooling_demand` | A loop serving the zone cools, including a plant loop that runs with it. |
+| **Cooling demand** binary sensor | `binary_sensor.<zone>_cooling_demand` | A loop serving the zone cools, including a shared plant loop. |
 | **Combined temperature** sensor | `sensor.<zone>_combined_temperature` | The zone has a temperature sensor or an area. |
-| **Dew point** sensor | `sensor.<zone>_dew_point` | A loop serving the zone cools, including a plant loop that runs with it. |
+| **Dew point** sensor | `sensor.<zone>_dew_point` | A loop serving the zone cools, including a shared plant loop. |
 | **Duty cycle** sensor | `sensor.<zone>_duty_cycle` | The zone has a loop, or a plant loop runs with it. |
-| **Reset recovery learning** button | `button.<zone>_reset_recovery_learning` | The zone's digital thermostat has learning set to `observe` or `assist`. |
+| **Reset recovery learning** button | `button.<zone>_reset_recovery_learning` | Digital thermostat learning is set to `observe` or `assist`. |
 
-The thermostat is the zone's digital thermostat.
-Its heating and cooling choices follow all loops serving the zone, including shared plant loops.
+The thermostat's heating and cooling choices follow every loop serving the zone, including shared plant loops.
 It offers the presets configured for its current mode, plus `schedule` when a comfort schedule is configured.
-Its target ranges from 5 to 35 °C in steps of 0.5, and its separate heating and cooling manual targets, preset, and mode survive restarts.
-Its `hvac_action` shows what the equipment does for the zone, not what the zone asks for, which the demand binary sensors show:
+Its target goes from 5 to 35 °C in steps of 0.5, and its separate heating and cooling manual targets, preset, and mode survive restarts.
+Its `hvac_action` shows what the equipment does for the zone, while the demand sensors show what the zone asks for:
 
 | Action | When |
 | --- | --- |
+| `heating` or `cooling` | The zone calls, and one of its loops passes flow, including while frost protection heats it. |
+| `preheating` | The zone calls for heat, and its loops do not pass flow yet, such as while its valves open. |
+| `idle` | Anything else, such as while the Plant runs the other mode, or the zone's loops are dropped. |
 | `off` | The thermostat is off, and frost protection does not heat the zone. |
-| `heating` or `cooling` | The zone demands in the mode the outputs run in, and one of its loops, or a plant loop that runs with it, passes flow. Frost protection's demand counts, even while the thermostat is off. |
-| `preheating` | The zone demands heat while the outputs run heat, and a loop it wants does not pass flow yet, such as while its valves open. |
-| `idle` | Anything else, such as while the Plant mode is off or runs the other mode, or while the zone's loops are dropped. |
 
-In Dry run it follows the proposed states, as the loop flowing sensors do.
-It shows the zone's combined temperature, and its humidity when the zone has a humidity sensor or an area.
-Its `reason` attribute is the zone's demand reason, the same as on the demand binary sensors, such as `window open`; it is not recorded in history.
 The thermostat also exposes comfort planning attributes:
 
 | Attribute | Value |
@@ -132,46 +115,32 @@ The thermostat displays the same evaluated comfort proposal used for its demand,
 **Reset recovery learning** clears only that zone's recovery observations and model, including both heating and cooling evidence.
 It does not change the learning option, manual targets, presets, arming, or hydraulic safety timers.
 The button is a configuration entity on the zone device and disappears when learning is turned off.
-A zone with an external thermostat gets no thermostat entity, because the existing climate entity is the thermostat.
-A zone that covers exactly one area gets its thermostat placed in that area when it is first created, so it appears on the area's page and answers voice commands for the area.
+A zone with an existing thermostat gets no thermostat entity; the existing one is its thermostat.
 
-The demand binary sensors are on while the zone demands heating or cooling, and have this attribute:
+The demand binary sensors are on while the zone calls, and their `reason` attribute says why or why not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, or `window open`.
 
-| Attribute | Value |
-| --- | --- |
-| `reason` | Why the zone demands or not, such as `heat to 21.0 °C from 19.5 °C`, `frost protection: heat to 6.0 °C from 4.0 °C`, `thermostat off`, or `window open` while one of the zone's windows turns its demand off. It is not recorded in history. |
+The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors.
+Its `areas` attribute shows each area with the sensors it names and their readings, and its `sensors` attribute each extra sensor.
+Its `sensor_health` attribute shows numeric input freshness, age, configured maximum age, and usable value.
 
-The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors by its aggregation.
-Its attributes show where the readings come from, and are not recorded in history:
+The **Dew point** sensor is the zone's worst-case dew point: the dew point of its warmest temperature and its highest humidity, which its `humidity` attribute shows.
 
-| Attribute | Value |
-| --- | --- |
-| `areas` | Each covered area with its `name`, its `temperature_sensor` and `temperature`, and its `humidity_sensor` and `humidity`. |
-| `sensors` | Each extra temperature sensor with its reading. |
-| `sensor_health` | The freshness, age, configured maximum age, and usable value of the zone's numeric inputs. |
-
-The **Dew point** sensor is the zone's worst-case dew point: the dew point of its warmest temperature and its highest humidity.
-Its `humidity` attribute is that highest humidity.
-
-The **Duty cycle** sensor is a diagnostic: the share of the last 24 hours, in percent, in which a loop of the zone, or a plant loop that runs with it, passed flow.
-It covers the 24 whole hours before the current hour, so it changes when a new hour begins, and an hour counts in full once it is over.
-Only flow inferred from equipment observations while outputs are commanded counts, as for the loops' runtime below: time in Dry run, and time while Hydronicus or Home Assistant was not running, count as no flow.
-Its `basis` attribute explains that loop flow is inferred from equipment feedback, and `window_hours: 24` and `includes_current_hour: false` describe the window.
-It is unknown until the Plant's first evaluation.
-[Troubleshooting](troubleshooting.md#a-zone-runs-nearly-all-day) explains how to use it to balance the zones.
+The **Duty cycle** sensor is a diagnostic: the share of the last 24 whole hours in which a loop of the zone passed flow.
+It counts flow inferred from live equipment observations while outputs are commanded, so it reads 0 in Dry run.
+Unknown configured feedback contributes no runtime.
+Its `basis` explains that inference, and `window_hours: 24` and `includes_current_hour: false` describe the window.
+[Troubleshooting](troubleshooting.md#a-zone-runs-nearly-all-day) explains how to use it to balance zones.
 
 ## Each loop
 
-| Entity | Entity ID | Device |
-| --- | --- | --- |
-| Flowing binary sensor | `binary_sensor.<zone>_<loop>_flowing` | The zone of a zone loop. |
-| Flowing binary sensor | `binary_sensor.<plant>_<loop>_flowing` | The Plant, for a plant loop. |
-| Runtime sensor | `sensor.<zone>_<loop>_runtime` | The zone of a zone loop. |
-| Runtime sensor | `sensor.<plant>_<loop>_runtime` | The Plant, for a plant loop. |
+| Entity | Entity ID |
+| --- | --- |
+| Flowing binary sensor | `binary_sensor.<zone>_<loop>_flowing`, or `binary_sensor.<plant>_<loop>_flowing` for a plant loop. |
+| Runtime sensor | `sensor.<zone>_<loop>_runtime`, or `sensor.<plant>_<loop>_runtime` for a plant loop. |
 
 Both are named after the loop, such as `Ceiling flowing` and `Ceiling runtime`.
 
-It is on while the loop is inferred to pass flow: every valve is open and circulation is observed or estimated.
+The flowing sensor is on while the loop is inferred to pass flow: every valve is open and circulation is observed or estimated.
 Configured running and flow feedback are used when present; otherwise switch state, source request, and source post-run provide the estimate.
 Unknown configured feedback produces unknown flow and contributes no runtime.
 Pump flow proof still does not measure how much water passes through an individual loop.
@@ -203,26 +172,140 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | --- | --- | --- |
 | **Requested** binary sensor | `binary_sensor.<source>_requested` | On while Hydronicus wants the source's request on. |
 
-Its attributes:
+Its `observed` attribute is the request switch's own state, and its `reason` says why, such as `held for its minimum on time` or `waiting for the source mode`.
+Its `running`, `running_basis`, and `running_sensor` attributes describe source operation separately from the request.
+Configured feedback takes precedence; without it, operation is inferred from the request, and unknown feedback remains unknown.
 
-| Attribute | Value |
-| --- | --- |
-| `observed` | The state of the source's request switch as Home Assistant shows it. |
-| `running` | Source operation from running feedback when configured, otherwise inferred from the request; unknown is none. |
-| `running_basis` | Which feedback or estimate supports `running`. |
-| `running_sensor` | The configured source running sensor, if any. |
-| `reason` | Why the source is requested or not, such as `requested`, `held for its minimum on time`, or `waiting for the source mode`. |
+## An example
 
-## The reference plant
-
-The [reference plant](examples/reference-plant.yaml), with Plant `Home`, source `Heat pump`, and zones `Basement`, `Bedroom area`, and `Living area`, gets 32 entities:
+The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 32 entities:
 
 - `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
 - `binary_sensor.heat_pump_requested` for the source.
 - For each zone, such as `living_area`: `climate.living_area`, `binary_sensor.living_area_heating_demand`, `binary_sensor.living_area_cooling_demand`, `sensor.living_area_combined_temperature`, `sensor.living_area_dew_point`, `sensor.living_area_duty_cycle`, `binary_sensor.living_area_ceiling_flowing`, and `sensor.living_area_ceiling_runtime`.
 - `binary_sensor.living_area_floor_flowing` and `sensor.living_area_floor_runtime` for the living area's underfloor loop.
 
-## What is not an entity
+Hydronicus creates no entity for a valve or a pump; they keep the entities their own integration provides.
+Problems that need you, such as an output that does not respond, are [Repairs](troubleshooting.md#repairs), not entities.
 
-Output faults, missing entities, and outputs awaiting confirmation are Repairs, described in [troubleshooting](troubleshooting.md#repairs).
-Hydronicus creates no entity for a valve or a pump; the loop's flowing sensor shows their states, and the output entities themselves stay the ones their own integration provides.
+## Actions
+
+### Export plant file
+
+`hydronicus.export_plant` returns the [plant file](plant-file.md) of a Plant, which imports as the same Plant with the same entity IDs.
+Only administrators can run it, and it only returns a response, so call it with **Actions** under **Settings > Tools**, or from a script with `response_variable`.
+
+| Field | Required | Value |
+| --- | --- | --- |
+| `config_entry_id` | yes | The Plant to export. The action form lets you pick it. |
+
+The response has two keys: `document`, the plant file as data, and `yaml`, the same file as text.
+The action fails with a message when the entry is not a Hydronicus Plant, or when its stored configuration is not a valid Plant.
+
+## Automation examples
+
+### Tell me when the plant needs attention
+
+The **Status** reads `degraded` while an output does not respond, an entity is missing, or the latest evaluation failed.
+This automation sends a notification when that lasts 10 minutes; replace `sensor.home_status` with your Plant's **Status** sensor:
+
+```yaml
+automation:
+  - alias: "Heating: the plant needs attention"
+    triggers:
+      - trigger: state
+        entity_id: sensor.home_status
+        to: degraded
+        for:
+          minutes: 10
+    actions:
+      - action: notify.notify
+        data:
+          title: Heating needs attention
+          message: "Not responding: {{ state_attr('sensor.home_status', 'outputs_not_responding') }}"
+```
+
+### Keep a copy of the plant file
+
+This script shows the current plant file in a notification, so you can copy it after a change.
+Replace the `config_entry_id` with your Plant's, which the action form under **Settings > Tools > Actions** fills in when you pick the Plant:
+
+```yaml
+script:
+  show_plant_file:
+    sequence:
+      - action: hydronicus.export_plant
+        data:
+          config_entry_id: 01J0000000000000000000000
+        response_variable: plant
+      - action: persistent_notification.create
+        data:
+          title: Plant file
+          message: "{{ plant.yaml }}"
+```
+
+### Automatic heat and cool changeover
+
+The **Mode** select has no automatic option by design, so you choose heat or cool, or let an automation do it.
+Base the automation on a slow outdoor temperature, so a cold night or a sunny afternoon does not switch modes.
+The [`statistics`](https://www.home-assistant.io/integrations/statistics/) integration's 24 hour mean works well:
+
+```yaml
+sensor:
+  - platform: statistics
+    name: "Outdoor temperature 24h mean"
+    entity_id: sensor.outdoor_temperature
+    state_characteristic: mean
+    max_age:
+      hours: 24
+```
+
+Then switch with a neutral band between the two modes, so the mode does not flip back and forth around one threshold.
+The numbers are examples; tune them to your climate and your emitters.
+The `input_boolean.automatic_changeover` lets you turn the automation off and hold a mode you set by hand:
+
+```yaml
+automation:
+  - alias: "Home: automatic heat/cool changeover"
+    triggers:
+      - trigger: state
+        entity_id: sensor.outdoor_temperature_24h_mean
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.automatic_changeover
+        state: "on"
+    actions:
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.outdoor_temperature_24h_mean
+                below: 15
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.home_mode
+                data:
+                  option: "heat"
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.outdoor_temperature_24h_mean
+                above: 22
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.home_mode
+                data:
+                  option: "cool"
+        default:
+          - action: select.select_option
+            target:
+              entity_id: select.home_mode
+            data:
+              option: "off"
+    mode: single
+```
+
+Replace `select.home_mode` with your Plant's **Mode** select.
+The automation needs no delays of its own: Hydronicus always runs its own [stop sequence and mode dwell](how-it-works.md#heating-cooling-and-mode-changes) between heating and cooling, and a mode set at an awkward moment just waits behind it.

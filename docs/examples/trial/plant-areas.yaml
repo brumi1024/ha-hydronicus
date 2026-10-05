@@ -1,6 +1,6 @@
 # Hydronicus trial kit: the same two zones, following Home Assistant areas.
 # It needs the areas Living room and Bedroom, each naming its trial temperature
-# sensor in its area settings, as the README describes.
+# sensor in its area settings, as docs/getting-started.md describes.
 # Import it with Add integration, Hydronicus, Import a plant file.
 hydronicus: 2
 name: Trial plant

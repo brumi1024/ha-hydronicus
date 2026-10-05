@@ -45,11 +45,12 @@ USER_DOCUMENTS = (
     "docs/configuration.md",
     "docs/development.md",
     "docs/entities.md",
+    "docs/getting-started.md",
     "docs/how-it-works.md",
     "docs/plant-file.md",
     "docs/safety.md",
     "docs/troubleshooting.md",
-    "docs/upgrade-and-rollback.md",
+    "docs/updating-and-removing.md",
 )
 # Labels that Home Assistant or HACS show rather than strings.json.
 EXTERNAL_LABELS = frozenset(
@@ -351,6 +352,12 @@ def test_every_repair_is_documented() -> None:
 
 
 # Links and wording
+
+
+def test_every_user_document_is_checked() -> None:
+    """Every page of the documentation is one of the checked user documents."""
+    pages = {str(path.relative_to(REPOSITORY_ROOT)) for path in DOCS.glob("*.md")}
+    assert sorted(pages - set(USER_DOCUMENTS)) == []
 
 
 @pytest.mark.parametrize("document", USER_DOCUMENTS)
