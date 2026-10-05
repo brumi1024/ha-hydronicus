@@ -1,0 +1,41 @@
+# Circuit valves and switched pumps, with recovery learning in observation mode.
+# Replace the example entity IDs with the actual entities from your installation.
+# No source is configured: the heat pump regulates inlet and outlet water temperature.
+# Open circuits and circulation cool the water, so its controller starts heating after a delay.
+# It receives no zone demand or request from Hydronicus; Modbus integration is a later step.
+hydronicus: 2
+name: Circuit control
+weather:
+  entity: weather.home
+  outdoor_sensor: sensor.outdoor_temperature
+pumps:
+  floor:
+    switch: switch.floor_pump
+    min_flow: path
+    overrun: 180
+zones:
+  living_room:
+    temperature: [sensor.living_room_temperature]
+    thermostat:
+      digital:
+        target: 21
+        learning: observe
+        schedule:
+          entity: schedule.living_room_comfort
+          heat_setback: 2
+          max_early_start: 7200
+          heating_rate: 0.7
+    loops:
+      floor:
+        valves:
+          - entity: switch.living_room_floor_valve
+            opening_time: 180
+        pump: floor
+        modes: [heat]
+# Select the Schedule preset to follow the helper.
+# Observe does not change configured-rate early starts.
+# Once recovery evidence is accepted, learning: assist opts into learned timing.
+# Recovery after circulation begins includes autonomous source and emitter delays.
+# This does not identify compressor startup time or prove delivered heat.
+# weather_aware: true separately opts into weather-informed recovery with assist.
+# Cooling also requires measured condensation and humidity inputs.

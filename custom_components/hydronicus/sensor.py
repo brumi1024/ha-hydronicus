@@ -16,7 +16,8 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import HydronicusConfigEntry
-from .core.model import Loop, Zone
+from .core.model import Loop, Mode, Zone
+from .core.reconcile import target_to_dict
 from .core.step import value_of
 from .entity import (
     HydronicusEntity,
@@ -29,7 +30,7 @@ from .entity import (
 )
 from .flow_history import HOUR
 from .runtime import PlantRuntime
-from .view import zone_loops
+from .view import pump_operation, source_operation
 
 PARALLEL_UPDATES = 0
 
@@ -53,7 +54,9 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = STATUSES
     # Reasons quote readings and change with every one; the recorder keeps the rest.
-    _unrecorded_attributes = frozenset({"reasons", "proposed"})
+    _unrecorded_attributes = frozenset(
+        {"reasons", "proposed", "sensor_health", "pending_commands", "evaluation_age_seconds"}
+    )
 
     def __init__(self, runtime: PlantRuntime) -> None:
         super().__init__(
@@ -62,18 +65,41 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.runtime.view is not None
+        return self.runtime.view is not None or self.runtime.evaluation_error is not None
 
     @property
     def native_value(self) -> str | None:
+        if self.runtime.evaluation_error is not None:
+            return "degraded"
         view = self.runtime.view
         return None if view is None else view.status()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         runtime, view = self.runtime, self.runtime.view
+        now = dt_util.utcnow().timestamp()
+        health: dict[str, Any] = {
+            "evaluation_error": runtime.evaluation_error,
+            "blocking_reason": runtime.evaluation_error
+            or (None if view is None else view.blocking_reason()),
+            "evaluated_at": None
+            if view is None
+            else dt_util.utc_from_timestamp(view.at).isoformat(),
+            "evaluation_age_seconds": None if view is None else round(max(0.0, now - view.at), 1),
+            "next_evaluation_at": None
+            if runtime.next_evaluation_at is None
+            else dt_util.utc_from_timestamp(runtime.next_evaluation_at).isoformat(),
+            "pending_commands": {
+                entity: {
+                    "target": target_to_dict(attempt.target),
+                    "age_seconds": round(max(0.0, now - attempt.sent_at), 1),
+                    "attempts": attempt.count,
+                }
+                for entity, attempt in sorted(runtime.reconcile_state.attempts.items())
+            },
+        }
         if view is None:
-            return {}
+            return health
         plant = runtime.plant
         attributes: dict[str, Any] = {
             "requested_mode": runtime.requested_mode.value,
@@ -89,11 +115,28 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "configuration_problem": runtime.problem,
             "frost_protection": list(view.desired.frost_protection),
             "exercising": view.desired.exercise,
+            "sensor_health": view.sensor_health(now),
+            "pump_operation": {
+                pump.slug: pump_operation(
+                    plant,
+                    pump,
+                    view.observations,
+                    now,
+                    source_winding=view.source_winding and view.live,
+                ).attributes()
+                for pump in plant.pumps
+            },
+            "source_operation": source_operation(plant, view.observations).attributes(),
+            "observed_flow": {
+                str(loop.ref): view.loop_operation(loop, observed=True).attributes()
+                for loop in plant.all_loops
+            },
             "idle_since": {
                 entity: None if since is None else dt_util.utc_from_timestamp(since).isoformat()
                 for entity, since in sorted(runtime.state.idle_since.items())
             },
             "reasons": dict(view.desired.reasons),
+            **health,
         }
         if not runtime.state.live:
             attributes["proposed"] = {
@@ -107,7 +150,7 @@ class ZoneTemperatureSensor(ZoneEntity, SensorEntity):
     """A zone's combined temperature, with each area's sensor and reading."""
 
     _attr_translation_key = "combined_temperature"
-    _unrecorded_attributes = frozenset({"areas", "sensors"})
+    _unrecorded_attributes = frozenset({"areas", "sensors", "sensor_health"})
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
@@ -126,6 +169,9 @@ class ZoneTemperatureSensor(ZoneEntity, SensorEntity):
         return {
             "areas": {area: dict(values) for area, values in readings.areas.items()},
             "sensors": dict(readings.sensors),
+            "sensor_health": {
+                entity: dict(health) for entity, health in readings.sensor_health.items()
+            },
         }
 
 
@@ -169,6 +215,14 @@ class ZoneDutyCycleSensor(ZoneEntity, SensorEntity):
         duty_cycle = self.runtime.flow.duty_cycle(self._zone)
         return None if duty_cycle is None else round(duty_cycle, 1)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "basis": "Loop flow inferred from equipment feedback while control is live",
+            "window_hours": 24,
+            "includes_current_hour": False,
+        }
+
 
 class LoopRuntimeSensor(HydronicusEntity, SensorEntity):
     """How long a loop has passed flow while the Plant was live."""
@@ -193,6 +247,10 @@ class LoopRuntimeSensor(HydronicusEntity, SensorEntity):
     def native_value(self) -> float:
         return round(self.runtime.flow.runtime(self._loop) / HOUR, 3)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"basis": "Loop flow inferred from equipment feedback while control is live"}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -204,9 +262,9 @@ async def async_setup_entry(
     for zone in runtime.plant.zones:
         if zone.temperature or zone.areas:
             entities.append((zone.slug, ZoneTemperatureSensor(runtime, zone)))
-        if zone.cools:
+        if Mode.COOL in runtime.plant.zone_modes(zone.slug):
             entities.append((zone.slug, ZoneDewPointSensor(runtime, zone)))
-        if zone_loops(runtime.plant, zone.slug):
+        if runtime.plant.zone_loops(zone.slug):
             entities.append((zone.slug, ZoneDutyCycleSensor(runtime, zone)))
     entities.extend(
         (loop.zone, LoopRuntimeSensor(runtime, loop)) for loop in runtime.plant.all_loops

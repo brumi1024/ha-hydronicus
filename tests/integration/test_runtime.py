@@ -83,6 +83,11 @@ async def test_a_failed_evaluation_raises_a_repair_and_is_retried(
     assert "Plant Home could not evaluate and tries again in 60 seconds" in caplog.text
     (issue,) = issues(hass, IssueKind.EVALUATION_FAILED)
     assert issue.translation_placeholders == {"plant": "Home", "error": "KeyError: 'floor'"}
+    assert entry.runtime_data.evaluation_error == "KeyError: 'floor'"
+    assert entry.runtime_data.next_evaluation_at is not None
+    assert (
+        hass.states.get("sensor.home_status").attributes["evaluation_error"] == "KeyError: 'floor'"
+    )
     assert actuators.calls == []
 
     # Nothing changes, so only the retry evaluates again.
@@ -92,6 +97,8 @@ async def test_a_failed_evaluation_raises_a_repair_and_is_retried(
     await async_advance(hass, freezer, 5)
 
     assert issues(hass, IssueKind.EVALUATION_FAILED) == []
+    assert entry.runtime_data.evaluation_error is None
+    assert hass.states.get("sensor.home_status").attributes["evaluation_error"] is None
     assert "switch.home_living_area_floor_heating_valve:on" in actuators.shorts()
 
 

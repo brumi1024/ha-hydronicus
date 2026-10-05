@@ -43,11 +43,16 @@ from ..core.model import (
     MIN_EXERCISE_INTERVAL,
     MIN_EXERCISE_RUN,
     MIN_MAX_HUMIDITY,
+    DigitalThermostat,
     ExternalThermostat,
+    LearningMode,
     OutputRole,
     Plant,
     Preset,
     RunKind,
+    Schedule,
+    SupplyControl,
+    WeatherConfig,
 )
 from ..core.plant_file import PlantFileError, describe_path, parse_plant
 from .documents import NEW, Document, pumps, title, zones
@@ -63,6 +68,10 @@ PLANT_FIELDS: Final = {
     "source.name": "source_name",
     "source.request": "request",
     "source.mode": "mode_select",
+    "source.running_sensor": "running_sensor",
+    "source.feedback_timeout": "timing",
+    "source.supply": "supply",
+    "weather": "weather",
 }
 MODE_FIELDS: Final = {"source.mode.heat": "heat", "source.mode.cool": "cool", "source.mode": "heat"}
 PUMP_FIELDS: Final = {
@@ -74,6 +83,8 @@ PUMP_FIELDS: Final = {
     "min_flow_loops": "min_flow_loops",
     "supply_temperature": "supply_temperature",
     "condensation_switch": "condensation_switch",
+    "running_sensor": "running_sensor",
+    "flow_sensor": "flow_sensor",
 }
 LOOP_FIELDS: Final = {
     "name": "name",
@@ -95,6 +106,13 @@ ZONE_FIELDS: Final = {
     "humidity": "humidity",
     "aggregation": "aggregation",
     "thermostat": "thermostat",
+    "thermostat.digital.target": "comfort",
+    "thermostat.digital.cool_target": "comfort",
+    "thermostat.digital.presets": "presets",
+    "thermostat.digital.cool_presets": "cool_presets",
+    "thermostat.digital.schedule": "schedule",
+    "thermostat.digital.learning": "learning",
+    "thermostat.digital.weather_aware": "learning",
     "windows": "windows",
     "window_open_delay": "window_open_delay",
     "window_close_delay": "window_close_delay",
@@ -234,6 +252,72 @@ def celsius() -> selector.NumberSelector:
     )
 
 
+def number(
+    *, low: float | None = None, high: float | None = None, unit: str | None = None
+) -> selector.NumberSelector:
+    config = selector.NumberSelectorConfig(step=0.1, mode=selector.NumberSelectorMode.BOX)
+    if low is not None:
+        config["min"] = low
+    if high is not None:
+        config["max"] = high
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return selector.NumberSelector(config)
+
+
+def supply_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    """Optional supply control, whose outdoor sensor enables the heating curve."""
+    defaults = SupplyControl("number.supply")
+    schema: dict[Any, Any] = {
+        optional("entity", values): entity(hass, "number", shown=_list([values.get("entity")])),
+        optional("outdoor_sensor", values): entity(
+            hass, "sensor", shown=_list([values.get("outdoor_sensor")])
+        ),
+    }
+    for key in (
+        "heat_temperature",
+        "cool_temperature",
+        "minimum",
+        "maximum",
+        "outdoor_cold",
+        "outdoor_warm",
+        "heat_cold",
+        "heat_warm",
+    ):
+        schema[_default(key, values, getattr(defaults, key))] = number(unit=_CELSIUS)
+    schema[_default("tolerance", values, defaults.tolerance)] = number(low=0.1, unit="K")
+    schema[_default("max_age", values, defaults.max_age)] = seconds(1)
+    return vol.Schema(schema)
+
+
+def schedule_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    defaults = Schedule("schedule.comfort")
+    schema: dict[Any, Any] = {
+        optional("entity", values): entity(hass, "schedule", shown=_list([values.get("entity")])),
+        _default("max_early_start", values, defaults.max_early_start): seconds(0, 21600),
+    }
+    for key in ("heat_setback", "cool_setback", "heating_rate", "cooling_rate"):
+        schema[_default(key, values, getattr(defaults, key))] = number(
+            low=0.1 if key.endswith("rate") else 0, unit="K/h" if key.endswith("rate") else "K"
+        )
+    return vol.Schema(schema)
+
+
+def weather_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    defaults = WeatherConfig("weather.home")
+    return vol.Schema(
+        {
+            optional("entity", values): entity(
+                hass, "weather", shown=_list([values.get("entity")])
+            ),
+            optional("outdoor_sensor", values): entity(
+                hass, "sensor", shown=_list([values.get("outdoor_sensor")])
+            ),
+            _default("max_age", values, defaults.max_age): seconds(1),
+        }
+    )
+
+
 def humidity_limit() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
@@ -308,6 +392,15 @@ def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
             optional("mode_select", values): entity(
                 hass, "select", shown=_list([values.get("mode_select")])
             ),
+            optional("running_sensor", values): entity(
+                hass, "binary_sensor", shown=_list([values.get("running_sensor")])
+            ),
+            vol.Optional("supply"): section(
+                supply_schema(hass, values.get("supply") or {}), {"collapsed": True}
+            ),
+            vol.Optional("weather"): section(
+                weather_schema(hass, values.get("weather") or {}), {"collapsed": True}
+            ),
             vol.Optional("timing"): section(
                 vol.Schema(
                     {
@@ -315,6 +408,7 @@ def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
                         _default("post_run", timing, 180): seconds(),
                         _default("min_on", timing, 600): seconds(),
                         _default("min_off", timing, 600): seconds(),
+                        _default("feedback_timeout", timing, 300): seconds(1),
                     }
                 ),
                 {"collapsed": True},
@@ -404,6 +498,10 @@ def pump_schema(
     schema[optional("condensation_switch", values)] = entity(
         hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
     )
+    for key in ("running_sensor", "flow_sensor"):
+        schema[optional(key, values)] = entity(
+            hass, "binary_sensor", shown=_list([values.get(key)])
+        )
     if add_another:
         schema[vol.Optional("add_another", default=False)] = selector.BooleanSelector()
     if removable:
@@ -453,10 +551,53 @@ def zone_schema(
             optional("window_close_delay", values): seconds(),
             optional("max_humidity", values): humidity_limit(),
             vol.Optional("presets"): section(
-                vol.Schema({optional(preset.value, presets): celsius() for preset in Preset}),
+                vol.Schema(
+                    {
+                        optional(preset.value, presets): celsius()
+                        for preset in Preset
+                        if preset is not Preset.SCHEDULE
+                    }
+                ),
                 {"collapsed": True},
             ),
         }
+    )
+    defaults = DigitalThermostat()
+    comfort = values.get("comfort") or {}
+    schema[vol.Optional("comfort")] = section(
+        vol.Schema(
+            {
+                _default("target", comfort, defaults.target): celsius(),
+                _default("cool_target", comfort, defaults.cool_target): celsius(),
+            }
+        ),
+        {"collapsed": True},
+    )
+    cool_presets = values.get("cool_presets") or {}
+    schema[vol.Optional("cool_presets")] = section(
+        vol.Schema(
+            {
+                optional(preset.value, cool_presets): celsius()
+                for preset in Preset
+                if preset is not Preset.SCHEDULE
+            }
+        ),
+        {"collapsed": True},
+    )
+    schema[vol.Optional("schedule")] = section(
+        schedule_schema(hass, values.get("schedule") or {}), {"collapsed": True}
+    )
+    learning = values.get("learning") or {}
+    schema[vol.Optional("learning")] = section(
+        vol.Schema(
+            {
+                _default("mode", learning, LearningMode.OFF.value): choice(
+                    [mode.value for mode in LearningMode], key="learning_mode"
+                ),
+                _default("weather_aware", learning, False): selector.BooleanSelector(),
+            }
+        ),
+        {"collapsed": True},
     )
     return vol.Schema(schema)
 
@@ -571,6 +712,8 @@ def output_labels(plant: Plant) -> dict[str, str]:
             what = "Source request switch"
         elif role is OutputRole.SOURCE_MODE:
             what = "Source mode select"
+        elif role is OutputRole.SOURCE_SETPOINT:
+            what = "Source supply temperature setpoint"
         elif role is OutputRole.PUMP:
             pump = next(pump for pump in plant.pumps if pump.switch == entity_id)
             what = f"Pump {pump.title}"
@@ -595,6 +738,13 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
     lines = [f"Plant {plant.name}"]
     if protection := _protection(plant):
         lines.append(f"- Protection: {protection}")
+    if plant.weather is not None:
+        outdoor = (
+            f", measured outdoor temperature {plant.weather.outdoor_sensor}"
+            if plant.weather.outdoor_sensor is not None
+            else ""
+        )
+        lines.append(f"- Weather forecast: {plant.weather.entity}{outdoor}")
     source = plant.source
     if source is None:
         lines.append("- No source: valves open and switched pumps run on demand.")
@@ -628,6 +778,13 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             if isinstance(zone.thermostat, ExternalThermostat)
             else "digital thermostat"
         )
+        if (
+            isinstance(zone.thermostat, DigitalThermostat)
+            and zone.thermostat.learning is not LearningMode.OFF
+        ):
+            thermostat += f", recovery learning {zone.thermostat.learning.value}"
+            if zone.thermostat.weather_aware:
+                thermostat += ", weather-aware recovery"
         windows = f", windows {listed(zone.windows)}" if zone.windows else ""
         if zone.max_humidity == DEFAULT_MAX_HUMIDITY:
             humidity = ""
@@ -698,9 +855,8 @@ def _protection(plant: Plant) -> str:
 def review_warnings(hass: HomeAssistant, plant: Plant) -> str:
     """List what may not work as intended; none of it stops the Plant from being saved."""
     warnings = [warning.message for warning in area_review_warnings(hass, plant)]
-    served = {slug for loop in plant.loops for slug in loop.runs.zones}
     for zone in plant.zones:
-        if not zone.loops and zone.slug not in served:
+        if not plant.zone_loops(zone.slug):
             warnings.append(
                 f"Zone {zone.title} has no loop of its own and no plant loop runs with it, so "
                 "its demand moves no water."

@@ -25,6 +25,7 @@ from .entity import (
     source_device,
 )
 from .runtime import PlantRuntime
+from .view import pump_operation, source_operation
 
 PARALLEL_UPDATES = 0
 
@@ -80,9 +81,9 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
         return self.runtime.view is not None
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         view = self.runtime.view
-        return view is not None and view.loop_flowing(self._loop)
+        return None if view is None else view.loop_operation(self._loop).active
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -95,12 +96,24 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
             return None if state is None else value_of(state)
 
         pump = runtime.plant.pump(loop.pump)
-        source = runtime.plant.source
-        pump_entity = pump.switch or (None if source is None else source.request)
+        operation = (
+            None
+            if view is None
+            else pump_operation(
+                runtime.plant, pump, view.seen, view.at, source_winding=view.source_winding
+            )
+        )
         return {
             "valves": {valve.entity: shown(valve.entity) for valve in loop.valves},
             "pump": pump.slug,
-            "pump_running": None if pump_entity is None else shown(pump_entity),
+            "pump_running": None if operation is None else operation.active,
+            "pump_running_basis": None if operation is None else operation.basis,
+            "flow_basis": None if view is None else view.loop_operation(loop).basis,
+            "flow_sensor": pump.flow_sensor,
+            "dry_run": not runtime.state.live,
+            "observed_flow": None
+            if view is None
+            else view.loop_operation(loop, observed=True).active,
             "reason": None if view is None else view.desired.reasons.get(str(loop.ref)),
         }
 
@@ -137,6 +150,13 @@ class SourceRequestedSensor(HydronicusEntity, BinarySensorEntity):
         observed = None if view is None else view.observations.outputs.get(source.request)
         return {
             "observed": None if observed is None else value_of(observed),
+            "running": None
+            if view is None
+            else source_operation(runtime.plant, view.observations).active,
+            "running_basis": None
+            if view is None
+            else source_operation(runtime.plant, view.observations).basis,
+            "running_sensor": source.running_sensor,
             "reason": None if view is None else view.desired.reasons.get("source"),
         }
 
@@ -155,7 +175,7 @@ async def async_setup_entry(
         entities.append((None, LoopFlowingSensor(runtime, loop)))
     for zone in plant.zones:
         entities.append((zone.slug, ZoneDemandSensor(runtime, zone, Mode.HEAT)))
-        if zone.cools:
+        if Mode.COOL in plant.zone_modes(zone.slug):
             entities.append((zone.slug, ZoneDemandSensor(runtime, zone, Mode.COOL)))
         entities.extend((zone.slug, LoopFlowingSensor(runtime, loop)) for loop in zone.loops)
     async_add_plant_entities(runtime, "binary_sensor", async_add_entities, entities)

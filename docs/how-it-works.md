@@ -30,7 +30,8 @@ Hydronicus commands an output only once you have armed it.
 ## When the Plant evaluates
 
 The Plant evaluates again whenever something it observes changes: an output, a sensor, a thermostat, the area settings of a covered area, the **Mode** select, **Control equipment**, or the armed outputs.
-It also evaluates when a timer it is waiting for runs out, such as a valve's opening time or a pump's overrun, and when a command is due to be retried.
+A sensor report with an unchanged value also refreshes the Plant, so a recovered sensor does not stay blocked until its value changes.
+It also evaluates when a timer it is waiting for runs out, such as a valve's opening time, a pump's overrun, or a schedule's early-start deadline, and when a command is due to be retried.
 Changes that arrive together share one evaluation.
 
 Each evaluation takes a snapshot of every entity the Plant reads, decides the desired state of every output, compares it with what the outputs show, sends what differs, stores its timers, and updates the entities.
@@ -50,6 +51,8 @@ A required sensor that is missing blocks the zone, and an optional one is left o
 A digital thermostat demands heating once the temperature is `heat_start_delta` (0.3 K) below the target, and stops once it is `heat_stop_delta` (0.1 K) above; cooling works the same way the other side of the target.
 It holds each decision for its minimum on or off time, 600 seconds by default, because a thermoelectric valve takes minutes to open and a short call would otherwise close it again before its pump ran.
 A zone that has not called since its thermostat started or changed mode may call at once.
+Heating and cooling keep separate manual and preset targets.
+An optional comfort schedule chooses that mode's comfort or setback target, with bounded early start as described in [comfort schedules](#comfort-schedules).
 An external thermostat demands heating while its `hvac_action` is heating or preheating, cooling while it is cooling, and nothing while it is idle or off; anything else, or an unavailable thermostat, blocks the zone.
 A zone's demand counts only when its thermostat's mode matches the Plant mode; a zone that asks to cool while the Plant heats is shown as blocked.
 
@@ -102,6 +105,10 @@ The source's mode select should show the option of the Plant mode.
 The source's request should be on once a loop that a zone calls for is ready in the Plant mode, its switched pump is seen running, the mode select shows the right option, and every source-driven pump has an open path.
 A plant loop that runs with the source never asks for heat by itself.
 The request stays on for at least its minimum on time, 600 seconds by default, while a ready loop remains, and stays off for at least its minimum off time, also 600 seconds, before it is asked again.
+These timers begin when the request is observed on or off, so a delayed or ignored command cannot consume the equipment's minimum time before it acts.
+With [supply temperature control](#supply-temperature-control), the source also waits for a confirmed setpoint and usable policy inputs.
+Optional switched-pump running and flow feedback must confirm circulation before the source is requested.
+A source-driven pump may start from known-off feedback when the source is first requested, then has the source's `feedback_timeout` to prove operation, 300 seconds by default; unavailable feedback blocks that startup.
 The minimum on time also holds when the **Mode** select changes the mode.
 A blocking condensation guard, a loop that is no longer ready or whose pump stops, turning **Control equipment** off, and stopping a previous configuration release the request at once.
 After the request ends, the source's post-run, 180 seconds by default, keeps the loops of its own pumps open.
@@ -128,7 +135,7 @@ Within one evaluation the commands go out in dependency order:
 3. Valves open.
 4. Valves close.
 5. Pumps on.
-6. The source mode.
+6. The source mode and supply temperature.
 7. The source request on.
 
 The waits between the steps are already part of the desired state.
@@ -136,8 +143,12 @@ A pump is asked to run only once its loop is ready, a valve closes only once the
 So heating starts with the valves, then the pumps, then the source, and it stops with the source, then the pumps, then the valves.
 
 A command that returns without an error is not a confirmation; only the output's state in Home Assistant is.
-Each command may take up to 10 seconds, and until the output shows the result, Hydronicus assumes the command may still act: a pump it asked to start counts as possibly running, and one it asked to stop counts as possibly still running.
+Hydronicus gives each service call a 10-second timeout and models an unconfirmed command as possibly acting during that window: a pump it asked to start counts as possibly running, and one it asked to stop counts as possibly still running.
+This timeout cannot cancel a command already accepted by downstream equipment.
+The simulator assumes device commands act within that window and preserve order; equipment that acts later or reorders commands needs independent interlocks and commissioning checks.
 At most one command per output is outstanding at a time.
+Before starting each queued command, dispatch checks that the output is still armed and the Plant still permits the command.
+Disarming prevents unsent commands from starting; it does not undo a service call already sent.
 
 A command whose result is not seen is sent again after a wait that starts at 10 seconds and doubles up to 5 minutes, for as long as the difference remains.
 After three attempts without a result, Hydronicus raises a Repair saying that the output does not respond, and keeps retrying; the Repair clears once the output shows what is asked.
@@ -281,7 +292,8 @@ In Dry run Hydronicus sends nothing: it records each command it would send as pr
 The **Status** sensor's `proposed` attribute shows the proposed state of each output, and the loop flowing sensors follow the proposals.
 Arm the outputs first, because a loop whose outputs are not armed is dropped in Dry run too.
 
-Turning **Control equipment** on starts commanding at once, from what the outputs really show.
+Turning **Control equipment** on starts from the real outputs and physical mode history.
+A heating or cooling sequence simulated in Dry run cannot satisfy the dwell required by equipment that was running in the other mode.
 Turning it off first runs the off-mode sequence on the armed outputs: the source is released, pumps finish their overrun or post-run, and valves close once their pumps are seen off.
 Only then does the Plant go to Dry run, and the switch's `live` attribute stays true until it has.
 
@@ -292,6 +304,8 @@ Removing an output disarms it, and editing a thermostat, a sensor, a name, or a 
 ## Reloads and restarts
 
 A reload, an unload, and a Home Assistant restart never send a command; the equipment stays as it is while Hydronicus is not running.
+Stopping cancels dispatch and drops queued commands, so no unsent command starts after shutdown begins.
+It does not claim that a previously sent command or physical equipment has stopped.
 
 Hydronicus stores its timers, the Plant mode, its retry state, and when each output last changed, and restores them before the first evaluation.
 The first evaluation waits until Home Assistant has started and every digital thermostat has restored its target and mode.
@@ -305,6 +319,92 @@ When a new configuration no longer has an output that is on, or has a command in
 Only then does the new configuration run.
 The sequence also stops the outputs the new configuration keeps; they start again as the new configuration asks for them.
 A configuration that is not valid stops the old configuration the same way, then only observes and reads `invalid` until a reconfigure fixes it.
+
+## Supply temperature control
+
+A source can bind an optional `number` entity for its water supply target.
+Without an outdoor sensor, heating and cooling each use a configured fixed target.
+With an outdoor sensor, heating uses a linear curve between two outdoor temperatures and their supply targets, clamped at both ends.
+For example, the default curve asks for 45 °C at -10 °C outdoors, 35 °C at 5 °C, and 25 °C at 20 °C or warmer.
+This responds to a current outdoor measurement; it does not predict the weather.
+
+The policy stays inside its configured bounds and the number entity's usable temperature range.
+A configured outdoor sensor that is missing, stale, or invalid blocks the heating request.
+Cooling remains independent of the outdoor sensor, and raises its proposed target when needed to preserve the worst measured dew point plus the guard's 2 K margin and 1 K release allowance.
+If that would exceed the configured maximum, the source stays off with a reason.
+The existing condensation guard still checks actual measured water or surface temperatures.
+
+The number is an armed output with the same confirmation, timeout, and retry path as other outputs.
+A small configurable tolerance accepts feedback near the requested value, so rounding or a small outdoor temperature change does not continually rewrite it.
+The source waits for confirmation before requesting operation.
+Choose one owner for the supply setpoint; leave this feature off when the source's own controller already owns its heating curve.
+
+## Comfort schedules
+
+A digital thermostat can follow an existing Home Assistant `schedule` helper after its `schedule` preset is selected.
+During on periods it uses the manual comfort target for its current mode.
+Outside those periods it reduces the heating target by `heat_setback`, or increases the cooling target by `cool_setback`.
+The heating and cooling targets and preset dictionaries remain separate.
+
+An optional early start estimates recovery time from the current temperature difference and a configured warming or cooling rate in K/hour.
+It never begins earlier than `max_early_start` before the next comfort period, and zero disables early start.
+For example, a room 1 K below its heating target with `heating_rate: 1` may start one hour early, provided the configured limit allows it.
+A room already at target needs no early start.
+Once early start begins, it stays active until that comfort period starts, so a warming or cooling room cannot repeatedly switch back to setback.
+The latch survives reloads and resets when its schedule event, control mode, or applicable limit changes.
+The thermostat exposes its effective target and schedule status, including whether early start is active.
+
+A manual target change or a different preset cancels schedule control until `schedule` is selected again.
+An unavailable helper falls back to manual comfort, while a missing or invalid next event disables early start.
+The schedule never changes the Plant mode or overrides windows, arming, condensation guards, minimum times, or hydraulic sequencing.
+By default this is a bounded estimate using configured rates, with optional learned recovery described below.
+It does not guarantee the room will reach comfort at the scheduled time.
+
+## Recovery learning
+
+Each digital thermostat can learn empirical room recovery times from observed circuit operation and temperature reports.
+Learning is off by default.
+Observe records usable episodes and shadow predictions while leaving configured-rate comfort planning unchanged.
+Assist permits an accepted estimate to choose scheduled recovery timing, within the existing maximum early start.
+The learner keeps each zone and mode separate and rejects episodes affected by unusable readings, changed targets, safety blocks, or interrupted operation.
+Dry run proposals are not learning evidence.
+
+Admission requires independent recovery history spread over time and successful predictions made before their observed outcomes.
+Too little history, prediction error, stale evidence, or a deficit outside the observed range returns planning to the configured rate.
+A forecast can refine recovery only when the zone separately opts in and evidence supports using outdoor conditions.
+Weather failure falls back to the learned baseline or configured rate.
+Neither learning nor forecasts change the manual comfort target, extend the configured lead limit, or suppress ordinary demand.
+
+An accepted early start remains tied to that schedule event while the user keeps schedule control.
+A manual target or preset change still cancels it.
+The thermostat's displayed effective target and demand use the same evaluated proposal.
+The **Reset recovery learning** button discards a zone's model without changing its manual controls or hydraulic state.
+
+These features work with a source-less Plant that opens valves and starts switched pumps once a loop is ready.
+They do not require a heat-pump request switch or create one.
+An autonomous heat pump can regulate its inlet and outlet water temperatures without knowing zone demand: opening circuits and circulating their water lowers water temperature, which can make its own controller start heating after a delay.
+The learned interval begins with observed circulation, so it includes any subsequent autonomous source delay and the water and emitter response together.
+Scheduled learned recovery separately budgets the longest remaining configured valve-opening time among the zone's serving loops in the current mode, within the same maximum early-start limit.
+Already ready valves add no delay, and valves partway through opening add only their remaining configured wait.
+This timing allowance never replaces hydraulic readiness checks or identifies the compressor's startup timestamp.
+Pump and valve observations describe circuit operation; without independent proof, circulation remains an estimate.
+Even proven circulation and measured room temperature do not establish heat delivered, compressor operation, electricity use, savings, or COP.
+Those claims require their own trustworthy measurements.
+
+## Equipment feedback
+
+A source or pump can bind a `running_sensor`, and a pump can additionally bind a `flow_sensor`.
+Each is a binary input from the equipment's own integration.
+Running feedback tells Hydronicus that equipment may still need an open path after its command ends, including autonomous source or pump activity.
+Switched-pump flow feedback confirms circulation before the source is requested.
+Source running feedback and source-driven pump feedback may start known off and must confirm within the source's `feedback_timeout`, 300 seconds by default.
+This equipment startup period is separate from the 10-second service call timeout.
+Missing or unknown feedback must not be interpreted as confirmation that equipment stopped.
+
+Without feedback, running and loop flow are estimates derived from output states and configured timing.
+Even with pump flow proof, an open loop's flowing state is not an individual loop flow meter and gives no measured water volume, heat output, or efficiency.
+Use actual flow, temperature difference, and energy measurements for those quantities.
+Keep hardware flow proving and other source protections independent of Home Assistant.
 
 ## What Home Assistant shows
 

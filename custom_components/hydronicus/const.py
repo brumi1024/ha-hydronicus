@@ -7,6 +7,7 @@ from homeassistant.const import Platform
 DOMAIN: Final = "hydronicus"
 PLATFORMS: Final = (
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.CLIMATE,
     Platform.SELECT,
     Platform.SENSOR,

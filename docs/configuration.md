@@ -16,8 +16,16 @@ Have these entities ready:
 - For cooling: a humidity sensor for every zone that cools, and a supply temperature or surface temperature sensor as the condensation reference of every loop that cools.
 - Optionally, for cooling: a `binary_sensor` for each dew point or condensation switch on a cooling pipe, which is on when it detects condensation.
 - Optionally, a `binary_sensor` for each window or door whose opening should stop its zone, which is on while it is open.
+- Optionally, binary running feedback for the source or pumps, and binary flow proof for a pump.
+- Optionally, a source supply temperature `number` and an outdoor temperature `sensor` for a heating curve.
+- Optionally, a Home Assistant `schedule` helper for each digital thermostat that should follow comfort periods.
+- Optionally, a `weather` entity with hourly forecasts and a separate measured outdoor temperature `sensor` for recovery learning.
 
 Hydronicus never offers its own entities in these forms, because a Plant that reads its own output would feed back into itself.
+
+For a system where Hydronicus controls only the circuit valves and pumps, leave the source request empty and select each pump's switch.
+The serving pump starts after a demanded loop's valves are ready, and normal overrun and hydraulic protection still apply.
+Recovery learning needs room temperatures and circuit observations; it does not require heat-pump control.
 
 ## Create a Plant
 
@@ -37,6 +45,10 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    The collapsed **Timing** section holds the **Mode dwell** (3600 seconds), the **Source post-run** (180 seconds), and the **Source minimum on time** and **Source minimum off time** (600 seconds each).
    The collapsed **Protection** section holds **Exercise idle pumps and valves**, on by default, with the **Exercise interval** (604800 seconds, a week, and at least an hour) and the **Exercise pump run** (60 seconds, from 10 to 600), and **Frost protection**, on by default, with the **Frost protection temperature** (5 °C, at most 10 °C).
    See [frost protection](how-it-works.md#frost-protection) and [exercising idle pumps and valves](how-it-works.md#exercising-idle-pumps-and-valves).
+   Optional source running feedback observes operation separately from its request.
+   **Source feedback timeout** sets how long requested equipment may take to report that it runs, 300 seconds by default.
+   The collapsed **Supply temperature control** section selects the supply number and its fixed targets, bounds, tolerance, and optional outdoor heating curve.
+   See [supply temperature control](plant-file.md#supply-temperature-control) for every setting and its units.
 2. **Source modes**, only with a mode select.
    Choose the **Heating option** and the **Cooling option** of the select.
    The form lists the options the select offers now.
@@ -47,6 +59,7 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Set the **Minimum flow** to **Needs an open loop**, or to **A separator guarantees its flow** when a hydraulic separator, buffer, or bypass gives the pump a path whatever the loops do.
    Optionally choose the **Supply temperature sensor**, the water temperature this pump supplies, which lets its loops cool.
    Optionally choose the **Condensation switch** on the pump's supply pipe; while it is on or unavailable, none of the pump's loops cools.
+   Optional running feedback and water flow proof confirm operation and circulation independently of the pump command.
    Turn on **Add another pump** to add the next one.
 4. **How is your home zoned?**
    Choose **One zone per area** to give each chosen Home Assistant area a zone of its own, **Zones that cover several areas** to group areas into zones, such as one zone per floor, or **Zones without areas** for zones with their own sensors or an existing thermostat.
@@ -59,7 +72,9 @@ Guided setup asks for the Plant and its source, then its pumps, then its zones o
    Choose an **Existing thermostat** to let an existing climate entity own the zone's demand, or leave it empty for a digital thermostat that Hydronicus provides.
    Optionally choose the zone's **Windows**, and set the **Window open delay** and the **Window close delay** (60 seconds each), as [Windows](#windows) describes.
    Set the **Maximum humidity for cooling** (70 %, from 30 to 100 %), above which the zone's loops stop cooling, as [Cooling limits](#cooling-limits) describes.
-   The collapsed **Digital thermostat presets** section sets the **Comfort**, **Eco**, and **Away** targets; leave a preset empty to leave it out.
+   The collapsed **Default comfort temperatures** section sets separate heating and cooling targets.
+   **Heating presets** and **Cooling presets** each set the **Comfort**, **Eco**, and **Away** targets; leave a preset empty to leave it out.
+   The optional **Comfort schedule** section selects a schedule helper, separate mode setbacks, maximum early start, and expected room warming and cooling rates.
 6. The loop form.
    Enter the **Loop name**, such as `Ceiling` or `Floor`.
    Choose the **Valves** that open together for the loop, or none for a loop whose pump is its only control.
@@ -104,7 +119,7 @@ A new Plant commands nothing: no output is armed and **Control equipment** is of
    A loop runs only when every output it needs is armed, and unchecking an output disarms it.
 2. Set the Plant's **Mode** select to heat or cool.
 3. Set each zone's thermostat to the same mode.
-   A new digital thermostat starts off with a target of 21 °C.
+   A new digital thermostat starts off, with a heating target of 21 °C and a cooling target of 24 °C by default.
 4. Watch the Plant in Dry run: the **Status** sensor's `proposed` attribute shows the state Hydronicus would give each output, and its `reasons` attribute explains each decision.
 5. Turn on the **Control equipment** switch when the proposals are right, and Hydronicus starts commanding the armed outputs.
 
@@ -200,10 +215,33 @@ A zone that cools uses its highest humidity reading and its highest temperature 
 A zone has exactly one thermostat.
 
 A digital thermostat is the zone's climate entity, which Hydronicus provides.
-It restores its target, preset, and mode after a restart, starts off with a target of 21 °C when new, and offers heating, plus cooling when a loop of the zone cools.
+It restores separate heating and cooling manual targets, its preset, and its mode after a restart.
+A new thermostat starts off, with heating at 21 °C and cooling at 24 °C by default.
+Its available modes follow every loop serving the zone, including a shared plant loop.
 It demands heating 0.3 K below its target and stops 0.1 K above it, and cooling the same way the other side.
 It holds each decision for at least 600 seconds, so a short call does not open a slow thermoelectric valve and close it again before the pump has run.
 The [plant file](plant-file.md#thermostats) can change these deltas and the minimum on and off times.
+Heating presets apply only to heating and cooling presets only to cooling; each mode keeps its own manual target.
+
+Configure a helper under **Comfort schedule**, then select the thermostat's `schedule` preset to follow it.
+On periods use its manual comfort target; off periods apply the configured reduction for heat or increase for cool.
+A manual temperature change or another preset cancels schedule control until `schedule` is selected again.
+Early start is off by default and has a maximum of six hours when enabled; its configured rates are in K/hour.
+An unavailable schedule falls back to manual comfort, and an unusable next-event timestamp disables early start.
+See [comfort schedules](how-it-works.md#comfort-schedules) and the [example plant](examples/comfort-and-feedback.yaml).
+
+The **Recovery learning** section is off by default.
+Choose **Observe** to collect recovery observations and predictions without changing the configured thermostat behavior; this works without a schedule.
+Choose **Assist** only when you want validated learned recovery estimates to influence a configured comfort schedule's early start.
+The configured rate remains the fallback and **Maximum early start** remains an absolute limit, including when a prediction says the room needs longer.
+Manual target changes and other presets still leave schedule control.
+
+Configure optional inputs under the Plant's **Weather forecast** section.
+Choose a weather entity that supports hourly forecasts and, when available, a separate measured outdoor temperature sensor.
+**Use weather for recovery** is a separate zone option that requires Assist, a comfort schedule, and those Plant weather settings.
+Unusable weather falls back to learned recovery or the configured rate without suppressing ordinary comfort demand.
+Forecasts do not replace room temperatures, condensation sensors, or pump feedback.
+See the [circuit-only example](examples/predictive-circuits.yaml) and [recovery learning settings](plant-file.md#recovery-learning).
 
 An existing thermostat is an existing Home Assistant climate entity that owns the zone's demand.
 Hydronicus reads only its `hvac_action`: heating or preheating calls for heat, cooling calls for cooling, and idle or off calls for nothing.
@@ -256,6 +294,7 @@ The ranges are inclusive and catch sensor faults, such as -127 °C from a discon
 | --- | --- |
 | Zone temperature and loop surface temperature | -50 to 100 °C |
 | Pump supply temperature | -50 to 150 °C |
+| Outdoor compensation temperature | -50 to 100 °C |
 | Humidity | 0 to 100 % |
 
 An unusable reading counts like an unavailable one: a required sensor blocks its zone, an optional one is left out, and a condensation reference blocks its loop's cooling.

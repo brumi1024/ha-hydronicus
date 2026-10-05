@@ -14,7 +14,7 @@ It then drives those outputs in the right order and checks that each one got the
 
 ## What it does
 
-- A Plant has an optional source, such as an air-to-water heat pump, reached through a request switch and an optional mode select.
+- A Plant has an optional source, such as an air-to-water heat pump, reached through a request switch, an optional mode select, and an optional bounded supply temperature number.
 - Pumps are switched by Hydronicus, or driven by the source itself, such as a heat pump's own circulator, which Hydronicus never commands.
 - A zone is the space one thermostat controls.
   It can cover Home Assistant areas and follow the temperature and humidity sensors those areas name.
@@ -23,13 +23,17 @@ It then drives those outputs in the right order and checks that each one got the
   A loop without a valve is fine, and a loop that no zone owns, such as a towel dryer or a loop several zones share, is a plant loop.
 - Heating and cooling share the same loops, the Plant mode chooses between them, and a change of mode is sequenced with a dwell.
 - Every loop that cools is guarded against condensation with the zone's worst-case dew point.
+- Separate heating and cooling targets and presets keep each mode's comfort settings.
+  An optional Home Assistant schedule applies setbacks, with a bounded early start using a configured room warming or cooling rate.
+- Optional running and flow feedback distinguish observed equipment operation from output-based estimates.
+- An optional supply temperature output uses fixed heating and cooling targets, or a simple outdoor heating curve, through the same arming and confirmation path as other outputs.
 - Valves open before pumps start, pumps run before the source is asked, and it all stops in reverse, with pump overrun and source post-run.
 - A pump that needs an open loop always has one while it may run.
 - A command counts as done only when Home Assistant shows its result; otherwise it is retried, and a Repair names the output that does not respond.
 - Reloads and restarts send no command and continue every timer.
 - Hydronicus commands only the outputs you arm, and only while **Control equipment** is on; otherwise it runs in Dry run and shows what it would do.
 
-Read [how Hydronicus works](docs/how-it-works.md) for the details, and [the reference plant](docs/examples/reference-plant.yaml) for a complete example.
+Read [how Hydronicus works](docs/how-it-works.md) for the details, [the reference plant](docs/examples/reference-plant.yaml) for a complete example, and [the comfort and feedback example](docs/examples/comfort-and-feedback.yaml) for the optional controls.
 
 ## Installation
 
@@ -118,7 +122,7 @@ Each zone has a thermostat, such as `climate.bedroom`, and a loop flowing sensor
 2. Set `select.trial_plant_mode` to heat.
 3. Set `climate.bedroom` to heat; a new thermostat starts off with a 21 °C target.
 4. Lower `input_number.hydronicus_trial_bedroom_temperature` to 18 °C.
-5. `binary_sensor.bedroom_heating_demand` turns on with a `level` of 1.
+5. `binary_sensor.bedroom_heating_demand` turns on and its `reason` explains the demand.
    The `proposed` attribute of `sensor.trial_plant_status` shows the bedroom valve on at once, and the pump on 180 seconds later, once the valve has had its opening time.
 6. Raise the bedroom temperature to 22 °C.
    Demand ends, and the pump keeps running for its 180 second overrun before the valve closes.

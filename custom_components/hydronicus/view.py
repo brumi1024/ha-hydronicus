@@ -13,9 +13,9 @@ from typing import Any, Final
 
 from .areas import AreaResolution
 from .core.demand import aggregate, dew_point, zone_values
-from .core.model import Desired, Loop, Mode, Plant, RunKind, SwitchTarget, Zone
+from .core.model import Desired, Loop, Mode, Plant, Pump, SwitchTarget, Zone
 from .core.reconcile import Reconciled
-from .core.step import Observations, OutputState, Reading, SwitchState
+from .core.step import GUARD_REFERENCE_MAX_AGE, Observations, OutputState, Reading, SwitchState
 from .previous import Commanding
 
 # A zone whose demand is off for one of these reasons cannot get what it asks for.
@@ -36,6 +36,19 @@ class ZoneReadings:
     areas: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     # Each explicit temperature sensor with its reading.
     sensors: Mapping[str, float | None] = field(default_factory=dict)
+    sensor_health: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class Operation:
+    """An operating state and the evidence behind it; unknown is never confirmed off."""
+
+    active: bool | None
+    basis: str
+    sensor: str | None = None
+
+    def attributes(self) -> dict[str, Any]:
+        return {"active": self.active, "basis": self.basis, "sensor": self.sensor}
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +73,9 @@ class PlantView:
     missing: Mapping[str, str]
     problem: str | None
     stopping: Commanding | None
+    # Post-run is estimated only after this sequence has seen the source run.
+    source_winding: bool = False
+    live: bool = False
 
     @property
     def running_mode(self) -> Mode:
@@ -70,7 +86,46 @@ class PlantView:
 
     def loop_flowing(self, loop: Loop) -> bool:
         """Whether a loop passes flow as ``step()`` saw it, including Dry run proposals."""
-        return _passes_flow(self.plant, loop, self.seen.outputs)
+        return self.loop_operation(loop).active is True
+
+    def loop_operation(self, loop: Loop, *, observed: bool = False) -> Operation:
+        """The evidence for a loop's flow, optionally excluding all Dry run proposals."""
+        return loop_operation(
+            self.plant,
+            loop,
+            self.observations if observed else self.seen,
+            self.at,
+            source_winding=self.source_winding and (self.live or not observed),
+        )
+
+    def sensor_health(self, now: float | None = None) -> dict[str, dict[str, Any]]:
+        """Every numeric input's age and quality against its strictest configured use."""
+        limits: dict[str, float] = {}
+        for zone in self.plant.zones:
+            for entity, maximum in _zone_sensor_limits(zone, self.observations):
+                limits[entity] = min(limits.get(entity, maximum), maximum)
+        for pump in self.plant.pumps:
+            if pump.supply_temperature:
+                limits[pump.supply_temperature] = min(
+                    limits.get(pump.supply_temperature, GUARD_REFERENCE_MAX_AGE),
+                    GUARD_REFERENCE_MAX_AGE,
+                )
+        for loop in self.plant.all_loops:
+            if loop.surface_temperature:
+                limits[loop.surface_temperature] = min(
+                    limits.get(loop.surface_temperature, GUARD_REFERENCE_MAX_AGE),
+                    GUARD_REFERENCE_MAX_AGE,
+                )
+        source = self.plant.source
+        if source and source.supply and source.supply.outdoor_sensor:
+            entity, maximum = source.supply.outdoor_sensor, source.supply.max_age
+            limits[entity] = min(limits.get(entity, maximum), maximum)
+        return {
+            entity: reading_health(
+                self.observations.sensors.get(entity), maximum, self.at if now is None else now
+            )
+            for entity, maximum in sorted(limits.items())
+        }
 
     def status(self) -> str:
         """Off, idle, heating, cooling, exercising, changing over, degraded, stopping, invalid."""
@@ -106,7 +161,7 @@ class PlantView:
         demand = desired.demands.get(zone)
         if demand is None or not demand.on or demand.mode is not desired.mode:
             return "idle"
-        loops = zone_loops(self.plant, zone)
+        loops = self.plant.zone_loops(zone)
         if any(self.loop_flowing(loop) for loop in loops):
             return "heating" if desired.mode is Mode.HEAT else "cooling"
         if desired.mode is Mode.HEAT and any(
@@ -142,7 +197,7 @@ class PlantView:
                 continue
             dropped = [
                 reason
-                for loop in zone.loops
+                for loop in self.plant.zone_loops(zone.slug)
                 if (reason := desired.reasons.get(str(loop.ref), "")).startswith("dropped")
             ]
             if demand.on and dropped:
@@ -151,29 +206,51 @@ class PlantView:
                 blocked[zone.slug] = demand.reason
         return blocked
 
-
-def zone_loops(plant: Plant, zone: str) -> list[Loop]:
-    """The loops that serve a zone: its own, and the plant loops that run with it."""
-    return [
-        loop
-        for loop in plant.all_loops
-        if loop.zone == zone or (loop.runs.kind is RunKind.WITH_ZONES and zone in loop.runs.zones)
-    ]
+    def blocking_reason(self) -> str | None:
+        """The most immediate reason operation cannot continue as requested."""
+        if self.problem:
+            return self.problem
+        if self.stopping is not None:
+            return "Waiting for equipment from the previous configuration to stop"
+        if self.missing:
+            return "A configured entity is missing"
+        if self.reconciled.repairs:
+            return "Equipment has not confirmed its requested state"
+        if reason := self.desired.reasons.get("mode"):
+            return reason
+        if blocked := self.blocked_zones():
+            slug, reason = next(iter(blocked.items()))
+            return f"{self.plant.zone(slug).title}: {reason}"
+        supply = self.desired.reasons.get("source_supply", "")
+        if supply and not supply.startswith("supply target "):
+            return supply
+        source = self.desired.reasons.get("source", "")
+        return (
+            source
+            if source.startswith("waiting") or "blocks" in source or "did not confirm" in source
+            else None
+        )
 
 
 def observed_flow(
-    plant: Plant, observations: Observations
+    plant: Plant, observations: Observations, now: float, *, source_winding: bool = False
 ) -> tuple[frozenset[str], frozenset[str]]:
-    """The loops that pass flow as observed, and the zones they serve.
+    """The loops whose observed feedback indicates flow, and the zones they serve.
 
     Unlike the loop flowing sensors, this leaves out the Dry run proposals and
-    the calls in flight: it is what the equipment does.
+    the calls in flight. Without a flow sensor this remains an inference from
+    outputs, running feedback, and the configured source post-run.
     """
-    flowing = [loop for loop in plant.all_loops if _passes_flow(plant, loop, observations.outputs)]
+    flowing = [
+        loop
+        for loop in plant.all_loops
+        if loop_operation(plant, loop, observations, now, source_winding=source_winding).active
+        is True
+    ]
     zones = frozenset(
         zone.slug
         for zone in plant.zones
-        if any(loop in flowing for loop in zone_loops(plant, zone.slug))
+        if any(loop in flowing for loop in plant.zone_loops(zone.slug))
     )
     return frozenset(str(loop.ref) for loop in flowing), zones
 
@@ -213,25 +290,128 @@ def zone_readings(
         dew_point=worst,
         areas=breakdown,
         sensors={sensor.entity: _value(sensors.get(sensor.entity)) for sensor in zone.temperature},
+        sensor_health={
+            entity: reading_health(sensors.get(entity), maximum, now)
+            for entity, maximum in _zone_sensor_limits(zone, observations)
+        },
     )
 
 
-def _passes_flow(plant: Plant, loop: Loop, outputs: Mapping[str, OutputState]) -> bool:
-    """Whether a loop's valves are all on and its pump runs.
+def _zone_sensor_limits(zone: Zone, observations: Observations) -> list[tuple[str, float]]:
+    limits = [(sensor.entity, sensor.max_age) for sensor in (*zone.temperature, *zone.humidity)]
+    for area in zone.areas:
+        if (named := observations.areas.get(area.area)) is not None:
+            limits.extend(
+                (entity, area.max_age)
+                for entity in (named.temperature, named.humidity)
+                if entity is not None
+            )
+    return limits
 
-    A source-driven pump runs while the source's request is on.
-    """
-    if not all(_on(outputs.get(valve.entity)) for valve in loop.valves):
-        return False
-    pump = plant.pump(loop.pump)
-    if pump.switch is not None:
-        return _on(outputs.get(pump.switch))
+
+def reading_health(reading: Reading | None, maximum: float, now: float) -> dict[str, Any]:
+    """Explain freshness without presenting an invalid value as a measurement."""
+    age = None if reading is None else max(0.0, now - reading.updated)
+    quality = (
+        "unavailable or invalid"
+        if reading is None or reading.value is None
+        else "stale"
+        if age is not None and age >= maximum
+        else "fresh"
+    )
+    return {
+        "quality": quality,
+        "age_seconds": None if age is None else round(age, 1),
+        "max_age_seconds": maximum,
+        "value": _value(reading),
+    }
+
+
+def _binary(state: OutputState | None) -> bool | None:
+    if not isinstance(state, SwitchState) or state.on is None or state.moving:
+        return None
+    return state.on
+
+
+def source_operation(plant: Plant, observations: Observations) -> Operation:
+    """Separate generator running feedback from its request output."""
     source = plant.source
-    return source is not None and _on(outputs.get(source.request))
+    if source is None:
+        return Operation(False, "No source configured")
+    if source.running_sensor:
+        return Operation(
+            _binary(observations.readiness.get(source.running_sensor)),
+            "Running sensor",
+            source.running_sensor,
+        )
+    return Operation(
+        _binary(observations.outputs.get(source.request)),
+        "Inferred from source request",
+        source.request,
+    )
 
 
-def _on(state: OutputState | None) -> bool:
-    return isinstance(state, SwitchState) and state.on is True and not state.moving
+def pump_operation(
+    plant: Plant,
+    pump: Pump,
+    observations: Observations,
+    now: float,
+    *,
+    source_winding: bool = False,
+) -> Operation:
+    """Prefer independent running feedback, otherwise label the operating estimate."""
+    if pump.running_sensor:
+        return Operation(
+            _binary(observations.readiness.get(pump.running_sensor)),
+            "Running sensor",
+            pump.running_sensor,
+        )
+    if pump.switch:
+        return Operation(
+            _binary(observations.outputs.get(pump.switch)), "Inferred from pump switch", pump.switch
+        )
+    source = plant.source
+    if source is None:
+        return Operation(None, "No source configured")
+    state = observations.outputs.get(source.request)
+    running = source_operation(plant, observations)
+    if running.active is True:
+        return Operation(True, "Inferred from source operation", running.sensor)
+    if (
+        source_winding
+        and isinstance(state, SwitchState)
+        and state.on is False
+        and now < state.since + source.post_run
+    ):
+        return Operation(True, "Estimated source post-run", source.request)
+    if source.running_sensor and running.active is None:
+        return Operation(None, "Source running feedback unavailable", source.running_sensor)
+    return Operation(_binary(state), "Inferred from source request", source.request)
+
+
+def loop_operation(
+    plant: Plant,
+    loop: Loop,
+    observations: Observations,
+    now: float,
+    *,
+    source_winding: bool = False,
+) -> Operation:
+    """Explain inferred branch flow; pump flow feedback cannot measure each branch."""
+    valves = [_binary(observations.outputs.get(valve.entity)) for valve in loop.valves]
+    if False in valves:
+        return Operation(False, "Valve closed")
+    if None in valves:
+        return Operation(None, "Valve position unavailable")
+    pump = plant.pump(loop.pump)
+    if pump.flow_sensor:
+        return Operation(
+            _binary(observations.readiness.get(pump.flow_sensor)),
+            "Pump flow sensor; loop path inferred",
+            pump.flow_sensor,
+        )
+    running = pump_operation(plant, pump, observations, now, source_winding=source_winding)
+    return Operation(running.active, f"Estimated flow: {running.basis.lower()}", running.sensor)
 
 
 def _value(reading: Reading | None) -> float | None:

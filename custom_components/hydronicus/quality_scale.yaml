@@ -15,17 +15,12 @@ rules:
   config-flow-test-coverage:
     status: todo
     comment: |
-      config_flow.py and most of flows/ measure 95-100%, but
-      flows/zone.py (91%) and flows/settings.py (87%) fall short of
-      full coverage.
+      The local gate measures whole-package coverage, but this rule
+      requires complete config-flow coverage. Verify every flow module
+      in the current coverage report before marking it done.
   config-flow: done
   dependency-transparency: done
-  docs-actions:
-    status: todo
-    comment: |
-      hydronicus.export_plant is named in docs/plant-file.md and
-      services.yaml, but is not documented as a service action with
-      its fields the way docs-actions expects.
+  docs-actions: done
   docs-triggers:
     status: exempt
     comment: Hydronicus provides no device triggers.
@@ -34,13 +29,7 @@ rules:
     comment: Hydronicus provides no device conditions.
   docs-high-level-description: done
   docs-installation-instructions: done
-  docs-removal-instructions:
-    status: todo
-    comment: |
-      Removing a Plant or the equipment stop sequence is only
-      mentioned in passing in docs/troubleshooting.md and
-      docs/upgrade-and-rollback.md; there is no dedicated removal
-      section.
+  docs-removal-instructions: done
   entity-event-setup: done
   entity-unique-id: done
   has-entity-name: done
@@ -75,10 +64,9 @@ rules:
   test-coverage:
     status: todo
     comment: |
-      custom_components/hydronicus overall measures 96%, but several
-      modules sit under the 95% this rule wants per module:
-      flows/settings.py and services.py (87%), storage.py and
-      repairs.py (89%), diagnostics.py (89%).
+      The local gate reports whole-package coverage. This rule also
+      requires at least 95% per module; consult the current coverage
+      report before declaring that stronger requirement satisfied.
 
   # Gold
   devices: done
@@ -92,23 +80,14 @@ rules:
       A Plant binds entities the owner already set up in Home
       Assistant; there is no device on the network to discover.
   docs-data-update: done
-  docs-examples:
-    status: todo
-    comment: |
-      docs/entities.md and docs/how-it-works.md mention that an
-      automation can use the entities, but neither gives a worked
-      automation example.
-  docs-known-limitations:
-    status: todo
-    comment: |
-      Known limitations live only in a release's own notes
-      (docs/releases/v0.2.0.md), which the next release will not
-      repeat; there is no durable, version-independent section.
+  docs-examples: done
+  docs-known-limitations: done
   docs-supported-devices:
     status: exempt
     comment: |
-      Hydronicus is device-agnostic: any switch, sensor, or climate
-      entity of any integration can fill a role.
+      Hydronicus binds generic entities supplied by other integrations.
+      Roles require matching domains, supported units, and meaningful
+      physical feedback; they do not imply compatibility with every device.
   docs-supported-functions: done
   docs-troubleshooting: done
   docs-use-cases: done

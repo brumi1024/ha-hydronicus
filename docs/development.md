@@ -61,10 +61,16 @@ Do not add schema aliases or migration paths without a concrete persisted predec
 - `core/model.py` describes a Plant as an optional source, its pumps, its zones, and its loops, as frozen values addressed by slugs, and the desired state that `step()` returns.
 - `core/plant_file.py` reads, validates, and writes the format 2 plant file, which is also the storage schema: `to_storage` splits a Plant into entry data and zone subentry data with its slug-keyed objects listed in order, `from_storage` joins them again, and `describe_path` puts a problem's path in words.
 - `core/demand.py` holds what `step()` reads from sensors and thermostats: fail-closed aggregation, the worst-case dew point, digital thermostat hysteresis and minimum durations, and the normalization of an external thermostat's `hvac_action`.
+- `core/supply.py` proposes a bounded fixed or outdoor-compensated supply target from explicit readings, mode, and time, without Home Assistant or actuator access.
+  The core owns its freshness deadline, cooling margin, and integration into source sequencing.
 - `core/step.py` defines the observations `step()` reads and the State it persists, and `step()` computes the desired state of every output with every hydraulic wait already in it: a valve stays open while a pump that may still run needs it, a pump stays on while a released source request may still be on, and the source is requested only once its loops are ready and their pumps are observed running.
 - `core/reconcile.py` turns the desired state into the service calls to send, in dependency order, keeps at most one call per output in flight, waits for a valve that shows it is opening or closing toward its target, retries with backoff, reports the outputs for Repairs, and proposes instead of sending in Dry run; `step_view` shows `step()` the calls still in flight and the Dry run proposals.
 
-A decision never counts on a call having acted: a call that no observation has confirmed may act until `CALL_TIMEOUT` after it was sent.
+A decision never counts on a call having acted: a call that no observation has confirmed is modeled as possibly acting until `CALL_TIMEOUT` after it was sent.
+The simulator assumes downstream commands act within that window and in order; cancelling a Home Assistant service task cannot guarantee that physical devices obey those assumptions.
+Commissioning must check real actuator latency and feedback, with hardware interlocks retaining responsibility outside this model.
+Source minimum on and off times use observed request transitions rather than desired transitions.
+Dry run mode history cannot replace the physical mode history when control resumes.
 
 The Home Assistant adapter lives beside the core:
 
@@ -73,7 +79,8 @@ The Home Assistant adapter lives beside the core:
   An evaluation that raises is logged, raises the `evaluation_failed` Repair, and is retried after a minute.
   Setup restores the stored State and the digital thermostats before the first evaluation, and stopping only cancels, never commands.
   A configuration that is not valid still loads, as an empty Plant with its stored ID and name that only observes, next to the `invalid_plant` Repair.
-- `dispatch.py` sends the actions outside the evaluation from one task at a time, in the order they were decided and each within `CALL_TIMEOUT` of its evaluation, and stopping drops the queue and cancels that task, so no call starts once stopping has begun.
+- `dispatch.py` sends the actions outside the evaluation from one task at a time, in the order they were decided and each within `CALL_TIMEOUT` of its evaluation.
+  It rechecks authorization before dispatch, and stopping drops the queue and cancels that task, so no call starts once stopping has begun.
 - `previous.py` persists the last valid Plant with the outputs it was commanding.
   When a new configuration removes an output that is on, or is not valid, the first evaluation runs that previous Plant with Control equipment forced off until its outputs are observed off, and only then the new Plant.
 - `view.py` is the read model: the `PlantView` of each evaluation, from which the entities and diagnostics derive the status, the blocked zones, the flowing loops, the zone readings, and each thermostat's action.
@@ -136,5 +143,21 @@ Only a spontaneous physical change, such as a valve closing by itself, is exempt
 10. `custom_components/hydronicus/core/` has no Home Assistant imports and at least 90 percent coverage, and the whole package passes mypy.
 11. Exporting a Plant and importing the file reproduces the Plant, its object IDs, and its entity IDs.
 12. `make verify` is the gate.
+
+## Comfort and supply extension seams
+
+Digital thermostat planning keeps the user's manual heating and cooling targets separate from the effective target of a preset, setback, or early start.
+Schedule observation belongs to the Home Assistant adapter; setback and recovery decisions belong to the pure demand policy with explicit time and deadlines.
+A manual target change exits schedule control, and restored state preserves both mode targets.
+An unavailable schedule returns to manual comfort, while unknown transition timing disables early start.
+
+Supply control returns a proposal rather than an actuator command.
+It uses the same numeric output, arming, observation, retry, and dispatch path as other outputs.
+A later forecast policy should enter through the same bounded demand or setpoint proposal seams and retain all sequencing and condensation gates.
+No forecast service is called by the synchronous core or evaluation.
+
+Topology queries use the Plant's serving-loop methods so shared plant loops produce the same zone capabilities in validation, climate entities, demand sensors, and setup warnings.
+Commissioning data distinguishes measured inputs, command confirmation, feedback proof, and output-based estimates.
+Tests must exercise delayed observations, invalid feedback, manual overrides, restart, schedule transitions, and numeric unit conversion through the appropriate public seam.
 
 The plans of earlier versions are in the git history, not in the repository.

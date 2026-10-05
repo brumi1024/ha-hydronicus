@@ -18,7 +18,7 @@ from homeassistant.core import StateMachine
 
 from .core.model import OutputRole, Plant
 from .core.plant_file import export_plant, parse_plant
-from .observe import option_value, switch_value
+from .observe import numeric_value, option_value, switch_value
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,10 +99,12 @@ class PreviousConfiguration:
             return False
         roles = previous.plant.outputs()
 
-        def value(entity: str) -> bool | str | None:
+        def value(entity: str) -> bool | str | float | None:
             state = states.get(entity)
             if roles[entity] is OutputRole.SOURCE_MODE:
                 return option_value(state)
+            if roles[entity] is OutputRole.SOURCE_SETPOINT:
+                return numeric_value(state)
             return switch_value(state)
 
         commanded = {entity for entity in previous.outputs if entity in roles}

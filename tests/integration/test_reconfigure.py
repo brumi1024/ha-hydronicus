@@ -166,6 +166,37 @@ async def test_reconfigure_adds_a_pump_and_a_plant_loop_and_edits_a_pump(
     assert "switch.garage_valve" in plant.outputs()
 
 
+async def test_weather_changes_are_reviewed_and_saved_without_a_source(
+    hass: HomeAssistant,
+) -> None:
+    entry = await async_import(hass, TWO_ZONES)
+    flow = hass.config_entries.flow
+    for weather in (
+        {"entity": "weather.home", "max_age": 7200},
+        {"entity": "weather.home", "max_age": 7500},
+        {},
+    ):
+        result = await async_reconfigure(hass, entry)
+        result = await async_choose(flow, result, "plant")
+        result = await async_submit(flow, result, {"name": "Flat", "weather": weather})
+        assert result["step_id"] == "reconfigure", result
+        result = await async_choose(flow, result, "save")
+        assert result["description_placeholders"]["summary"] == (
+            "- Plant settings changed: weather forecast"
+        )
+        result = await async_submit(flow, result)
+        assert result["reason"] == "reconfigure_successful"
+        await hass.async_block_till_done()
+        plant = entry.runtime_data.plant
+        assert plant.source is None
+        if weather:
+            assert plant.weather is not None
+            assert plant.weather.entity == weather["entity"]
+            assert plant.weather.max_age == weather["max_age"]
+        else:
+            assert plant.weather is None
+
+
 async def test_saving_sets_up_again_a_plant_that_failed_to_set_up(hass: HomeAssistant) -> None:
     reference_world(hass)
     with patch.object(

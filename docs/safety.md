@@ -66,6 +66,11 @@ While a command has not taken effect, Hydronicus assumes the worst of it:
 An output that is unavailable gets no command, and the loops that need it do not run until it returns.
 A bound entity that does not exist is a Repair, and whatever needs it is blocked.
 
+The 10-second service timeout is a software boundary, not a guarantee that equipment cannot act later.
+The simulator assumes delayed commands act within that window and commands to one entity act in order.
+A device that queues an earlier start and executes it after a later stop can violate those assumptions.
+Check real device latency and ordering during commissioning, and keep independent hydraulic and electrical interlocks.
+
 ## Sensors fail closed
 
 A required sensor that is unavailable, stale, in an unsupported unit, or physically implausible blocks its zone, and the zone does not call.
@@ -124,6 +129,17 @@ A Plant left invalid by a removal stops the same way and then only observes, wit
 Removing the whole Plant does not stop the equipment it controlled; stop it first with **Control equipment**.
 
 Read [reloads and restarts](how-it-works.md#reloads-and-restarts) for exactly what each evaluation stores, restores, and stops.
+
+## Optional feedback and comfort controls
+
+Running and flow sensors provide additional observations, but they do not replace hardwired flow proving or an equipment interlock.
+A binary flow input proves only what its device measures, and an individual loop's flow may still be inferred from its open valves and pump state.
+Loop runtime and duty cycle are not delivered heat or energy measurements.
+
+Supply temperature control is optional and bounded, with cooling still subject to measured condensation guards.
+Configure limits for the actual source, emitters, and mixing arrangement, and give the setpoint one controller.
+A schedule or early start changes only comfort demand and never grants permission to run equipment through a blocked guard.
+Configured room recovery rates are estimates and do not guarantee that comfort will be reached at a particular time.
 
 ## Safe operating rule
 

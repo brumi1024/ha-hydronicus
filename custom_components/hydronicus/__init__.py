@@ -29,6 +29,8 @@ from .core.model import Plant
 from .core.plant_file import PlantFileError, describe_path
 from .entity import async_remove_unprovided, is_stale_device, plant_device
 from .issues import async_delete_issues, async_sync_issues, invalid_plant
+from .learning import LEARNING_STORE_VERSION
+from .learning import store_key as learning_store_key
 from .runtime import PlantRuntime, store_key
 from .services import async_setup_services
 from .storage import plant_from_entry, pruned_entry_data, pruned_options, stored_document
@@ -191,3 +193,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove the Plant's Repairs and persisted state."""
     async_delete_issues(hass, entry.entry_id)
     await Store[dict[str, object]](hass, STORE_VERSION, store_key(entry.entry_id)).async_remove()
+    await Store[dict[str, object]](
+        hass, LEARNING_STORE_VERSION, learning_store_key(entry.entry_id)
+    ).async_remove()

@@ -55,6 +55,7 @@ from .model import (
     DigitalThermostat,
     Exercise,
     ExternalThermostat,
+    LearningMode,
     Loop,
     LoopRef,
     LoopRun,
@@ -64,11 +65,14 @@ from .model import (
     Preset,
     Pump,
     RunKind,
+    Schedule,
     Sensor,
     Source,
     SourceModeSelect,
+    SupplyControl,
     Thermostat,
     Valve,
+    WeatherConfig,
     Zone,
     ZoneArea,
     title_from_slug,
@@ -84,12 +88,47 @@ _TOP_KEYS: Final = (
     "mode_dwell",
     "exercise",
     "frost_protection",
+    "weather",
     "source",
     "pumps",
     "loops",
     "zones",
 )
-_SOURCE_KEYS: Final = ("name", "request", "mode", "post_run", "min_on", "min_off")
+_SOURCE_KEYS: Final = (
+    "name",
+    "request",
+    "mode",
+    "post_run",
+    "min_on",
+    "min_off",
+    "running_sensor",
+    "supply",
+    "feedback_timeout",
+)
+_SUPPLY_KEYS: Final = (
+    "entity",
+    "outdoor_sensor",
+    "heat_temperature",
+    "cool_temperature",
+    "minimum",
+    "maximum",
+    "tolerance",
+    "outdoor_cold",
+    "outdoor_warm",
+    "heat_cold",
+    "heat_warm",
+    "max_age",
+)
+_SCHEDULE_KEYS: Final = (
+    "entity",
+    "heat_setback",
+    "cool_setback",
+    "max_early_start",
+    "heating_rate",
+    "cooling_rate",
+)
+_WEATHER_KEYS: Final = ("entity", "outdoor_sensor", "max_age")
+_CONFIG_PRESETS: Final = (Preset.COMFORT, Preset.ECO, Preset.AWAY)
 _SOURCE_MODE_KEYS: Final = ("entity", "heat", "cool")
 _PUMP_KEYS: Final = (
     "name",
@@ -100,6 +139,8 @@ _PUMP_KEYS: Final = (
     "min_flow_loops",
     "supply_temperature",
     "condensation_switch",
+    "running_sensor",
+    "flow_sensor",
 )
 _PLANT_LOOP_KEYS: Final = (
     "name",
@@ -140,6 +181,11 @@ _THERMOSTAT_KEYS: Final = ("digital", "external")
 _DIGITAL_KEYS: Final = (
     "target",
     "presets",
+    "cool_target",
+    "cool_presets",
+    "schedule",
+    "learning",
+    "weather_aware",
     "heat_start_delta",
     "heat_stop_delta",
     "cool_start_delta",
@@ -206,6 +252,7 @@ def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Pla
         name=_text(_required(top, "name", ""), "name"),
         mode_dwell=_number(top.get("mode_dwell", DEFAULT_MODE_DWELL), "mode_dwell"),
         source=_source(top["source"], "source") if "source" in top else None,
+        weather=_weather(top["weather"], "weather") if "weather" in top else None,
         pumps=tuple(
             _pump(slug, value, path) for slug, value, path in _slugs(top.get("pumps", {}), "pumps")
         ),
@@ -268,6 +315,24 @@ def _frost_protection(value: object, path: str) -> float | None:
     return _within(_number(value, path), path, high=MAX_FROST_PROTECTION)
 
 
+def _weather(value: object, path: str) -> WeatherConfig:
+    weather = _mapping(value, path, _WEATHER_KEYS)
+    entity = _entity(_required(weather, "entity", path), _join(path, "entity"), ("weather",))
+    return WeatherConfig(
+        entity=entity,
+        outdoor_sensor=(
+            _entity(weather["outdoor_sensor"], _join(path, "outdoor_sensor"), _SENSOR_DOMAINS)
+            if "outdoor_sensor" in weather
+            else None
+        ),
+        max_age=_number(
+            weather.get("max_age", WeatherConfig(entity).max_age),
+            _join(path, "max_age"),
+            positive=True,
+        ),
+    )
+
+
 def _source(value: object, path: str) -> Source:
     source = _mapping(value, path, _SOURCE_KEYS)
     return Source(
@@ -278,8 +343,71 @@ def _source(value: object, path: str) -> Source:
         post_run=_number(source.get("post_run", DEFAULT_POST_RUN), _join(path, "post_run")),
         min_on=_number(source.get("min_on", DEFAULT_MIN_ON), _join(path, "min_on")),
         min_off=_number(source.get("min_off", DEFAULT_MIN_OFF), _join(path, "min_off")),
+        feedback_timeout=_number(
+            source.get("feedback_timeout", 300.0), _join(path, "feedback_timeout"), positive=True
+        ),
         name=_name(source, path),
+        running_sensor=_contact(source, "running_sensor", path),
+        supply=_supply(source["supply"], _join(path, "supply")) if "supply" in source else None,
     )
+
+
+def _supply(value: object, path: str) -> SupplyControl:
+    document = _mapping(value, path, _SUPPLY_KEYS)
+    entity = _entity(_required(document, "entity", path), _join(path, "entity"), ("number",))
+    defaults = SupplyControl(entity)
+    settings = {
+        key: _number(
+            document.get(key, getattr(defaults, key)),
+            _join(path, key),
+            signed=key not in ("tolerance", "max_age"),
+            positive=key in ("tolerance", "max_age"),
+        )
+        for key in _SUPPLY_KEYS
+        if key not in ("entity", "outdoor_sensor")
+    }
+    if settings["minimum"] >= settings["maximum"]:
+        raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
+    if settings["outdoor_cold"] >= settings["outdoor_warm"]:
+        raise PlantFileError(
+            _join(path, "outdoor_warm"),
+            "Warm outdoor temperature must exceed cold outdoor temperature.",
+        )
+    if settings["heat_cold"] < settings["heat_warm"]:
+        raise PlantFileError(
+            _join(path, "heat_warm"),
+            "The warm-weather heating target must not exceed the cold-weather target.",
+        )
+    for key in ("heat_temperature", "cool_temperature", "heat_cold", "heat_warm"):
+        _within(settings[key], _join(path, key), low=settings["minimum"], high=settings["maximum"])
+    _within(
+        settings["tolerance"],
+        _join(path, "tolerance"),
+        high=settings["maximum"] - settings["minimum"],
+    )
+    outdoor = (
+        _entity(document["outdoor_sensor"], _join(path, "outdoor_sensor"), _SENSOR_DOMAINS)
+        if "outdoor_sensor" in document
+        else None
+    )
+    return SupplyControl(entity=entity, outdoor_sensor=outdoor, **settings)
+
+
+def _schedule(value: object, path: str) -> Schedule:
+    document = _mapping(value, path, _SCHEDULE_KEYS)
+    entity = _entity(_required(document, "entity", path), _join(path, "entity"), ("schedule",))
+    defaults = Schedule(entity)
+    settings = {
+        key: _number(
+            document.get(key, getattr(defaults, key)),
+            _join(path, key),
+            positive=key in ("heating_rate", "cooling_rate"),
+        )
+        for key in _SCHEDULE_KEYS
+        if key != "entity"
+    }
+    _within(settings["max_early_start"], _join(path, "max_early_start"), high=21600)
+    return Schedule(entity=entity, **settings)
 
 
 def _source_mode(value: object, path: str) -> SourceModeSelect:
@@ -318,6 +446,8 @@ def _pump(slug: str, value: object, path: str) -> Pump:
             supply_temperature=supply_temperature,
             name=_name(pump, path),
             condensation_switch=condensation_switch,
+            running_sensor=_contact(pump, "running_sensor", path),
+            flow_sensor=_contact(pump, "flow_sensor", path),
         )
     if pump["driven_by"] != "source":
         raise PlantFileError(
@@ -336,6 +466,8 @@ def _pump(slug: str, value: object, path: str) -> Pump:
         supply_temperature=supply_temperature,
         name=_name(pump, path),
         condensation_switch=condensation_switch,
+        running_sensor=_contact(pump, "running_sensor", path),
+        flow_sensor=_contact(pump, "flow_sensor", path),
     )
 
 
@@ -521,15 +653,27 @@ def _thermostat(value: object, path: str) -> Thermostat:
         value = digital.get(key, getattr(defaults, key))
         return _number(value, _join(path, key), signed=signed)
 
-    presets_path = _join(path, "presets")
-    presets = _mapping(digital.get("presets", {}), presets_path, tuple(Preset))
+    def presets(key: str) -> tuple[tuple[Preset, float], ...]:
+        preset_path = _join(path, key)
+        values = _mapping(digital.get(key, {}), preset_path, _CONFIG_PRESETS)
+        return tuple(
+            (preset, _number(values[preset], _join(preset_path, preset), signed=True))
+            for preset in _CONFIG_PRESETS
+            if preset in values
+        )
+
     return DigitalThermostat(
         target=setting("target", signed=True),
-        presets=tuple(
-            (preset, _number(presets[preset], _join(presets_path, preset), signed=True))
-            for preset in Preset
-            if preset in presets
+        presets=presets("presets"),
+        cool_target=setting("cool_target", signed=True),
+        cool_presets=presets("cool_presets"),
+        schedule=_schedule(digital["schedule"], _join(path, "schedule"))
+        if "schedule" in digital
+        else None,
+        learning=_choice(
+            digital.get("learning", LearningMode.OFF), _join(path, "learning"), tuple(LearningMode)
         ),
+        weather_aware=_flag(digital.get("weather_aware", False), _join(path, "weather_aware")),
         heat_start_delta=setting("heat_start_delta"),
         heat_stop_delta=setting("heat_stop_delta"),
         cool_start_delta=setting("cool_start_delta"),
@@ -696,6 +840,7 @@ def validate_plant(plant: Plant) -> None:
         _check_loop(plant, loop)
     for zone in plant.zones:
         _check_zone(zone)
+        _check_learning(plant, zone)
     for loop in plant.loops:
         if loop.cools:
             for zone in plant.dew_point_zones(loop):
@@ -824,6 +969,23 @@ def _check_zone(zone: Zone) -> None:
         )
 
 
+def _check_learning(plant: Plant, zone: Zone) -> None:
+    thermostat = zone.thermostat
+    if not isinstance(thermostat, DigitalThermostat):
+        return
+    path = f"zones.{zone.slug}.thermostat.digital"
+    if thermostat.learning is LearningMode.ASSIST and thermostat.schedule is None:
+        raise PlantFileError(_join(path, "learning"), "Assisted recovery needs a comfort schedule.")
+    if thermostat.weather_aware and (
+        thermostat.learning is not LearningMode.ASSIST or plant.weather is None
+    ):
+        raise PlantFileError(
+            _join(path, "weather_aware"),
+            "Weather-aware recovery needs assisted learning, a comfort schedule, "
+            "and Plant weather settings.",
+        )
+
+
 def _check_dew_point(zone: Zone, loop: Loop) -> None:
     """Refuse a zone whose dew point a cooling plant loop's guard needs and cannot have."""
     path = f"zones.{zone.slug}"
@@ -866,6 +1028,8 @@ def _output_paths(plant: Plant) -> Iterator[tuple[str, str]]:
         yield plant.source.request, "source.request"
         if plant.source.mode is not None:
             yield plant.source.mode.entity, "source.mode.entity"
+        if plant.source.supply is not None:
+            yield plant.source.supply.entity, "source.supply.entity"
     for pump in plant.pumps:
         if pump.switch is not None:
             yield pump.switch, f"pumps.{pump.slug}.switch"
@@ -890,12 +1054,21 @@ def entity_paths(plant: Plant) -> dict[str, str]:
         if entity is not None:
             paths.setdefault(entity, path)
 
+    if plant.weather is not None:
+        bind(plant.weather.entity, "weather.entity")
+        bind(plant.weather.outdoor_sensor, "weather.outdoor_sensor")
     if plant.source is not None:
         bind(plant.source.request, "source.request")
+        bind(plant.source.running_sensor, "source.running_sensor")
+        if plant.source.supply is not None:
+            bind(plant.source.supply.entity, "source.supply.entity")
+            bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
         if plant.source.mode is not None:
             bind(plant.source.mode.entity, "source.mode.entity")
     for pump in plant.pumps:
         bind(pump.switch, f"pumps.{pump.slug}.switch")
+        bind(pump.running_sensor, f"pumps.{pump.slug}.running_sensor")
+        bind(pump.flow_sensor, f"pumps.{pump.slug}.flow_sensor")
         bind(pump.supply_temperature, f"pumps.{pump.slug}.supply_temperature")
         bind(pump.condensation_switch, f"pumps.{pump.slug}.condensation_switch")
     for loop in plant.loops:
@@ -908,6 +1081,8 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(sensor.entity, f"{path}.humidity.{index}")
         if isinstance(zone.thermostat, ExternalThermostat):
             bind(zone.thermostat.entity, f"{path}.thermostat.external")
+        elif zone.thermostat.schedule is not None:
+            bind(zone.thermostat.schedule.entity, f"{path}.thermostat.digital.schedule.entity")
         for index, window in enumerate(zone.windows):
             bind(window, f"{path}.windows.{index}")
         for loop in zone.loops:
@@ -1056,6 +1231,10 @@ def export_plant(plant: Plant) -> dict[str, Any]:
         )
     if plant.source is not None:
         document["source"] = _export_source(plant.source)
+    if plant.weather is not None:
+        document["weather"] = _export_configuration(
+            plant.weather, WeatherConfig(plant.weather.entity), _WEATHER_KEYS
+        )
     if plant.pumps:
         document["pumps"] = {pump.slug: _export_pump(pump) for pump in plant.pumps}
     if plant.loops:
@@ -1082,6 +1261,14 @@ def _export_source(source: Source) -> dict[str, Any]:
     document["post_run"] = _export_number(source.post_run)
     document["min_on"] = _export_number(source.min_on)
     document["min_off"] = _export_number(source.min_off)
+    if source.feedback_timeout != 300.0:
+        document["feedback_timeout"] = _export_number(source.feedback_timeout)
+    if source.running_sensor is not None:
+        document["running_sensor"] = source.running_sensor
+    if source.supply is not None:
+        document["supply"] = _export_configuration(
+            source.supply, SupplyControl(source.supply.entity), _SUPPLY_KEYS
+        )
     return document
 
 
@@ -1101,6 +1288,10 @@ def _export_pump(pump: Pump) -> dict[str, Any]:
         document["supply_temperature"] = pump.supply_temperature
     if pump.condensation_switch is not None:
         document["condensation_switch"] = pump.condensation_switch
+    if pump.running_sensor is not None:
+        document["running_sensor"] = pump.running_sensor
+    if pump.flow_sensor is not None:
+        document["flow_sensor"] = pump.flow_sensor
     return document
 
 
@@ -1189,11 +1380,30 @@ def _export_thermostat(thermostat: Thermostat) -> dict[str, Any]:
         value = getattr(thermostat, key)
         if value == getattr(_DEFAULT_THERMOSTAT, key):
             continue
-        if key == "presets":
+        if key in ("presets", "cool_presets"):
             settings[key] = {str(preset): _export_number(target) for preset, target in value}
+        elif key == "schedule":
+            settings[key] = _export_configuration(value, Schedule(value.entity), _SCHEDULE_KEYS)
+        elif key in ("learning", "weather_aware"):
+            settings[key] = str(value) if key == "learning" else value
         else:
             settings[key] = _export_number(value)
     return {"digital": settings}
+
+
+def _export_configuration(
+    value: SupplyControl | Schedule | WeatherConfig,
+    defaults: SupplyControl | Schedule | WeatherConfig,
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    document: dict[str, Any] = {"entity": value.entity}
+    for key in keys:
+        setting = getattr(value, key)
+        if setting != getattr(defaults, key):
+            document[key] = (
+                _export_number(setting) if isinstance(setting, (float, int)) else setting
+            )
+    return document
 
 
 def _named(name: str | None) -> dict[str, Any]:

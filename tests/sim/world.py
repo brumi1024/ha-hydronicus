@@ -43,6 +43,7 @@ from custom_components.hydronicus.core.model import (
     Loop,
     LoopRef,
     Mode,
+    NumericTarget,
     OptionTarget,
     OutputRole,
     OutputTarget,
@@ -56,6 +57,7 @@ from custom_components.hydronicus.core.step import (
     AreaSensors,
     DigitalThermostatState,
     ExternalThermostatState,
+    NumericState,
     Observations,
     OptionState,
     OutputState,
@@ -143,6 +145,18 @@ class SelectBody:
 
 
 @dataclass(slots=True)
+class NumberBody:
+    """A numeric output in core units, independent of a requested target."""
+
+    value: float = 20.0
+    changed: float = WALL_BASE
+    available: bool = True
+
+    def observe(self) -> NumericState:
+        return NumericState(self.value if self.available else None, self.changed)
+
+
+@dataclass(slots=True)
 class ValveBody:
     """A valve's travel; its switch is the ``SwitchBody`` of the same entity."""
 
@@ -223,10 +237,15 @@ class World:
         self.armed: frozenset[str] = frozenset()
         self.switches: dict[str, SwitchBody] = {}
         self.selects: dict[str, SelectBody] = {}
+        self.numbers: dict[str, NumberBody] = {}
         self.valves: dict[str, ValveBody] = {}
         self.readiness: dict[str, SwitchBody] = {}
-        # Condensation switches and windows, which only a trace changes.
+        # Condensation switches, windows, and feedback, which only a trace changes.
         self.contacts: dict[str, SwitchBody] = {}
+        # Explicit physical overrides are independent of feedback sensor faults.
+        # Absent an override, a pump follows its switch or the source's request.
+        self.pump_running_overrides: dict[str, bool] = {}
+        self.source_running_override: bool | None = None
         self.sensors: dict[str, SensorBody] = {}
         self.areas: dict[str, AreaSensors] = {}
         self.thermostats: dict[str, ThermostatState] = {}
@@ -254,6 +273,8 @@ class World:
             if role is OutputRole.SOURCE_MODE:
                 assert plant.source is not None and plant.source.mode is not None
                 self.selects.setdefault(entity, SelectBody(option=plant.source.mode.heat))
+            elif role is OutputRole.SOURCE_SETPOINT:
+                self.numbers.setdefault(entity, NumberBody(changed=self.wall()))
             else:
                 self.switches.setdefault(entity, SwitchBody(changed=self.wall()))
         for loop in plant.all_loops:
@@ -266,6 +287,8 @@ class World:
         for pump in plant.pumps:
             if pump.supply_temperature is not None:
                 self._sensor(pump.supply_temperature, DEFAULT_REFERENCE)
+        if plant.source and plant.source.supply and plant.source.supply.outdoor_sensor:
+            self._sensor(plant.source.supply.outdoor_sensor, 5.0)
         for zone in plant.zones:
             for sensor in zone.temperature:
                 self._sensor(sensor.entity, DEFAULT_TEMPERATURE)
@@ -326,6 +349,9 @@ class World:
     def option(self, entity: str) -> str | None:
         return self.selects[entity].option
 
+    def number(self, entity: str) -> float:
+        return self.numbers[entity].value
+
     @property
     def requested(self) -> bool:
         source = self.plant.source
@@ -336,8 +362,15 @@ class World:
         return not self.requested and self.t < self.post_run_end - EPSILON
 
     def pump_running(self, pump: Pump) -> bool:
+        if pump.slug in self.pump_running_overrides:
+            return self.pump_running_overrides[pump.slug]
         if pump.switch is None:
-            return self.requested or self.post_running
+            source_running = (
+                self.requested
+                if self.source_running_override is None
+                else self.source_running_override
+            )
+            return source_running or self.post_running
         return self.switches[pump.switch].on
 
     def valve_passes(self, entity: str) -> bool:
@@ -371,6 +404,7 @@ class World:
         return (
             not self.in_flight()
             and not self.post_running
+            and not any(self.pump_running(pump) for pump in self.plant.pumps)
             and not any(
                 body.on or self.moving(entity)
                 for entity, body in self.switches.items()
@@ -471,6 +505,29 @@ class World:
         self.selects[entity].changed = self.wall() - since
         self.changed()
 
+    def seed_number(self, entity: str, value: float, since: float = 0.0) -> None:
+        self.numbers[entity].value = value
+        self.numbers[entity].changed = self.wall() - since
+        self.changed()
+
+    def set_pump_running(self, slug: str, running: bool | None) -> None:
+        """Override physical circulation; None returns it to command-based behavior.
+
+        This does not change the feedback input: scenarios set that separately
+        to model a faithful sensor, a false report, or unavailable feedback.
+        """
+        self.plant.pump(slug)
+        if running is None:
+            self.pump_running_overrides.pop(slug, None)
+        else:
+            self.pump_running_overrides[slug] = running
+        self.changed()
+
+    def set_source_running(self, running: bool | None) -> None:
+        """Override actual source operation independently of request and feedback."""
+        self.source_running_override = running
+        self.changed()
+
     def spontaneous_off(self, entity: str) -> None:
         """A switch output turns off by itself, such as a relay rebooting."""
         if self.switches[entity].on and self.switches[entity].available:
@@ -478,9 +535,7 @@ class World:
             self.set_switch(entity, False)
 
     def set_available(self, entity: str, available: bool) -> None:
-        body: SwitchBody | SelectBody = (
-            self.switches[entity] if entity in self.switches else self.selects[entity]
-        )
+        body = self.output_body(entity)
         if body.available != available:
             body.available = available
             body.changed = self.wall()
@@ -507,7 +562,7 @@ class World:
             self.changed()
 
     def set_contact(self, entity: str, on: bool | None) -> None:
-        """Turn a condensation switch or window on or off, or None for unavailable."""
+        """Change a binary input or its availability without changing physical equipment."""
         body = self.contacts[entity]
         available = on is not None
         if body.available == available and (on is None or body.on == on):
@@ -524,6 +579,13 @@ class World:
 
     # Service calls
 
+    def output_body(self, entity: str) -> SwitchBody | SelectBody | NumberBody:
+        if entity in self.switches:
+            return self.switches[entity]
+        if entity in self.selects:
+            return self.selects[entity]
+        return self.numbers[entity]
+
     def fault_for(self, entity: str, t: float) -> Fault | None:
         for fault in self.faults:
             if fault.entity == entity and fault.start <= t < fault.end:
@@ -533,11 +595,7 @@ class World:
     def dispatch(self, action: Action) -> Call:
         """Send one service call and schedule its effect."""
         entity = self.plant_check(action)
-        available = (
-            self.switches[entity].available
-            if entity in self.switches
-            else self.selects[entity].available
-        )
+        available = self.output_body(entity).available
         fault = self.fault_for(entity, self.t)
         call = Call(self.t, entity, action.target, Outcome.PENDING, None)
         self.calls.append(call)
@@ -563,7 +621,10 @@ class World:
         role = self.plant.outputs().get(action.entity)
         if role is None:
             raise AssertionError(f"reconcile() sent {action} to an entity that is no output")
-        expected = OptionTarget if role is OutputRole.SOURCE_MODE else SwitchTarget
+        expected = {
+            OutputRole.SOURCE_MODE: OptionTarget,
+            OutputRole.SOURCE_SETPOINT: NumericTarget,
+        }.get(role, SwitchTarget)
         if not isinstance(action.target, expected):
             raise AssertionError(f"reconcile() sent {action}, but {action.entity} is a {role}")
         return action.entity
@@ -585,6 +646,18 @@ class World:
             if call.stalls and body is not None and body.reports_travel:
                 self._stall(entity)
             return
+        if entity in self.numbers:
+            number = self.numbers[entity]
+            if not number.available:
+                call.outcome = Outcome.DROPPED
+                return
+            assert isinstance(call.target, NumericTarget)
+            call.outcome = Outcome.LANDED
+            if number.value != call.target.value:
+                number.value = call.target.value
+                number.changed = self.wall()
+                self.changed()
+            return
         select = self.selects[entity]
         if not select.available:
             call.outcome = Outcome.DROPPED
@@ -605,6 +678,8 @@ class World:
         for entity, role in self.plant.outputs().items():
             if role is OutputRole.SOURCE_MODE:
                 outputs[entity] = self.selects[entity].observe()
+            elif role is OutputRole.SOURCE_SETPOINT:
+                outputs[entity] = self.numbers[entity].observe()
             else:
                 observed = self.switches[entity].observe()
                 if observed.on is not None and self.moving(entity):
@@ -635,8 +710,12 @@ class World:
 
 
 def contacts(plant: Plant) -> list[str]:
-    """Every condensation switch and window a Plant reads."""
+    """Every condensation switch, window, and equipment feedback a Plant reads."""
     found = [pump.condensation_switch for pump in plant.pumps]
     found.extend(loop.condensation_switch for loop in plant.all_loops)
     found.extend(window for zone in plant.zones for window in zone.windows)
+    found.extend(pump.running_sensor for pump in plant.pumps)
+    found.extend(pump.flow_sensor for pump in plant.pumps)
+    if plant.source is not None:
+        found.append(plant.source.running_sensor)
     return [entity for entity in dict.fromkeys(found) if entity is not None]

@@ -20,13 +20,15 @@
           "name": "Plant name",
           "source_name": "Source name",
           "request": "Source request switch",
-          "mode_select": "Source mode select"
+          "mode_select": "Source mode select",
+          "running_sensor": "Source running feedback"
         },
         "data_description": {
           "name": "Names the Plant, its device, and its Plant-wide entities.",
           "source_name": "Names the source, such as Heat pump.",
           "request": "Optional. The switch that asks the heat pump or boiler for heat or cooling. Leave it empty when the source runs on its own controls; valves and switched pumps still run on demand.",
-          "mode_select": "Optional. The select that switches the source between heating and cooling. The next step asks which of its options means which."
+          "mode_select": "Optional. The select that switches the source between heating and cooling. The next step asks which of its options means which.",
+          "running_sensor": "Optional. A binary sensor that confirms the source is physically running."
         },
         "sections": {
           "timing": {
@@ -36,13 +38,15 @@
               "mode_dwell": "Mode dwell",
               "post_run": "Source post-run",
               "min_on": "Source minimum on time",
-              "min_off": "Source minimum off time"
+              "min_off": "Source minimum off time",
+              "feedback_timeout": "Source feedback timeout"
             },
             "data_description": {
               "mode_dwell": "After a change between heating and cooling, how long the Plant waits before the new mode starts.",
               "post_run": "How long the source keeps its pumps running after its request ends. Loops stay open for them.",
               "min_on": "The shortest time the source request stays on.",
-              "min_off": "The shortest time the source request stays off."
+              "min_off": "The shortest time the source request stays off.",
+              "feedback_timeout": "How long the source request may run before configured source and source-driven pump running or flow sensors must confirm operation."
             }
           },
           "protection": {
@@ -61,6 +65,38 @@
               "exercise_run": "How long an exercised switched pump runs.",
               "frost_protection": "Heat a zone whose coldest temperature falls below the frost protection temperature, even when its thermostat or the Plant mode is off.",
               "frost_temperature": "Frost protection heats until the coldest temperature is 1 °C above this."
+            }
+          },
+          "supply": {
+            "name": "Supply temperature control",
+            "description": "Optional. Choose a number entity only when Hydronicus owns its supply temperature target. An outdoor sensor enables the heating curve. Without an outdoor sensor, heating uses the fixed target. An unusable configured outdoor reading blocks the source request.",
+            "data": {
+              "entity": "Supply setpoint number",
+              "outdoor_sensor": "Outdoor temperature sensor",
+              "heat_temperature": "Fixed heating temperature",
+              "cool_temperature": "Cooling temperature",
+              "minimum": "Minimum supply temperature",
+              "maximum": "Maximum supply temperature",
+              "tolerance": "Confirmation tolerance",
+              "outdoor_cold": "Cold outdoor temperature",
+              "outdoor_warm": "Warm outdoor temperature",
+              "heat_cold": "Heating temperature in cold weather",
+              "heat_warm": "Heating temperature in warm weather",
+              "max_age": "Maximum outdoor reading age"
+            }
+          },
+          "weather": {
+            "name": "Weather forecast",
+            "description": "Optional hourly weather input for recovery predictions. This works with valves and switched pumps even when no source is configured. Forecasts never replace measured safety sensors.",
+            "data": {
+              "entity": "Weather entity",
+              "outdoor_sensor": "Measured outdoor temperature",
+              "max_age": "Maximum weather input age"
+            },
+            "data_description": {
+              "entity": "Choose a weather entity that provides hourly forecasts.",
+              "outdoor_sensor": "Optional separate temperature sensor used to compare recovery in different outdoor conditions.",
+              "max_age": "Maximum age of forecast content since it was first seen and of weather or outdoor sensor reports. Repeated forecasts keep their original age; this is not the provider issue time."
             }
           }
         }
@@ -89,7 +125,9 @@
           "condensation_switch": "Condensation switch",
           "add_another": "Add another pump",
           "min_flow_loops": "Min-flow loops",
-          "remove": "Remove this pump"
+          "remove": "Remove this pump",
+          "running_sensor": "Pump running feedback",
+          "flow_sensor": "Water flow proof"
         },
         "data_description": {
           "name": "Names the pump in the forms and the plant file.",
@@ -100,7 +138,9 @@
           "condensation_switch": "Optional. A binary sensor on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on or unavailable, none of the pump's loops cools.",
           "add_another": "Show this form again for the next pump.",
           "min_flow_loops": "For a pump the source runs that needs an open loop: the loops Hydronicus holds open while it may run.",
-          "remove": "Remove the pump from the Plant. A pump that a loop still uses cannot be removed."
+          "remove": "Remove the pump from the Plant. A pump that a loop still uses cannot be removed.",
+          "running_sensor": "Optional. A binary sensor that confirms this pump is physically running.",
+          "flow_sensor": "Optional. A binary sensor that confirms water is flowing. This is a flow proof input, not a flow rate."
         }
       },
       "zoning": {
@@ -156,12 +196,53 @@
         },
         "sections": {
           "presets": {
-            "name": "Digital thermostat presets",
-            "description": "Targets of the digital thermostat's presets. Leave a preset empty to leave it out.",
+            "name": "Heating presets",
+            "description": "Heating targets of the digital thermostat presets. Leave a preset empty to leave it out.",
             "data": {
               "comfort": "Comfort",
               "eco": "Eco",
               "away": "Away"
+            }
+          },
+          "cool_presets": {
+            "name": "Cooling presets",
+            "description": "Independent cooling targets. A warmer Eco or Away target reduces cooling.",
+            "data": {
+              "comfort": "Comfort",
+              "eco": "Eco",
+              "away": "Away"
+            }
+          },
+          "comfort": {
+            "name": "Default comfort temperatures",
+            "description": "Separate starting targets for heating and cooling. Changes made on the thermostat remain its manual targets.",
+            "data": {
+              "target": "Heating temperature",
+              "cool_target": "Cooling temperature"
+            }
+          },
+          "schedule": {
+            "name": "Comfort schedule",
+            "description": "Optional. After configuring a schedule helper, select Schedule on the thermostat to follow it. On uses the manual comfort target; off applies the setback. Early start estimates recovery from the current room temperature and is capped by the maximum lead time.",
+            "data": {
+              "entity": "Schedule helper",
+              "heat_setback": "Heating setback",
+              "cool_setback": "Cooling setback",
+              "max_early_start": "Maximum early start",
+              "heating_rate": "Estimated heating rate",
+              "cooling_rate": "Estimated cooling rate"
+            }
+          },
+          "learning": {
+            "name": "Recovery learning",
+            "description": "Off by default. Observe records room recovery and predictions without changing targets or early starts. Assist may use a validated recovery estimate within the existing schedule limit. A source or heat-pump control is not required.",
+            "data": {
+              "mode": "Learning mode",
+              "weather_aware": "Use weather for recovery"
+            },
+            "data_description": {
+              "mode": "Start with Observe. Assist requires a comfort schedule and keeps the configured rate as its fallback.",
+              "weather_aware": "Optional. Requires Assist, a comfort schedule, and Weather forecast settings for the Plant. Weather changes only bounded early-start timing."
             }
           }
         }
@@ -394,12 +475,53 @@
           },
           "sections": {
             "presets": {
-              "name": "Digital thermostat presets",
-              "description": "Targets of the digital thermostat's presets. Leave a preset empty to leave it out.",
+              "name": "Heating presets",
+              "description": "Heating targets of the digital thermostat presets. Leave a preset empty to leave it out.",
               "data": {
                 "comfort": "Comfort",
                 "eco": "Eco",
                 "away": "Away"
+              }
+            },
+            "cool_presets": {
+              "name": "Cooling presets",
+              "description": "Independent cooling targets. A warmer Eco or Away target reduces cooling.",
+              "data": {
+                "comfort": "Comfort",
+                "eco": "Eco",
+                "away": "Away"
+              }
+            },
+            "comfort": {
+              "name": "Default comfort temperatures",
+              "description": "Separate starting targets for heating and cooling. Changes made on the thermostat remain its manual targets.",
+              "data": {
+                "target": "Heating temperature",
+                "cool_target": "Cooling temperature"
+              }
+            },
+            "schedule": {
+              "name": "Comfort schedule",
+              "description": "Optional. After configuring a schedule helper, select Schedule on the thermostat to follow it. On uses the manual comfort target; off applies the setback. Early start estimates recovery from the current room temperature and is capped by the maximum lead time.",
+              "data": {
+                "entity": "Schedule helper",
+                "heat_setback": "Heating setback",
+                "cool_setback": "Cooling setback",
+                "max_early_start": "Maximum early start",
+                "heating_rate": "Estimated heating rate",
+                "cooling_rate": "Estimated cooling rate"
+              }
+            },
+            "learning": {
+              "name": "Recovery learning",
+              "description": "Off by default. Observe records room recovery and predictions without changing targets or early starts. Assist may use a validated recovery estimate within the existing schedule limit. A source or heat-pump control is not required.",
+              "data": {
+                "mode": "Learning mode",
+                "weather_aware": "Use weather for recovery"
+              },
+              "data_description": {
+                "mode": "Start with Observe. Assist requires a comfort schedule and keeps the configured rate as its fallback.",
+                "weather_aware": "Optional. Requires Assist, a comfort schedule, and Weather forecast settings for the Plant. Weather changes only bounded early-start timing."
               }
             }
           }
@@ -537,6 +659,13 @@
         "min": "Minimum",
         "max": "Maximum"
       }
+    },
+    "learning_mode": {
+      "options": {
+        "off": "Off",
+        "observe": "Observe",
+        "assist": "Assist"
+      }
     }
   },
   "entity": {
@@ -605,6 +734,53 @@
     "switch": {
       "control": {
         "name": "Control equipment"
+      }
+    },
+    "climate": {
+      "zone": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "schedule": "Schedule"
+            }
+          },
+          "recovery_method": {
+            "name": "Recovery method",
+            "state": {
+              "configured": "Configured rate",
+              "learned": "Learned recovery",
+              "weather": "Weather-informed recovery"
+            }
+          },
+          "planned_recovery_seconds": {
+            "name": "Planned recovery duration"
+          },
+          "learning_mode": {
+            "name": "Learning mode",
+            "state": {
+              "off": "Off",
+              "observe": "Observe",
+              "assist": "Assist"
+            }
+          },
+          "learning_reason": {
+            "name": "Learning reason"
+          },
+          "learning_episode_count": {
+            "name": "Independent recovery episodes"
+          },
+          "learning_confidence": {
+            "name": "Recovery prediction validated"
+          },
+          "estimated_recovery_seconds": {
+            "name": "Estimated recovery duration"
+          }
+        }
+      }
+    },
+    "button": {
+      "reset_learning": {
+        "name": "Reset recovery learning"
       }
     }
   },

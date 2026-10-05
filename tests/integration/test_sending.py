@@ -304,3 +304,88 @@ async def test_a_changeover_sets_the_source_mode_before_the_request(
     assert hass.states.get(SOURCE_MODE).state == "Cool"
     assert shorts.index(f"{SOURCE_MODE}:=Cool") < shorts.index(f"{SOURCE_REQUEST}:on")
     assert hass.states.get("sensor.home_status").state == "cooling"
+
+
+@pytest.mark.parametrize(
+    ("unit", "minimum", "maximum", "expected"),
+    [("°C", 5.0, 60.0, 35.0), ("°F", 41.0, 140.0, 95.0), ("K", 278.15, 333.15, 308.15)],
+)
+def test_temperature_setpoint_service_uses_the_number_unit(
+    unit: str, minimum: float, maximum: float, expected: float
+) -> None:
+    from homeassistant.core import State
+
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.reconcile import Action
+    from custom_components.hydronicus.dispatch import service_call
+
+    state = State(
+        "number.supply", "25", {"unit_of_measurement": unit, "min": minimum, "max": maximum}
+    )
+    domain, service, data = service_call(Action("number.supply", NumericTarget(35.0)), state)
+    assert (domain, service) == ("number", "set_value")
+    assert data == {"entity_id": "number.supply", "value": pytest.approx(expected)}
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {},
+        {"unit_of_measurement": "W", "min": 0, "max": 100},
+        {"unit_of_measurement": ["°C"], "min": 0, "max": 100},
+        {"unit_of_measurement": "°C", "min": 5, "max": 30},
+        {"unit_of_measurement": "°C", "min": "invalid", "max": 60},
+        {"unit_of_measurement": "°C", "min": 5, "max": float("inf")},
+    ],
+)
+def test_temperature_setpoint_refuses_unknown_or_incompatible_bounds(
+    attributes: dict[str, object],
+) -> None:
+    from homeassistant.core import State
+
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.reconcile import Action
+    from custom_components.hydronicus.dispatch import service_call
+
+    action = Action("number.supply", NumericTarget(35.0))
+    with pytest.raises(ValueError):
+        service_call(action, State("number.supply", "25", attributes))
+    with pytest.raises(ValueError):
+        service_call(action)
+
+
+async def test_disarm_is_checked_before_send_even_before_the_next_evaluation(
+    hass: HomeAssistant, actuators: Actuators, valves: ValveServices
+) -> None:
+    from custom_components.hydronicus.const import OPTION_ARMED_OUTPUTS
+
+    entry = await async_flat(hass, "den", "study")
+    valves.hold("valve.den")
+    control_on(hass, entry)
+    await async_until(lambda: valves.waiting)
+    armed = set(entry.options[OPTION_ARMED_OUTPUTS]) - {"valve.study"}
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, OPTION_ARMED_OUTPUTS: sorted(armed)}
+    )
+    valves.release("valve.den")
+    await hass.async_block_till_done()
+    assert "valve.study:on" not in actuators.shorts()
+
+
+async def test_control_off_drops_an_obsolete_queued_start(
+    hass: HomeAssistant, actuators: Actuators, valves: ValveServices
+) -> None:
+    """Orderly shutdown must not send a queued start that the new safe plan no longer wants."""
+    from custom_components.hydronicus.core.model import SwitchTarget
+
+    entry = await async_flat(hass, "den", "study")
+    valves.hold("valve.den")
+    control_on(hass, entry)
+    await async_until(lambda: valves.waiting)
+    hass.config_entries.async_update_entry(entry, options={**entry.options, OPTION_CONTROL: False})
+    await async_until(
+        lambda: entry.runtime_data.view.desired.outputs["valve.study"] == SwitchTarget(False)
+    )
+    valves.release("valve.den")
+    await hass.async_block_till_done()
+    assert "valve.study:on" not in actuators.shorts()

@@ -167,6 +167,7 @@ def test_generated_plants_stay_within_the_contract(plant: Plant) -> None:
         ),
         lambda plant: any(loop.cools and loop.surface_minimum is None for loop in plant.all_loops),
         lambda plant: any(zone.windows for zone in plant.zones),
+        lambda plant: plant.source is not None and plant.source.supply is not None,
     ],
     ids=[
         "source-driven path pump",
@@ -180,6 +181,7 @@ def test_generated_plants_stay_within_the_contract(plant: Plant) -> None:
         "condensation switches",
         "surface minimum off",
         "windows",
+        "numeric source supply",
     ],
 )
 def test_generated_plants_reach_every_feature(feature: object) -> None:

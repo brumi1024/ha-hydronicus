@@ -11,13 +11,16 @@ Names are separate and editable, and a missing name reads as the slug in words.
 
 A Source is the generator Hydronicus asks for heat or cooling, such as a heat pump, and a Plant has at most one.
 
-Hydronicus reaches it only through generic entities: a request switch, an optional mode select, and later a flow setpoint number.
+Hydronicus reaches it only through generic entities: a request switch, an optional mode select, and an optional supply temperature number.
+An optional running sensor observes the Source independently of the request.
 
-A Plant without a Source still opens valves and runs switched Pumps, which suits a boiler with its own controls.
+A Plant without a Source still opens valves and runs switched Pumps, which suits a boiler or heat pump that regulates water temperature with its own controls.
 
 ## Pump
 
 A Pump is a circulator that Hydronicus switches, or that the Source drives and Hydronicus never commands.
+
+Optional running and flow sensors observe the Pump independently of its command or the Source request.
 
 Every Pump has a minimum flow: `guaranteed` when a Separator gives it a path whatever the Loops do, or `path` when it needs an open Loop while it runs.
 
@@ -61,6 +64,16 @@ The thermostat can be a digital thermostat that Hydronicus provides or one exist
 The Zone owns observations and Loops, while the thermostat owns target and Demand state.
 
 External thermostat Demand is accepted from normalized `hvac_action` only, and an external thermostat is never commanded.
+
+A digital thermostat keeps separate heating and cooling comfort targets and presets.
+An optional Schedule selects comfort or setback and may start recovery early within an explicit bound.
+A manual target change leaves Schedule control until the owner selects it again.
+
+## Supply control
+
+Supply control proposes a bounded Source water temperature, fixed by Mode or calculated from an outdoor heating curve.
+It never commands equipment directly: arming, observation, condensation guards, and hydraulic sequencing remain authoritative.
+A missing or stale outdoor reading blocks an outdoor-compensated heating request.
 
 ## Mode
 

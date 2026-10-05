@@ -468,19 +468,25 @@ def test_the_source_waits_for_its_mode_select_and_keeps_min_on_and_min_off() -> 
     state, desired, _ = run(plant, running)
     assert desired.source_request
     warm = observe(
-        plant, temperatures={"room": 22.0}, on=["switch.valve", "switch.pump", "switch.boiler"]
+        plant,
+        temperatures={"room": 22.0},
+        on=["switch.valve", "switch.pump", "switch.boiler"],
+        since={"switch.boiler": NOW},
     )
     held_state, desired, due = run(plant, warm, state, NOW + 100)
     assert desired.source_request and desired.reasons["source"] == "held for its minimum on time"
-    assert due == pytest.approx(120.0 + TICK), "the pump's overrun ends before the minimum on time"
+    assert due == pytest.approx(200.0 + TICK), "the source minimum on time keeps its pump running"
     released, desired, _ = run(plant, warm, held_state, NOW + 300)
     assert not desired.source_request and released.source_changed == NOW + 300
-    _, desired, _ = run(plant, running, released, NOW + 400)
+    stopped = replace(
+        running, outputs={**running.outputs, "switch.boiler": SwitchState(False, NOW + 300)}
+    )
+    _, desired, _ = run(plant, stopped, released, NOW + 400)
     assert (
         not desired.source_request
         and desired.reasons["source"] == "held off for its minimum off time"
     )
-    assert run(plant, running, released, NOW + 600)[1].source_request
+    assert run(plant, stopped, released, NOW + 600)[1].source_request
 
     heat_pump = _plant(HEAT_PUMP)
     ready = observe(heat_pump, temperatures={"a": 19.0}, on=["switch.a_ceiling"], option="Cool")
@@ -854,7 +860,9 @@ def test_a_mode_change_keeps_the_source_for_its_minimum_on_time_and_control_off_
     )
     on = ["switch.valve", "switch.pump", "switch.boiler"]
     for mode in (Mode.OFF, Mode.COOL):
-        changed = observe(plant, mode=mode, temperatures={"room": 19.0}, on=on)
+        changed = observe(
+            plant, mode=mode, temperatures={"room": 19.0}, on=on, since={"switch.boiler": NOW - 250}
+        )
         state, desired, due = run(plant, changed, heating)
         assert desired.mode is Mode.HEAT
         assert desired.reasons["mode"] == f"stopping heat before {mode.value}"
@@ -1494,3 +1502,308 @@ def test_frost_protection_heats_only_a_zone_that_a_loop_heats() -> None:
     _, desired, _ = run(shared, frosty, State(live=True))
     assert desired.frost_protection == ("room",), "a plant loop that runs with it heats it"
     assert desired.outputs["switch.floor"] == ON
+
+
+def test_source_minimum_off_time_begins_when_the_request_really_stops() -> None:
+    plant = _plant(RADIATOR)
+    on = observe(plant, temperatures={"room": 19.0}, on=plant.outputs())
+    running, _, _ = run(plant, on, now=NOW)
+    warm = replace(on, thermostats={"room": DigitalThermostatState(Mode.OFF, 21.0)})
+    released, desired, _ = run(plant, warm, running, NOW + 610)
+    assert not desired.source_request
+    # A stop ignored for longer than min_off must not use up the actual off time.
+    ignored, _, _ = run(plant, warm, released, NOW + 1220)
+    stopped = replace(on, outputs={**on.outputs, "switch.boiler": SwitchState(False, NOW + 1220)})
+    off, desired, _ = run(plant, stopped, ignored, NOW + 1220)
+    assert not desired.source_request
+    assert "minimum off time" in desired.reasons["source"]
+    assert run(plant, stopped, off, NOW + 1519)[1].source_request is False
+    assert run(plant, stopped, off, NOW + 1520)[1].source_request is True
+
+
+def test_dry_run_handover_waits_for_real_flow_to_stop_and_full_dwell() -> None:
+    plant = _plant(HEAT_PUMP)
+    simulated = State(live=False, mode=Mode.COOL, last_mode=Mode.COOL, dry_run=True)
+    real = observe(plant, mode=Mode.COOL, on=["switch.c_floor", "switch.floor_pump"])
+    stopping, desired, _ = run(plant, real, simulated)
+    assert not desired.source_request
+    assert desired.outputs["switch.floor_pump"] == OFF
+    assert desired.mode is Mode.OFF
+    stopped = replace(
+        real, outputs={**real.outputs, "switch.floor_pump": SwitchState(False, NOW + 1)}
+    )
+    waiting, desired, _ = run(plant, stopped, stopping, NOW + 1)
+    assert desired.mode is Mode.OFF
+    # Off does not allow an exercise to bypass the unfinished physical dwell.
+    off = replace(stopped, mode=Mode.OFF)
+    assert run(plant, off, waiting, NOW + 300)[1].exercise is None
+    assert run(plant, stopped, waiting, NOW + 600)[1].mode is Mode.OFF
+    assert run(plant, stopped, waiting, NOW + 601)[1].mode is Mode.COOL
+
+
+def test_source_minimum_on_time_begins_when_delayed_start_is_observed() -> None:
+    plant = _plant(RADIATOR)
+    ready = observe(plant, temperatures={"room": 19.0}, on=["switch.valve", "switch.pump"])
+    starting, desired, _ = run(plant, ready)
+    assert desired.source_request
+    # Repeated start decisions never consume the physical minimum on period.
+    starting, desired, _ = run(plant, ready, starting, NOW + 610)
+    assert desired.source_request
+    warm = observe(
+        plant,
+        temperatures={"room": 22.0},
+        on=plant.outputs(),
+        since={"switch.boiler": NOW + 610},
+    )
+    running, desired, _ = run(plant, warm, starting, NOW + 610)
+    assert desired.source_request
+    assert run(plant, warm, running, NOW + 909)[1].source_request
+    assert not run(plant, warm, running, NOW + 910)[1].source_request
+
+
+def test_switched_pump_starts_before_flow_proof_and_source_waits_for_proof() -> None:
+    plant = _plant(RADIATOR.replace("overrun: 120", "overrun: 0, flow_sensor: binary_sensor.flow"))
+    ready = observe(
+        plant,
+        temperatures={"room": 19.0},
+        on=["switch.valve"],
+        readiness={"binary_sensor.flow": False},
+    )
+    _, desired, _ = run(plant, ready)
+    assert desired.outputs["switch.pump"] == ON
+    assert not desired.source_request
+    pump_on = replace(ready, outputs={**ready.outputs, "switch.pump": SwitchState(True, NOW)})
+    assert not run(plant, pump_on)[1].source_request
+    proved = replace(pump_on, readiness={"binary_sensor.flow": SwitchState(True, NOW)})
+    assert run(plant, proved)[1].source_request
+    missing = replace(ready, readiness={})
+    assert run(plant, missing)[1].outputs["switch.pump"] == OFF
+
+
+def test_running_feedback_preserves_a_path_after_pump_switch_stops() -> None:
+    plant = _plant(
+        RADIATOR.replace("overrun: 120", "overrun: 0, running_sensor: binary_sensor.running")
+    )
+    on = observe(plant, on=["switch.valve"], readiness={"binary_sensor.running": True})
+    for proof in (True, None):
+        observed = replace(on, readiness={"binary_sensor.running": SwitchState(proof, NOW)})
+        assert run(plant, observed)[1].outputs["switch.valve"] == ON
+    stopped = replace(on, readiness={"binary_sensor.running": SwitchState(False, NOW)})
+    assert run(plant, stopped)[1].outputs["switch.valve"] == OFF
+
+
+def test_source_driven_flow_proof_has_bounded_startup_grace_without_deadlock() -> None:
+    plant = _plant(
+        HEAT_PUMP.replace(
+            "driven_by: source,", "driven_by: source, flow_sensor: binary_sensor.flow,"
+        )
+    )
+    ready = observe(
+        plant,
+        temperatures={"a": 19.0},
+        on=["switch.a_ceiling"],
+        readiness={"binary_sensor.flow": False},
+    )
+    started, desired, _ = run(plant, ready)
+    assert desired.source_request
+    running = replace(ready, outputs={**ready.outputs, "switch.hp": SwitchState(True, NOW)})
+    started, desired, _ = run(plant, running, started, NOW + 1)
+    assert desired.source_request
+    assert not run(plant, running, started, NOW + 300)[1].source_request
+    confirmed = replace(running, readiness={"binary_sensor.flow": SwitchState(True, NOW + 1)})
+    assert run(plant, confirmed, started, NOW + 300)[1].source_request
+    assert not run(plant, replace(ready, readiness={}))[1].source_request
+
+
+def test_source_running_proof_keeps_switched_flow_after_request_stops() -> None:
+    plant = _plant(
+        RADIATOR.replace(
+            "post_run: 60", "post_run: 0, running_sensor: binary_sensor.source_running"
+        )
+    )
+    observed = observe(
+        plant, on=["switch.valve", "switch.pump"], readiness={"binary_sensor.source_running": True}
+    )
+    state = State(live=True, mode=Mode.HEAT, last_mode=Mode.HEAT, overruns={"pump": LONG_AGO})
+    desired = run(plant, observed, state)[1]
+    assert desired.outputs["switch.pump"] == ON
+    assert desired.outputs["switch.valve"] == ON
+    stopped = replace(observed, readiness={"binary_sensor.source_running": SwitchState(False, NOW)})
+    assert run(plant, stopped, state)[1].outputs["switch.pump"] == OFF
+
+
+def test_numeric_supply_must_be_armed_confirmed_and_fresh_before_source_runs() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        RADIATOR.replace(
+            "request: switch.boiler,",
+            "request: switch.boiler, supply: {entity: number.supply, "
+            "outdoor_sensor: sensor.outdoor, max_age: 60},",
+        )
+    )
+    ready = observe(plant, temperatures={"room": 19.0}, on=["switch.valve", "switch.pump"])
+    ready = replace(
+        ready,
+        outputs={**ready.outputs, "number.supply": NumericState(30, NOW)},
+        sensors={**ready.sensors, "sensor.outdoor": Reading(5, NOW)},
+    )
+    _, desired, due = run(plant, ready)
+    assert desired.outputs["number.supply"] == NumericTarget(35, 0.5)
+    assert not desired.source_request
+    assert due == pytest.approx(60 + TICK)
+    matched = replace(ready, outputs={**ready.outputs, "number.supply": NumericState(34.5, NOW)})
+    assert run(plant, matched)[1].source_request
+    assert not run(plant, replace(matched, armed=matched.armed - {"number.supply"}))[
+        1
+    ].source_request
+    assert not run(
+        plant,
+        replace(
+            matched, outputs={**matched.outputs, "number.supply": NumericState(float("nan"), NOW)}
+        ),
+    )[1].source_request
+    _, stale, _ = run(plant, matched, now=NOW + 60)
+    assert not stale.source_request
+    assert "number.supply" not in stale.outputs
+    assert "stale" in stale.reasons["source"]
+
+
+def test_cooling_supply_target_protects_full_confirmation_band_above_dew_point() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        HEAT_PUMP.replace(
+            "request: switch.hp",
+            "request: switch.hp\n  supply: {entity: number.supply, "
+            "cool_temperature: 5, maximum: 60}",
+        )
+    )
+    ready = observe(
+        plant,
+        mode=Mode.COOL,
+        temperatures={"a": 26.0},
+        sensors={"sensor.a_rh": Reading(40, NOW), "sensor.supply": Reading(25, NOW)},
+        on=["switch.a_ceiling"],
+        option="Cool",
+    )
+    ready = replace(ready, outputs={**ready.outputs, "number.supply": NumericState(5, NOW)})
+    desired = run(plant, ready)[1]
+    target = desired.outputs["number.supply"]
+    assert isinstance(target, NumericTarget)
+    assert target.value > 14
+    assert not desired.source_request
+    confirmed = replace(
+        ready, outputs={**ready.outputs, "number.supply": NumericState(target.value, NOW)}
+    )
+    assert run(plant, confirmed)[1].source_request
+    assert plant.source is not None and plant.source.supply is not None
+    impossible = replace(
+        plant, source=replace(plant.source, supply=replace(plant.source.supply, maximum=10))
+    )
+    desired = run(impossible, confirmed)[1]
+    assert not desired.source_request
+    assert "exceeds" in desired.reasons["source"]
+
+
+def test_running_heating_source_keeps_running_during_safe_curve_adjustment() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        RADIATOR.replace(
+            "request: switch.boiler,",
+            "request: switch.boiler, supply: {entity: number.supply, "
+            "outdoor_sensor: sensor.outdoor},",
+        )
+    )
+    observed = observe(plant, temperatures={"room": 19.0}, on=plant.outputs())
+    observed = replace(
+        observed,
+        outputs={**observed.outputs, "number.supply": NumericState(35, NOW)},
+        sensors={**observed.sensors, "sensor.outdoor": Reading(5, NOW)},
+    )
+    running, desired, _ = run(plant, observed)
+    assert desired.source_request
+    warming = replace(observed, sensors={**observed.sensors, "sensor.outdoor": Reading(7, NOW)})
+    desired = run(plant, warming, running, NOW + 10)[1]
+    assert desired.source_request
+    assert desired.outputs["number.supply"] == NumericTarget(pytest.approx(33.66666667), 0.5)
+    # The configured absolute limits override the normal numeric tolerance.
+    assert plant.source is not None and plant.source.supply is not None
+    bounded = replace(
+        plant, source=replace(plant.source, supply=replace(plant.source.supply, maximum=35))
+    )
+    too_high = replace(
+        observed, outputs={**observed.outputs, "number.supply": NumericState(35.1, NOW)}
+    )
+    assert not run(bounded, too_high)[1].source_request
+    assert not run(bounded, too_high, running)[1].source_request
+
+
+def test_cooling_supply_covers_idle_valveless_branches_and_min_flow_paths() -> None:
+    from custom_components.hydronicus.core.demand import dew_point
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    base = """
+hydronicus: 2
+name: Exposed cooling
+source:
+  request: switch.source
+  min_on: 0
+  min_off: 0
+  supply: {entity: number.supply, cool_temperature: 10}
+pumps:
+  pump: {switch: switch.pump, supply_temperature: sensor.supply, overrun: 0}
+zones:
+  dry:
+    temperature: [sensor.dry]
+    humidity: [sensor.dry_rh]
+    loops: {ceiling: {pump: pump, modes: [cool]}}
+  humid:
+    temperature: [sensor.humid]
+    humidity: [sensor.humid_rh]
+    loops: {ceiling: {pump: pump, modes: [cool]}}
+"""
+    for text in (
+        base,
+        base.replace(
+            "pump: {switch: switch.pump, supply_temperature: sensor.supply, overrun: 0}",
+            "pump: {driven_by: source, supply_temperature: sensor.supply, "
+            "min_flow_loops: [humid.ceiling]}",
+        ).replace(
+            "ceiling: {pump: pump, modes: [cool]}",
+            "ceiling: {pump: pump, modes: [cool], valves: [switch.humid]}",
+            1,
+        ),
+    ):
+        plant = _plant(text)
+        observed = observe(
+            plant,
+            mode=Mode.COOL,
+            temperatures={"dry": 27, "humid": 25},
+            on=plant.outputs(),
+            sensors={
+                "sensor.dry_rh": Reading(20, NOW),
+                "sensor.humid_rh": Reading(60, NOW),
+                "sensor.supply": Reading(28, NOW),
+            },
+        )
+        observed = replace(
+            observed,
+            thermostats={
+                "dry": DigitalThermostatState(Mode.COOL, 21),
+                "humid": DigitalThermostatState(Mode.OFF, 21),
+            },
+            outputs={**observed.outputs, "number.supply": NumericState(10, NOW)},
+        )
+        desired = run(plant, observed)[1]
+        target = desired.outputs["number.supply"]
+        assert isinstance(target, NumericTarget)
+        point = dew_point(25, 60)
+        assert point is not None
+        assert target.value - target.tolerance >= point + 3
+        assert not desired.source_request

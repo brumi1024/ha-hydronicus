@@ -75,6 +75,7 @@ UNUSABLE_REPAIR_AFTER: Final = 600.0
 _ROLE_NAMES = {
     OutputRole.SOURCE_REQUEST: "source request",
     OutputRole.SOURCE_MODE: "source mode select",
+    OutputRole.SOURCE_SETPOINT: "source supply temperature",
     OutputRole.PUMP: "pump",
     OutputRole.VALVE: "valve",
 }

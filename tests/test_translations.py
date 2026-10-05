@@ -37,6 +37,8 @@ STRINGS = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
 ICONS = json.loads((COMPONENT / "icons.json").read_text(encoding="utf-8"))
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 ENTITY_KEYS = {
+    "button": {"reset_learning"},
+    "climate": {"zone"},
     "binary_sensor": {"heating_demand", "cooling_demand", "loop_flowing", "source_requested"},
     "select": {"mode"},
     "sensor": {"status", "combined_temperature", "dew_point", "duty_cycle", "loop_runtime"},

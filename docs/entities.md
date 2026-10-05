@@ -46,7 +46,7 @@ The **Status** sensor reads:
 | `cooling` | The same for cooling. |
 | `exercising` | Nothing else runs, and an idle pump or its valves are [exercised](how-it-works.md#exercising-idle-pumps-and-valves) so they do not seize. |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. |
-| `degraded` | An output did not respond, or an entity the Plant binds does not exist. |
+| `degraded` | An output did not respond, a bound entity does not exist, or the latest evaluation failed. |
 | `stopping` | A changed configuration removed outputs that were running, or is not valid, so the Plant first stops the equipment of its previous configuration. |
 | `invalid` | The configuration is not valid; the equipment it ran has stopped, and the Plant only observes until a reconfigure fixes it. |
 
@@ -70,6 +70,16 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | `idle_since` | Each switched pump and valve with the time since which it has not been on, or none while it is on; the exercise counts from it. |
 | `reasons` | Why, for each zone, loop, output, the source, and the mode. It is not recorded in history. |
 | `proposed` | Only in Dry run: the state Hydronicus would give each output. It is not recorded in history. |
+| `blocking_reason` | The current leading reason the Plant cannot proceed, or none. |
+| `evaluated_at` | ISO timestamp of the last successful evaluation. |
+| `evaluation_age_seconds` | Age of that evaluation when the entity attributes were published. It is not a continuously ticking sensor. |
+| `next_evaluation_at` | Next scheduled controller check, or none; it is not a promise that equipment will change then. |
+| `evaluation_error` | The latest evaluation error, or none after a successful evaluation. |
+| `pending_commands` | Each output awaiting confirmation, with `target`, `age_seconds`, and `attempts`. |
+| `sensor_health` | Each numeric input's `value`, `quality`, `age_seconds`, and `max_age_seconds`; quality is `fresh`, `stale`, or `unavailable or invalid`. |
+| `pump_operation` | Each pump's observed or estimated operation, with `active`, `basis`, and `sensor`. Unknown feedback has `active: null`. |
+| `source_operation` | Source operation separately from its request, with `active`, `basis`, and `sensor`. |
+| `observed_flow` | Each loop's operation from actual observations, with `active`, `basis`, and `sensor`, even while Dry run shows proposals. |
 
 ## Each zone
 
@@ -77,14 +87,16 @@ It is unavailable until the Plant's first evaluation, and it has these attribute
 | --- | --- | --- |
 | Thermostat | `climate.<zone>` | The zone has a digital thermostat. |
 | **Heating demand** binary sensor | `binary_sensor.<zone>_heating_demand` | Always. |
-| **Cooling demand** binary sensor | `binary_sensor.<zone>_cooling_demand` | A loop of the zone cools. |
+| **Cooling demand** binary sensor | `binary_sensor.<zone>_cooling_demand` | A loop serving the zone cools, including a plant loop that runs with it. |
 | **Combined temperature** sensor | `sensor.<zone>_combined_temperature` | The zone has a temperature sensor or an area. |
-| **Dew point** sensor | `sensor.<zone>_dew_point` | A loop of the zone cools. |
+| **Dew point** sensor | `sensor.<zone>_dew_point` | A loop serving the zone cools, including a plant loop that runs with it. |
 | **Duty cycle** sensor | `sensor.<zone>_duty_cycle` | The zone has a loop, or a plant loop runs with it. |
+| **Reset recovery learning** button | `button.<zone>_reset_recovery_learning` | The zone's digital thermostat has learning set to `observe` or `assist`. |
 
 The thermostat is the zone's digital thermostat.
-It offers `off` and `heat`, plus `cool` when a loop of the zone cools, and the presets the zone has.
-Its target ranges from 5 to 35 °C in steps of 0.5, and its target, preset, and mode survive restarts.
+Its heating and cooling choices follow all loops serving the zone, including shared plant loops.
+It offers the presets configured for its current mode, plus `schedule` when a comfort schedule is configured.
+Its target ranges from 5 to 35 °C in steps of 0.5, and its separate heating and cooling manual targets, preset, and mode survive restarts.
 Its `hvac_action` shows what the equipment does for the zone, not what the zone asks for, which the demand binary sensors show:
 
 | Action | When |
@@ -97,6 +109,29 @@ Its `hvac_action` shows what the equipment does for the zone, not what the zone 
 In Dry run it follows the proposed states, as the loop flowing sensors do.
 It shows the zone's combined temperature, and its humidity when the zone has a humidity sensor or an area.
 Its `reason` attribute is the zone's demand reason, the same as on the demand binary sensors, such as `window open`; it is not recorded in history.
+The thermostat also exposes comfort planning attributes:
+
+| Attribute | Value |
+| --- | --- |
+| `heat_target` and `cool_target` | The separate manual comfort targets. |
+| `planned_target` | The manual comfort target for the current mode, before schedule setback or recovery. |
+| `effective_target` | The target currently used for demand, including a preset, setback, or early start. |
+| `early_start` | Whether the schedule is currently recovering before the next comfort period. |
+| `schedule_status` | `manual`, `off`, `unavailable`, `comfort`, `setback`, or `early_start`. |
+| `recovery_method` | `configured`, `learned`, or `weather`, from the comfort proposal used for demand. |
+| `planned_recovery_seconds` | The proposed recovery duration before the configured early-start cap, or none without a current recovery plan. |
+| `learning_mode` | The configured `off`, `observe`, or `assist` option. |
+| `learning_reason` | Why the current recovery estimate is accepted or unavailable. |
+| `learning_episode_count` | Independent complete recovery episodes behind the current estimate; zero when no estimate is available. |
+| `learning_confidence` | Whether the current estimate passes the admission checks; Observe still leaves configured-rate planning unchanged. |
+| `estimated_recovery_seconds` | The learner's current prediction, including a provisional prediction with insufficient confidence; none when unavailable. |
+
+Changing the target or choosing a different preset exits schedule control; selecting `schedule` resumes it.
+See [comfort schedules](how-it-works.md#comfort-schedules) for unavailable helpers and recovery limits.
+The thermostat displays the same evaluated comfort proposal used for its demand, while a just-submitted manual change appears immediately.
+**Reset recovery learning** clears only that zone's recovery observations and model, including both heating and cooling evidence.
+It does not change the learning option, manual targets, presets, arming, or hydraulic safety timers.
+The button is a configuration entity on the zone device and disappears when learning is turned off.
 A zone with an external thermostat gets no thermostat entity, because the existing climate entity is the thermostat.
 A zone that covers exactly one area gets its thermostat placed in that area when it is first created, so it appears on the area's page and answers voice commands for the area.
 
@@ -113,13 +148,15 @@ Its attributes show where the readings come from, and are not recorded in histor
 | --- | --- |
 | `areas` | Each covered area with its `name`, its `temperature_sensor` and `temperature`, and its `humidity_sensor` and `humidity`. |
 | `sensors` | Each extra temperature sensor with its reading. |
+| `sensor_health` | The freshness, age, configured maximum age, and usable value of the zone's numeric inputs. |
 
 The **Dew point** sensor is the zone's worst-case dew point: the dew point of its warmest temperature and its highest humidity.
 Its `humidity` attribute is that highest humidity.
 
 The **Duty cycle** sensor is a diagnostic: the share of the last 24 hours, in percent, in which a loop of the zone, or a plant loop that runs with it, passed flow.
 It covers the 24 whole hours before the current hour, so it changes when a new hour begins, and an hour counts in full once it is over.
-Only flow that Hydronicus observes while outputs are commanded counts, as for the loops' runtime below: time in Dry run, and time while Hydronicus or Home Assistant was not running, count as no flow.
+Only flow inferred from equipment observations while outputs are commanded counts, as for the loops' runtime below: time in Dry run, and time while Hydronicus or Home Assistant was not running, count as no flow.
+Its `basis` attribute explains that loop flow is inferred from equipment feedback, and `window_hours: 24` and `includes_current_hour: false` describe the window.
 It is unknown until the Plant's first evaluation.
 [Troubleshooting](troubleshooting.md#a-zone-runs-nearly-all-day) explains how to use it to balance the zones.
 
@@ -134,18 +171,27 @@ It is unknown until the Plant's first evaluation.
 
 Both are named after the loop, such as `Ceiling flowing` and `Ceiling runtime`.
 
-It is on while the loop passes flow: every valve is on and its pump runs, where a source-driven pump runs while the source's request is on.
-In Dry run it shows the proposed states.
+It is on while the loop is inferred to pass flow: every valve is open and circulation is observed or estimated.
+Configured running and flow feedback are used when present; otherwise switch state, source request, and source post-run provide the estimate.
+Unknown configured feedback produces unknown flow and contributes no runtime.
+Pump flow proof still does not measure how much water passes through an individual loop.
+In Dry run the main state shows the proposed operation, while `observed_flow` keeps actual equipment observations separate.
 Its attributes:
 
 | Attribute | Value |
 | --- | --- |
 | `valves` | Each valve with its state. |
 | `pump` | The slug of the loop's pump. |
-| `pump_running` | Whether the pump's switch, or the source's request for a source-driven pump, is on. |
+| `pump_running` | Whether the pump is running according to its configured feedback or an output-based estimate; unknown is none. |
+| `pump_running_basis` | Which feedback or estimate supports `pump_running`. |
+| `flow_basis` | Which observations support the loop's flowing state. |
+| `flow_sensor` | The pump flow proof sensor, if configured. |
+| `dry_run` | Whether the main state follows proposals. |
+| `observed_flow` | Flow from actual equipment observations, independently of Dry run proposals. |
 | `reason` | Why the loop runs or not, such as `wanted`, `min-flow path`, `exercise`, or `dropped: condensation guard blocks`. |
 
-The runtime sensor is a diagnostic: how long the loop has passed flow in total, in hours.
+The runtime sensor is a diagnostic: how long the loop is inferred to have passed flow in total, in hours.
+Its `basis` attribute makes that inference explicit; it is not a heat or energy meter.
 It counts only flow that Hydronicus observes while outputs are commanded, that is while **Control equipment** is on or its off-mode sequence runs, with every valve on and the pump observed running.
 The proposed flow of Dry run never counts, and neither does time while Hydronicus or Home Assistant was not running, even if the equipment ran meanwhile.
 It survives reloads and restarts, and it is a total that only grows, so Home Assistant's long-term statistics give its daily, weekly, and monthly runtime, such as in a statistics graph card.
@@ -162,6 +208,9 @@ Its attributes:
 | Attribute | Value |
 | --- | --- |
 | `observed` | The state of the source's request switch as Home Assistant shows it. |
+| `running` | Source operation from running feedback when configured, otherwise inferred from the request; unknown is none. |
+| `running_basis` | Which feedback or estimate supports `running`. |
+| `running_sensor` | The configured source running sensor, if any. |
 | `reason` | Why the source is requested or not, such as `requested`, `held for its minimum on time`, or `waiting for the source mode`. |
 
 ## The reference plant

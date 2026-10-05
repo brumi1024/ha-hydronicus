@@ -8,6 +8,7 @@ from custom_components.hydronicus.core.model import (
     Desired,
     DigitalThermostat,
     ExternalThermostat,
+    LearningMode,
     LoopRef,
     Mode,
     OptionTarget,
@@ -15,6 +16,7 @@ from custom_components.hydronicus.core.model import (
     Plant,
     Preset,
     SwitchTarget,
+    WeatherConfig,
     title_from_slug,
 )
 from custom_components.hydronicus.core.plant_file import read_plant_file
@@ -113,3 +115,43 @@ def test_desired_state_holds_one_target_per_output() -> None:
         reasons={"living_area": "Heating demand."},
     )
     assert desired.outputs["switch.valve"] == SwitchTarget(True)
+
+
+def test_shared_loops_determine_zone_modes_and_source_loops_do_not() -> None:
+    plant = read_plant_file("""
+hydronicus: 2
+name: Shared cooling
+source: {request: switch.source}
+pumps:
+  pump: {switch: switch.pump, supply_temperature: sensor.supply}
+loops:
+  shared: {pump: pump, modes: [cool], runs: {with_zones: [room]}}
+  primary: {pump: pump, modes: [heat], runs: with_source}
+zones:
+  room: {temperature: [sensor.room], humidity: [sensor.humidity]}
+""")
+    assert [loop.slug for loop in plant.zone_loops("room")] == ["shared"]
+    assert plant.zone_modes("room") == frozenset({Mode.COOL})
+    with pytest.raises(KeyError):
+        plant.zone_modes("missing")
+
+
+def test_heating_and_cooling_have_independent_defaults_and_presets() -> None:
+    config = DigitalThermostat(
+        target=20,
+        cool_target=25,
+        presets=((Preset.ECO, 17),),
+        cool_presets=((Preset.ECO, 28),),
+    )
+    assert config.target_for(Mode.HEAT) == 20
+    assert config.target_for(Mode.COOL) == 25
+    assert config.presets_for(Mode.HEAT) == {Preset.ECO: 17}
+    assert config.presets_for(Mode.COOL) == {Preset.ECO: 28}
+
+
+def test_learning_and_weather_require_explicit_configuration() -> None:
+    assert DigitalThermostat().learning is LearningMode.OFF
+    assert DigitalThermostat().weather_aware is False
+    assert Plant("plant", "Plant").weather is None
+    assert WeatherConfig("weather.home").outdoor_sensor is None
+    assert WeatherConfig("weather.home").max_age == 7200

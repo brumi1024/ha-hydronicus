@@ -12,7 +12,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from .comfort import ComfortTarget
 
 
 class Mode(StrEnum):
@@ -46,6 +49,15 @@ class Preset(StrEnum):
     COMFORT = "comfort"
     ECO = "eco"
     AWAY = "away"
+    SCHEDULE = "schedule"
+
+
+class LearningMode(StrEnum):
+    """Whether recovery learning is disabled, observed, or used for early start."""
+
+    OFF = "off"
+    OBSERVE = "observe"
+    ASSIST = "assist"
 
 
 class RunKind(StrEnum):
@@ -64,6 +76,7 @@ class OutputRole(StrEnum):
 
     SOURCE_REQUEST = "source_request"
     SOURCE_MODE = "source_mode"
+    SOURCE_SETPOINT = "source_setpoint"
     PUMP = "pump"
     VALVE = "valve"
 
@@ -175,6 +188,10 @@ class Pump:
     # blocks the cooling of every loop of the pump.
     condensation_switch: str | None = None
 
+    # Optional independent proof of circulation and actual flow.
+    running_sensor: str | None = None
+    flow_sensor: str | None = None
+
     @property
     def driven_by_source(self) -> bool:
         return self.switch is None
@@ -233,6 +250,24 @@ class SourceModeSelect:
 
 
 @dataclass(frozen=True, slots=True)
+class SupplyControl:
+    """A bounded source supply setpoint, optionally compensated for outdoor temperature."""
+
+    entity: str
+    outdoor_sensor: str | None = None
+    heat_temperature: float = 35.0
+    cool_temperature: float = 18.0
+    minimum: float = 5.0
+    maximum: float = 60.0
+    tolerance: float = 0.5
+    outdoor_cold: float = -10.0
+    outdoor_warm: float = 20.0
+    heat_cold: float = 45.0
+    heat_warm: float = 25.0
+    max_age: float = DEFAULT_MAX_AGE
+
+
+@dataclass(frozen=True, slots=True)
 class Source:
     """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
 
@@ -242,6 +277,10 @@ class Source:
     min_on: float = DEFAULT_MIN_ON
     min_off: float = DEFAULT_MIN_OFF
     name: str | None = None
+    running_sensor: str | None = None
+    supply: SupplyControl | None = None
+    # Seconds after a request turns on for independent running and flow proof.
+    feedback_timeout: float = 300.0
 
     @property
     def title(self) -> str:
@@ -267,11 +306,32 @@ class ZoneArea:
 
 
 @dataclass(frozen=True, slots=True)
+class Schedule:
+    """A comfort schedule with setbacks and a bounded estimate of recovery time."""
+
+    entity: str
+    heat_setback: float = 2.0
+    cool_setback: float = 2.0
+    max_early_start: float = 0.0
+    heating_rate: float = 1.0
+    cooling_rate: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class WeatherConfig:
+    """Optional hourly forecast input and a separate measured outdoor temperature."""
+
+    entity: str
+    outdoor_sensor: str | None = None
+    max_age: float = 7200.0
+
+
+@dataclass(frozen=True, slots=True)
 class DigitalThermostat:
     """A Hydronicus climate entity that owns a zone's target and demand."""
 
     target: float = 21.0
-    # Preset targets in the order of ``Preset``.
+    # Heating preset targets in the order of ``Preset``, excluding SCHEDULE.
     presets: tuple[tuple[Preset, float], ...] = ()
     heat_start_delta: float = 0.3
     heat_stop_delta: float = 0.1
@@ -279,6 +339,19 @@ class DigitalThermostat:
     cool_stop_delta: float = 0.1
     min_on: float = DEFAULT_DEMAND_MIN_ON
     min_off: float = DEFAULT_DEMAND_MIN_OFF
+    cool_target: float = 24.0
+    cool_presets: tuple[tuple[Preset, float], ...] = ()
+    schedule: Schedule | None = None
+    learning: LearningMode = LearningMode.OFF
+    weather_aware: bool = False
+
+    def target_for(self, mode: Mode) -> float:
+        """Return the configured default target of the selected mode."""
+        return self.cool_target if mode is Mode.COOL else self.target
+
+    def presets_for(self, mode: Mode) -> Mapping[Preset, float]:
+        """Return the configured preset targets of the selected mode."""
+        return dict(self.cool_presets if mode is Mode.COOL else self.presets)
 
     @property
     def preset_targets(self) -> Mapping[Preset, float]:
@@ -354,6 +427,7 @@ class Plant:
     exercise: Exercise | None = DEFAULT_EXERCISE
     # The frost protection temperature in °C, or None to turn frost protection off.
     frost_protection: float | None = DEFAULT_FROST_PROTECTION
+    weather: WeatherConfig | None = None
 
     @property
     def all_loops(self) -> tuple[Loop, ...]:
@@ -383,6 +457,21 @@ class Plant:
             case _:
                 return self.zones
 
+    def zone_loops(self, slug: str) -> tuple[Loop, ...]:
+        """Return the owned and shared loops that directly serve this zone."""
+        return (
+            *self.zone(slug).loops,
+            *(
+                loop
+                for loop in self.loops
+                if loop.runs.kind is RunKind.WITH_ZONES and slug in loop.runs.zones
+            ),
+        )
+
+    def zone_modes(self, slug: str) -> frozenset[Mode]:
+        """Return the heating and cooling capabilities of all loops serving a zone."""
+        return frozenset(mode for loop in self.zone_loops(slug) for mode in loop.modes)
+
     def pump_loops(self, slug: str) -> tuple[Loop, ...]:
         """Return every loop that a pump drives."""
         return tuple(loop for loop in self.all_loops if loop.pump == slug)
@@ -394,6 +483,8 @@ class Plant:
             outputs.setdefault(self.source.request, OutputRole.SOURCE_REQUEST)
             if self.source.mode is not None:
                 outputs.setdefault(self.source.mode.entity, OutputRole.SOURCE_MODE)
+            if self.source.supply is not None:
+                outputs.setdefault(self.source.supply.entity, OutputRole.SOURCE_SETPOINT)
         for pump in self.pumps:
             if pump.switch is not None:
                 outputs.setdefault(pump.switch, OutputRole.PUMP)
@@ -427,7 +518,15 @@ class OptionTarget:
     option: str
 
 
-type OutputTarget = SwitchTarget | OptionTarget
+@dataclass(frozen=True, slots=True)
+class NumericTarget:
+    """A numeric output target and the accepted observation tolerance."""
+
+    value: float
+    tolerance: float = 0.5
+
+
+type OutputTarget = SwitchTarget | OptionTarget | NumericTarget
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,3 +564,5 @@ class Desired:
     frost_protection: tuple[str, ...] = ()
     # The slug of the pump whose idle switch or valves are being exercised, if any.
     exercise: str | None = None
+    # The comfort proposal used for each digital thermostat's demand this evaluation.
+    comfort: Mapping[str, ComfortTarget] = field(default_factory=dict)

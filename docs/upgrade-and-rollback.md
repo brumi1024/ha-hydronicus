@@ -25,6 +25,16 @@ After the restart:
 3. Check the **Status** sensor, the Repairs, and the entity IDs.
 4. Check the armed outputs in **Arm outputs** before you turn **Control equipment** on again.
 
+## Removing Hydronicus
+
+Before removing a Plant, export its plant file and turn **Control equipment** off.
+Wait until `live` is false and check that the physical equipment is stopped with its own controls or feedback.
+If it has not stopped, stop it with its own controls before continuing.
+Delete the Plant entry from **Settings > Devices & services** to remove its zones and Hydronicus entities.
+Removal does not send shutdown commands, and deleting a Plant does not remove the hardware entities supplied by other integrations.
+After all Plants are removed, remove the custom integration through HACS and restart Home Assistant if requested.
+Preserve independent hardware protection throughout removal.
+
 ## Rolling back
 
 A Plant stored by one version may not load in another; a version's own [release notes](releases) say whether it can load a Plant an earlier version stored.
