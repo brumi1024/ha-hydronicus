@@ -50,6 +50,7 @@ from custom_components.hydronicus.core.model import (
     Sensor,
     Source,
     SourceModeSelect,
+    SupplyControl,
     Thermostat,
     Valve,
     Zone,
@@ -208,6 +209,7 @@ def _sources() -> st.SearchStrategy[Source]:
         post_run=st.sampled_from([0.0, 60.0, 180.0]),
         min_on=st.sampled_from([0.0, 120.0, 600.0]),
         min_off=st.sampled_from([0.0, 120.0, 600.0]),
+        supply=st.none() | st.just(SupplyControl("number.source_supply")),
     )
 
 
@@ -464,7 +466,11 @@ def _window(event: Event) -> float:
 @st.composite
 def traces(draw: st.DrawFn, plant: Plant) -> Trace:
     outputs = plant.outputs()
-    switches = [entity for entity, role in outputs.items() if role is not OutputRole.SOURCE_MODE]
+    switches = [
+        entity
+        for entity, role in outputs.items()
+        if role in (OutputRole.SOURCE_REQUEST, OutputRole.PUMP, OutputRole.VALVE)
+    ]
     commandable = list(outputs)
     # Disarming a running source request would leave the source on for good.
     disarmable = [

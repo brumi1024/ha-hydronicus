@@ -25,7 +25,7 @@ When a zone should heat and nothing moves, check these in order:
 | `heating` or `cooling` | `active_loops`, and `proposed` in Dry run. |
 | `exercising` | Nothing else runs, and an idle pump is exercised: `exercising` and `idle_since`. |
 | `changing_over` | The mode is changing: `reasons`, under `mode`. |
-| `degraded` | `outputs_not_responding`, `missing_entities`, and the Repairs. |
+| `degraded` | `outputs_not_responding`, `missing_entities`, `evaluation_error`, and the Repairs. |
 | `stopping` | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
 | `invalid` | `configuration_problem`, and the [Plant is not valid](#plant-is-not-valid) Repair. |
 | unavailable | The Plant has not evaluated yet or is not loaded; check that every digital thermostat has loaded, and the Repairs. |
@@ -85,6 +85,9 @@ A zone's **Duty cycle** sensor shows the share of the last 24 hours in which its
 Compare the zones over a few days of similar weather in the same mode.
 A zone that stays near 100 percent while the others run much less gets too little heat or cooling: its loops are undersized, or the hydraulic balancing gives it too little flow.
 Open its balancing valves or raise its flow, or throttle the zones that reach their targets easily, then watch the duty cycles settle.
+Only flow inferred from live equipment observations counts, so duty cycle reads 0 in Dry run.
+A pump flow sensor proves circulation, not individual loop flow or delivered heat.
+Without flow proof these remain estimates, and unknown configured feedback contributes no runtime.
 
 ### The equipment is in an unexpected state
 
@@ -138,6 +141,7 @@ Select **Submit** to open the Plant's **Reconfigure** and fix it, for example by
 
 An evaluation failed with an error, which is a bug in Hydronicus.
 Meanwhile the Plant sends no new command, so the outputs stay as they were; if they must not, stop them by hand.
+Its status changes to `degraded` and reports `evaluation_error`, while the last successful view and its `evaluated_at` remain available for diagnosis.
 It tries again every minute, and the Repair clears after the next evaluation that works.
 Please report it with the error from the log and the Plant's diagnostics.
 
@@ -191,6 +195,57 @@ A condensation switch, supply temperature, or surface temperature of a cooling l
 The Repair names the input and the loops it blocks, and shows whatever the Plant mode is, because cooling cannot start without it.
 Check the device, its battery, and its connection.
 
+## Commissioning optional controls
+
+The **Status** sensor's `blocking_reason` gives the leading current obstruction.
+Use `evaluated_at`, `evaluation_age_seconds`, and `next_evaluation_at` to distinguish an old successful view from a controller waiting for its next deadline.
+The next evaluation is a controller check, not a guarantee that a pump or valve will change then.
+`pending_commands` shows each requested target, its age, and how many attempts were made.
+`sensor_health` reports numeric input freshness and configured maximum ages.
+
+Compare `pump_operation` and `source_operation` with the equipment's own feedback.
+Each includes its evidence `basis`, and unknown feedback appears as an unknown value rather than confirmed stopped equipment.
+`observed_flow` remains separate from the simulated proposals in Dry run.
+The loop's `flow_basis` and `pump_running_basis` show which parts are inferred.
+
+### The source waits for its supply temperature
+
+Confirm that the supply number is armed, supports a temperature unit, and advertises a range that includes the target.
+The source waits for observed confirmation within its configured `tolerance`.
+A missing or stale outdoor input blocks an outdoor-compensated heating request; check its `sensor_health` and `max_age`.
+An outdoor sensor reporting the same value again still refreshes its age.
+Cooling may raise its target for the measured dew-point margin; if that exceeds the configured maximum, it must remain blocked.
+Do not increase a limit just to clear a block without checking the emitters and source requirements.
+
+### A schedule does not start when expected
+
+Confirm that the thermostat has selected its `schedule` preset, the helper exists, and the Plant and thermostat use the same mode.
+A manual target change or another preset leaves schedule control.
+Inspect the thermostat's `schedule_status`, `planned_target`, `effective_target`, and `early_start` attributes.
+A valid off schedule applies setback, while an unavailable helper falls back to manual comfort.
+Early start also needs a future next event and a positive maximum lead time.
+Its rate describes room temperature recovery in K/hour, not water temperature change, and its limit may be shorter than the recovery the room actually needs.
+
+## Recovery learning and weather
+
+Start with the thermostat's `learning_mode`, `learning_reason`, `learning_confidence`, and `recovery_method` attributes.
+Observe intentionally keeps `recovery_method` at `configured`, even when a shadow prediction has confidence.
+Assist also falls back to `configured` until independent recovery episodes and prediction validation support the current deficit.
+An available provisional prediction is not evidence that active learning is enabled.
+The configured maximum early-start limit still applies when the predicted recovery takes longer.
+
+Learning ignores Dry run and interrupted or unreliable observations.
+Check `learning` in diagnostics for each zone's collection reason, active episode, accepted history, and separate heating and cooling estimates.
+Recovery requires both room temperature reports and usable circuit observations; output-derived circulation remains an estimate unless independent feedback proves it.
+Use **Reset recovery learning** after an installation change when you want to discard a zone's history explicitly.
+The reset leaves targets, presets, arming, and hydraulic timers alone.
+
+Check `forecast` in diagnostics for unsupported hourly forecasts, unavailable reports, coverage, expiry, and failed retrievals.
+Repeated forecast content retains its original first-observed age, so another successful retrieval does not necessarily make it fresh.
+`issued_at` is `null` when the provider issue time is unknown, and `quality` reports that limitation.
+A stale or missing forecast returns recovery planning to its learned baseline or configured rate.
+Measured condensation and temperature inputs remain authoritative.
+
 ## Logs and diagnostics
 
 Open **Settings > System > Logs** and filter for `hydronicus`.
@@ -206,6 +261,9 @@ It logs an error when an evaluation fails, and when it refuses a Plant created b
 | `requested_mode` and `status` | The **Mode** select and the **Status** sensor. |
 | `observations` | What the last evaluation read. |
 | `desired` | What the last evaluation decided, with its reasons. |
+| `desired.comfort` | The authoritative comfort proposal used for each digital thermostat's demand, including recovery method and bounded early-start decision. |
+| `learning` | Bounded recovery observations, collection reasons, active episodes, and separate mode estimates with confidence and validation evidence. |
+| `forecast` | Optional hourly forecast source, freshness, coverage, retrieval failures, and provider issue-time uncertainty. |
 | `state` and `reconcile` | The saved timers, and the commands waiting for a result. |
 | `unusable_inputs` | When each blocking sensor and condensation input became unusable. |
 | `flow` | Each loop's runtime, and each zone's flow per hour. |

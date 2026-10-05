@@ -285,3 +285,197 @@ def _edited(reference: Plant) -> Plant:
     validate_plant(edited)
     assert LIVING_CEILING in edited.outputs()
     return edited
+
+
+def test_dry_run_mode_history_cannot_shorten_physical_dwell_or_relabel_exercise() -> None:
+    """Reduced from the October review's randomized idle-exercise failure."""
+    configured = plant("""
+hydronicus: 2
+name: Physical history
+mode_dwell: 300
+exercise: {interval: 3600, run: 30}
+frost_protection: null
+pumps:
+  heat: {switch: switch.heat, overrun: 0}
+  both: {switch: switch.both, overrun: 0, supply_temperature: sensor.supply}
+zones:
+  room:
+    temperature: [sensor.room]
+    humidity: [sensor.humidity]
+    loops:
+      radiator: {pump: heat, modes: [heat]}
+      ceiling: {pump: both, modes: [heat, cool]}
+""")
+    sim = Sim(configured, mode=Mode.HEAT, control=False)
+    sim.seed_on("switch.heat")
+    sim.set_zone_temperature("room", 9.5)
+    sim.set_sensor("sensor.supply", 10)
+    sim.set_zone_humidity("room", 30)
+    sim.start()
+    sim.run_for(6)
+    sim.set_mode(Mode.COOL, thermostats=False)
+    sim.run_until(3301)
+    assert sim.is_on("switch.heat") and not sim.world.calls
+    sim.set_control(True)
+    sim.run_for(1)
+    stopped = sim.switched("switch.heat")[-1][0]
+    assert not sim.is_on("switch.heat")
+    sim.set_mode(Mode.OFF, thermostats=False)
+    sim.run_until(stopped + 299)
+    assert not sim.is_on("switch.heat") and not sim.is_on("switch.both")
+    sim.run_for(4000)
+    assert any(on and t >= stopped + 300 for t, on in sim.switched("switch.heat"))
+
+
+def test_source_minimum_off_time_survives_an_ignored_shutdown() -> None:
+    configured = plant(
+        BOILER.replace("min_off: 0", "min_off: 300")
+        .replace("overrun: 60", "overrun: 0")
+        .replace(
+            "temperature: [sensor.flat_temperature]",
+            "temperature: [sensor.flat_temperature]\n"
+            "    thermostat: {digital: {min_on: 0, min_off: 0}}",
+        )
+    )
+    sim = Sim(configured, mode=Mode.HEAT)
+    sim.set_zone_temperature("flat", 18)
+    sim.run_until_true(lambda: sim.world.requested, 200, "source starts")
+    sim.fault("switch.boiler_request", FaultKind.TIMEOUT, 610)
+    sim.set_zone_temperature("flat", 25)
+    sim.run_for(610)
+    assert sim.world.requested
+    sim.world.set_switch("switch.boiler_request", False)
+    stopped = sim.t
+    sim.set_zone_temperature("flat", 18)
+    sim.run_for(299)
+    assert not sim.world.requested
+    sim.run_until_true(lambda: sim.world.requested, 20, "source restarts after actual off interval")
+    assert sim.switched("switch.boiler_request")[-1][0] - stopped >= 300
+
+
+def test_source_waits_for_numeric_output_retries_and_observed_confirmation() -> None:
+    configured = plant(
+        BOILER.replace(
+            "request: switch.boiler_request,",
+            "request: switch.boiler_request, supply: {entity: number.supply},",
+        )
+    )
+    sim = Sim(configured, mode=Mode.HEAT)
+    sim.seed_running("flat.radiators")
+    sim.set_zone_temperature("flat", 18)
+    sim.fault("number.supply", FaultKind.TIMEOUT, 80)
+    sim.start()
+    sim.run_for(75)
+    assert not sim.world.requested
+    assert "number.supply" in sim.repairs()
+    sim.run_until_true(lambda: sim.world.requested, 120, "confirmed setpoint enables source")
+    assert sim.world.number("number.supply") == 35
+    assert all(call.t >= 80 for call in sim.calls_to("switch.boiler_request") if call.target == ON)
+    calls = len(sim.calls_to("number.supply"))
+    sim.world.seed_number("number.supply", 35.4)
+    sim.run_for(5)
+    assert len(sim.calls_to("number.supply")) == calls, "confirmation tolerance prevents thrashing"
+
+
+def test_actual_source_running_feedback_keeps_path_beyond_configured_post_run() -> None:
+    configured = plant("""
+hydronicus: 2
+name: Actual circulation
+exercise: null
+source:
+  request: switch.source
+  running_sensor: binary_sensor.source_running
+  min_on: 0
+  min_off: 0
+  post_run: 0
+pumps:
+  primary: {driven_by: source, min_flow_loops: [room.floor]}
+zones:
+  room:
+    temperature: [sensor.room]
+    loops:
+      floor: {pump: primary, valves: [{entity: switch.valve, opening_time: 1}]}
+""")
+    sim = Sim(configured, mode=Mode.HEAT)
+    sim.seed_running("room.floor")
+    sim.seed_on("switch.source")
+    sim.world.set_source_running(True)
+    sim.set_contact("binary_sensor.source_running", True)
+    sim.set_zone_temperature("room", 25)
+    sim.start()
+    sim.run_for(20)
+    assert not sim.world.requested
+    assert sim.flowing("room.floor") and sim.is_on("switch.valve")
+    sim.world.set_source_running(None)
+    sim.set_contact("binary_sensor.source_running", False)
+    sim.run_for(5)
+    assert not sim.is_on("switch.valve")
+
+
+def test_an_unused_dry_run_mode_does_not_label_the_first_physical_exercise() -> None:
+    configured = plant("""
+hydronicus: 2
+name: Unused mode
+mode_dwell: 300
+exercise: {interval: 3600, run: 30}
+frost_protection: null
+pumps: {pump: {switch: switch.pump, overrun: 0}}
+zones:
+  room:
+    temperature: [sensor.room]
+    loops: {radiator: {pump: pump, modes: [heat]}}
+""")
+    sim = Sim(configured, mode=Mode.COOL, control=False)
+    sim.start()
+    sim.run_for(1)
+    sim.set_mode(Mode.OFF, thermostats=False)
+    sim.run_for(1)
+    sim.set_control(True)
+    sim.run_for(3700)
+    assert any(on for _, on in sim.switched("switch.pump"))
+    assert sim.checker.flow_log
+    assert all(flow.exercise and flow.label is Mode.HEAT for flow in sim.checker.flow_log)
+
+
+def test_handover_exercise_has_its_own_label_without_erasing_prior_cooling_flow() -> None:
+    configured = plant("""
+hydronicus: 2
+name: Cooling history
+mode_dwell: 300
+exercise: {interval: 3600, run: 30}
+frost_protection: null
+pumps:
+  heat: {switch: switch.heat, overrun: 0}
+  cool: {switch: switch.cool, supply_temperature: sensor.supply, overrun: 0}
+zones:
+  room:
+    temperature: [sensor.room]
+    humidity: [sensor.humidity]
+    loops:
+      radiator: {pump: heat, modes: [heat]}
+      ceiling: {pump: cool, modes: [cool]}
+""")
+    for seeded in (False, True):
+        sim = Sim(configured, mode=Mode.COOL, control=not seeded)
+        sim.set_zone_temperature("room", 26)
+        sim.set_zone_humidity("room", 40)
+        sim.set_sensor("sensor.supply", 25)
+        sim.set_target("room", 27)
+        if seeded:
+            sim.seed_running("room.ceiling")
+        sim.start()
+        sim.run_for(1)
+        sim.set_control(False)
+        sim.run_for(1)
+        sim.set_mode(Mode.OFF, thermostats=False)
+        sim.run_for(1)
+        sim.set_control(True)
+        sim.run_for(4000)
+        heat = [flow for flow in sim.checker.flow_log if flow.ref == LoopRef("room", "radiator")]
+        assert heat and all(flow.exercise and flow.label is Mode.HEAT for flow in heat)
+        if seeded:
+            original = sim.checker.flow_log[0]
+            assert original.label is Mode.COOL and not original.exercise
+            assert original.end is not None
+            assert heat[0].start >= original.end + configured.mode_dwell
+            assert sim.checker.last_end[Mode.COOL] == original.end

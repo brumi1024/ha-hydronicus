@@ -58,6 +58,7 @@ from custom_components.hydronicus.core.model import (
     LoopRef,
     MinFlow,
     Mode,
+    NumericTarget,
     OptionTarget,
     OutputRole,
     OutputTarget,
@@ -141,6 +142,7 @@ class Checker:
         self.label: Mode | None = None
         # The pump of the exercise the State holds, running or stopping.
         self.exercised: str | None = None
+        self.exercise_label = Mode.HEAT
         self.flows: dict[LoopRef, Flow] = {}
         self.flow_log: list[Flow] = []
         self.last_end: dict[Mode, float] = {}
@@ -166,7 +168,11 @@ class Checker:
     def start(self, label: Mode | None) -> None:
         """Take the initial physical state, with the label of flows that already run."""
         self.started = True
-        self.label = label if label is not None else _mode_label(self.world.mode)
+        # A requested mode in Dry run never labels equipment that has not run.
+        # Initial labels describe seeded physical flow; subsequent live evaluations
+        # label the flow they actually authorize.
+        if any(self.world.flowing(loop) for loop in self.plant.all_loops):
+            self.label = label if label is not None else _mode_label(self.world.mode)
         # Control equipment off at setup is Dry run from the first evaluation.
         self.dry = not self.world.control
         self.check(self.world.t)
@@ -198,17 +204,32 @@ class Checker:
             role = outputs.get(entity)
             if role is None:
                 raise InvariantViolation("K2", self.world.t, f"Desired names {entity}, no output")
-            expected = OptionTarget if role is OutputRole.SOURCE_MODE else SwitchTarget
+            expected = {
+                OutputRole.SOURCE_MODE: OptionTarget,
+                OutputRole.SOURCE_SETPOINT: NumericTarget,
+            }.get(role, SwitchTarget)
             if not isinstance(target, expected):
                 raise InvariantViolation("K2", self.world.t, f"Desired {entity}: {target}")
+            if isinstance(target, NumericTarget):
+                source = self.plant.source
+                assert source is not None and source.supply is not None
+                supply = source.supply
+                if not math.isfinite(target.value) or not (
+                    supply.minimum <= target.value <= supply.maximum
+                ):
+                    raise InvariantViolation(
+                        "supply", self.world.t, f"Supply target {target.value} exceeds its bounds"
+                    )
         if desired.exercise is not None and desired.source_request:
             raise InvariantViolation(
                 "exercise", self.world.t, f"exercising {desired.exercise} requests the source"
             )
         label = _mode_label(state.last_mode)
-        if label is not None:
+        if state.live and label is not None:
             self.label = label
-        self.exercised = None if state.exercise is None else state.exercise.pump
+        # A proposed exercise never relabels real flow as an exempt exercise.
+        self.exercised = None if not state.live or state.exercise is None else state.exercise.pump
+        self.exercise_label = label or Mode.HEAT
         self.release_wanted = not desired.source_request
 
     def on_dispatch(self, call: Call) -> None:
@@ -264,7 +285,7 @@ class Checker:
     def _note_impaired(self, t: float) -> None:
         world = self.world
         for entity in self.plant.outputs():
-            body = world.switches.get(entity) or world.selects.get(entity)
+            body = world.output_body(entity)
             if (
                 entity not in world.armed
                 or (body is not None and not body.available)
@@ -287,9 +308,7 @@ class Checker:
             if ref in self.flows:
                 continue
             exercise = loop.pump == self.exercised
-            label = self.label
-            if label is None and exercise:
-                label = Mode.HEAT
+            label = self.exercise_label if exercise else self.label
             if label is None:
                 raise InvariantViolation(5, t, f"loop {ref} flows before any mode ran")
             if label not in loop.modes:
@@ -558,11 +577,21 @@ class Checker:
         if isinstance(target, OptionTarget):
             select = self.world.selects[entity]
             return select.available and select.option == target.option
+        if isinstance(target, NumericTarget):
+            number = self.world.numbers[entity]
+            return (
+                number.available
+                and math.isfinite(number.value)
+                and abs(number.value - target.value) <= target.tolerance
+            )
         return False
 
     def max_ages(self) -> dict[str, float]:
         """Every sensor's max_age, as the plant file sets it."""
         ages: dict[str, float] = {}
+        source = self.plant.source
+        if source and source.supply and source.supply.outdoor_sensor:
+            ages[source.supply.outdoor_sensor] = source.supply.max_age
         for zone in self.plant.zones:
             for sensor in (*zone.temperature, *zone.humidity):
                 ages[sensor.entity] = sensor.max_age

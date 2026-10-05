@@ -28,9 +28,11 @@ sensors once a minute; it never evaluates and never sends a command.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Any, Final
 
@@ -40,6 +42,7 @@ from homeassistant.core import (
     CALLBACK_TYPE,
     Event,
     EventStateChangedData,
+    EventStateReportedData,
     HomeAssistant,
     callback,
 )
@@ -50,6 +53,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
     async_track_state_change_event,
+    async_track_state_report_event,
 )
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
@@ -64,17 +68,21 @@ from .areas import (
 )
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.model import (
+    Desired,
     DigitalThermostat,
     ExternalThermostat,
+    LearningMode,
     Mode,
     OutputRole,
     OutputTarget,
     Plant,
+    Zone,
 )
 from .core.plant_file import entity_paths, export_plant
-from .core.reconcile import Reconciled, ReconcileState, reconcile, step_view
+from .core.reconcile import Action, Reconciled, ReconcileState, reconcile, step_view
 from .core.step import (
     DigitalThermostatState,
+    NumericState,
     Observations,
     OptionState,
     OutputState,
@@ -83,9 +91,11 @@ from .core.step import (
     ThermostatState,
     step,
 )
+from .core.thermal import RecoveryEstimate, recovery_deficit
 from .dispatch import Dispatcher
 from .entity import zone_unique_id
 from .flow_history import FlowHistory
+from .forecast import WeatherForecast
 from .issues import (
     Issue,
     IssueKind,
@@ -101,12 +111,15 @@ from .issues import (
     zone_area_issue,
     zone_sensor_unusable,
 )
+from .learning import LearningCoordinator, LearningSample
 from .observe import (
     OutputMemory,
     SensorKind,
     external_thermostat,
+    numeric_value,
     option_value,
     reading,
+    schedule_state,
     switch_memory_value,
     switch_moving,
     switch_value,
@@ -160,6 +173,12 @@ class PlantRuntime:
         self.thermostats: dict[str, DigitalThermostatState] = {}
         self.areas = AreaResolution()
         self.flow = FlowHistory()
+        self.learning = LearningCoordinator(hass, entry.entry_id)
+        self.forecast = (
+            WeatherForecast(hass, plant.weather, self.request_evaluation)
+            if plant.weather is not None and problem is None
+            else None
+        )
         # The last evaluation, as the entities read it; None until the first one.
         self.view: PlantView | None = None
         self.proposals: deque[Proposal] = deque(maxlen=_PROPOSALS_KEPT)
@@ -179,13 +198,16 @@ class PlantRuntime:
         self._listeners: list[CALLBACK_TYPE] = []
         self._unsubscribe: list[CALLBACK_TYPE] = []
         self._state_listener: CALLBACK_TYPE | None = None
+        self._report_listener: CALLBACK_TYPE | None = None
         self._area_listener: CALLBACK_TYPE | None = None
         self._tracked: frozenset[str] = frozenset()
         self._timer: CALLBACK_TYPE | None = None
         self._refresh: CALLBACK_TYPE | None = None
         self._hass_stop: CALLBACK_TYPE | None = None
         self._flow_saved_at = 0.0
-        self._dispatcher = Dispatcher(hass, entry, plant.name)
+        self.next_evaluation_at: float | None = None
+        self.evaluation_error: str | None = None
+        self._dispatcher = Dispatcher(hass, entry, plant.name, self._authorized)
         self._saved: dict[str, Any] | None = None
         self._queued = False
         self._set_up = False
@@ -200,6 +222,8 @@ class PlantRuntime:
 
     async def async_load(self) -> None:
         """Restore the persisted State, reconciler State, output memory, and Plant mode."""
+        # Optional empirical data has its own store and cannot reset safety timers.
+        await self.learning.async_load()
         data = await self.store.async_load()
         if not data:
             return
@@ -272,38 +296,54 @@ class PlantRuntime:
         if not (self._set_up and self._hass_started) or self._awaiting_restore:
             return
         self._began = True
+        if self.forecast is not None:
+            self.forecast.async_start()
         self.request_evaluation()
 
     async def async_stop(self) -> None:
         """Stop without sending a command, and save the persisted state now."""
+        self._stop()
+        await self._dispatcher.async_stop()
+        if self.forecast is not None:
+            await self.forecast.async_stop()
+        await self.learning.async_stop()
+        await self.store.async_save(self._data())
+
+    @callback
+    def _stop(self) -> None:
+        """Cancel work immediately at every command-free lifecycle boundary."""
         self._stopped = True
+        self.next_evaluation_at = None
+        self._dispatcher.stop()
+        if self.forecast is not None:
+            self.forecast.stop()
+        self.learning.stop(dt_util.utcnow().timestamp())
         for unsubscribe in (
             self._timer,
             self._refresh,
             self._hass_stop,
             self._state_listener,
+            self._report_listener,
             self._area_listener,
             *self._unsubscribe,
         ):
             if unsubscribe is not None:
                 unsubscribe()
         self._timer = self._refresh = self._hass_stop = None
-        self._state_listener = self._area_listener = None
+        self._state_listener = self._report_listener = self._area_listener = None
         self._unsubscribe.clear()
         # The time until the next setup is not counted, whatever flows meanwhile.
         self.flow.pause(dt_util.utcnow().timestamp())
-        await self._dispatcher.async_stop()
-        await self.store.async_save(self._data())
 
     @callback
     def _on_hass_stop(self, _event: Event) -> None:
-        """Count the flow up to now, and save it when Home Assistant writes its last data.
+        """Cancel work and save the final counters when Home Assistant stops.
 
-        Home Assistant does not unload a Plant when it stops, and the counters are
-        saved only every ``FLOW_SAVE_INTERVAL`` while nothing else changes.
+        Home Assistant does not unload a Plant when it stops, so its stop event
+        uses the same synchronous cancellation boundary as an unload.
         """
         self._hass_stop = None
-        self.flow.update(dt_util.utcnow().timestamp())
+        self._stop()
         self.store.async_delay_save(self._data)
 
     # Inputs from the Plant's own entities
@@ -319,6 +359,12 @@ class PlantRuntime:
     def set_thermostat(self, zone: str, thermostat: DigitalThermostatState) -> None:
         """Take a change of a digital thermostat and evaluate."""
         self.thermostats[zone] = thermostat
+        self.request_evaluation()
+
+    @callback
+    def reset_learning(self, zone: str) -> None:
+        """Forget optional recovery history without changing targets or safety state."""
+        self.learning.reset(zone)
         self.request_evaluation()
 
     @callback
@@ -345,6 +391,18 @@ class PlantRuntime:
     @property
     def armed(self) -> frozenset[str]:
         return armed_outputs(self.entry) & set(self._outputs)
+
+    def _authorized(self, action: Action) -> bool:
+        """Check the current authorization immediately before sending an output command."""
+        stopping = self.previous.stopping
+        armed = self.armed if stopping is None else stopping.outputs
+        return (
+            not self._stopped
+            and self.state.live
+            and action.entity in armed
+            and self.view is not None
+            and self.view.desired.outputs.get(action.entity) == action.target
+        )
 
     # Entities
 
@@ -401,7 +459,8 @@ class PlantRuntime:
         succeeds clears the Repair.
         """
         self._schedule(dt_util.utcnow().timestamp() + EVALUATION_RETRY)
-        failed = evaluation_failed(self.plant.name, f"{type(error).__name__}: {error}")
+        self.evaluation_error = f"{type(error).__name__}: {error}"
+        failed = evaluation_failed(self.plant.name, self.evaluation_error)
         current = (
             *(issue for issue in self.issues if issue.kind is not IssueKind.EVALUATION_FAILED),
             failed,
@@ -409,6 +468,7 @@ class PlantRuntime:
         if current != self.issues:
             self.issues = current
             async_sync_issues(self.hass, self.entry.entry_id, current)
+        self._publish()
 
     @property
     def control_plant(self) -> Plant:
@@ -428,6 +488,11 @@ class PlantRuntime:
         plant = self.control_plant
         self._resolve_areas()
         observations = self._observe(now, plant)
+        fingerprints = self._learning_fingerprints(plant, observations)
+        self.learning.synchronize(fingerprints)
+        observations = replace(
+            observations, recovery=self._recovery_estimates(plant, observations, now)
+        )
         seen = step_view(observations, self.reconcile_state)
         state, desired, due = step(plant, seen, self.state, now)
         result = reconcile(
@@ -440,6 +505,8 @@ class PlantRuntime:
             live=state.live,
         )
         self.state, self.reconcile_state = state, result.state
+        self._dispatcher.discard_obsolete(observations.armed, desired.outputs)
+        self.evaluation_error = None
         self.unusable.update(
             {
                 IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
@@ -448,10 +515,14 @@ class PlantRuntime:
             now,
         )
         # Only flow observed while the Plant is live counts, never a Dry run proposal.
+        source_winding = plant.source is not None and plant.source.request in state.winding
         loops, zones = (
-            observed_flow(self.plant, observations) if state.live else (frozenset(), frozenset())
+            observed_flow(self.plant, observations, now, source_winding=source_winding)
+            if state.live
+            else (frozenset(), frozenset())
         )
         self.flow.update(now, loops, zones)
+        self._sample_learning(plant, observations, desired, fingerprints, zones, now)
         self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
         if self.previous.stopping is not None and not state.live:
             self.previous.stopped()
@@ -460,7 +531,10 @@ class PlantRuntime:
         if result.send:
             self._dispatcher.send(result.send, now)
         self._schedule(
-            None if due is None else now + due, result.retry_at, self.unusable.next_report(now)
+            None if due is None else now + due,
+            result.retry_at,
+            self.unusable.next_report(now),
+            self.learning.next_sample_at,
         )
         self._schedule_refresh(now)
         missing = self._sync_issues(result, plant, now)
@@ -478,6 +552,8 @@ class PlantRuntime:
             missing=missing,
             problem=self.problem,
             stopping=self.previous.stopping,
+            source_winding=source_winding,
+            live=state.live,
         )
         self._publish()
         if result.proposed:
@@ -489,6 +565,165 @@ class PlantRuntime:
         """The Plants the runtime reads: the configured one and one that is stopping."""
         stopping = self.previous.stopping
         return (self.plant,) if stopping is None else (self.plant, stopping.plant)
+
+    def _learning_fingerprints(self, plant: Plant, observations: Observations) -> dict[str, str]:
+        """Invalidate evidence before prediction when its physical or sensor context changes."""
+        fingerprints: dict[str, str] = {}
+        for zone in plant.zones:
+            if not isinstance(zone.thermostat, DigitalThermostat) or (
+                zone.thermostat.learning is LearningMode.OFF
+            ):
+                continue
+            loops = plant.zone_loops(zone.slug)
+            # Switching from observation to assist does not change the learned system.
+            config = asdict(zone)
+            config["thermostat"].pop("learning")
+            config["thermostat"].pop("weather_aware")
+            context = {
+                "zone": config,
+                "loops": [asdict(loop) for loop in loops],
+                "pumps": [asdict(plant.pump(slug)) for slug in sorted({x.pump for x in loops})],
+                "source": None if plant.source is None else asdict(plant.source),
+                "weather": None if plant.weather is None else asdict(plant.weather),
+                "areas": {area.area: observations.areas.get(area.area) for area in zone.areas},
+            }
+            fingerprints[zone.slug] = hashlib.sha256(
+                json.dumps(context, sort_keys=True, default=str).encode()
+            ).hexdigest()
+        return fingerprints
+
+    def _recovery_estimates(
+        self, plant: Plant, observations: Observations, now: float
+    ) -> dict[str, RecoveryEstimate]:
+        estimates: dict[str, RecoveryEstimate] = {}
+        for zone in plant.zones:
+            config = zone.thermostat
+            thermostat = observations.thermostats.get(zone.slug)
+            if (
+                not isinstance(config, DigitalThermostat)
+                or config.learning is LearningMode.OFF
+                or not isinstance(thermostat, DigitalThermostatState)
+                or thermostat.hvac_mode is Mode.OFF
+            ):
+                continue
+            temperature = zone_readings(zone, observations, self.areas, now).temperature
+            if temperature is None:
+                continue
+            deficit = recovery_deficit(thermostat.hvac_mode, thermostat.target, temperature)
+            baseline = self.learning.estimate(zone.slug, thermostat.hvac_mode, deficit, now)
+            estimates[zone.slug] = baseline
+            if (
+                not config.weather_aware
+                or config.schedule is None
+                or self.forecast is None
+                or self.forecast.snapshot is None
+            ):
+                continue
+            schedule = observations.schedules.get(config.schedule.entity)
+            if schedule is None or schedule.active is not False or schedule.next_event is None:
+                continue
+            end = schedule.next_event
+            start = max(now, end - config.schedule.max_early_start)
+            outdoor = self.forecast.snapshot.temperature_between(start, end, now)
+            if outdoor is not None:
+                candidate = self.learning.estimate(
+                    zone.slug, thermostat.hvac_mode, deficit, now, outdoor
+                )
+                if candidate.confidence and candidate.weather_adjusted:
+                    estimates[zone.slug] = replace(
+                        candidate,
+                        valid_until=min(
+                            candidate.valid_until or now, self.forecast.snapshot.expires_at
+                        ),
+                    )
+        return estimates
+
+    def _sample_learning(
+        self,
+        plant: Plant,
+        observations: Observations,
+        desired: Desired,
+        fingerprints: dict[str, str],
+        flowing_zones: frozenset[str],
+        now: float,
+    ) -> None:
+        samples: dict[str, LearningSample] = {}
+        outdoor = None if self.forecast is None else self.forecast.outdoor_observation(now)
+        for zone in plant.zones:
+            config = zone.thermostat
+            thermostat = observations.thermostats.get(zone.slug)
+            if not isinstance(config, DigitalThermostat) or zone.slug not in fingerprints:
+                continue
+            comfort = desired.comfort.get(zone.slug)
+            temperature = zone_readings(zone, observations, self.areas, now).temperature
+            reports = self._temperature_reports(zone, observations, now)
+            mode = (
+                thermostat.hvac_mode if isinstance(thermostat, DigitalThermostatState) else Mode.OFF
+            )
+            loops = plant.zone_loops(zone.slug)
+            windows_clear = all(
+                (contact := observations.readiness.get(entity)) is not None and contact.on is False
+                for entity in zone.windows
+            )
+            permitted = (
+                windows_clear
+                and zone.slug not in self.state.windows_open
+                and zone.slug not in desired.frost_protection
+                and desired.exercise is None
+                and desired.mode is mode
+                and mode is not Mode.OFF
+                and not any(
+                    str(loop.ref) in desired.blocking_condensation_inputs
+                    or (
+                        self.state.guards.get(str(loop.ref)) is not None
+                        and self.state.guards[str(loop.ref)].blocked
+                    )
+                    for loop in loops
+                    if mode is Mode.COOL and mode in loop.modes
+                )
+            )
+            samples[zone.slug] = LearningSample(
+                zone=zone.slug,
+                mode=mode,
+                learning=config.learning,
+                fingerprint=fingerprints[zone.slug],
+                temperature=temperature,
+                temperature_at=max((at for at, _ in reports), default=None),
+                temperature_max_age=min((age for _, age in reports), default=0.0),
+                target=None if comfort is None else comfort.target,
+                preset=(
+                    str(thermostat.preset)
+                    if isinstance(thermostat, DigitalThermostatState)
+                    else "unavailable"
+                ),
+                circulating=zone.slug in flowing_zones,
+                live=self.state.live and observations.control and self.previous.stopping is None,
+                permitted=permitted,
+                reason=None
+                if permitted
+                else "control or safety condition prevents a clean recovery",
+                outdoor_temperature=None if outdoor is None else outdoor.temperature,
+            )
+        self.learning.update(samples, now)
+
+    @staticmethod
+    def _temperature_reports(
+        zone: Zone, observations: Observations, now: float
+    ) -> list[tuple[float, float]]:
+        inputs = [(sensor.entity, sensor.max_age) for sensor in zone.temperature]
+        inputs.extend(
+            (names.temperature, area.max_age)
+            for area in zone.areas
+            if (names := observations.areas.get(area.area)) is not None
+            and names.temperature is not None
+        )
+        return [
+            (sensor.updated, max_age)
+            for entity, max_age in inputs
+            if (sensor := observations.sensors.get(entity)) is not None
+            and sensor.value is not None
+            and sensor.updated <= now < sensor.updated + max_age
+        ]
 
     def _roles(self) -> dict[str, OutputRole]:
         """Every output of the Plants the runtime reads, with its role."""
@@ -506,6 +741,9 @@ class PlantRuntime:
             if role is OutputRole.SOURCE_MODE:
                 option = option_value(state)
                 outputs[entity] = OptionState(option, self.memory.since(entity, option, changed))
+            elif role is OutputRole.SOURCE_SETPOINT:
+                value = numeric_value(state)
+                outputs[entity] = NumericState(value, self.memory.since(entity, value, changed))
             else:
                 since = self.memory.since(entity, switch_memory_value(state), changed)
                 outputs[entity] = SwitchState(switch_value(state), since, switch_moving(state))
@@ -544,6 +782,14 @@ class PlantRuntime:
             sensors=sensors,
             areas=dict(self.areas.area_sensors),
             thermostats=thermostats,
+            schedules={
+                zone.thermostat.schedule.entity: schedule_state(
+                    states.get(zone.thermostat.schedule.entity)
+                )
+                for zone in plant.zones
+                if isinstance(zone.thermostat, DigitalThermostat)
+                and zone.thermostat.schedule is not None
+            },
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -554,6 +800,14 @@ class PlantRuntime:
         return kinds
 
     def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
+        if plant.weather is not None and plant.weather.outdoor_sensor is not None:
+            kinds[plant.weather.outdoor_sensor] = SensorKind.AIR
+        if (
+            plant.source is not None
+            and plant.source.supply is not None
+            and plant.source.supply.outdoor_sensor is not None
+        ):
+            kinds[plant.source.supply.outdoor_sensor] = SensorKind.AIR
         for pump in plant.pumps:
             if pump.supply_temperature is not None:
                 kinds[pump.supply_temperature] = SensorKind.WATER
@@ -598,17 +852,31 @@ class PlantRuntime:
             self._state_listener = async_track_state_change_event(
                 self.hass, sorted(tracked), self._on_state_change
             )
+            if self._report_listener is not None:
+                self._report_listener()
+            self._report_listener = async_track_state_report_event(
+                self.hass, sorted(self._sensor_kinds()), self._on_sensor_report
+            )
 
     def _tracked_entities(self) -> frozenset[str]:
         tracked = set(self._roles()) | set(self._sensor_kinds())
         for plant in self._plants():
+            if plant.weather is not None:
+                tracked.add(plant.weather.entity)
             for loop in plant.all_loops:
                 tracked.update(valve.readiness for valve in loop.valves if valve.readiness)
             tracked.update(contacts(plant))
             for zone in plant.zones:
                 if isinstance(zone.thermostat, ExternalThermostat):
                     tracked.add(zone.thermostat.entity)
+                elif zone.thermostat.schedule is not None:
+                    tracked.add(zone.thermostat.schedule.entity)
         return frozenset(tracked)
+
+    @callback
+    def _on_sensor_report(self, _event: Event[EventStateReportedData]) -> None:
+        """An unchanged report can recover a previously stale required sensor."""
+        self.request_evaluation()
 
     @callback
     def _on_state_change(self, event: Event[EventStateChangedData]) -> None:
@@ -618,11 +886,13 @@ class PlantRuntime:
         if role is not None and new_state is not None:
             # Every change of an output is remembered, so no change goes unseen
             # between two evaluations.
-            value: bool | str | None = (
-                option_value(new_state)
-                if role is OutputRole.SOURCE_MODE
-                else switch_memory_value(new_state)
-            )
+            value: bool | str | float | None
+            if role is OutputRole.SOURCE_MODE:
+                value = option_value(new_state)
+            elif role is OutputRole.SOURCE_SETPOINT:
+                value = numeric_value(new_state)
+            else:
+                value = switch_memory_value(new_state)
             self.memory.since(entity, value, new_state.last_changed_timestamp)
         self.request_evaluation()
 
@@ -635,6 +905,7 @@ class PlantRuntime:
             self._timer()
             self._timer = None
         times = [time for time in at if time is not None]
+        self.next_evaluation_at = min(times) if times else None
         if times:
             self._timer = async_track_point_in_utc_time(
                 self.hass, self._on_timer, dt_util.utc_from_timestamp(min(times))
@@ -643,6 +914,7 @@ class PlantRuntime:
     @callback
     def _on_timer(self, _now: datetime) -> None:
         self._timer = None
+        self.next_evaluation_at = None
         self.request_evaluation()
 
     @callback
@@ -755,8 +1027,12 @@ class PlantRuntime:
 
 
 def contacts(plant: Plant) -> set[str]:
-    """Every condensation switch and window a Plant reads."""
+    """Every condensation switch, window, and independent equipment proof a Plant reads."""
     found = {pump.condensation_switch for pump in plant.pumps}
+    found.update(pump.running_sensor for pump in plant.pumps)
+    found.update(pump.flow_sensor for pump in plant.pumps)
+    if plant.source is not None:
+        found.add(plant.source.running_sensor)
     found.update(loop.condensation_switch for loop in plant.all_loops)
     found.update(window for zone in plant.zones for window in zone.windows)
     return {entity for entity in found if entity is not None}

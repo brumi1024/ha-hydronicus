@@ -39,6 +39,11 @@ Dry run sends nothing and only checks the configuration and the sequence; see [w
 Sensors that a zone follows through its areas are optional by default, so one missing sensor does not stop a zone of several rooms.
 For a zone that cools, consider making each area's humidity required in the [plant file](plant-file.md#areas), because a room whose humidity nobody sees is where a cooled surface condenses.
 
+The 10-second service timeout is a software boundary, not a guarantee that equipment cannot act later.
+The simulator assumes delayed commands act within that window and commands to one entity act in order.
+A device that queues an earlier start and executes it after a later stop can violate those assumptions.
+Check real device latency and ordering during commissioning, and keep independent hydraulic and electrical interlocks.
+
 ## Frost protection is for rooms, not pipes
 
 Frost protection heats a zone whose coldest reading falls below 5 °C, but only while Home Assistant runs, the zone's sensors report, and its outputs are armed with **Control equipment** on.
@@ -69,6 +74,17 @@ Protect against that independently of Hydronicus:
 A reload or a restart never sends a command, so the equipment stays exactly as it was until Hydronicus runs again.
 Removing a zone, a loop, a pump, or the source first stops the equipment of the old configuration in order, before the new configuration runs.
 Removing the whole Plant does not stop its equipment; turn off **Control equipment** first, as [removing Hydronicus](updating-and-removing.md#removing-hydronicus) describes.
+
+## Optional feedback and comfort controls
+
+Running and flow sensors provide additional observations, but they do not replace hardwired flow proving or an equipment interlock.
+A binary flow input proves only what its device measures, and an individual loop's flow may still be inferred from its open valves and pump state.
+Loop runtime and duty cycle are not delivered heat or energy measurements.
+
+Supply temperature control is optional and bounded, with cooling still subject to measured condensation guards.
+Configure limits for the actual source, emitters, and mixing arrangement, and give the setpoint one controller.
+A schedule or early start changes only comfort demand and never grants permission to run equipment through a blocked guard.
+Configured room recovery rates are estimates and do not guarantee that comfort will be reached at a particular time.
 
 ## Safe operating rule
 

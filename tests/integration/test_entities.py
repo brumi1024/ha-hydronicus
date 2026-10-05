@@ -50,7 +50,8 @@ zones:
   study:
     temperature: [sensor.study]
     humidity: [sensor.study_rh]
-    thermostat: {digital: {target: 20.5, presets: {comfort: 22, eco: 19}}}
+    thermostat:
+      digital: {target: 20.5, presets: {comfort: 22, eco: 19}, cool_presets: {comfort: 24, eco: 27}}
     loops:
       ceiling: {valves: [switch.study_valve], pump: pump, modes: [heat, cool]}
 """
@@ -146,7 +147,7 @@ async def test_a_thermostat_action_is_what_the_equipment_does_for_its_zone(
     assert actuators.shorts() == ["switch.study_valve:on", "switch.pump:on"]
     assert action() == "heating"
 
-    set_temperature(hass, "sensor.study", 24.0)
+    set_temperature(hass, "sensor.study", 26.0)
     await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="cool")
     assert hass.states.get("binary_sensor.study_cooling_demand").state == "on"
     assert action() == "idle", "the Plant runs heat"
@@ -188,7 +189,11 @@ async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
         [
             (
                 State("climate.study", "cool", {"temperature": 21.5, "preset_mode": "eco"}),
-                {"last_active_hvac_mode": "cool", "target_temperature_celsius": 21.3},
+                {
+                    "last_active_hvac_mode": "cool",
+                    "heat_target_temperature_celsius": 20.7,
+                    "cool_target_temperature_celsius": 21.3,
+                },
             )
         ],
     )
@@ -203,7 +208,7 @@ async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
     )
     climate = hass.states.get("climate.study")
     assert climate.state == "cool"
-    assert climate.attributes["temperature"] == 19.0, "the preset's target applies"
+    assert climate.attributes["temperature"] == 27.0, "the cooling preset's target applies"
     assert climate.attributes["preset_modes"] == ["comfort", "eco", "none"]
 
     await async_call(
@@ -212,6 +217,175 @@ async def test_a_digital_thermostat_restores_its_exact_target_preset_and_mode(
     await async_call(hass, "climate", "turn_off", entity_id="climate.study")
     await async_call(hass, "climate", "turn_on", entity_id="climate.study")
     assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.COOL, 23.5)
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="heat")
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.HEAT, 20.7)
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="cool")
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.COOL, 23.5)
+
+
+@pytest.mark.parametrize(
+    "state,last_active,preset,active",
+    [
+        ("heat", "heat", "eco", Mode.HEAT),
+        ("cool", "cool", "eco", Mode.COOL),
+        ("off", "heat", "eco", Mode.HEAT),
+        ("off", "cool", "eco", Mode.COOL),
+        ("cool", "heat", "eco", Mode.COOL),
+        ("heat", "heat", "none", Mode.HEAT),
+    ],
+)
+async def test_upgrade_preserves_the_old_manual_target_under_a_preset(
+    hass: HomeAssistant, state: str, last_active: str, preset: str, active: Mode
+) -> None:
+    """Restore the real 0.3.0 payload, then expose its manual target through HA services."""
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State(
+                    "climate.study",
+                    state,
+                    {"temperature": 22.7 if preset == "none" else 19.0, "preset_mode": preset},
+                ),
+                {"last_active_hvac_mode": last_active, "target_temperature_celsius": 22.73},
+            )
+        ],
+    )
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 21.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+
+    climate = hass.states.get("climate.study")
+    assert climate.state == state
+    assert climate.attributes["planned_target"] == 22.73
+    assert climate.attributes["preset_mode"] == preset
+    await async_call(
+        hass, "climate", "set_preset_mode", entity_id="climate.study", preset_mode="none"
+    )
+    await async_call(hass, "climate", "turn_on", entity_id="climate.study")
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(active, 22.73)
+
+    other = Mode.COOL if active is Mode.HEAT else Mode.HEAT
+    await async_call(
+        hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode=other.value
+    )
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(
+        other, 24.0 if other is Mode.COOL else 20.5
+    ), "the old shared target belongs only to the last active mode"
+    await async_call(
+        hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode=active.value
+    )
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(active, 22.73)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(active, 22.73)
+    assert hass.states.get("climate.study").attributes[f"{other.value}_target"] == (
+        24.0 if other is Mode.COOL else 20.5
+    )
+
+
+@pytest.mark.parametrize("cool_target", [24.91, None])
+async def test_upgrade_preserves_newer_mode_targets_and_only_fills_the_active_mode(
+    hass: HomeAssistant, cool_target: float | None
+) -> None:
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State("climate.study", "cool", {"temperature": 19.0, "preset_mode": "eco"}),
+                {
+                    "last_active_hvac_mode": "cool",
+                    "target_temperature_celsius": 22.73,
+                    "heat_target_temperature_celsius": 20.81,
+                    "cool_target_temperature_celsius": cool_target,
+                },
+            )
+        ],
+    )
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 21.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(
+        Mode.COOL, 22.73 if cool_target is None else cool_target, Preset.ECO
+    )
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="heat")
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(
+        Mode.HEAT, 20.81, Preset.ECO
+    )
+
+
+@pytest.mark.parametrize("old_target", [True, "22.73", float("nan"), 36.0])
+async def test_upgrade_ignores_unusable_old_targets_without_importing_a_preset_temperature(
+    hass: HomeAssistant, old_target: object
+) -> None:
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State("climate.study", "heat", {"temperature": 19.0, "preset_mode": "eco"}),
+                {"last_active_hvac_mode": "heat", "target_temperature_celsius": old_target},
+            )
+        ],
+    )
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 21.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(
+        Mode.HEAT, 20.5, Preset.ECO
+    )
+
+
+async def test_heating_presets_cannot_be_reused_as_cooling_targets(hass: HomeAssistant) -> None:
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 24)
+    set_humidity(hass, "sensor.study_rh", 50)
+    set_temperature(hass, "sensor.supply", 22)
+    entry = await async_import(hass, COOLING.replace(", cool_presets: {comfort: 24, eco: 27}", ""))
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="heat")
+    await async_call(
+        hass, "climate", "set_preset_mode", entity_id="climate.study", preset_mode="eco"
+    )
+    assert hass.states.get("climate.study").attributes["temperature"] == 19
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="cool")
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.COOL, 24)
+    assert hass.states.get("climate.study").attributes["preset_modes"] == ["none"]
+
+
+async def test_a_shared_cooling_loop_exposes_cooling_for_every_served_zone(
+    hass: HomeAssistant,
+) -> None:
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 27)
+    set_humidity(hass, "sensor.study_rh", 50)
+    set_temperature(hass, "sensor.supply", 22)
+    entry = await async_import(
+        hass,
+        """
+hydronicus: 2
+name: Shared
+pumps:
+  pump: {switch: switch.pump, supply_temperature: sensor.supply}
+loops:
+  ceiling: {valves: [switch.study_valve], pump: pump, modes: [cool], runs: {with_zones: [study]}}
+zones:
+  study:
+    temperature: [sensor.study]
+    humidity: [sensor.study_rh]
+""",
+    )
+    assert hass.states.get("climate.study").attributes["hvac_modes"] == ["off", "cool"]
+    assert hass.states.get("sensor.study_dew_point") is not None
+    assert hass.states.get("binary_sensor.study_cooling_demand") is not None
+    await async_call(hass, "climate", "turn_on", entity_id="climate.study")
+    assert entry.runtime_data.thermostats["study"] == DigitalThermostatState(Mode.COOL, 24)
+    assert hass.states.get("binary_sensor.study_cooling_demand").state == "on"
 
 
 async def test_setting_a_target_with_a_mode_changes_both(hass: HomeAssistant) -> None:

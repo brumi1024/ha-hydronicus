@@ -249,6 +249,19 @@ async def test_exporting_and_importing_a_plant_reproduces_its_entity_ids(
     assert plant_entities(hass, again) == before
 
 
+async def test_removing_a_plant_also_removes_its_optional_learning_store(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    await entry.runtime_data.learning.store.async_save({"zones": {}})
+    key = f"{DOMAIN}.{entry.entry_id}.learning"
+    assert key in hass_storage
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert key not in hass_storage
+
+
 async def test_a_plant_keeps_the_order_of_its_pumps_and_loops_across_a_restart(
     hass: HomeAssistant,
 ) -> None:

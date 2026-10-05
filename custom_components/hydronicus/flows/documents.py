@@ -35,6 +35,7 @@ from ..core.model import (
     DEFAULT_SURFACE_MINIMUM,
     DEFAULT_WINDOW_CLOSE_DELAY,
     DEFAULT_WINDOW_OPEN_DELAY,
+    DigitalThermostat,
     LoopRef,
     MinFlow,
     Mode,
@@ -60,6 +61,7 @@ _STRUCTURE: Final = (
     "exercise",
     "frost_protection",
     "source",
+    "weather",
     "pumps",
     "loops",
 )
@@ -69,6 +71,7 @@ _STRUCTURE_WORDS: Final = {
     "exercise": "exercise",
     "frost_protection": "frost protection",
     "source": "source",
+    "weather": "weather forecast",
     "pumps": "pumps",
     "loops": "plant loops",
 }
@@ -175,11 +178,15 @@ def plant_values(document: Mapping[str, Any]) -> dict[str, Any]:
         "source_name": source.get("name", DEFAULT_SOURCE_TITLE),
         "request": source.get("request"),
         "mode_select": mode.get("entity"),
+        "running_sensor": source.get("running_sensor"),
+        "supply": dict(_mapping(source, "supply")),
+        "weather": dict(_mapping(document, "weather")),
         "timing": {
             "mode_dwell": document.get("mode_dwell", DEFAULT_MODE_DWELL),
             "post_run": source.get("post_run", DEFAULT_POST_RUN),
             "min_on": source.get("min_on", DEFAULT_MIN_ON),
             "min_off": source.get("min_off", DEFAULT_MIN_OFF),
+            "feedback_timeout": source.get("feedback_timeout", 300.0),
         },
         "protection": _protection_values(document),
     }
@@ -214,6 +221,7 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
         "post_run": old.get("post_run", DEFAULT_POST_RUN),
         "min_on": old.get("min_on", DEFAULT_MIN_ON),
         "min_off": old.get("min_off", DEFAULT_MIN_OFF),
+        "feedback_timeout": old.get("feedback_timeout", 300.0),
         **(values.get("timing") or {}),
     }
     result["name"] = str(values.get("name", "")).strip()
@@ -227,6 +235,14 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     )
     result["frost_protection"] = (
         protection["frost_temperature"] if protection["frost_protection"] else False
+    )
+    weather = dict(values.get("weather", _mapping(document, "weather")) or {})
+    _put(
+        result,
+        "weather",
+        {key: value for key, value in weather.items() if value is not None}
+        if weather.get("entity")
+        else None,
     )
     request = values.get("request")
     if not request:
@@ -244,6 +260,12 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     source["post_run"] = timing["post_run"]
     source["min_on"] = timing["min_on"]
     source["min_off"] = timing["min_off"]
+    if timing["feedback_timeout"] != 300.0:
+        source["feedback_timeout"] = timing["feedback_timeout"]
+    _put(source, "running_sensor", values.get("running_sensor", old.get("running_sensor")))
+    supply = dict(values.get("supply", _mapping(old, "supply")) or {})
+    if supply.get("entity"):
+        source["supply"] = {key: value for key, value in supply.items() if value is not None}
     result["source"] = source
     return result
 
@@ -262,7 +284,17 @@ def with_mode(document: Mapping[str, Any], entity: str, heat: str, cool: str) ->
     # Keep the canonical key order: the mode follows the request.
     result["source"] = {
         key: source[key]
-        for key in ("name", "request", "mode", "post_run", "min_on", "min_off")
+        for key in (
+            "name",
+            "request",
+            "mode",
+            "post_run",
+            "min_on",
+            "min_off",
+            "running_sensor",
+            "supply",
+            "feedback_timeout",
+        )
         if key in source
     }
     return result
@@ -283,6 +315,8 @@ def pump_values(document: Mapping[str, Any], slug: str | None) -> dict[str, Any]
         "min_flow_loops": list(pump.get("min_flow_loops", [])),
         "supply_temperature": pump.get("supply_temperature"),
         "condensation_switch": pump.get("condensation_switch"),
+        "running_sensor": pump.get("running_sensor"),
+        "flow_sensor": pump.get("flow_sensor"),
     }
 
 
@@ -311,6 +345,9 @@ def with_pump(
         _put(pump, "min_flow_loops", list(values.get("min_flow_loops") or []))
     _put(pump, "supply_temperature", values.get("supply_temperature"))
     _put(pump, "condensation_switch", values.get("condensation_switch"))
+    old = table.get(slug, {})
+    for key in ("running_sensor", "flow_sensor"):
+        _put(pump, key, values.get(key, old.get(key)))
     table[slug] = pump
     return result, slug
 
@@ -506,7 +543,8 @@ def zone_values(document: Mapping[str, Any], slug: str | None) -> dict[str, Any]
         }
     zone = zones(document).get(slug, {})
     thermostat = _mapping(zone, "thermostat")
-    presets = _mapping(_mapping(thermostat, "digital"), "presets")
+    digital = _mapping(thermostat, "digital")
+    presets = _mapping(digital, "presets")
     return {
         "name": title(zone, slug),
         "areas": _entities(zone.get("areas"), "area"),
@@ -515,6 +553,16 @@ def zone_values(document: Mapping[str, Any], slug: str | None) -> dict[str, Any]
         "aggregation": zone.get("aggregation", "mean"),
         "thermostat": thermostat.get("external"),
         "presets": {preset.value: presets[preset.value] for preset in Preset if preset in presets},
+        "cool_presets": dict(_mapping(digital, "cool_presets")),
+        "comfort": {
+            "target": digital.get("target", DigitalThermostat().target),
+            "cool_target": digital.get("cool_target", DigitalThermostat().cool_target),
+        },
+        "schedule": dict(_mapping(digital, "schedule")),
+        "learning": {
+            "mode": digital.get("learning", "off"),
+            "weather_aware": digital.get("weather_aware", False),
+        },
         "windows": list(zone.get("windows", [])),
         "window_open_delay": zone.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY),
         "window_close_delay": zone.get("window_close_delay", DEFAULT_WINDOW_CLOSE_DELAY),
@@ -541,16 +589,25 @@ def with_zone(
         zone["thermostat"] = {"external": external}
     else:
         digital = dict(_mapping(_mapping(old, "thermostat"), "digital"))
-        presets = values.get("presets") or {}
-        _put(
-            digital,
-            "presets",
-            {
-                preset.value: presets[preset.value]
-                for preset in Preset
-                if presets.get(preset.value) is not None
-            },
-        )
+        for key in ("presets", "cool_presets"):
+            presets = values.get(key, digital.get(key)) or {}
+            _put(
+                digital,
+                key,
+                {
+                    preset.value: presets[preset.value]
+                    for preset in Preset
+                    if preset is not Preset.SCHEDULE and presets.get(preset.value) is not None
+                },
+            )
+        digital.update(values.get("comfort") or {})
+        schedule = dict(values.get("schedule", _mapping(digital, "schedule")) or {})
+        _put(digital, "schedule", schedule if schedule.get("entity") else None)
+        if "learning" in values:
+            learning = values["learning"] or {}
+            mode = learning.get("mode", "off")
+            _put(digital, "learning", mode if mode != "off" else None)
+            _put(digital, "weather_aware", True if learning.get("weather_aware") else None)
         if digital:
             zone["thermostat"] = {"digital": digital}
     _put(zone, "windows", list(dict.fromkeys(values.get("windows") or [])))

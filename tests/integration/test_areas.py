@@ -182,3 +182,26 @@ async def test_the_area_review_warns_about_missing_areas_and_shared_areas(
         ("area_without_temperature_sensor", "study"),
         ("area_in_several_zones", "study"),
     }
+
+
+async def test_shared_cooling_loop_warns_when_its_area_has_no_humidity_sensor(
+    hass: HomeAssistant,
+) -> None:
+    set_temperature(hass, "sensor.study", 21)
+    create_area(hass, "Study", temperature="sensor.study")
+    plant = read_plant_file("""
+hydronicus: 2
+name: Flat
+pumps:
+  pump: {switch: switch.pump, supply_temperature: sensor.supply}
+loops:
+  ceiling: {pump: pump, modes: [cool], runs: {with_zones: [study]}}
+zones:
+  study: {areas: [study]}
+""")
+
+    warnings = area_review_warnings(hass, plant)
+
+    assert [(warning.code, warning.zones) for warning in warnings] == [
+        ("area_without_humidity_sensor", ("study",))
+    ]

@@ -338,7 +338,7 @@ def test_every_entity_is_documented() -> None:
         entity["name"]
         for platform in strings["entity"].values()
         for entity in platform.values()
-        if "{" not in entity["name"]
+        if "name" in entity and "{" not in entity["name"]
     ]
     assert [name for name in names if f"**{name}**" not in text] == []
     for document in ("docs/entities.md", "docs/troubleshooting.md"):

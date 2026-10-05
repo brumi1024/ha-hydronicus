@@ -16,9 +16,10 @@ Anything only one release needs, such as moving a Plant from an older format, is
 Install the new version with HACS, and restart Home Assistant when it asks.
 Then check that:
 
-1. Every Plant loads, with one entry per zone under it.
-2. The **Status** sensor and the Repairs look as expected.
-3. **Arm outputs** still lists the outputs you armed.
+1. The installed version is the one you intended.
+2. Every Plant loads, with one entry per zone under it, and its entity IDs are unchanged.
+3. The **Status** sensor and the Repairs look as expected.
+4. **Arm outputs** still lists the outputs you armed.
 
 Only then turn **Control equipment** on again.
 
@@ -43,6 +44,7 @@ Stop it first, so no valve, pump, or source request is left on:
    This removes the Plant, its zones, their entities and devices, its Repairs, and its saved state.
 5. Repeat for every Plant, then remove Hydronicus in HACS and restart Home Assistant.
 
+Preserve independent hardware protection throughout removal.
 Your valves, pumps, sensors, and existing thermostats are untouched; they belong to their own integrations.
 Automations and dashboards that used the Plant's entities need updating.
 If you loaded the [trial package](getting-started.md#load-the-trial-entities), remove it from `configuration.yaml` as well.

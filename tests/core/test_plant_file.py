@@ -17,6 +17,7 @@ from custom_components.hydronicus.core.model import (
     DigitalThermostat,
     Exercise,
     ExternalThermostat,
+    LearningMode,
     LoopRef,
     LoopRun,
     MinFlow,
@@ -27,6 +28,7 @@ from custom_components.hydronicus.core.model import (
     RunKind,
     Sensor,
     Valve,
+    WeatherConfig,
     ZoneArea,
 )
 from custom_components.hydronicus.core.plant_file import (
@@ -1242,3 +1244,227 @@ def test_a_path_names_an_object_by_its_name() -> None:
 
     assert describe_path(document, "pumps.p1.switch") == "Pump Main circulator, switch"
     assert describe_path(document, "zones.study") == "Zone Study"
+
+
+def advanced_document() -> dict[str, Any]:
+    """Independent comfort policy and equipment feedback on the reference plant."""
+    document = reference_document()
+    document["source"].update(
+        {
+            "running_sensor": "binary_sensor.source_running",
+            "feedback_timeout": 180,
+            "supply": {
+                "entity": "number.supply_target",
+                "outdoor_sensor": "sensor.outdoor",
+                "heat_temperature": 36,
+                "cool_temperature": 19,
+                "minimum": 6,
+                "maximum": 55,
+                "tolerance": 0.2,
+                "outdoor_cold": -15,
+                "outdoor_warm": 18,
+                "heat_cold": 48,
+                "heat_warm": 26,
+                "max_age": 1800,
+            },
+        }
+    )
+    document["pumps"]["heat_pump"].update(
+        {
+            "running_sensor": "binary_sensor.pump_running",
+            "flow_sensor": "binary_sensor.flow",
+        }
+    )
+    document["zones"]["basement"]["thermostat"] = {
+        "digital": {
+            "target": 20,
+            "cool_target": 25,
+            "presets": {"comfort": 21, "eco": 18, "away": 16},
+            "cool_presets": {"comfort": 24, "eco": 27, "away": 30},
+            "schedule": {
+                "entity": "schedule.comfort",
+                "heat_setback": 3,
+                "cool_setback": 4,
+                "max_early_start": 7200,
+                "heating_rate": 0.7,
+                "cooling_rate": 1.2,
+            },
+        }
+    }
+    return document
+
+
+def test_advanced_controls_roundtrip_through_yaml_and_sorted_storage() -> None:
+    plant = parse_plant(advanced_document())
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.supply.heat_temperature == 36
+    assert plant.source.supply.max_age == 1800
+    assert plant.outputs()["number.supply_target"] is OutputRole.SOURCE_SETPOINT
+    paths = entity_paths(plant)
+    assert paths["number.supply_target"] == "source.supply.entity"
+    assert paths["sensor.outdoor"] == "source.supply.outdoor_sensor"
+    assert paths["binary_sensor.source_running"] == "source.running_sensor"
+    assert paths["binary_sensor.pump_running"] == "pumps.heat_pump.running_sensor"
+    assert paths["binary_sensor.flow"] == "pumps.heat_pump.flow_sensor"
+    assert paths["schedule.comfort"] == "zones.basement.thermostat.digital.schedule.entity"
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("source.running_sensor", "sensor.running"),
+        ("source.feedback_timeout", 0),
+        ("source.feedback_timeout", float("inf")),
+        ("pumps.heat_pump.running_sensor", "switch.running"),
+        ("pumps.heat_pump.flow_sensor", "sensor.flow"),
+        ("source.supply.entity", "input_number.target"),
+        ("source.supply.outdoor_sensor", "binary_sensor.outdoor"),
+        ("source.supply.minimum", float("nan")),
+        ("source.supply.maximum", float("inf")),
+        ("source.supply.maximum", 6),
+        ("source.supply.tolerance", 0),
+        ("source.supply.tolerance", 100),
+        ("source.supply.max_age", 0),
+        ("source.supply.outdoor_warm", -15),
+        ("source.supply.heat_warm", 50),
+        ("source.supply.heat_temperature", 70),
+        ("source.supply.cool_temperature", -10),
+        ("zones.basement.thermostat.digital.cool_target", float("nan")),
+        ("zones.basement.thermostat.digital.presets.schedule", 22),
+        ("zones.basement.thermostat.digital.cool_presets.schedule", 22),
+        ("zones.basement.thermostat.digital.cool_presets.eco", float("inf")),
+        ("zones.basement.thermostat.digital.schedule.entity", "calendar.comfort"),
+        ("zones.basement.thermostat.digital.schedule.heat_setback", -1),
+        ("zones.basement.thermostat.digital.schedule.cool_setback", float("nan")),
+        ("zones.basement.thermostat.digital.schedule.max_early_start", 21601),
+        ("zones.basement.thermostat.digital.schedule.heating_rate", 0),
+        ("zones.basement.thermostat.digital.schedule.cooling_rate", -1),
+    ],
+)
+def test_advanced_controls_reject_unsafe_or_invalid_values(path: str, value: object) -> None:
+    document = advanced_document()
+    _set(path, value)(document)
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+
+
+def test_default_optional_controls_roundtrip_without_optional_observations() -> None:
+    document = reference_document()
+    document["source"]["supply"] = {"entity": "number.supply_target"}
+    document["pumps"]["floor"]["flow_sensor"] = "binary_sensor.floor_flow"
+    document["zones"]["basement"]["thermostat"] = {
+        "digital": {"schedule": {"entity": "schedule.comfort", "max_early_start": 21600}}
+    }
+    plant = parse_plant(document)
+    assert export_plant(plant)["source"]["supply"] == {"entity": "number.supply_target"}
+    assert parse_plant(export_plant(plant)) == plant
+
+
+def predictive_document() -> dict[str, Any]:
+    """Opt-in recovery and weather bindings independent of source control."""
+    document = advanced_document()
+    document["weather"] = {
+        "entity": "weather.home",
+        "outdoor_sensor": "sensor.measured_outdoor",
+        "max_age": 3600,
+    }
+    document["zones"]["basement"]["thermostat"]["digital"].update(
+        learning="assist", weather_aware=True
+    )
+    return document
+
+
+def test_predictive_settings_roundtrip_and_bind_only_inputs() -> None:
+    plant = parse_plant(predictive_document())
+    assert plant.weather == WeatherConfig("weather.home", "sensor.measured_outdoor", 3600)
+    thermostat = plant.zone("basement").thermostat
+    assert isinstance(thermostat, DigitalThermostat)
+    assert thermostat.learning is LearningMode.ASSIST
+    assert thermostat.weather_aware is True
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    paths = entity_paths(plant)
+    assert paths["weather.home"] == "weather.entity"
+    assert paths["sensor.measured_outdoor"] == "weather.outdoor_sensor"
+    assert "weather.home" not in plant.outputs()
+    assert "sensor.measured_outdoor" not in plant.outputs()
+
+
+def test_learning_defaults_off_and_observation_needs_no_schedule_or_source() -> None:
+    document: dict[str, Any] = {
+        "hydronicus": 2,
+        "name": "Circuit control",
+        "pumps": {"floor": {"switch": "switch.floor_pump"}},
+        "zones": {
+            "room": {
+                "temperature": ["sensor.room"],
+                "loops": {"floor": {"pump": "floor", "valves": ["switch.room_valve"]}},
+            }
+        },
+    }
+    baseline = parse_plant(document)
+    assert baseline.weather is None
+    thermostat = baseline.zone("room").thermostat
+    assert isinstance(thermostat, DigitalThermostat)
+    assert thermostat.learning is LearningMode.OFF
+    assert thermostat.weather_aware is False
+    assert "thermostat" not in export_plant(baseline)["zones"]["room"]
+    document["zones"]["room"]["thermostat"] = {"digital": {"learning": "observe"}}
+    document["weather"] = {"entity": "weather.home"}
+    plant = parse_plant(document)
+    assert plant.source is None
+    assert plant.weather == WeatherConfig("weather.home")
+    assert export_plant(plant)["weather"] == {"entity": "weather.home"}
+    assert parse_plant(export_plant(plant)) == plant
+    document["zones"]["room"]["thermostat"]["digital"].update(
+        learning="assist", weather_aware=True, schedule={"entity": "schedule.room"}
+    )
+    assisted = parse_plant(document)
+    assert assisted.source is None
+    assert assisted.outputs() == baseline.outputs()
+    assert parse_plant(export_plant(assisted)) == assisted
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("weather.entity", "sensor.forecast"),
+        ("weather.outdoor_sensor", "input_number.outdoor"),
+        ("weather.max_age", 0),
+        ("weather.max_age", float("inf")),
+        ("weather.max_age", True),
+        ("zones.basement.thermostat.digital.learning", "automatic"),
+        ("zones.basement.thermostat.digital.learning", True),
+        ("zones.basement.thermostat.digital.weather_aware", "true"),
+    ],
+)
+def test_predictive_settings_reject_invalid_values(path: str, value: object) -> None:
+    document = predictive_document()
+    _set(path, value)(document)
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        (_delete("zones.basement.thermostat.digital.schedule"), "learning"),
+        (_delete("weather"), "weather_aware"),
+        (_set("zones.basement.thermostat.digital.learning", "observe"), "weather_aware"),
+        (_set("zones.basement.thermostat.digital.learning", "off"), "weather_aware"),
+    ],
+)
+def test_predictive_settings_reject_missing_prerequisites(
+    change: Callable[[dict[str, Any]], None], field: str
+) -> None:
+    document = predictive_document()
+    change(document)
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == f"zones.basement.thermostat.digital.{field}"

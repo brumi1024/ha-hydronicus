@@ -15,9 +15,9 @@ rules:
   config-flow-test-coverage:
     status: todo
     comment: |
-      config_flow.py and most of flows/ measure 95-100%, but
-      flows/zone.py (91%) and flows/settings.py (87%) fall short of
-      full coverage.
+      The local gate measures whole-package coverage, but this rule
+      requires complete config-flow coverage. Verify every flow module
+      in the current coverage report before marking it done.
   config-flow: done
   dependency-transparency: done
   docs-actions: done
@@ -64,10 +64,9 @@ rules:
   test-coverage:
     status: todo
     comment: |
-      custom_components/hydronicus overall measures 96%, but several
-      modules sit under the 95% this rule wants per module:
-      flows/settings.py and services.py (87%), storage.py and
-      repairs.py (89%), diagnostics.py (89%).
+      The local gate reports whole-package coverage. This rule also
+      requires at least 95% per module; consult the current coverage
+      report before declaring that stronger requirement satisfied.
 
   # Gold
   devices: done
@@ -86,8 +85,9 @@ rules:
   docs-supported-devices:
     status: exempt
     comment: |
-      Hydronicus is device-agnostic: any switch, sensor, or climate
-      entity of any integration can fill a role.
+      Hydronicus binds generic entities supplied by other integrations.
+      Roles require matching domains, supported units, and meaningful
+      physical feedback; they do not imply compatibility with every device.
   docs-supported-functions: done
   docs-troubleshooting: done
   docs-use-cases: done

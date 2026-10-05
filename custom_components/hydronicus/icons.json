@@ -1,5 +1,17 @@
 {
   "entity": {
+    "climate": {
+      "zone": {
+        "default": "mdi:thermostat",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "schedule": "mdi:calendar-clock"
+            }
+          }
+        }
+      }
+    },
     "binary_sensor": {
       "heating_demand": {
         "default": "mdi:radiator",
@@ -75,6 +87,11 @@
           "on": "mdi:power-plug",
           "off": "mdi:power-plug-off"
         }
+      }
+    },
+    "button": {
+      "reset_learning": {
+        "default": "mdi:restart"
       }
     }
   },

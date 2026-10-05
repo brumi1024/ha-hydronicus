@@ -36,6 +36,7 @@ from typing import Any, Final
 
 from .model import (
     Desired,
+    NumericTarget,
     OptionTarget,
     OutputRole,
     OutputTarget,
@@ -45,6 +46,7 @@ from .model import (
 from .step import (
     CALL_TIMEOUT,
     TICK,
+    NumericState,
     Observations,
     OptionState,
     OutputState,
@@ -294,7 +296,7 @@ def _dry_run(
     )
 
 
-def _shown(state: OutputState | None) -> tuple[bool | str | None, bool]:
+def _shown(state: OutputState | None) -> tuple[bool | str | float | None, bool]:
     """What an output shows: its value, and whether it is still moving there."""
     if state is None:
         return None, False
@@ -307,6 +309,8 @@ def _as_observed(target: OutputTarget, now: float) -> OutputState:
             return SwitchState(on, now)
         case OptionTarget(option=option):
             return OptionState(option, now)
+        case NumericTarget(value=value):
+            return NumericState(value, now)
 
 
 def step_view(observations: Observations, state: ReconcileState) -> Observations:
@@ -323,7 +327,7 @@ def step_view(observations: Observations, state: ReconcileState) -> Observations
         outputs = {**outputs, **state.dry_run}
     if not sent and outputs is observations.outputs:
         return observations
-    return replace(observations, outputs=outputs, sent=sent)
+    return replace(observations, outputs=outputs, physical_outputs=observations.outputs, sent=sent)
 
 
 # Persistence
@@ -336,9 +340,13 @@ def target_to_dict(target: OutputTarget) -> dict[str, Any]:
             return {"on": on}
         case OptionTarget(option=option):
             return {"option": option}
+        case NumericTarget(value=value, tolerance=tolerance):
+            return {"value": value, "tolerance": tolerance}
 
 
 def target_from_dict(data: Mapping[str, Any]) -> OutputTarget:
+    if "value" in data:
+        return NumericTarget(float(data["value"]), float(data["tolerance"]))
     if "on" in data:
         return SwitchTarget(bool(data["on"]))
     return OptionTarget(str(data["option"]))
@@ -350,10 +358,14 @@ def _output_to_dict(state: OutputState) -> dict[str, Any]:
             return {"on": on, "since": since}
         case OptionState(option=option, since=since):
             return {"option": option, "since": since}
+        case NumericState(value=value, since=since):
+            return {"value": value, "since": since}
 
 
 def _output_from_dict(data: Mapping[str, Any]) -> OutputState:
     since = float(data["since"])
+    if "value" in data:
+        return NumericState(None if data["value"] is None else float(data["value"]), since)
     if "on" in data:
         return SwitchState(None if data["on"] is None else bool(data["on"]), since)
     return OptionState(None if data["option"] is None else str(data["option"]), since)

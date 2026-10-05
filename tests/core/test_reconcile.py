@@ -269,3 +269,42 @@ def test_dry_run_proposes_and_counts_each_proposal_as_observed(plant: Plant) -> 
         "select.hp": OptionState("Cool", NOW)
     }
     assert _run(plant, {}, real, result.state).state == ReconcileState()
+
+
+def test_numeric_confirmation_persistence_and_dependency_order(plant: Plant) -> None:
+    from dataclasses import replace
+
+    from custom_components.hydronicus.core.model import NumericTarget, SupplyControl
+    from custom_components.hydronicus.core.step import NumericState, satisfies
+
+    assert plant.source is not None
+    plant = replace(plant, source=replace(plant.source, supply=SupplyControl("number.supply")))
+    desired = _desired({"number.supply": NumericTarget(35, 0.5), "switch.hp": ON})
+    outputs = {"number.supply": NumericState(20, NOW), "switch.hp": SwitchState(False, NOW)}
+    result = reconcile(
+        plant, desired, outputs, ReconcileState(), NOW, armed=frozenset(plant.outputs()), live=True
+    )
+    assert [action.entity for action in result.send] == ["number.supply", "switch.hp"]
+    assert ReconcileState.from_dict(result.state.to_dict()) == result.state
+    assert satisfies(NumericState(34.5, NOW), NumericTarget(35, 0.5))
+    assert not satisfies(NumericState(float("nan"), NOW), NumericTarget(35, 0.5))
+    confirmed = {
+        **outputs,
+        "number.supply": NumericState(35.4, NOW),
+        "switch.hp": SwitchState(True, NOW),
+    }
+    assert not reconcile(
+        plant,
+        desired,
+        confirmed,
+        result.state,
+        NOW + 1,
+        armed=frozenset(plant.outputs()),
+        live=True,
+    ).send
+    dry = reconcile(
+        plant, desired, outputs, ReconcileState(), NOW, armed=frozenset(plant.outputs()), live=False
+    )
+    assert not dry.send
+    assert dry.state.dry_run["number.supply"] == NumericState(35, NOW)
+    assert ReconcileState.from_dict(dry.state.to_dict()) == dry.state

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from math import isfinite
 from typing import Any, Final
@@ -24,8 +25,10 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import State
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
+from .core.comfort import ScheduleState
 from .core.demand import external_action
 from .core.step import ExternalThermostatState, Reading
 
@@ -104,7 +107,7 @@ def celsius_from_unit(value: float, unit: object) -> float | None:
     """
     if unit is None or unit == "" or unit == UnitOfTemperature.CELSIUS:
         return value
-    if unit not in TemperatureConverter.VALID_UNITS:
+    if not isinstance(unit, str) or unit not in TemperatureConverter.VALID_UNITS:
         return None
     return TemperatureConverter.convert(value, str(unit), UnitOfTemperature.CELSIUS)
 
@@ -142,6 +145,24 @@ def reading(state: State | None, kind: SensorKind, now: float) -> Reading:
     return Reading(normalized, updated)
 
 
+def numeric_value(state: State | None) -> float | None:
+    """Read a temperature number output as Celsius with the same sensor validation."""
+    return reading(state, SensorKind.WATER, 0.0).value
+
+
+def schedule_state(state: State | None) -> ScheduleState:
+    """Read a schedule and its next absolute transition without assuming local timezone."""
+    active = switch_value(state)
+    if state is None or active is None:
+        return ScheduleState(None, None)
+    value = state.attributes.get("next_event")
+    if isinstance(value, str):
+        value = dt_util.parse_datetime(value)
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return ScheduleState(active, None)
+    return ScheduleState(active, value.timestamp())
+
+
 def external_thermostat(state: State | None) -> ExternalThermostatState:
     """Normalize an external climate entity's ``hvac_action``; unavailable blocks the zone."""
     if state is None or state.state in _MISSING:
@@ -156,7 +177,7 @@ def external_thermostat(state: State | None) -> ExternalThermostatState:
 class Remembered:
     """An output's last known value and when it took that value."""
 
-    value: bool | str
+    value: bool | str | float
     since: float
 
 
@@ -174,7 +195,7 @@ class OutputMemory:
     def __init__(self, remembered: Mapping[str, Remembered] | None = None) -> None:
         self._remembered: dict[str, Remembered] = dict(remembered or {})
 
-    def since(self, entity: str, value: bool | str | None, changed: float) -> float:
+    def since(self, entity: str, value: bool | str | float | None, changed: float) -> float:
         """Record an observed value and return when the output took it.
 
         ``changed`` is Home Assistant's ``last_changed`` of the state. An unknown
@@ -206,6 +227,6 @@ class OutputMemory:
             if not isinstance(known, Mapping):
                 continue
             value, since = known.get("value"), known.get("since")
-            if isinstance(value, bool | str) and isinstance(since, int | float):
+            if isinstance(value, bool | str | int | float) and isinstance(since, int | float):
                 remembered[entity] = Remembered(value, float(since))
         return cls(remembered)

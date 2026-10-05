@@ -259,3 +259,64 @@ async def test_a_restart_in_the_middle_of_stopping_resumes_the_sequence(
     assert actuators.to(BASEMENT_CEILING) == []
     assert_all_off(hass)
     assert status(hass).state == "idle"
+
+
+@pytest.mark.parametrize("remove_source", [False, True])
+async def test_removing_a_supply_number_never_invents_an_off_value_or_stalls_shutdown(
+    hass: HomeAssistant, actuators: Actuators, remove_source: bool
+) -> None:
+    """A temperature setpoint has no off state; only the source request needs shutting down."""
+    from homeassistant.const import EVENT_CALL_SERVICE
+    from homeassistant.core import Event, callback
+
+    from tests.integration.helpers import set_temperature
+    from tests.integration.test_review_regressions import PLANT
+
+    source = "source:\n  request: switch.source\n  min_on: 0\n  min_off: 0\n  post_run: 0\n"
+    text = PLANT.replace(
+        "name: Review",
+        "name: Review\n" + source + "  supply: {entity: number.supply, heat_temperature: 35}",
+    )
+    number_calls: list[dict[str, Any]] = []
+
+    @callback
+    def record(event: Event) -> None:
+        if event.data["domain"] == "number":
+            number_calls.append(dict(event.data))
+
+    hass.bus.async_listen(EVENT_CALL_SERVICE, record)
+    for entity in ("switch.pump", "switch.valve", "switch.source"):
+        hass.states.async_set(entity, "off")
+    hass.states.async_set("number.supply", "35", {"unit_of_measurement": "°C", "min": 5, "max": 60})
+    set_temperature(hass, "sensor.room", 18.0)
+    entry = await async_import(hass, text)
+    await async_set_options(hass, entry, armed=entry.runtime_data.plant.outputs(), control=True)
+    await async_call(hass, "select", "select_option", entity_id="select.review_mode", option="heat")
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.room", hvac_mode="heat")
+    assert hass.states.get("switch.source").state == "on"
+    actuators.clear()
+
+    replacement = (
+        PLANT if remove_source else PLANT.replace("name: Review", "name: Review\n" + source)
+    )
+    flow = hass.config_entries.flow
+    result = await flow.async_init(
+        DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
+    )
+    result = await async_choose(flow, result, "replace")
+    result = await async_submit(flow, result, {"plant_file": replacement})
+    assert result["step_id"] == "save"
+    result = await async_submit(flow, result)
+    assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
+
+    assert number_calls == []
+    assert hass.states.get("number.supply").state == "35"
+    assert "number.supply" not in entry.runtime_data.plant.outputs()
+    assert entry.runtime_data.previous.stopping is None
+    assert entry.runtime_data.evaluation_error is None
+    assert hass.states.get("switch.source").state == ("off" if remove_source else "on")
+    if remove_source:
+        assert actuators.shorts()[0] == "switch.source:off"
+    else:
+        assert actuators.calls == [], "removing a settled setpoint does not cycle the source"

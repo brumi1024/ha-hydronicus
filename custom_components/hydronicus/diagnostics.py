@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from . import HydronicusConfigEntry
 from .core.model import Desired
@@ -21,6 +22,7 @@ from .core.plant_file import export_plant
 from .core.reconcile import target_to_dict
 from .core.step import Observations, SwitchState, value_of
 from .storage import stored_document
+from .view import pump_operation, source_operation
 
 
 def _plain(value: Any) -> Any:
@@ -55,6 +57,8 @@ def _observations(observations: Observations) -> dict[str, Any]:
         "sensors": _plain(dict(observations.sensors)),
         "areas": _plain(dict(observations.areas)),
         "thermostats": _plain(dict(observations.thermostats)),
+        "schedules": _plain(dict(observations.schedules)),
+        "recovery": _plain(dict(observations.recovery)),
     }
 
 
@@ -65,6 +69,7 @@ def _desired(desired: Desired) -> dict[str, Any]:
         "outputs": {entity: target_to_dict(target) for entity, target in desired.outputs.items()},
         "reasons": dict(desired.reasons),
         "demands": _plain(dict(desired.demands)),
+        "comfort": _plain(dict(desired.comfort)),
         "blocking_sensors": _plain(dict(desired.blocking_sensors)),
         "blocking_condensation_inputs": _plain(dict(desired.blocking_condensation_inputs)),
     }
@@ -75,13 +80,54 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     runtime = entry.runtime_data
     view = runtime.view
+    now = dt_util.utcnow().timestamp()
     return {
         # A configuration that is not valid has no Plant to export, only what is stored.
         "plant": export_plant(runtime.plant) if runtime.problem is None else stored_document(entry),
         "options": dict(entry.options),
         "requested_mode": runtime.requested_mode.value,
-        "status": None if view is None else view.status(),
+        "status": "degraded"
+        if runtime.evaluation_error
+        else None
+        if view is None
+        else view.status(),
         "evaluated_at": None if view is None else view.at,
+        "evaluation_error": runtime.evaluation_error,
+        "blocking_reason": runtime.evaluation_error
+        or (None if view is None else view.blocking_reason()),
+        "next_evaluation_at": runtime.next_evaluation_at,
+        "learning": _plain(runtime.learning.diagnostics(now)),
+        "forecast": None if runtime.forecast is None else runtime.forecast.diagnostics(now),
+        "sensor_health": {} if view is None else view.sensor_health(now),
+        "pending_commands": {
+            entity: {
+                "target": target_to_dict(attempt.target),
+                "age_seconds": round(max(0.0, now - attempt.sent_at), 1),
+                "attempts": attempt.count,
+            }
+            for entity, attempt in sorted(runtime.reconcile_state.attempts.items())
+        },
+        "pump_operation": {}
+        if view is None
+        else {
+            pump.slug: pump_operation(
+                runtime.plant,
+                pump,
+                view.observations,
+                view.at,
+                source_winding=view.source_winding and view.live,
+            ).attributes()
+            for pump in runtime.plant.pumps
+        },
+        "source_operation": None
+        if view is None
+        else source_operation(runtime.plant, view.observations).attributes(),
+        "observed_flow": {}
+        if view is None
+        else {
+            str(loop.ref): view.loop_operation(loop, observed=True).attributes()
+            for loop in runtime.plant.all_loops
+        },
         "observations": None if view is None else _observations(view.observations),
         "desired": None if view is None else _desired(view.desired),
         "state": runtime.state.to_dict(),

@@ -49,12 +49,13 @@ def test_a_fahrenheit_reading_is_the_same_temperature_in_celsius(celsius: float)
         ("55", "%", SensorKind.HUMIDITY, 55.0),
         ("55", "g/m³", SensorKind.HUMIDITY, None),
         ("21", "W", SensorKind.AIR, None),
+        ("21", ["°C"], SensorKind.AIR, None),
         ("unavailable", "°C", SensorKind.AIR, None),
         ("nan", "°C", SensorKind.AIR, None),
     ],
 )
 def test_readings_outside_their_unit_or_plausible_range_carry_no_value(
-    value: str, unit: str | None, kind: SensorKind, expected: float | None
+    value: str, unit: object, kind: SensorKind, expected: float | None
 ) -> None:
     attributes = {} if unit is None else {"unit_of_measurement": unit}
     observed = reading(state(value, **attributes), kind, 0.0)
@@ -123,3 +124,38 @@ def test_the_output_memory_keeps_when_a_value_began_across_restarts_and_outages(
     restored.forget_except(set())
     assert restored.to_dict() == {}
     assert OutputMemory.from_dict({"switch.a": "junk", "switch.b": {"value": [1]}}).to_dict() == {}
+
+
+def test_numeric_output_feedback_and_memory_use_celsius() -> None:
+    from custom_components.hydronicus.observe import numeric_value
+
+    value = numeric_value(state("95", unit_of_measurement="°F"))
+    assert value == 35.0
+    assert numeric_value(state("308.15", unit_of_measurement="K")) == pytest.approx(35.0)
+    assert numeric_value(state("95", unit_of_measurement="W")) is None
+    assert numeric_value(None) is None
+    memory = OutputMemory()
+    assert memory.since("number.supply", value, 10.0) == 10.0
+    restored = OutputMemory.from_dict(memory.to_dict())
+    assert restored.since("number.supply", 35.0, 20.0) == 10.0
+    assert restored.since("number.supply", 36.0, 30.0) == 30.0
+
+
+@pytest.mark.parametrize("next_event", [WHEN, WHEN.isoformat(), "2026-09-25T14:00:00+02:00"])
+def test_schedule_transitions_are_absolute_instants(next_event: object) -> None:
+    from custom_components.hydronicus.observe import schedule_state
+
+    schedule = schedule_state(state("off", next_event=next_event))
+    assert schedule.active is False
+    assert schedule.next_event == WHEN.timestamp()
+
+
+@pytest.mark.parametrize("next_event", [None, "invalid", "2026-09-25T12:00:00", 42])
+def test_invalid_schedule_transitions_keep_the_current_schedule_state(next_event: object) -> None:
+    from custom_components.hydronicus.observe import schedule_state
+
+    schedule = schedule_state(state("on", next_event=next_event))
+    assert schedule.active is True
+    assert schedule.next_event is None
+    assert schedule_state(None).active is None
+    assert schedule_state(state("unavailable", next_event=WHEN)).active is None

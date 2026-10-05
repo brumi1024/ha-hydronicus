@@ -27,7 +27,7 @@ from homeassistant.util import slugify
 from homeassistant.util.hass_dict import HassKey
 
 from .bindings import is_hydronicus_owned
-from .core.model import DigitalThermostat, Plant
+from .core.model import DigitalThermostat, Mode, Plant
 from .core.step import AreaSensors
 
 # The name each covered area last had, so a removed area is still named in a
@@ -332,7 +332,7 @@ def area_review_warnings(hass: HomeAssistant, plant: Plant) -> tuple[AreaReviewW
                         "area settings, so it adds no temperature reading.",
                     )
                 )
-            if zone.cools and sensors.humidity is None:
+            if Mode.COOL in plant.zone_modes(zone.slug) and sensors.humidity is None:
                 warnings.append(
                     AreaReviewWarning(
                         "area_without_humidity_sensor",

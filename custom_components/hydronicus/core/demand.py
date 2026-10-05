@@ -15,10 +15,11 @@ return when it is next due.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import fsum, isfinite, log
 from typing import Final
 
+from .comfort import ComfortTarget, ScheduleState, comfort_target
 from .model import (
     FROST_PROTECTION_RELEASE,
     Aggregation,
@@ -85,6 +86,9 @@ class DemandState:
     # None for an off decision that no on decision in this mode came before: no
     # valve has closed for it, so no minimum off time holds it.
     since: float | None
+    # Keep an early comfort period until this schedule transition, even once the
+    # room approaches its target and the estimated lead time becomes shorter.
+    early_start_event: float | None = None
 
 
 def external_action(hvac_action: str | None, hvac_mode: str | None) -> Mode | None:
@@ -219,6 +223,8 @@ def zone_demand(
     previous: DemandState | None,
     now: float,
     reached: Reached,
+    schedule: ScheduleState | None = None,
+    comfort: ComfortTarget | None = None,
 ) -> tuple[DemandState, Demand]:
     """Evaluate a zone's thermostat into its next DemandState and its Demand."""
     if isinstance(thermostat, ExternalThermostatState):
@@ -238,9 +244,18 @@ def zone_demand(
         return _settle(previous, mode, False, now), _off(mode, "thermostat off")
     if temperature is None:
         return _settle(previous, mode, False, now), _off(mode, "no usable temperature")
-    target = thermostat.target
-    if thermostat.preset is not None:
-        target = config.preset_targets.get(thermostat.preset, target)
+    comfort = comfort or comfort_target(
+        config,
+        mode,
+        thermostat.target,
+        thermostat.preset,
+        temperature,
+        schedule,
+        now,
+        reached,
+        None if previous is None or previous.mode is not mode else previous.early_start_event,
+    )
+    target = comfort.target
     # The distance to target in the direction the mode drives the room.
     below = target - temperature if mode is Mode.HEAT else temperature - target
     start, stop = (
@@ -251,8 +266,12 @@ def zone_demand(
     was_on = previous is not None and previous.mode is mode and previous.on
     requested = below >= start or (was_on and below > -stop)
     state = _apply_timing(previous, mode, requested, config, now, reached)
+    if state.early_start_event != comfort.early_start_event:
+        state = replace(state, early_start_event=comfort.early_start_event)
     verb = "heat" if mode is Mode.HEAT else "cool"
     reason = f"{verb} to {target:.1f} °C from {temperature:.1f} °C"
+    if comfort.reason is not None:
+        reason += f", {comfort.reason}"
     if state.on != requested:
         reason += ", held for its minimum " + ("on" if state.on else "off") + " time"
     return state, Demand(mode, state.on, reason)

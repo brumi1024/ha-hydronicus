@@ -22,6 +22,9 @@ Hydronicus coordinates the whole plant:
 - Heating and cooling: the same loops do both, never at the same time, with a pause between the two.
 - Condensation guard: cooled floors and ceilings stay above the dew point of the room.
 - Verified commands: a command counts only once Home Assistant shows its result; otherwise it is retried and reported.
+- Comfort planning: separate heating and cooling targets, schedules, and bounded early start, with optional recovery learning and hourly weather forecasts.
+- Equipment feedback: optional running and flow sensors distinguish confirmed operation from estimates.
+- Supply control: an optional temperature number sets bounded fixed targets or an outdoor heating curve.
 - Built-in care: frost protection, and a weekly run of idle pumps and valves so they do not seize.
 - Any hardware: works with any Home Assistant switch, valve, sensor, or thermostat, whichever integration provides it.
 - Dry run first: a new Plant only shows what it would do, until you decide it may control your equipment.
@@ -31,7 +34,10 @@ Hydronicus coordinates the whole plant:
 - Home Assistant with HACS. Hydronicus requires Home Assistant 2026.9.0 or newer.
 - Your valves and pumps as `switch` or `valve` entities, such as relays.
 - A temperature sensor for each zone, and for cooling, a humidity sensor and a water or surface temperature sensor.
-- Optionally, a switch that asks your heat pump or boiler for heat, and a select that switches it between heating and cooling.
+- Optionally, a switch that asks your heat pump or boiler for heat, a select that switches it between heating and cooling, and a number for its water supply target.
+
+A source that regulates its own water temperature needs no request switch; Hydronicus can coordinate only the circuit valves and pumps.
+See the [comfort and feedback example](docs/examples/comfort-and-feedback.yaml) and the [circuit-only learning example](docs/examples/predictive-circuits.yaml).
 
 ## Install
 

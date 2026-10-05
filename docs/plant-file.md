@@ -15,6 +15,10 @@ A plant file is pasted into a form; Hydronicus never reads one from `configurati
 
 Import and replace both check the whole file and show what changes before anything is stored.
 
+The export action's required `config_entry_id` is the Home Assistant entry ID selected in its form, not the Plant UUID or a zone entity ID.
+The action is response-only and refuses a missing entry, an entry from another integration, or an invalid stored Plant.
+It does not arm outputs, change control, or export runtime state.
+
 A plant file describes the plant, not how it is running: which outputs are armed, **Control equipment**, the Plant mode, the thermostats' targets, and the timers are not in it.
 So a Plant created from a file starts like any new Plant, with nothing armed and **Control equipment** off.
 
@@ -105,6 +109,7 @@ Read it from the top:
 | `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` or `null` to turn it off. |
 | `frost_protection` | no | `5` | The frost protection temperature in °C, at most 10, or `false` or `null` to turn frost protection off. A zone that a loop heats is heated whatever its thermostat says once its coldest reading falls below it, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
+| `weather` | no | none | Optional [weather forecast](#weather-forecast) inputs for recovery learning. |
 | `pumps` | no | | Slug to [pump](#pumps). |
 | `loops` | no | | Slug to [plant loop](#plant-loops). |
 | `zones` | no | | Slug to [zone](#zones). |
@@ -112,6 +117,23 @@ Read it from the top:
 Unknown keys are errors at every level of the file.
 Times are in seconds and temperatures in °C.
 Numbers must not be negative unless a key says otherwise.
+
+## Weather forecast
+
+The optional Plant-level `weather` mapping selects hourly forecast inputs independently of source control.
+A Plant with only switched pumps and circuit valves can use it.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `entity` | yes | | A `weather` entity that supports hourly forecasts. |
+| `outdoor_sensor` | no | | A separate measured outdoor temperature `sensor`, used to compare recovery under different outdoor conditions. |
+| `max_age` | no | `7200` | Positive maximum age in seconds of forecast content since first observed, weather entity reports, and the optional measured outdoor reading. |
+
+Forecasts are optional planning inputs and never replace measured room temperatures, condensation references, or equipment feedback.
+Adding this mapping alone does not enable weather-aware control: each participating digital thermostat also selects `learning: assist` and `weather_aware: true`.
+Missing or stale optional inputs return recovery planning to its learned baseline or configured schedule rate.
+Repeated forecast content keeps its original age; retrieving it again does not prove the provider issued a new forecast.
+When the provider issue time is unavailable, diagnostics distinguish that uncertainty from the time Hydronicus first observed the forecast.
 
 ## Exercise
 
@@ -167,10 +189,41 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | `request` | yes | | The `switch` that asks the source for heat or cooling. |
 | `mode` | no | | The `select` that switches the source between heating and cooling, as a mapping of `entity`, the select, `heat`, its option for heating, and `cool`, its option for cooling, such as `{entity: select.heat_pump_mode, heat: Heat, cool: Cool}`. The two options must differ. |
 | `post_run` | no | `180` | How long the source keeps its own pumps running after the request ends. Hydronicus keeps their loops open for that long. |
-| `min_on` | no | `600` | The shortest time the request stays on. |
-| `min_off` | no | `600` | The shortest time the request stays off. |
+| `min_on` | no | `600` | The shortest time the request stays on, measured from observed activation. |
+| `min_off` | no | `600` | The shortest time the request stays off, measured from observed shutdown. |
+| `running_sensor` | no | | A `binary_sensor` that reports whether the source actually runs, independently of its request switch. |
+| `feedback_timeout` | no | `300` | Positive seconds allowed after an observed source request for source running feedback and source-driven pump running or flow feedback to confirm operation. Missing or unknown feedback blocks startup. |
+| `supply` | no | | Optional [supply temperature control](#supply-temperature-control). |
 
 A Plant without a source still opens valves and runs the pumps it switches, which suits a boiler that follows its own controls.
+
+### Supply temperature control
+
+The source's `supply` mapping binds a `number` entity in addition to its request switch.
+It is a separately armed output, and the source waits for its target to be confirmed before requesting heat or cooling.
+All temperatures below are in °C; the adapter converts the command into the number entity's supported temperature unit and checks its advertised range.
+Configure this only when Hydronicus owns the supply setpoint; do not let another heating-curve controller continuously rewrite the same number.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `entity` | yes | | The `number` that sets the source's supply temperature. |
+| `heat_temperature` | no | `35` | Fixed heating target when no outdoor sensor is bound. |
+| `cool_temperature` | no | `18` | Cooling target, raised when necessary to respect the measured dew-point margin. |
+| `minimum` | no | `5` | Lowest permitted supply target. |
+| `maximum` | no | `60` | Highest permitted supply target; must exceed `minimum`. |
+| `tolerance` | no | `0.5` | Positive temperature difference in K accepted as confirmation of the number's target, avoiding repeated commands for small changes. |
+| `outdoor_sensor` | no | | A temperature `sensor` that enables the heating curve. Cooling still uses its fixed target. |
+| `outdoor_cold` | no | `-10` | Outdoor temperature at the cold end of the curve; may be negative. |
+| `outdoor_warm` | no | `20` | Outdoor temperature at the warm end of the curve; must exceed `outdoor_cold`. |
+| `heat_cold` | no | `45` | Supply target at or below `outdoor_cold`. |
+| `heat_warm` | no | `25` | Supply target at or above `outdoor_warm`; must not exceed `heat_cold`. |
+| `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
+
+The curve is linear between its two endpoints and stays at an endpoint outside their outdoor range.
+Every configured fixed or curve supply temperature must lie within `minimum` and `maximum`.
+A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
+A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
+See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).
 
 ## Pumps
 
@@ -187,6 +240,8 @@ Every loop runs on exactly one pump, and a pump can drive any number of loops.
 | `min_flow_loops` | see below | | For a source-driven pump with `min_flow: path`: the loops Hydronicus holds open whenever none of the pump's other loops is ready while the pump may run. |
 | `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. |
 | `condensation_switch` | no | | A `binary_sensor` on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on, unavailable, or unknown, none of the pump's loops cools. |
+| `running_sensor` | no | | A `binary_sensor` that reports whether the pump actually runs. |
+| `flow_sensor` | no | | A `binary_sensor` that reports whether circulation is proved. This is an input, not a water-volume or energy meter. |
 
 A pump has either `switch` or `driven_by: source`, never both.
 A switched pump with `min_flow: path` simply never runs without a ready loop, so it takes no `min_flow_loops`.
@@ -367,8 +422,13 @@ A digital thermostat accepts these keys:
 
 | Key | Default | Value |
 | --- | --- | --- |
-| `target` | `21` | The target of a new thermostat, in °C. It may be negative. |
-| `presets` | none | Preset targets: any of `comfort`, `eco`, and `away`. |
+| `target` | `21` | The heating comfort target of a new thermostat, in °C. |
+| `cool_target` | `24` | The cooling comfort target of a new thermostat, in °C. |
+| `presets` | none | Heating preset targets: any of `comfort`, `eco`, and `away`. |
+| `cool_presets` | none | Cooling preset targets, independently configured using the same names. |
+| `schedule` | none | Optional [comfort schedule](#comfort-schedule) settings. Selecting the thermostat's `schedule` preset enables them. |
+| `learning` | `off` | Recovery learning: `off`, `observe`, or `assist`; see [recovery learning](#recovery-learning). |
+| `weather_aware` | `false` | Allow weather-informed recovery timing, only with assisted learning, a comfort schedule, and Plant weather settings. |
 | `heat_start_delta` | `0.3` | Heating demand starts this far below the target. |
 | `heat_stop_delta` | `0.1` | Heating demand stops this far above the target. |
 | `cool_start_delta` | `0.3` | Cooling demand starts this far above the target. |
@@ -421,6 +481,49 @@ zones:
           - {entity: switch.living_floor_valve, opening_time: 240, readiness: binary_sensor.living_floor_valve_open}
         pump: pump
 ```
+
+### Comfort schedule
+
+A digital thermostat's `schedule` mapping follows an existing Home Assistant `schedule` helper.
+It is an optional thermostat policy: it never changes the Plant mode, arms an output, or bypasses a hydraulic or condensation interlock.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `entity` | yes | | The `schedule` helper whose on periods are comfort periods. |
+| `heat_setback` | no | `2` | Nonnegative reduction in K from the heating comfort target outside comfort periods. |
+| `cool_setback` | no | `2` | Nonnegative increase in K from the cooling comfort target outside comfort periods. |
+| `max_early_start` | no | `0` | Maximum recovery lead time in seconds, from 0 to 21600. Zero disables early start. |
+| `heating_rate` | no | `1` | Positive expected room warming rate in K/hour. |
+| `cooling_rate` | no | `1` | Positive expected room cooling rate in K/hour. |
+
+Select the thermostat's `schedule` preset to follow the helper.
+The comfort target is its manual target for the current mode; setbacks are limited to the thermostat's 5 to 35 °C range.
+A manual temperature change or another preset leaves schedule control until `schedule` is selected again.
+Switching between heat and cool retains schedule control and uses the corresponding mode's target, setback, and rate.
+
+Before an upcoming comfort period, the thermostat divides the current temperature deficit by the configured recovery rate, and starts at most `max_early_start` seconds early.
+An unavailable schedule falls back to the manual comfort target and reports that state.
+A missing, invalid, or past `next_event` prevents early start, while a valid off state still applies the setback.
+Without assisted learning, these rates are explicit estimates; reaching comfort at the scheduled time is not guaranteed.
+The [comfort and feedback example](examples/comfort-and-feedback.yaml) combines schedules, separate targets, feedback, and a supply curve.
+
+### Recovery learning
+
+Learning is optional for each digital thermostat and defaults to `off`.
+`observe` collects usable recovery observations and predicts recovery without changing targets or early-start timing.
+Observation works without a comfort schedule and without a configured source.
+`assist` requires a comfort schedule and permits an accepted learned estimate to choose recovery timing within its existing `max_early_start` limit.
+An unvalidated estimate leaves the configured `heating_rate` or `cooling_rate` in effect.
+Heating and cooling evidence stays separate for each zone.
+
+Set `weather_aware: true` only with `learning: assist`, a schedule, and the Plant's `weather` mapping.
+Weather may adjust bounded early-start timing but never changes the manual comfort target, extends the early-start limit, or suppresses ordinary comfort demand.
+An unavailable forecast returns to the learned baseline or configured rate.
+Changing the manual target still exits schedule control.
+
+Use the [circuit-only example](examples/predictive-circuits.yaml) for a Plant that opens valves and starts its serving pumps while the heat pump uses its own controls.
+Leave `source` out until there is an actual source request entity that Hydronicus owns.
+Output observations are estimates of circuit operation unless independent feedback proves it; learning does not imply flow measurement or heat-pump electricity measurement.
 
 ## A small cooling Plant
 
