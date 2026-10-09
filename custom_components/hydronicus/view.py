@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Final
 
 from .areas import AreaResolution
@@ -80,6 +81,29 @@ class PlantView:
     @property
     def running_mode(self) -> Mode:
         return self.desired.mode
+
+    def holds(self, *targets: str) -> list[dict[str, Any]]:
+        """The timers holding these targets, or every one with none given, soonest end first."""
+        return [
+            {
+                "target": hold.target,
+                "kind": hold.kind.value,
+                "until": None
+                if hold.until is None
+                else datetime.fromtimestamp(hold.until, UTC).isoformat(),
+            }
+            for hold in self.desired.holds
+            if not targets or hold.target in targets
+        ]
+
+    def loop_hold_targets(self, loop: Loop) -> tuple[str, ...]:
+        """What holds a loop as it is: the loop, its valves, and its pump, or its source."""
+        pump = self.plant.pump(loop.pump)
+        return (
+            str(loop.ref),
+            *(valve.entity for valve in loop.valves),
+            pump.switch or "source",
+        )
 
     def readings(self, zone: str) -> ZoneReadings:
         return self.zones.get(zone, ZoneReadings())

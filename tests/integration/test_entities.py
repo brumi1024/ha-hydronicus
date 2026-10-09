@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import mock_restore_cache_with_extra_data
 
 from custom_components.hydronicus import async_remove_config_entry_device
@@ -153,6 +154,50 @@ async def test_a_thermostat_action_is_what_the_equipment_does_for_its_zone(
     assert action() == "idle", "the Plant runs heat"
     await async_call(hass, "climate", "turn_off", entity_id="climate.study")
     assert action() == "off"
+
+
+async def test_the_entities_name_the_timers_that_hold_the_equipment(
+    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
+) -> None:
+    """A pump waiting for its opening valve, then its overrun, each with when it ends."""
+    outputs_off(hass, "switch.pump", "switch.study_valve")
+    set_temperature(hass, "sensor.study", 18.0)
+    set_humidity(hass, "sensor.study_rh", 50.0)
+    set_temperature(hass, "sensor.supply", 22.0)
+    entry = await async_import(hass, COOLING)
+    await async_set_options(hass, entry, armed=["switch.pump", "switch.study_valve"], control=True)
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.study", hvac_mode="heat")
+    await async_call(hass, "select", "select_option", entity_id="select.flat_mode", option="heat")
+    await async_advance(hass, freezer, 5)
+
+    status = hass.states.get("sensor.flat_status").attributes
+    loop = hass.states.get("binary_sensor.study_ceiling_flowing").attributes
+    valve_ready = dt_util.parse_datetime(
+        next(hold["until"] for hold in status["holds"] if hold["target"] == "switch.study_valve")
+    )
+    assert valve_ready is not None
+    assert {hold["kind"] for hold in status["holds"]} == {"valve_opening", "waiting_for_valves"}
+    assert status["pump_operation"]["pump"]["reason"] == "waiting for its valves to open"
+    assert loop["pump_reason"] == "waiting for its valves to open"
+    assert {hold["target"]: hold["kind"] for hold in loop["holds"]} == {
+        "switch.study_valve": "valve_opening",
+        "switch.pump": "waiting_for_valves",
+    }
+    assert all(hold["until"] == valve_ready.isoformat() for hold in loop["holds"])
+
+    await async_advance(hass, freezer, 200, step=5)
+    assert hass.states.get("sensor.flat_status").attributes["holds"] == []
+    set_temperature(hass, "sensor.study", 26.0)
+    await async_advance(hass, freezer, 5)
+    demand = hass.states.get("binary_sensor.study_heating_demand").attributes
+    assert [hold["kind"] for hold in demand["holds"]] == ["demand_min_on"]
+    held_until = dt_util.parse_datetime(demand["holds"][0]["until"])
+    assert held_until is not None
+    await async_advance(hass, freezer, (held_until - dt_util.utcnow()).total_seconds() + 1)
+    pump = hass.states.get("sensor.flat_status").attributes["pump_operation"]["pump"]
+    assert pump["reason"] == "overrun"
+    assert [hold["kind"] for hold in pump["holds"]] == ["overrun"]
+    assert hass.states.get("binary_sensor.study_heating_demand").attributes["holds"] == []
 
 
 async def test_frost_protection_heats_a_zone_whose_thermostat_and_plant_are_off(

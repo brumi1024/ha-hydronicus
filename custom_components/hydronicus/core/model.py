@@ -536,6 +536,42 @@ class Demand:
     mode: Mode
     on: bool
     reason: str
+    # While the thermostat's minimum on or off time holds the decision, when it ends.
+    held_until: float | None = None
+
+
+class HoldKind(StrEnum):
+    """A timer that keeps an object as it is for now."""
+
+    VALVE_OPENING = "valve_opening"
+    VALVE_CLOSING = "valve_closing"
+    WAITING_FOR_VALVES = "waiting_for_valves"
+    OVERRUN = "overrun"
+    SOURCE_MIN_ON = "source_min_on"
+    MIN_ON = "min_on"
+    MIN_OFF = "min_off"
+    POST_RUN = "post_run"
+    FEEDBACK = "feedback"
+    MODE_DWELL = "mode_dwell"
+    WINDOW_OPEN_DELAY = "window_open_delay"
+    WINDOW_CLOSE_DELAY = "window_close_delay"
+    DEMAND_MIN_ON = "demand_min_on"
+    DEMAND_MIN_OFF = "demand_min_off"
+    GUARD_MIN_BLOCKED = "guard_min_blocked"
+    EXERCISE = "exercise"
+
+
+@dataclass(frozen=True, slots=True)
+class Hold:
+    """A timer that holds ``target`` as it is until ``until``, or None when that is open-ended.
+
+    ``target`` is keyed as in ``Desired.reasons``: a zone slug, a loop reference,
+    an output entity, ``source``, ``mode``, or ``<loop>.guard``.
+    """
+
+    target: str
+    kind: HoldKind
+    until: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,3 +602,5 @@ class Desired:
     exercise: str | None = None
     # The comfort proposal used for each digital thermostat's demand this evaluation.
     comfort: Mapping[str, ComfortTarget] = field(default_factory=dict)
+    # Every timer that holds an object as it is now, ordered by when it ends.
+    holds: tuple[Hold, ...] = ()
