@@ -55,7 +55,14 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
     _attr_options = STATUSES
     # Reasons quote readings and change with every one; the recorder keeps the rest.
     _unrecorded_attributes = frozenset(
-        {"reasons", "proposed", "sensor_health", "pending_commands", "evaluation_age_seconds"}
+        {
+            "reasons",
+            "holds",
+            "proposed",
+            "sensor_health",
+            "pending_commands",
+            "evaluation_age_seconds",
+        }
     )
 
     def __init__(self, runtime: PlantRuntime) -> None:
@@ -117,13 +124,19 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "exercising": view.desired.exercise,
             "sensor_health": view.sensor_health(now),
             "pump_operation": {
-                pump.slug: pump_operation(
-                    plant,
-                    pump,
-                    view.observations,
-                    now,
-                    source_winding=view.source_winding and view.live,
-                ).attributes()
+                pump.slug: {
+                    **pump_operation(
+                        plant,
+                        pump,
+                        view.observations,
+                        now,
+                        source_winding=view.source_winding and view.live,
+                    ).attributes(),
+                    "reason": None
+                    if pump.switch is None
+                    else view.desired.reasons.get(pump.switch),
+                    "holds": view.holds(pump.switch or "source"),
+                }
                 for pump in plant.pumps
             },
             "source_operation": source_operation(plant, view.observations).attributes(),
@@ -136,6 +149,7 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
                 for entity, since in sorted(runtime.state.idle_since.items())
             },
             "reasons": dict(view.desired.reasons),
+            "holds": view.holds(),
             **health,
         }
         if not runtime.state.live:

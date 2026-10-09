@@ -54,6 +54,8 @@ from .model import (
     Desired,
     DigitalThermostat,
     Exercise,
+    Hold,
+    HoldKind,
     LearningMode,
     Loop,
     MinFlow,
@@ -554,6 +556,8 @@ class _Evaluation:
             self.source_observed_changed = self.since(plant.source.request)
         self.deadlines: list[float] = []
         self.reasons: dict[str, str] = {}
+        # The timers holding objects as they are, by target and kind.
+        self.holds: dict[tuple[str, HoldKind], Hold] = {}
         self.comfort: dict[str, ComfortTarget] = {}
         # The zones whose demand an open window turns off now.
         self.windows_open: set[str] = set()
@@ -580,6 +584,17 @@ class _Evaluation:
             return True
         self.deadlines.append(deadline)
         return False
+
+    def hold(self, target: str, kind: HoldKind, until: float | None) -> None:
+        """Record a timer that holds ``target`` as it is, keyed as in the reasons."""
+        self.holds[(target, kind)] = Hold(target, kind, until)
+
+    def held(self, target: str, kind: HoldKind, deadline: float) -> bool:
+        """Whether ``deadline`` is still ahead; if so, it holds ``target`` until then."""
+        if self.reached(deadline):
+            return False
+        self.hold(target, kind, deadline)
+        return True
 
     # Outputs as observed, with the calls that may still act
 
@@ -626,9 +641,22 @@ class _Evaluation:
             readiness = self.obs.readiness.get(valve.readiness)
             if readiness is not None and readiness.on is True:
                 return True
-        return self.reached(since + valve.opening_time)
+        return not self.held(entity, HoldKind.VALVE_OPENING, since + valve.opening_time)
 
-    def winding_down(self, entity: str, duration: float) -> bool:
+    def ready_at(self, loop: Loop) -> float | None:
+        """When a loop's valves are ready by their opening times, or None until all are open."""
+        ends = [self.now]
+        for valve in loop.valves:
+            if self.valve_ready(valve):
+                continue
+            if self.switch(valve.entity) is not True or self.pending(valve.entity) == OFF:
+                return None
+            ends.append(self.since(valve.entity) + valve.opening_time)
+        return max(ends)
+
+    def winding_down(
+        self, entity: str, duration: float, kind: HoldKind, target: str | None = None
+    ) -> bool:
         """Observed off for less than ``duration`` after it may have been on.
 
         That is a valve still closing or the source in its post-run. Only an
@@ -638,12 +666,14 @@ class _Evaluation:
         return (
             entity in self.state.winding
             and self.switch(entity) is False
-            and not self.reached(self.since(entity) + duration)
+            and self.held(target or entity, kind, self.since(entity) + duration)
         )
 
     def valve_may_pass(self, valve: Valve) -> bool:
         """Possibly passing flow: on, unknown, about to open, or still closing."""
-        return self.may_be_on(valve.entity) or self.winding_down(valve.entity, valve.opening_time)
+        return self.may_be_on(valve.entity) or self.winding_down(
+            valve.entity, valve.opening_time, HoldKind.VALVE_CLOSING
+        )
 
     def ready(self, loop: Loop) -> bool:
         if loop not in self._ready:
@@ -678,7 +708,7 @@ class _Evaluation:
             return False
         return (
             self.may_be_on(source.request)
-            or self.winding_down(source.request, source.post_run)
+            or self.winding_down(source.request, source.post_run, HoldKind.POST_RUN, "source")
             or (
                 source.running_sensor is not None
                 and self.feedback(source.running_sensor) is not False
@@ -795,10 +825,23 @@ class _Evaluation:
             frost_protection=tuple(self.frost),
             exercise=plan.exercising,
             comfort=self.comfort,
+            holds=self.current_holds(mode),
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
         return next_state, desired, due
+
+    def current_holds(self, mode: Mode) -> tuple[Hold, ...]:
+        """The holds in force, ordered by when they end; a guard holds only in cool."""
+        holds = [
+            hold
+            for hold in self.holds.values()
+            if (hold.until is None or hold.until > self.now)
+            and (mode is Mode.COOL or hold.kind is not HoldKind.GUARD_MIN_BLOCKED)
+        ]
+        return tuple(
+            sorted(holds, key=lambda hold: (hold.until is None, hold.until or 0.0, hold.target))
+        )
 
     def demands(self) -> tuple[dict[str, Demand], dict[str, DemandState]]:
         """Stage 2: aggregate each zone's temperature, evaluate its thermostat, then its windows."""
@@ -864,6 +907,12 @@ class _Evaluation:
                 schedule=schedule,
                 comfort=self.comfort.get(zone.slug),
             )
+            if demand.held_until is not None:
+                self.hold(
+                    zone.slug,
+                    HoldKind.DEMAND_MIN_ON if demand.on else HoldKind.DEMAND_MIN_OFF,
+                    demand.held_until,
+                )
             state, demand = self.window_inhibit(zone, state, demand)
             # Frost protection overrides the thermostat and an open window alike,
             # and leaves the thermostat's decision underneath as it is.
@@ -902,17 +951,25 @@ class _Evaluation:
         """
         windows = [self.obs.readiness.get(entity) for entity in zone.windows]
         if not was_open:
-            return any(
-                window is not None
-                and window.on is True
-                and self.reached(window.since + zone.window_open_delay)
+            opening = [
+                window.since + zone.window_open_delay
                 for window in windows
-            )
-        return not all(
-            window is None
-            or (window.on is not True and self.reached(window.since + zone.window_close_delay))
-            for window in windows
-        )
+                if window is not None and window.on is True
+            ]
+            if any(self.reached(end) for end in opening):
+                return True
+            if opening:
+                self.hold(zone.slug, HoldKind.WINDOW_OPEN_DELAY, min(opening))
+            return False
+        if any(window is not None and window.on is True for window in windows):
+            return True
+        closing = [
+            window.since + zone.window_close_delay for window in windows if window is not None
+        ]
+        if all(self.reached(end) for end in closing):
+            return False
+        self.hold(zone.slug, HoldKind.WINDOW_CLOSE_DELAY, max(closing))
+        return True
 
     def frost_protection(self, zone: Zone) -> Demand | None:
         """Frost protection's demand, which overrides the thermostat's, or None.
@@ -1029,7 +1086,9 @@ class _Evaluation:
             guard = GuardState(blocking or not releasing, now)
         elif not previous.blocked:
             guard = GuardState(True, now) if blocking else previous
-        elif releasing and self.reached(previous.since + GUARD_MIN_BLOCKED):
+        elif releasing and not self.held(
+            f"{ref}.guard", HoldKind.GUARD_MIN_BLOCKED, previous.since + GUARD_MIN_BLOCKED
+        ):
             guard = GuardState(False, now)
         else:
             guard = previous
@@ -1190,7 +1249,7 @@ class _Evaluation:
             if (
                 flowing
                 or flow_ended is None
-                or not self.reached(flow_ended + self.plant.mode_dwell)
+                or self.held("mode", HoldKind.MODE_DWELL, flow_ended + self.plant.mode_dwell)
             ):
                 self.reasons["mode"] = (
                     "commissioning: stopping physical flow and waiting for the mode dwell"
@@ -1213,7 +1272,12 @@ class _Evaluation:
                 self.reasons["mode"] = f"stopping the exercise before {requested.value}"
             elif fresh_start or (
                 not flowing
-                and (flow_ended is None or self.reached(flow_ended + self.plant.mode_dwell))
+                and (
+                    flow_ended is None
+                    or not self.held(
+                        "mode", HoldKind.MODE_DWELL, flow_ended + self.plant.mode_dwell
+                    )
+                )
             ):
                 mode = requested
             else:
@@ -1429,8 +1493,13 @@ class _Plan:
         if missing:
             ev.reasons[pump.switch] = f"waiting for usable pump feedback: {', '.join(missing)}"
             return False
-        if any(ev.ready(loop) for loop in self.paths[pump.slug] if loop in self.wanted):
+        wanted = [loop for loop in self.paths[pump.slug] if loop in self.wanted]
+        if any(ev.ready(loop) for loop in wanted):
             return True
+        if wanted:
+            ends = [end for loop in wanted if (end := ev.ready_at(loop)) is not None]
+            ev.reasons[pump.switch] = "waiting for its valves to open"
+            ev.hold(pump.switch, HoldKind.WAITING_FOR_VALVES, min(ends, default=None))
         source = self.plant.source
         if (
             source is not None
@@ -1447,6 +1516,8 @@ class _Plan:
             )
         ):
             ev.reasons[pump.switch] = "held for the source minimum on time"
+            ev.holds.pop((pump.switch, HoldKind.WAITING_FOR_VALVES), None)
+            ev.hold(pump.switch, HoldKind.SOURCE_MIN_ON, ev.source_observed_changed + source.min_on)
             return True
         started = ev.state.overruns.get(pump.slug)
         if self.label is not Mode.HEAT or pump.overrun <= 0 or ev.switch(pump.switch) is False:
@@ -1459,9 +1530,13 @@ class _Plan:
         if ev.reached(started + pump.overrun):
             return False
         ev.reasons[pump.switch] = "overrun"
-        return pump.min_flow is MinFlow.GUARANTEED or any(
+        runs = pump.min_flow is MinFlow.GUARANTEED or any(
             self.carries(pump, loop) for loop in ev.loops_of(pump)
         )
+        if runs:
+            ev.holds.pop((pump.switch, HoldKind.WAITING_FOR_VALVES), None)
+            ev.hold(pump.switch, HoldKind.OVERRUN, started + pump.overrun)
+        return runs
 
     # Stage 9: the source
 
@@ -1559,7 +1634,9 @@ class _Plan:
         if (
             ev.surely_on(source.request)
             and any(ev.feedback(entity) is not True for entity in proofs)
-            and ev.reached(ev.since(source.request) + source.feedback_timeout)
+            and not ev.held(
+                "source", HoldKind.FEEDBACK, ev.since(source.request) + source.feedback_timeout
+            )
         ):
             reasons["source"] = "source or pump did not confirm running or flow"
             return False
@@ -1631,7 +1708,9 @@ class _Plan:
             changed = ev.source_observed_changed if ev.source_observed is True else ev.now
             if changed is None:
                 changed = ev.now
-            if qualifying and (demanded or not ev.reached(changed + source.min_on)):
+            if qualifying and (
+                demanded or ev.held("source", HoldKind.MIN_ON, changed + source.min_on)
+            ):
                 reasons["source"] = "requested" if demanded else "held for its minimum on time"
                 return True
             reasons["source"] = "released"
@@ -1645,7 +1724,7 @@ class _Plan:
         if (
             ev.source_observed is False
             and ev.source_observed_changed is not None
-            and not ev.reached(ev.source_observed_changed + source.min_off)
+            and ev.held("source", HoldKind.MIN_OFF, ev.source_observed_changed + source.min_off)
         ):
             reasons["source"] = "held off for its minimum off time"
             return False
@@ -1747,7 +1826,10 @@ class _Plan:
         started = previous.started
         if runs and started is None and pump.switch is not None and ev.surely_on(pump.switch):
             started = ev.now
-        ran = not runs or (started is not None and ev.reached(started + settings.run))
+        ran = not runs or (
+            started is not None
+            and not ev.held(pump.switch or pump.slug, HoldKind.EXERCISE, started + settings.run)
+        )
         # A valve entity may show that it opens for its opening time, which then
         # counts from when it shows open.
         opening = max((valve.opening_time for loop in loops for valve in loop.valves), default=0.0)

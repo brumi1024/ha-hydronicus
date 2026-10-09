@@ -272,9 +272,12 @@ def zone_demand(
     reason = f"{verb} to {target:.1f} °C from {temperature:.1f} °C"
     if comfort.reason is not None:
         reason += f", {comfort.reason}"
+    held_until = None
     if state.on != requested:
         reason += ", held for its minimum " + ("on" if state.on else "off") + " time"
-    return state, Demand(mode, state.on, reason)
+        if state.since is not None:
+            held_until = state.since + (config.min_on if state.on else config.min_off)
+    return state, Demand(mode, state.on, reason, held_until)
 
 
 def _apply_timing(

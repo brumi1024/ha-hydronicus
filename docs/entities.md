@@ -55,6 +55,7 @@ The **Status** sensor's attributes explain the state:
 | `exercising` | The slug of the pump being exercised, or none. |
 | `idle_since` | Each switched pump and valve with the time since which it has been off. |
 | `reasons` | Why, for each zone, loop, output, the source, and the mode. Not recorded in history. |
+| `holds` | Every [timer](#timers) that holds equipment as it is now, soonest end first. Not recorded in history. |
 | `proposed` | Only in Dry run: the state Hydronicus would give each output. Not recorded in history. |
 
 | `blocking_reason` | The current leading reason the Plant cannot proceed, or none. |
@@ -64,7 +65,7 @@ The **Status** sensor's attributes explain the state:
 | `evaluation_error` | The latest evaluation error, or none after a successful evaluation. |
 | `pending_commands` | Each output awaiting confirmation, with `target`, `age_seconds`, and `attempts`. |
 | `sensor_health` | Each numeric input's `value`, `quality`, `age_seconds`, and `max_age_seconds`; quality is `fresh`, `stale`, or `unavailable or invalid`. |
-| `pump_operation` | Each pump's observed or estimated operation, with `active`, `basis`, and `sensor`. Unknown feedback has `active: null`. |
+| `pump_operation` | Each pump's observed or estimated operation, with `active`, `basis`, and `sensor`, plus the `reason` for its switch and the [timers](#timers) in `holds` that keep it on or off. Unknown feedback has `active: null`. |
 | `source_operation` | Source operation separately from its request, with `active`, `basis`, and `sensor`. |
 | `observed_flow` | Each loop's operation from actual observations, with `active`, `basis`, and `sensor`, even while Dry run shows proposals. |
 
@@ -118,6 +119,7 @@ The button is a configuration entity on the zone device and disappears when lear
 A zone with an existing thermostat gets no thermostat entity; the existing one is its thermostat.
 
 The demand binary sensors are on while the zone calls, and their `reason` attribute says why or why not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, or `window open`.
+Their `holds` attribute lists the zone's [timers](#timers): a window's open or close delay and the thermostat's minimum on or off time.
 
 The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors.
 Its `areas` attribute shows each area with the sensors it names and their readings, and its `sensors` attribute each extra sensor.
@@ -158,6 +160,8 @@ Its attributes:
 | `dry_run` | Whether the main state follows proposals. |
 | `observed_flow` | Flow from actual equipment observations, independently of Dry run proposals. |
 | `reason` | Why the loop runs or not, such as `wanted`, `min-flow path`, `exercise`, or `dropped: condensation guard blocks`. |
+| `pump_reason` | Why the loop's switched pump runs or waits, such as `waiting for its valves to open`, `overrun`, or none. |
+| `holds` | The [timers](#timers) on the loop, its valves, and its pump, or its source for a source-driven pump. |
 
 The runtime sensor is a diagnostic: how long the loop is inferred to have passed flow in total, in hours.
 Its `basis` attribute makes that inference explicit; it is not a heat or energy meter.
@@ -174,7 +178,32 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 
 Its `observed` attribute is the request switch's own state, and its `reason` says why, such as `held for its minimum on time` or `waiting for the source mode`.
 Its `running`, `running_basis`, and `running_sensor` attributes describe source operation separately from the request.
+Its `holds` attribute lists the source's [timers](#timers), such as its minimum off time and post-run.
 Configured feedback takes precedence; without it, operation is inferred from the request, and unknown feedback remains unknown.
+
+## Timers
+
+Hydronicus waits on purpose: a valve needs its opening time before its pump starts, a pump runs on after demand ends, and the source keeps its minimum on and off times.
+Each such wait is a hold, published in the `holds` attributes above as a list of `target`, `kind`, and `until`.
+`target` is keyed as in the Status sensor's `reasons`: an output entity, a zone or loop slug, `source`, `mode`, or `<loop>.guard`.
+`until` is when the hold ends as an ISO timestamp, or none while its end is not known yet, such as a pump waiting for a valve not yet seen open.
+A hold says when the timer ends, not that the equipment will change then: a new demand can keep a pump running past its overrun.
+
+| `kind` | Target | Holds |
+| --- | --- | --- |
+| `valve_opening` | Valve | The valve is open but not yet ready, for its opening time. |
+| `valve_closing` | Valve | The valve is off but may still pass flow while it closes. |
+| `waiting_for_valves` | Switched pump | The pump waits for a wanted loop's valves to be ready. |
+| `overrun` | Switched pump | The pump runs on after demand ends, in heating. |
+| `source_min_on` | Switched pump | The pump runs for the source's minimum on time. |
+| `exercise` | Pump | The pump runs for the exercise's run time. |
+| `min_on`, `min_off` | `source` | The source request keeps its minimum on or off time. |
+| `post_run` | `source` | The source's pumps may still run after its request turned off. |
+| `feedback` | `source` | The source waits for running or flow proof before it gives up. |
+| `mode_dwell` | `mode` | A mode change waits for the dwell after the old mode's flow. |
+| `window_open_delay`, `window_close_delay` | Zone | A window's delay before it turns demand off, or lets it back on. |
+| `demand_min_on`, `demand_min_off` | Zone | The thermostat keeps its decision for its minimum on or off time. |
+| `guard_min_blocked` | `<loop>.guard` | A condensation guard stays blocked for its minimum time, in cooling. |
 
 ## An example
 

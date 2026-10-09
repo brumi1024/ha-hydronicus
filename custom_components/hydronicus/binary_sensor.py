@@ -33,7 +33,7 @@ PARALLEL_UPDATES = 0
 class ZoneDemandSensor(ZoneEntity, BinarySensorEntity):
     """Whether a zone demands heating, or cooling, and why."""
 
-    _unrecorded_attributes = frozenset({"reason"})
+    _unrecorded_attributes = frozenset({"reason", "holds"})
 
     def __init__(self, runtime: PlantRuntime, zone: Zone, mode: Mode) -> None:
         kind = "heating" if mode is Mode.HEAT else "cooling"
@@ -55,16 +55,16 @@ class ZoneDemandSensor(ZoneEntity, BinarySensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         view = self.runtime.view
         demand = None if view is None else view.desired.demands.get(self._zone)
-        if demand is None:
+        if view is None or demand is None:
             return {}
-        return {"reason": demand.reason}
+        return {"reason": demand.reason, "holds": view.holds(self._zone)}
 
 
 class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
     """Whether a loop passes flow: its valves are open and its pump runs."""
 
     _attr_translation_key = "loop_flowing"
-    _unrecorded_attributes = frozenset({"reason"})
+    _unrecorded_attributes = frozenset({"reason", "pump_reason", "holds"})
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, runtime: PlantRuntime, loop: Loop) -> None:
@@ -115,6 +115,10 @@ class LoopFlowingSensor(HydronicusEntity, BinarySensorEntity):
             if view is None
             else view.loop_operation(loop, observed=True).active,
             "reason": None if view is None else view.desired.reasons.get(str(loop.ref)),
+            "pump_reason": None
+            if view is None or pump.switch is None
+            else view.desired.reasons.get(pump.switch),
+            "holds": [] if view is None else view.holds(*view.loop_hold_targets(loop)),
         }
 
 
@@ -122,7 +126,7 @@ class SourceRequestedSensor(HydronicusEntity, BinarySensorEntity):
     """Whether the Plant asks its source for heat or cooling."""
 
     _attr_translation_key = "source_requested"
-    _unrecorded_attributes = frozenset({"reason"})
+    _unrecorded_attributes = frozenset({"reason", "holds"})
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, runtime: PlantRuntime) -> None:
@@ -158,6 +162,7 @@ class SourceRequestedSensor(HydronicusEntity, BinarySensorEntity):
             else source_operation(runtime.plant, view.observations).basis,
             "running_sensor": source.running_sensor,
             "reason": None if view is None else view.desired.reasons.get("source"),
+            "holds": [] if view is None else view.holds("source"),
         }
 
 
