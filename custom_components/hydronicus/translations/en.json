@@ -774,8 +774,44 @@
           },
           "estimated_recovery_seconds": {
             "name": "Estimated recovery duration"
+          },
+          "schedule_status": {
+            "name": "Schedule status",
+            "state": {
+              "manual": "Not following the schedule",
+              "off": "Off",
+              "unavailable": "Schedule unavailable",
+              "comfort": "Comfort period",
+              "setback": "Setback",
+              "early_start": "Early start",
+              "invalid_block": "Invalid schedule block"
+            }
+          },
+          "schedule_level": {
+            "name": "Schedule level",
+            "state": {
+              "comfort": "Comfort",
+              "eco": "Eco",
+              "away": "Away",
+              "target": "Block target",
+              "setback": "Setback"
+            }
+          },
+          "schedule_entity": {
+            "name": "Schedule helper"
+          },
+          "schedule_next_change": {
+            "name": "Next schedule change"
           }
         }
+      }
+    },
+    "number": {
+      "heat_setback": {
+        "name": "Heating setback"
+      },
+      "cool_setback": {
+        "name": "Cooling setback"
       }
     },
     "button": {
@@ -893,6 +929,10 @@
     "condensation_input_unusable": {
       "title": "{plant}: {entity_id} blocks cooling",
       "description": "In Plant {plant}, the {input} {entity_id} has had no usable state for at least 10 minutes, so {loops} cannot cool: the condensation guard blocks without it. A condensation switch is unusable while it is unavailable or unknown, and a supply or surface temperature sensor while it is unavailable, has not reported for 30 minutes, is in an unsupported unit, or is outside its plausible range. This repair shows whatever the Plant mode is, because cooling cannot start without it. Check the device, its battery, and its connection. The repair clears automatically once it reports a usable state."
+    },
+    "invalid_schedule_block": {
+      "title": "{plant}, zone {zone}: schedule {entity_id} has blocks it cannot use",
+      "description": "In Plant {plant}, zone {zone} follows {entity_id}, and these blocks name a level Hydronicus cannot use: {blocks}. A block's data may name either a preset (comfort, eco, or away) or a heat_target and cool_target from 5 to 35 °C, never both. While such a block is active, the zone holds its manual comfort target. Edit the blocks in the schedule helper; the repair clears automatically once every block is usable."
     }
   },
   "exceptions": {

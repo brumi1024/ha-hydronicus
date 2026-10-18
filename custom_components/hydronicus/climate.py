@@ -26,6 +26,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoredExtraData, RestoreEntity
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from . import HydronicusConfigEntry
@@ -198,6 +199,7 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
             now,
             lambda deadline: deadline <= now,
             None if previous is None or previous.mode is not mode else previous.early_start_event,
+            setbacks=self.runtime.zone_setbacks(self._zone),
         )
 
     @property
@@ -244,6 +246,12 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
             and view.observations.thermostats.get(self._zone) == self._thermostat
             else None
         )
+        schedule = self._config.schedule
+        observed = (
+            None
+            if view is None or schedule is None
+            else view.observations.schedules.get(schedule.entity)
+        )
         return {
             "reason": None if demand is None else demand.reason,
             "heat_target": self._targets[Mode.HEAT],
@@ -252,6 +260,12 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
             "effective_target": comfort.target,
             "early_start": comfort.early_start,
             "schedule_status": comfort.schedule_status,
+            # What a dashboard needs to show and edit the schedule from this entity alone.
+            "schedule_entity": None if schedule is None else schedule.entity,
+            "schedule_level": comfort.schedule_level,
+            "schedule_next_change": None
+            if observed is None or observed.next_event is None
+            else dt_util.utc_from_timestamp(observed.next_event),
             "recovery_method": comfort.recovery_method,
             "planned_recovery_seconds": comfort.recovery_seconds,
             "learning_mode": self._config.learning.value,

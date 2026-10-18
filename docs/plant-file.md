@@ -490,8 +490,8 @@ It is an optional thermostat policy: it never changes the Plant mode, arms an ou
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |
 | `entity` | yes | | The `schedule` helper whose on periods are comfort periods. |
-| `heat_setback` | no | `2` | Nonnegative reduction in K from the heating comfort target outside comfort periods. |
-| `cool_setback` | no | `2` | Nonnegative increase in K from the cooling comfort target outside comfort periods. |
+| `heat_setback` | no | `2` | Reduction from 0 to 10 K from the heating comfort target outside comfort periods; the starting value of the zone's **Heating setback**. |
+| `cool_setback` | no | `2` | Increase from 0 to 10 K from the cooling comfort target outside comfort periods; the starting value of the zone's **Cooling setback**. |
 | `max_early_start` | no | `0` | Maximum recovery lead time in seconds, from 0 to 21600. Zero disables early start. |
 | `heating_rate` | no | `1` | Positive expected room warming rate in K/hour. |
 | `cooling_rate` | no | `1` | Positive expected room cooling rate in K/hour. |

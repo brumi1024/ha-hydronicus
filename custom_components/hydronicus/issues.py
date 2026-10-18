@@ -43,6 +43,7 @@ class IssueKind(StrEnum):
     ZONE_AREA_SELF_FEED = "zone_area_self_feed"
     ZONE_SENSOR_UNUSABLE = "zone_sensor_unusable"
     CONDENSATION_INPUT_UNUSABLE = "condensation_input_unusable"
+    INVALID_SCHEDULE_BLOCK = "invalid_schedule_block"
 
 
 # Kinds with a fix flow; hassfest wants their translations to carry the fix flow
@@ -198,6 +199,21 @@ def zone_sensor_unusable(plant: Plant, zone: str, entity_id: str) -> Issue:
         IssueKind.ZONE_SENSOR_UNUSABLE,
         f"{zone}|{entity_id}",
         {"plant": plant.name, "zone": plant.zone(zone).title, "entity_id": entity_id},
+    )
+
+
+def invalid_schedule_blocks(
+    plant: Plant, zone: str, entity_id: str, problems: Iterable[str]
+) -> Issue:
+    return Issue(
+        IssueKind.INVALID_SCHEDULE_BLOCK,
+        f"{zone}|{entity_id}",
+        {
+            "plant": plant.name,
+            "zone": plant.zone(zone).title,
+            "entity_id": entity_id,
+            "blocks": "; ".join(problems),
+        },
     )
 
 

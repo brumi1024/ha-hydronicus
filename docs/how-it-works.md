@@ -220,15 +220,49 @@ Choose one owner for the supply setpoint; leave this feature off when the source
 ## Comfort schedules
 
 A digital thermostat can follow an existing Home Assistant `schedule` helper after its `schedule` preset is selected.
-During on periods it uses the manual comfort target for its current mode.
-Outside those periods it reduces the heating target by `heat_setback`, or increases the cooling target by `cool_setback`.
+During on periods it uses the manual comfort target for its current mode, unless the block's data names another level.
+Outside those periods it reduces the heating target by the **Heating setback**, or increases the cooling target by the **Cooling setback**; both start from the configured `heat_setback` and `cool_setback`.
 The heating and cooling targets and preset dictionaries remain separate.
 
+### Block levels
+
+Each block of the helper may carry data, which Home Assistant edits under the block's advanced settings.
+Hydronicus reads three keys from it and ignores any other:
+
+| Key | Level |
+| --- | --- |
+| `preset` | `comfort`, `eco`, or `away`: that preset's target for the current mode. |
+| `heat_target` | An explicit heating target from 5 to 35 °C. |
+| `cool_target` | An explicit cooling target from 5 to 35 °C. |
+
+A block names either a preset or targets, never both.
+A block without these keys holds the manual comfort target.
+A level the current mode cannot use, such as a preset configured only for heating while the Plant cools, or a block with only a `cool_target` while it heats, holds the manual comfort target and says so in the demand `reason`.
+Unusable data, such as an unknown preset or an out-of-range target, also holds the manual comfort target, sets `schedule_status` to `invalid_block`, and raises a [Repair](troubleshooting.md#a-schedule-has-blocks-it-cannot-use).
+
+For example, these blocks hold 19 °C before work and 22 °C in the evening, with the setback in between:
+
+```yaml
+monday:
+  - from: "06:00:00"
+    to: "08:00:00"
+    data: {preset: eco}
+  - from: "17:00:00"
+    to: "23:00:00"
+    data: {heat_target: 22}
+```
+
+Hydronicus reads the week with the `schedule.get_schedule` action whenever the helper changes, because only the week says what the next block asks for.
+If the week cannot be read, early start towards a block assumes the manual comfort target.
+
+### Early start
+
 An optional early start estimates recovery time from the current temperature difference and a configured warming or cooling rate in K/hour.
-It never begins earlier than `max_early_start` before the next comfort period, and zero disables early start.
-For example, a room 1 K below its heating target with `heating_rate: 1` may start one hour early, provided the configured limit allows it.
-A room already at target needs no early start.
-Once early start begins, it stays active until that comfort period starts, so a warming or cooling room cannot repeatedly switch back to setback.
+It recovers towards the next period's level, whether the current period is a setback or a lower block, and only when that level is warmer for heating or cooler for cooling.
+It never begins earlier than `max_early_start` before the next period, and zero disables early start.
+For example, a room 1 K below the next block's heating target with `heating_rate: 1` may start one hour early, provided the configured limit allows it.
+A room already at that target needs no early start.
+Once early start begins, it stays active until that period starts, so a warming or cooling room cannot repeatedly switch back.
 The latch survives reloads and resets when its schedule event, control mode, or applicable limit changes.
 The thermostat exposes its effective target and schedule status, including whether early start is active.
 
@@ -237,6 +271,15 @@ An unavailable helper falls back to manual comfort, while a missing or invalid n
 The schedule never changes the Plant mode or overrides windows, arming, condensation guards, minimum times, or hydraulic sequencing.
 By default this is a bounded estimate using configured rates, with optional learned recovery described below.
 It does not guarantee the room will reach comfort at the scheduled time.
+
+### Editing a schedule from a dashboard
+
+A card needs only the thermostat entity.
+Its `schedule_entity` attribute names the helper, `schedule_level` and `schedule_status` say what applies now, and `schedule_next_change` says when that changes.
+Read the week, block data included, with the `schedule.get_schedule` action.
+Write it with the `schedule/update` command that Home Assistant's own helper editor sends, which replaces the helper's whole stored configuration, so send its name and icon and all seven days.
+That command is for administrators only; Home Assistant has no action that changes a schedule.
+Change the setbacks through the **Heating setback** and **Cooling setback** numbers, which any user may set.
 
 ## Recovery learning
 

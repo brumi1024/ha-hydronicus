@@ -159,3 +159,64 @@ def test_invalid_schedule_transitions_keep_the_current_schedule_state(next_event
     assert schedule.next_event is None
     assert schedule_state(None).active is None
     assert schedule_state(state("unavailable", next_event=WHEN)).active is None
+
+
+def test_the_next_block_and_its_level_come_from_the_week() -> None:
+    from datetime import time
+
+    from custom_components.hydronicus.core.comfort import BlockLevel
+    from custom_components.hydronicus.core.model import Preset
+    from custom_components.hydronicus.observe import schedule_state
+
+    # WHEN is Friday 12:00 in UTC, the default zone of these tests.
+    week = {
+        "friday": [
+            {"from": time(8), "to": time(12)},
+            {"from": "12:00:00", "to": "14:00:00", "data": {"preset": "eco", "note": "x"}},
+        ]
+    }
+    active = state("on", next_event=WHEN, preset="away")
+    schedule = schedule_state(active, week)
+    assert schedule.level == BlockLevel(preset=Preset.AWAY)
+    assert schedule.next_active is True
+    assert schedule.next_level == BlockLevel(preset=Preset.ECO)
+    ending = schedule_state(active, {"friday": [{"from": time(8), "to": time(12)}]})
+    assert ending.next_active is False and ending.next_level == BlockLevel()
+    # The active block's data is read only while the helper is on.
+    assert schedule_state(state("off", next_event=WHEN, preset="away"), week).level == BlockLevel()
+
+
+@pytest.mark.parametrize(
+    "week",
+    [
+        {"friday": "not a list"},
+        {"friday": ["not a block"]},
+        {"friday": [{"from": 1200, "to": "14:00"}]},
+        # An off period cannot be followed by another one.
+        {"friday": [{"from": "13:00", "to": "14:00"}]},
+    ],
+)
+def test_an_unreadable_week_leaves_the_next_period_unknown(week: dict[str, object]) -> None:
+    from custom_components.hydronicus.observe import schedule_state
+
+    schedule = schedule_state(state("off", next_event=WHEN), week)
+    assert schedule.next_event == WHEN.timestamp()
+    assert schedule.next_active is None
+
+
+def test_week_problems_name_each_unusable_block() -> None:
+    from custom_components.hydronicus.observe import week_problems
+
+    week = {
+        "monday": [
+            {"from": "08:00:00", "to": "10:00:00", "data": {"preset": "eco"}},
+            {"from": "10:00:00", "to": "12:00:00", "data": {"preset": "eco", "heat_target": 20}},
+            "not a block",
+        ],
+        "tuesday": "not a list",
+        "sunday": [{"from": "22:00:00", "to": "24:00:00", "data": {"cool_target": "cold"}}],
+    }
+    problems = week_problems(week)
+    assert len(problems) == 2
+    assert problems[0].startswith("Monday 10:00: a block names a preset or a target")
+    assert problems[1].startswith("Sunday 22:00: cool_target must be a number")

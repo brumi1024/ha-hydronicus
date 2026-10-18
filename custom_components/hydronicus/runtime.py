@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Any, Final
@@ -49,6 +50,7 @@ from homeassistant.core import (
 from homeassistant.core import (
     State as HassState,
 )
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -67,6 +69,7 @@ from .areas import (
     zone_area_problems,
 )
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
+from .core.comfort import Setbacks, next_period_target
 from .core.model import (
     Desired,
     DigitalThermostat,
@@ -104,6 +107,7 @@ from .issues import (
     condensation_inputs_unusable,
     evaluation_failed,
     invalid_plant,
+    invalid_schedule_blocks,
     missing_area_sensor,
     missing_binding,
     output_not_responding,
@@ -123,6 +127,7 @@ from .observe import (
     switch_memory_value,
     switch_moving,
     switch_value,
+    week_problems,
 )
 from .previous import PreviousConfiguration
 from .storage import armed_outputs, control
@@ -130,6 +135,9 @@ from .view import PlantView, observed_flow, zone_readings
 
 _LOGGER = logging.getLogger(__name__)
 
+# The action that returns a schedule helper's week, including each block's data.
+SCHEDULE_DOMAIN: Final = "schedule"
+SCHEDULE_GET: Final = "get_schedule"
 # How many Dry run proposals diagnostics keep.
 _PROPOSALS_KEPT: Final = 50
 # How long after a failed evaluation the Plant evaluates again, in seconds.
@@ -171,6 +179,11 @@ class PlantRuntime:
         self.memory = OutputMemory()
         self.unusable = UnusableInputs()
         self.thermostats: dict[str, DigitalThermostatState] = {}
+        # The owner's setbacks of each scheduled zone that has changed them, by zone slug.
+        self.setbacks: dict[str, Setbacks] = {}
+        # Each followed schedule helper's week from ``schedule.get_schedule``, or None
+        # when it could not be read; absent until the first read finishes.
+        self.schedule_weeks: dict[str, Mapping[str, Any] | None] = {}
         self.areas = AreaResolution()
         self.flow = FlowHistory()
         self.learning = LearningCoordinator(hass, entry.entry_id)
@@ -234,6 +247,10 @@ class PlantRuntime:
             self.unusable = UnusableInputs.from_dict(data.get("unusable_inputs", {}))
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
+            self.setbacks = {
+                zone: Setbacks(float(values["heat"]), float(values["cool"]))
+                for zone, values in data.get("setbacks", {}).items()
+            }
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
                 "The persisted state of Plant %s could not be read and starts over: %s",
@@ -243,6 +260,7 @@ class PlantRuntime:
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
             self.unusable, self.flow = UnusableInputs(), FlowHistory()
+            self.setbacks = {}
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -254,6 +272,10 @@ class PlantRuntime:
             self.flow.forget_except(
                 {str(loop.ref) for loop in plant.all_loops}, {zone.slug for zone in plant.zones}
             )
+            scheduled = self.scheduled_zones()
+            self.setbacks = {
+                zone: values for zone, values in self.setbacks.items() if zone in scheduled
+            }
         self._saved = self._data()
 
     @callback
@@ -365,6 +387,37 @@ class PlantRuntime:
     def reset_learning(self, zone: str) -> None:
         """Forget optional recovery history without changing targets or safety state."""
         self.learning.reset(zone)
+        self.request_evaluation()
+
+    def scheduled_zones(self) -> dict[str, DigitalThermostat]:
+        """Each zone whose digital thermostat follows a schedule, by zone slug."""
+        return {
+            zone.slug: zone.thermostat
+            for zone in self.plant.zones
+            if isinstance(zone.thermostat, DigitalThermostat)
+            and zone.thermostat.schedule is not None
+        }
+
+    def zone_setbacks(self, zone: str) -> Setbacks | None:
+        """A scheduled zone's current setbacks: the owner's, else the configured ones."""
+        config = self.scheduled_zones().get(zone)
+        if config is None or config.schedule is None:
+            return None
+        return self.setbacks.get(
+            zone, Setbacks(config.schedule.heat_setback, config.schedule.cool_setback)
+        )
+
+    @callback
+    def set_setback(self, zone: str, mode: Mode, value: float) -> None:
+        """Take a scheduled zone's new heating or cooling setback and evaluate."""
+        current = self.zone_setbacks(zone)
+        if current is None or mode is Mode.OFF:
+            return
+        self.setbacks[zone] = (
+            replace(current, heat=value) if mode is Mode.HEAT else replace(current, cool=value)
+        )
+        self._save()
+        self._publish()
         self.request_evaluation()
 
     @callback
@@ -609,7 +662,28 @@ class PlantRuntime:
             temperature = zone_readings(zone, observations, self.areas, now).temperature
             if temperature is None:
                 continue
-            deficit = recovery_deficit(thermostat.hvac_mode, thermostat.target, temperature)
+            schedule = (
+                None
+                if config.schedule is None
+                else observations.schedules.get(config.schedule.entity)
+            )
+            # Early start recovers towards the next scheduled period's level.
+            following = (
+                None
+                if schedule is None
+                else next_period_target(
+                    config,
+                    thermostat.hvac_mode,
+                    thermostat.target,
+                    schedule,
+                    observations.setbacks.get(zone.slug),
+                )
+            )
+            deficit = recovery_deficit(
+                thermostat.hvac_mode,
+                thermostat.target if following is None else following,
+                temperature,
+            )
             baseline = self.learning.estimate(zone.slug, thermostat.hvac_mode, deficit, now)
             estimates[zone.slug] = baseline
             if (
@@ -619,8 +693,7 @@ class PlantRuntime:
                 or self.forecast.snapshot is None
             ):
                 continue
-            schedule = observations.schedules.get(config.schedule.entity)
-            if schedule is None or schedule.active is not False or schedule.next_event is None:
+            if schedule is None or following is None or schedule.next_event is None:
                 continue
             end = schedule.next_event
             start = max(now, end - config.schedule.max_early_start)
@@ -784,11 +857,17 @@ class PlantRuntime:
             thermostats=thermostats,
             schedules={
                 zone.thermostat.schedule.entity: schedule_state(
-                    states.get(zone.thermostat.schedule.entity)
+                    states.get(zone.thermostat.schedule.entity),
+                    self.schedule_weeks.get(zone.thermostat.schedule.entity),
                 )
                 for zone in plant.zones
                 if isinstance(zone.thermostat, DigitalThermostat)
                 and zone.thermostat.schedule is not None
+            },
+            setbacks={
+                slug: setbacks
+                for slug in self.scheduled_zones()
+                if (setbacks := self.zone_setbacks(slug)) is not None
             },
         )
 
@@ -855,8 +934,12 @@ class PlantRuntime:
             if self._report_listener is not None:
                 self._report_listener()
             self._report_listener = async_track_state_report_event(
-                self.hass, sorted(self._sensor_kinds()), self._on_sensor_report
+                self.hass,
+                sorted(set(self._sensor_kinds()) | self._schedule_entities()),
+                self._on_sensor_report,
             )
+            for entity in self._schedule_entities() - set(self.schedule_weeks):
+                self._refresh_week(entity)
 
     def _tracked_entities(self) -> frozenset[str]:
         tracked = set(self._roles()) | set(self._sensor_kinds())
@@ -873,14 +956,59 @@ class PlantRuntime:
                     tracked.add(zone.thermostat.schedule.entity)
         return frozenset(tracked)
 
+    def _schedule_entities(self) -> frozenset[str]:
+        return frozenset(
+            zone.thermostat.schedule.entity
+            for plant in self._plants()
+            for zone in plant.zones
+            if isinstance(zone.thermostat, DigitalThermostat)
+            and zone.thermostat.schedule is not None
+        )
+
     @callback
-    def _on_sensor_report(self, _event: Event[EventStateReportedData]) -> None:
-        """An unchanged report can recover a previously stale required sensor."""
+    def _refresh_week(self, entity: str) -> None:
+        """Read a schedule helper's week again, since only its blocks name the next level."""
+        self.entry.async_create_background_task(
+            self.hass, self._async_refresh_week(entity), f"{DOMAIN} schedule week {entity}"
+        )
+
+    async def _async_refresh_week(self, entity: str) -> None:
+        week: Mapping[str, Any] | None
+        try:
+            response = await self.hass.services.async_call(
+                SCHEDULE_DOMAIN,
+                SCHEDULE_GET,
+                target={"entity_id": entity},
+                blocking=True,
+                return_response=True,
+            )
+        except HomeAssistantError as error:
+            _LOGGER.debug("The week of %s could not be read: %s", entity, error)
+            week = None
+        else:
+            found = None if response is None else response.get(entity)
+            week = found if isinstance(found, Mapping) else None
+        if self._stopped or (entity in self.schedule_weeks and self.schedule_weeks[entity] == week):
+            return
+        self.schedule_weeks[entity] = week
+        self.request_evaluation()
+
+    @callback
+    def _on_sensor_report(self, event: Event[EventStateReportedData]) -> None:
+        """An unchanged report can recover a previously stale required sensor.
+
+        A schedule helper reports unchanged when its blocks are edited without
+        moving its state or next transition, so its week is read again.
+        """
+        if event.data["entity_id"] in self._schedule_entities():
+            self._refresh_week(event.data["entity_id"])
         self.request_evaluation()
 
     @callback
     def _on_state_change(self, event: Event[EventStateChangedData]) -> None:
         entity = event.data["entity_id"]
+        if entity in self._schedule_entities():
+            self._refresh_week(entity)
         role = self._roles().get(entity)
         new_state: HassState | None = event.data["new_state"]
         if role is not None and new_state is not None:
@@ -946,6 +1074,10 @@ class PlantRuntime:
             "unusable_inputs": self.unusable.to_dict(),
             "flow": self.flow.to_dict(),
             "mode": self.requested_mode.value,
+            "setbacks": {
+                zone: {"heat": values.heat, "cool": values.cool}
+                for zone, values in sorted(self.setbacks.items())
+            },
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
         }
 
@@ -1001,6 +1133,18 @@ class PlantRuntime:
             zone_area_issue(plant, problem, self.areas)
             for problem in zone_area_problems(plant, self.areas)
         )
+        for zone, config in self.scheduled_zones().items():
+            assert config.schedule is not None
+            entity = config.schedule.entity
+            week = self.schedule_weeks.get(entity)
+            if week is not None:
+                problems = week_problems(week)
+            else:
+                # Without the week, only the active block's data can be read.
+                observed = schedule_state(states.get(entity))
+                problems = [] if observed.level.error is None else [observed.level.error]
+            if problems:
+                issues.append(invalid_schedule_blocks(plant, zone, entity, problems))
         # An input that does not exist already has its own Repair.
         issues.extend(
             zone_sensor_unusable(reconciled, zone, entity)

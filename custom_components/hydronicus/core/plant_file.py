@@ -46,6 +46,7 @@ from .model import (
     DEFAULT_WINDOW_OPEN_DELAY,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
+    MAX_SETBACK,
     MIN_EXERCISE_INTERVAL,
     MIN_EXERCISE_RUN,
     MIN_MAX_HUMIDITY,
@@ -407,6 +408,8 @@ def _schedule(value: object, path: str) -> Schedule:
         if key != "entity"
     }
     _within(settings["max_early_start"], _join(path, "max_early_start"), high=21600)
+    for key in ("heat_setback", "cool_setback"):
+        _within(settings[key], _join(path, key), high=MAX_SETBACK)
     return Schedule(entity=entity, **settings)
 
 
