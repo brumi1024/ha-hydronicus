@@ -89,6 +89,8 @@ DEFAULT_MIN_OFF: Final = 600.0
 # short dip does not open a slow thermoelectric valve, which takes about three
 # minutes, and close it again before its pump ever starts.
 DEFAULT_DEMAND_MIN_ON: Final = 600.0
+# The largest schedule setback, in K, in the plant file and on its number entities.
+MAX_SETBACK: Final = 10.0
 DEFAULT_DEMAND_MIN_OFF: Final = 600.0
 DEFAULT_OVERRUN: Final = 180.0
 DEFAULT_OPENING_TIME: Final = 180.0

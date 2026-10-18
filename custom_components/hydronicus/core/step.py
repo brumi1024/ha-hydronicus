@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from typing import Any, Final
 
-from .comfort import ComfortTarget, ScheduleState, comfort_target
+from .comfort import ComfortTarget, ScheduleState, Setbacks, comfort_target
 from .demand import (
     AreaSensors,
     DemandState,
@@ -202,6 +202,9 @@ class Observations:
     sent: Mapping[str, Sent] = field(default_factory=dict)
     # The current state and next transition of configured Home Assistant schedules.
     schedules: Mapping[str, ScheduleState] = field(default_factory=dict)
+    # The owner's current setbacks of each scheduled zone, by zone slug; a zone
+    # without one uses its configured setbacks.
+    setbacks: Mapping[str, Setbacks] = field(default_factory=dict)
     # Optional predictions never authorize control; comfort policy checks consent,
     # confidence, expiry, and the owner's existing early-start bound.
     recovery: Mapping[str, RecoveryEstimate] = field(default_factory=dict)
@@ -896,6 +899,7 @@ class _Evaluation:
                     if previous is None or previous.mode is not thermostat.hvac_mode
                     else previous.early_start_event,
                     recovery,
+                    obs.setbacks.get(zone.slug),
                 )
             state, demand = zone_demand(
                 zone,

@@ -1339,6 +1339,8 @@ def test_advanced_controls_roundtrip_through_yaml_and_sorted_storage() -> None:
         ("zones.basement.thermostat.digital.schedule.entity", "calendar.comfort"),
         ("zones.basement.thermostat.digital.schedule.heat_setback", -1),
         ("zones.basement.thermostat.digital.schedule.cool_setback", float("nan")),
+        ("zones.basement.thermostat.digital.schedule.heat_setback", 10.5),
+        ("zones.basement.thermostat.digital.schedule.cool_setback", 11),
         ("zones.basement.thermostat.digital.schedule.max_early_start", 21601),
         ("zones.basement.thermostat.digital.schedule.heating_rate", 0),
         ("zones.basement.thermostat.digital.schedule.cooling_rate", -1),

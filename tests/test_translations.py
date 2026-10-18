@@ -39,6 +39,7 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 ENTITY_KEYS = {
     "button": {"reset_learning"},
     "climate": {"zone"},
+    "number": {"heat_setback", "cool_setback"},
     "binary_sensor": {"heating_demand", "cooling_demand", "loop_flowing", "source_requested"},
     "select": {"mode"},
     "sensor": {"status", "combined_temperature", "dew_point", "duty_cycle", "loop_runtime"},

@@ -93,6 +93,14 @@
       "reset_learning": {
         "default": "mdi:restart"
       }
+    },
+    "number": {
+      "heat_setback": {
+        "default": "mdi:thermometer-minus"
+      },
+      "cool_setback": {
+        "default": "mdi:thermometer-plus"
+      }
     }
   },
   "services": {

@@ -113,13 +113,15 @@ async def test_supply_number_is_observed_in_celsius_and_confirmed_before_source_
         assert hass.states.get("switch.source").state == "off"
         hass.states.async_set("number.supply", str(call.data["value"]), native_attributes)
 
-    hass.services.async_register("number", "set_value", set_value)
     # start() initializes outputs as switches; update this number before the first live evaluation.
     for entity in ("switch.pump", "switch.valve", "switch.source"):
         hass.states.async_set(entity, "off")
     hass.states.async_set("number.supply", "77", native_attributes)
     set_temperature(hass, "sensor.room", 18.0)
     entry = await async_import(hass, text)
+    # After setup, which loads the number integration for Hydronicus's own setbacks
+    # and with it the real action this test replaces.
+    hass.services.async_register("number", "set_value", set_value)
     await async_set_options(hass, entry, armed=entry.runtime_data.plant.outputs(), control=True)
     await async_call(hass, "select", "select_option", entity_id="select.review_mode", option="heat")
     await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.room", hvac_mode="heat")

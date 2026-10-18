@@ -40,6 +40,7 @@ from ..core.model import (
     DEFAULT_SURFACE_MINIMUM,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
+    MAX_SETBACK,
     MIN_EXERCISE_INTERVAL,
     MIN_EXERCISE_RUN,
     MIN_MAX_HUMIDITY,
@@ -297,8 +298,11 @@ def schedule_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schem
         _default("max_early_start", values, defaults.max_early_start): seconds(0, 21600),
     }
     for key in ("heat_setback", "cool_setback", "heating_rate", "cooling_rate"):
+        rate = key.endswith("rate")
         schema[_default(key, values, getattr(defaults, key))] = number(
-            low=0.1 if key.endswith("rate") else 0, unit="K/h" if key.endswith("rate") else "K"
+            low=0.1 if rate else 0,
+            high=None if rate else MAX_SETBACK,
+            unit="K/h" if rate else "K",
         )
     return vol.Schema(schema)
 

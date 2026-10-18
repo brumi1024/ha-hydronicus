@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from enum import StrEnum
 from math import isfinite
 from typing import Any, Final
@@ -28,7 +28,7 @@ from homeassistant.core import State
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
-from .core.comfort import ScheduleState
+from .core.comfort import LEVEL_KEYS, BlockLevel, ScheduleState, block_level
 from .core.demand import external_action
 from .core.step import ExternalThermostatState, Reading
 
@@ -150,17 +150,64 @@ def numeric_value(state: State | None) -> float | None:
     return reading(state, SensorKind.WATER, 0.0).value
 
 
-def schedule_state(state: State | None) -> ScheduleState:
-    """Read a schedule and its next absolute transition without assuming local timezone."""
+# The weekday keys of a schedule's week, in ``datetime.weekday()`` order.
+WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def schedule_state(state: State | None, week: Mapping[str, Any] | None = None) -> ScheduleState:
+    """Read a schedule, its next absolute transition, and the levels around it.
+
+    The active block's data is on the state's attributes. ``week`` is the
+    helper's ``schedule.get_schedule`` response, which alone says what the block
+    that starts at the next transition asks for; without it that is unknown.
+    """
     active = switch_value(state)
     if state is None or active is None:
         return ScheduleState(None, None)
+    level = (
+        block_level({key: state.attributes[key] for key in LEVEL_KEYS if key in state.attributes})
+        if active
+        else BlockLevel()
+    )
     value = state.attributes.get("next_event")
     if isinstance(value, str):
         value = dt_util.parse_datetime(value)
     if not isinstance(value, datetime) or value.tzinfo is None:
-        return ScheduleState(active, None)
-    return ScheduleState(active, value.timestamp())
+        return ScheduleState(active, None, level)
+    following = None if week is None else _block_starting(week, value)
+    if following is None:
+        return ScheduleState(active, value.timestamp(), level)
+    next_active, next_level = following
+    if not next_active and not active:
+        # An off period cannot end in another one, so this week is not the helper's.
+        return ScheduleState(active, value.timestamp(), level)
+    return ScheduleState(active, value.timestamp(), level, next_active, next_level)
+
+
+def _block_starting(week: Mapping[str, Any], at: datetime) -> tuple[bool, BlockLevel] | None:
+    """Whether a block of ``week`` starts at ``at``, and its level; None if unreadable."""
+    local = dt_util.as_local(at)
+    blocks = week.get(WEEKDAYS[local.weekday()], [])
+    if not isinstance(blocks, list):
+        return None
+    for block in blocks:
+        if not isinstance(block, Mapping):
+            return None
+        start = _block_time(block.get("from"))
+        if start is None:
+            return None
+        if start == local.time().replace(tzinfo=None):
+            data = block.get("data")
+            return True, block_level(data if isinstance(data, Mapping) else None)
+    return False, BlockLevel()
+
+
+def _block_time(value: object) -> time | None:
+    if isinstance(value, time):
+        return value
+    if isinstance(value, str):
+        return dt_util.parse_time(value)
+    return None
 
 
 def external_thermostat(state: State | None) -> ExternalThermostatState:
@@ -230,3 +277,22 @@ class OutputMemory:
             if isinstance(value, bool | str | int | float) and isinstance(since, int | float):
                 remembered[entity] = Remembered(value, float(since))
         return cls(remembered)
+
+
+def week_problems(week: Mapping[str, Any]) -> list[str]:
+    """Every block of a schedule's week whose data names an unusable level."""
+    problems: list[str] = []
+    for day in WEEKDAYS:
+        blocks = week.get(day, [])
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if not isinstance(block, Mapping):
+                continue
+            data = block.get("data")
+            error = block_level(data if isinstance(data, Mapping) else None).error
+            if error is not None:
+                start = _block_time(block.get("from"))
+                at = "" if start is None else f" {start.strftime('%H:%M')}"
+                problems.append(f"{day.capitalize()}{at}: {error}")
+    return problems

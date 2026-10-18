@@ -80,6 +80,8 @@ The **Status** sensor's attributes explain the state:
 | **Dew point** sensor | `sensor.<zone>_dew_point` | A loop serving the zone cools, including a shared plant loop. |
 | **Duty cycle** sensor | `sensor.<zone>_duty_cycle` | The zone has a loop, or a plant loop runs with it. |
 | **Reset recovery learning** button | `button.<zone>_reset_recovery_learning` | Digital thermostat learning is set to `observe` or `assist`. |
+| **Heating setback** number | `number.<zone>_heating_setback` | The digital thermostat has a comfort schedule and the zone heats. |
+| **Cooling setback** number | `number.<zone>_cooling_setback` | The digital thermostat has a comfort schedule and a loop serving the zone cools. |
 
 The thermostat's heating and cooling choices follow every loop serving the zone, including shared plant loops.
 It offers the presets configured for its current mode, plus `schedule` when a comfort schedule is configured.
@@ -101,7 +103,10 @@ The thermostat also exposes comfort planning attributes:
 | `planned_target` | The manual comfort target for the current mode, before schedule setback or recovery. |
 | `effective_target` | The target currently used for demand, including a preset, setback, or early start. |
 | `early_start` | Whether the schedule is currently recovering before the next comfort period. |
-| `schedule_status` | `manual`, `off`, `unavailable`, `comfort`, `setback`, or `early_start`. |
+| `schedule_status` | `manual`, `off`, `unavailable`, `comfort`, `setback`, `early_start`, or `invalid_block`. |
+| `schedule_level` | While the schedule is followed, the level now in use: `comfort`, `eco`, `away`, `target`, or `setback`. |
+| `schedule_entity` | The schedule helper the thermostat follows, or none without a comfort schedule. |
+| `schedule_next_change` | When the helper next changes, from its `next_event`. |
 | `recovery_method` | `configured`, `learned`, or `weather`, from the comfort proposal used for demand. |
 | `planned_recovery_seconds` | The proposed recovery duration before the configured early-start cap, or none without a current recovery plan. |
 | `learning_mode` | The configured `off`, `observe`, or `assist` option. |
@@ -116,6 +121,9 @@ The thermostat displays the same evaluated comfort proposal used for its demand,
 **Reset recovery learning** clears only that zone's recovery observations and model, including both heating and cooling evidence.
 It does not change the learning option, manual targets, presets, arming, or hydraulic safety timers.
 The button is a configuration entity on the zone device and disappears when learning is turned off.
+
+**Heating setback** and **Cooling setback** say how far, in K, the target moves outside the schedule's comfort periods.
+They start from the configured `heat_setback` and `cool_setback`, can be changed at any time, and keep their value across restarts.
 A zone with an existing thermostat gets no thermostat entity; the existing one is its thermostat.
 
 The demand binary sensors are on while the zone calls, and their `reason` attribute says why or why not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, or `window open`.

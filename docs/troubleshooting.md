@@ -130,6 +130,7 @@ Diagnostics list them by the key in the second column.
 | [An area names a Hydronicus sensor](#an-area-names-a-hydronicus-sensor) | `zone_area_self_feed` | Warning |
 | [A sensor blocks its zone](#a-sensor-blocks-its-zone) | `zone_sensor_unusable` | Error |
 | [A condensation input blocks cooling](#a-condensation-input-blocks-cooling) | `condensation_input_unusable` | Error |
+| [A schedule has blocks it cannot use](#a-schedule-has-blocks-it-cannot-use) | `invalid_schedule_block` | Error |
 
 ### Plant is not valid
 
@@ -195,6 +196,13 @@ A condensation switch, supply temperature, or surface temperature of a cooling l
 The Repair names the input and the loops it blocks, and shows whatever the Plant mode is, because cooling cannot start without it.
 Check the device, its battery, and its connection.
 
+### A schedule has blocks it cannot use
+
+A block of the zone's comfort schedule names a level Hydronicus cannot use, such as both a preset and a target, an unknown preset, or a target outside 5 to 35 °C.
+The Repair lists each such block by day and start time.
+While one is active, the zone holds its manual comfort target and its `schedule_status` is `invalid_block`.
+Edit the block's data in the schedule helper; see [comfort schedules](how-it-works.md#comfort-schedules) for what a block may name.
+
 ## Commissioning optional controls
 
 The **Status** sensor's `blocking_reason` gives the leading current obstruction.
@@ -221,9 +229,9 @@ Do not increase a limit just to clear a block without checking the emitters and 
 
 Confirm that the thermostat has selected its `schedule` preset, the helper exists, and the Plant and thermostat use the same mode.
 A manual target change or another preset leaves schedule control.
-Inspect the thermostat's `schedule_status`, `planned_target`, `effective_target`, and `early_start` attributes.
+Inspect the thermostat's `schedule_status`, `schedule_level`, `planned_target`, `effective_target`, and `early_start` attributes.
 A valid off schedule applies setback, while an unavailable helper falls back to manual comfort.
-Early start also needs a future next event and a positive maximum lead time.
+Early start also needs a future next event, a positive maximum lead time, and a next period with a higher heating target or a lower cooling target than the current one.
 Its rate describes room temperature recovery in K/hour, not water temperature change, and its limit may be shorter than the recovery the room actually needs.
 
 ## Recovery learning and weather
