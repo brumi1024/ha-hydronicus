@@ -63,10 +63,13 @@ When the zone stops calling, it all stops in reverse:
 
 A source that runs its own pumps keeps them going for its post-run after the request ends, 3 minutes by default, and Hydronicus keeps their loops open meanwhile.
 The source's request also stays off for its minimum off time before it is asked again.
+A source may limit its starts per hour, and wait until enough loops call by their weight before it starts.
+A source with heat sink loops runs out its minimum on time into them when every zone is satisfied early, instead of into whichever loops happened to be open.
 Minimum on and off timers begin with observed request transitions, so a delayed command cannot consume the equipment's minimum time before it acts.
 Optional switched-pump running and flow feedback must confirm circulation before the source is requested.
 A source-driven pump may start from known-off feedback when first requested, then has the source's `feedback_timeout` to prove operation, 300 seconds by default; unavailable feedback blocks startup.
-A blocked condensation guard, a lost ready loop or pump, turning **Control equipment** off, and stopping an old configuration release the source request immediately.
+A blocked condensation guard, a lost ready loop or pump, a source health sensor that does not read healthy, turning **Control equipment** off, and stopping an old configuration release the source request immediately.
+A source request found on with no loop open behind a running pump is released and logged, since Hydronicus never commands one.
 
 ## Commands are confirmed
 

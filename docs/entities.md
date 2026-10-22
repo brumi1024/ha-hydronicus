@@ -208,6 +208,7 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 | `min_on`, `min_off` | `source` | The source request keeps its minimum on or off time. |
 | `post_run` | `source` | The source's pumps may still run after its request turned off. |
 | `feedback` | `source` | The source waits for running or flow proof before it gives up. |
+| `max_starts` | `source` | The source waits until its oldest start of the last hour is an hour old. |
 | `mode_dwell` | `mode` | A mode change waits for the dwell after the old mode's flow. |
 | `window_open_delay`, `window_close_delay` | Zone | A window's delay before it turns demand off, or lets it back on. |
 | `demand_min_on`, `demand_min_off` | Zone | The thermostat keeps its decision for its minimum on or off time. |

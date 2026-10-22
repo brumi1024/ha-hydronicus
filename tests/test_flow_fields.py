@@ -197,3 +197,32 @@ def test_learning_can_be_disabled_and_weather_removed_without_a_source() -> None
     values["learning"] = {"mode": "off", "weather_aware": False}
     edited, _ = documents.with_zone(edited, "room", values, "Room")
     assert parse_plant(edited).zone("room").thermostat.learning is LearningMode.OFF
+
+
+def test_source_cycling_limits_and_loop_weights_survive_every_form() -> None:
+    from custom_components.hydronicus.core.plant_file import export_plant, parse_plant
+    from custom_components.hydronicus.flows import documents
+    from tests.core.test_plant_file import cycling_document
+
+    document = export_plant(parse_plant(cycling_document()))
+    values = documents.plant_values(document)
+    edited = documents.with_plant(document, values)
+    edited = documents.with_mode(edited, values["mode_select"], "Heat", "Cool")
+    edited, _ = documents.with_loop(
+        edited, "living_area", "floor", documents.loop_values(edited, "living_area", "floor")
+    )
+
+    assert parse_plant(edited) == parse_plant(document)
+
+
+def test_removing_a_heat_sink_loop_removes_it_from_the_source() -> None:
+    from custom_components.hydronicus.core.plant_file import export_plant, parse_plant
+    from custom_components.hydronicus.flows import documents
+    from tests.core.test_plant_file import cycling_document
+
+    document = export_plant(parse_plant(cycling_document()))
+
+    edited = documents.without_loop(document, "living_area", "floor")
+    assert "heat_sink_loops" not in edited["source"]
+    kept = documents.without_loop(document, "living_area", "ceiling")
+    assert kept["source"]["heat_sink_loops"] == ["living_area.floor"]

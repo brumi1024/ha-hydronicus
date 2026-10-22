@@ -149,6 +149,18 @@ def plants(draw: st.DrawFn) -> Plant:
         )
 
     all_loops = [*plant_loops, *(loop for loops in zone_loops.values() for loop in loops)]
+    if source is not None:
+        sinks = [
+            loop.ref
+            for loop in all_loops
+            if Mode.HEAT in loop.modes and loop.runs.kind is not RunKind.WITH_SOURCE
+        ]
+        source = replace(
+            source,
+            heat_sink_loops=tuple(draw(st.lists(st.sampled_from(sinks), unique=True)))
+            if sinks
+            else (),
+        )
     pumps = tuple(
         _pump(draw, index, driven[index], supplies[index], all_loops) for index in range(pump_count)
     )
@@ -210,6 +222,9 @@ def _sources() -> st.SearchStrategy[Source]:
         min_on=st.sampled_from([0.0, 120.0, 600.0]),
         min_off=st.sampled_from([0.0, 120.0, 600.0]),
         supply=st.none() | st.just(SupplyControl("number.source_supply")),
+        max_starts_per_hour=st.sampled_from([None, 1, 3]),
+        start_threshold=st.sampled_from([None, 1.0, 2.0]),
+        health_sensor=st.none() | st.just("binary_sensor.source_healthy"),
     )
 
 

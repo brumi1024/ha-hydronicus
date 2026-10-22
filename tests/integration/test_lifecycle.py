@@ -187,13 +187,21 @@ async def test_an_entry_of_an_earlier_version_is_refused(
 
 # Zone removal
 
-SHARED = REFERENCE_PLANT.replace(
-    "min_flow_loops: [living_area.ceiling]",
-    "min_flow_loops: [basement.ceiling, living_area.ceiling]",
-).replace(
-    "loops:\n  towel_dryer:",
-    "loops:\n  hall:\n    valves: [switch.hall_radiator_valve]\n    pump: floor\n"
-    "    runs: {with_zones: [basement, living_area]}\n  towel_dryer:",
+SHARED = (
+    REFERENCE_PLANT.replace(
+        "min_flow_loops: [living_area.ceiling]",
+        "min_flow_loops: [basement.ceiling, living_area.ceiling]",
+    )
+    .replace(
+        "  min_off: 600\n",
+        "  min_off: 600\n  heat_sink_loops: [basement.ceiling, living_area.floor]\n",
+        1,
+    )
+    .replace(
+        "loops:\n  towel_dryer:",
+        "loops:\n  hall:\n    valves: [switch.hall_radiator_valve]\n    pump: floor\n"
+        "    runs: {with_zones: [basement, living_area]}\n  towel_dryer:",
+    )
 )
 
 
@@ -215,6 +223,7 @@ async def test_removing_a_zone_prunes_references_to_it_and_keeps_the_plant_runni
     assert entry.state is ConfigEntryState.LOADED
     assert stored_document(entry)["pumps"]["heat_pump"]["min_flow_loops"] == ["living_area.ceiling"]
     assert stored_document(entry)["loops"]["hall"]["runs"] == {"with_zones": ["living_area"]}
+    assert stored_document(entry)["source"]["heat_sink_loops"] == ["living_area.floor"]
     assert BASEMENT_CEILING not in entry.options[OPTION_ARMED_OUTPUTS]
     assert entry.runtime_data.plant.zones[0].slug == "bedroom_area"
     assert not any(e.startswith("climate.basement") for e in plant_entities(hass, entry).values())

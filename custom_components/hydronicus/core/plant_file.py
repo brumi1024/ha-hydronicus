@@ -105,6 +105,10 @@ _SOURCE_KEYS: Final = (
     "running_sensor",
     "supply",
     "feedback_timeout",
+    "max_starts_per_hour",
+    "heat_sink_loops",
+    "start_threshold",
+    "health_sensor",
 )
 _SUPPLY_KEYS: Final = (
     "entity",
@@ -152,6 +156,7 @@ _PLANT_LOOP_KEYS: Final = (
     "surface_temperature",
     "surface_minimum",
     "condensation_switch",
+    "weight",
 )
 _ZONE_LOOP_KEYS: Final = (
     "name",
@@ -161,6 +166,7 @@ _ZONE_LOOP_KEYS: Final = (
     "surface_temperature",
     "surface_minimum",
     "condensation_switch",
+    "weight",
 )
 _ZONE_KEYS: Final = (
     "name",
@@ -350,7 +356,29 @@ def _source(value: object, path: str) -> Source:
         name=_name(source, path),
         running_sensor=_contact(source, "running_sensor", path),
         supply=_supply(source["supply"], _join(path, "supply")) if "supply" in source else None,
+        max_starts_per_hour=_max_starts(source, path),
+        heat_sink_loops=(
+            _loop_refs(source["heat_sink_loops"], _join(path, "heat_sink_loops"))
+            if "heat_sink_loops" in source
+            else ()
+        ),
+        start_threshold=(
+            _number(source["start_threshold"], _join(path, "start_threshold"), positive=True)
+            if "start_threshold" in source
+            else None
+        ),
+        health_sensor=_contact(source, "health_sensor", path),
     )
+
+
+def _max_starts(source: Mapping[str, Any], path: str) -> int | None:
+    if "max_starts_per_hour" not in source:
+        return None
+    key_path = _join(path, "max_starts_per_hour")
+    value = _number(source["max_starts_per_hour"], key_path, positive=True)
+    if not value.is_integer():
+        raise PlantFileError(key_path, "Expected a whole number of starts.")
+    return int(value)
 
 
 def _supply(value: object, path: str) -> SupplyControl:
@@ -507,6 +535,7 @@ def _loop(ref: LoopRef, value: object, path: str) -> Loop:
         name=_name(loop, path),
         condensation_switch=_contact(loop, "condensation_switch", path),
         surface_minimum=_setting(loop, "surface_minimum", DEFAULT_SURFACE_MINIMUM, path),
+        weight=_number(loop.get("weight", 1.0), _join(path, "weight"), positive=True),
     )
 
 
@@ -839,6 +868,8 @@ def validate_plant(plant: Plant) -> None:
         _check_unique(f"zones.{zone.slug}.loops", (loop.slug for loop in zone.loops), "Loop")
     for pump in plant.pumps:
         _check_pump(plant, pump)
+    if plant.source is not None:
+        _check_heat_sink(plant, plant.source)
     for loop in plant.all_loops:
         _check_loop(plant, loop)
     for zone in plant.zones:
@@ -896,6 +927,26 @@ def _check_pump(plant: Plant, pump: Pump) -> None:
         if loop.pump != pump.slug:
             raise PlantFileError(
                 item_path, f"Loop {ref} runs on pump {loop.pump}, not {pump.slug}."
+            )
+
+
+def _check_heat_sink(plant: Plant, source: Source) -> None:
+    loops_path = "source.heat_sink_loops"
+    seen: set[LoopRef] = set()
+    for index, ref in enumerate(source.heat_sink_loops):
+        item_path = _join(loops_path, index)
+        if ref in seen:
+            raise PlantFileError(item_path, f"Loop {ref} is listed twice.")
+        seen.add(ref)
+        try:
+            loop = plant.loop(ref)
+        except KeyError:
+            raise PlantFileError(item_path, f"There is no loop {ref}.") from None
+        if Mode.HEAT not in loop.modes:
+            raise PlantFileError(item_path, f"Loop {ref} does not heat, so it is no heat sink.")
+        if loop.runs.kind is RunKind.WITH_SOURCE:
+            raise PlantFileError(
+                item_path, f"Loop {ref} already runs with the source; it needs no heat sink role."
             )
 
 
@@ -1063,6 +1114,7 @@ def entity_paths(plant: Plant) -> dict[str, str]:
     if plant.source is not None:
         bind(plant.source.request, "source.request")
         bind(plant.source.running_sensor, "source.running_sensor")
+        bind(plant.source.health_sensor, "source.health_sensor")
         if plant.source.supply is not None:
             bind(plant.source.supply.entity, "source.supply.entity")
             bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
@@ -1142,10 +1194,15 @@ _KEY_WORDS: Final = {
     "window_open_delay": "window open delay",
     "window_close_delay": "window close delay",
     "max_humidity": "maximum humidity",
+    "max_starts_per_hour": "maximum starts per hour",
+    "heat_sink_loops": "heat sink loops",
+    "start_threshold": "start threshold",
+    "health_sensor": "health sensor",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
     "min_flow_loops": "min-flow loop",
+    "heat_sink_loops": "heat sink loop",
     "valves": "valve",
     "with_zones": "zone",
     "areas": "area",
@@ -1268,6 +1325,14 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["feedback_timeout"] = _export_number(source.feedback_timeout)
     if source.running_sensor is not None:
         document["running_sensor"] = source.running_sensor
+    if source.health_sensor is not None:
+        document["health_sensor"] = source.health_sensor
+    if source.max_starts_per_hour is not None:
+        document["max_starts_per_hour"] = source.max_starts_per_hour
+    if source.start_threshold is not None:
+        document["start_threshold"] = _export_number(source.start_threshold)
+    if source.heat_sink_loops:
+        document["heat_sink_loops"] = [str(ref) for ref in source.heat_sink_loops]
     if source.supply is not None:
         document["supply"] = _export_configuration(
             source.supply, SupplyControl(source.supply.entity), _SUPPLY_KEYS
@@ -1314,6 +1379,8 @@ def _export_loop(loop: Loop) -> dict[str, Any]:
         document["surface_minimum"] = _export_setting(loop.surface_minimum)
     if loop.condensation_switch is not None:
         document["condensation_switch"] = loop.condensation_switch
+    if loop.weight != 1.0:
+        document["weight"] = _export_number(loop.weight)
     return document
 
 

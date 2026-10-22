@@ -220,6 +220,9 @@ class Loop:
     # The lowest surface temperature while cooling, in °C; None turns it off. It
     # needs ``surface_temperature``.
     surface_minimum: float | None = DEFAULT_SURFACE_MINIMUM
+    # The loop's share of demand, such as its emitter output, for the source's
+    # ``start_threshold``.
+    weight: float = 1.0
 
     @property
     def slug(self) -> str:
@@ -283,6 +286,17 @@ class Source:
     supply: SupplyControl | None = None
     # Seconds after a request turns on for independent running and flow proof.
     feedback_timeout: float = 300.0
+    # The most observed request starts within any hour; None turns the limit off.
+    max_starts_per_hour: int | None = None
+    # Heating loops held open while the request is held for its minimum on time
+    # after demand ended, so the source keeps a sink until its run may end.
+    heat_sink_loops: tuple[LoopRef, ...] = ()
+    # The total weight of wanted loops that must call before the request starts;
+    # None starts it for any calling loop. It never shortens a running request.
+    start_threshold: float | None = None
+    # A binary sensor that reads on while the source and its link are healthy;
+    # off, unknown, or unavailable releases the request at once and keeps it off.
+    health_sensor: str | None = None
 
     @property
     def title(self) -> str:
@@ -554,6 +568,7 @@ class HoldKind(StrEnum):
     MIN_OFF = "min_off"
     POST_RUN = "post_run"
     FEEDBACK = "feedback"
+    MAX_STARTS = "max_starts"
     MODE_DWELL = "mode_dwell"
     WINDOW_OPEN_DELAY = "window_open_delay"
     WINDOW_CLOSE_DELAY = "window_close_delay"
@@ -606,3 +621,8 @@ class Desired:
     comfort: Mapping[str, ComfortTarget] = field(default_factory=dict)
     # Every timer that holds an object as it is now, ordered by when it ends.
     holds: tuple[Hold, ...] = ()
+    # Why the source's health sensor forbids a request, or None while it reads healthy.
+    source_fault: str | None = None
+    # The source request is observed on while no loop of the mode may pass flow
+    # from a running pump, which ``step()`` never commands and releases at once.
+    source_without_path: bool = False

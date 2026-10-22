@@ -182,6 +182,7 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         flow_ended=NOW,
         source_request=True,
         source_changed=NOW - 5,
+        source_starts=(NOW - 900, NOW - 5),
         demands={
             "room": DemandState(Mode.HEAT, True, NOW),
             "hall": DemandState(Mode.OFF, False, None),

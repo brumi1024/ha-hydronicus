@@ -1470,3 +1470,112 @@ def test_predictive_settings_reject_missing_prerequisites(
     with pytest.raises(PlantFileError) as error:
         parse_plant(document)
     assert error.value.path == f"zones.basement.thermostat.digital.{field}"
+
+
+def cycling_document() -> dict[str, Any]:
+    """The reference plant with every source cycling limit and a weighted loop."""
+    document = reference_document()
+    document["source"].update(
+        {
+            "health_sensor": "binary_sensor.heat_pump_healthy",
+            "max_starts_per_hour": 3,
+            "start_threshold": 1.5,
+            "heat_sink_loops": ["living_area.floor"],
+        }
+    )
+    document["zones"]["living_area"]["loops"]["floor"]["weight"] = 2.5
+    return document
+
+
+def test_source_cycling_limits_roundtrip_through_yaml_and_sorted_storage() -> None:
+    plant = parse_plant(cycling_document())
+
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    source = plant.source
+    assert source is not None
+    assert source.max_starts_per_hour == 3
+    assert source.start_threshold == 1.5
+    assert source.heat_sink_loops == (LoopRef("living_area", "floor"),)
+    assert plant.loop(LoopRef("living_area", "floor")).weight == 2.5
+    assert plant.loop(LoopRef("living_area", "ceiling")).weight == 1.0
+    assert entity_paths(plant)["binary_sensor.heat_pump_healthy"] == "source.health_sensor"
+    assert "binary_sensor.heat_pump_healthy" not in plant.outputs()
+    exported = export_plant(plant)
+    assert exported["zones"]["living_area"]["loops"]["floor"]["weight"] == 2.5
+    assert "weight" not in exported["zones"]["living_area"]["loops"]["ceiling"]
+
+
+def test_source_cycling_limits_are_off_unless_set() -> None:
+    source = parse_plant(reference_document()).source
+
+    assert source is not None
+    assert source.max_starts_per_hour is None
+    assert source.start_threshold is None
+    assert source.heat_sink_loops == ()
+    assert source.health_sensor is None
+    assert not {"max_starts_per_hour", "start_threshold", "heat_sink_loops", "health_sensor"} & set(
+        export_plant(parse_plant(reference_document()))["source"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        ("source.max_starts_per_hour", 0, "positive"),
+        ("source.max_starts_per_hour", 2.5, "whole number"),
+        ("source.max_starts_per_hour", True, "number"),
+        ("source.start_threshold", 0, "positive"),
+        ("source.health_sensor", "switch.heat_pump_healthy", "binary_sensor"),
+        ("source.heat_sink_loops", "living_area.floor", "list"),
+        ("source.heat_sink_loops.0", "attic.floor", "no loop"),
+        ("source.heat_sink_loops.1", "living_area.floor", "listed twice"),
+        ("source.heat_sink_loops.0", "towel_dryer", "already runs with the source"),
+        ("zones.living_area.loops.floor.weight", 0, "positive"),
+        ("loops.towel_dryer.weight", float("inf"), "finite"),
+    ],
+)
+def test_source_cycling_limits_reject_invalid_values(
+    path: str, value: object, message: str
+) -> None:
+    document = cycling_document()
+    if path == "source.heat_sink_loops.1":
+        document["source"]["heat_sink_loops"] = ["living_area.floor", value]
+    elif path == "source.heat_sink_loops.0":
+        document["source"]["heat_sink_loops"] = [value]
+    else:
+        _set(path, value)(document)
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+def test_a_heat_sink_must_heat() -> None:
+    plant = parse_plant(cycling_document())
+    floor = plant.loop(LoopRef("living_area", "floor"))
+    zones = tuple(
+        replace(
+            zone,
+            loops=tuple(
+                replace(loop, modes=frozenset({Mode.COOL}), surface_temperature="sensor.surface")
+                if loop == floor
+                else loop
+                for loop in zone.loops
+            ),
+        )
+        for zone in plant.zones
+    )
+
+    with pytest.raises(PlantFileError) as error:
+        validate_plant(replace(plant, zones=zones))
+    assert error.value.path == "source.heat_sink_loops.0"
+    assert "does not heat" in str(error.value)
+
+
+def test_a_heat_sink_path_reads_in_words() -> None:
+    assert (
+        describe_path(cycling_document(), "source.heat_sink_loops.0") == "Source, heat sink loop 1"
+    )

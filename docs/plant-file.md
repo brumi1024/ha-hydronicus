@@ -194,6 +194,10 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | `running_sensor` | no | | A `binary_sensor` that reports whether the source actually runs, independently of its request switch. |
 | `feedback_timeout` | no | `300` | Positive seconds allowed after an observed source request for source running feedback and source-driven pump running or flow feedback to confirm operation. Missing or unknown feedback blocks startup. |
 | `supply` | no | | Optional [supply temperature control](#supply-temperature-control). |
+| `max_starts_per_hour` | no | no limit | The most times the request may be observed turning on within any hour, a whole number. A start beyond it waits until the oldest start is an hour old. |
+| `start_threshold` | no | none | The total `weight` of calling loops needed before the request starts. Loops below it still open and circulate; a running request is never cut short by it. |
+| `heat_sink_loops` | no | | Heating loops, such as `[living_area.floor]`, that Hydronicus opens when every calling loop is satisfied while the request is held for its `min_on`. The source then runs out its minimum time into them, and the other loops close once one of them is ready. A heat sink loop never asks for heat itself. |
+| `health_sensor` | no | | A `binary_sensor` that reads on while the source and its link are healthy, such as a Modbus bridge's health. While it reads off, unknown, or unavailable, the request is released at once, whatever `min_on` says, and stays off; the calling zones still circulate. |
 
 A Plant without a source still opens valves and runs the pumps it switches, which suits a boiler that follows its own controls.
 
@@ -301,6 +305,7 @@ A loop with no valve is always an open path, and its pump is its only control.
 | `surface_temperature` | no | | A `sensor` of the floor or ceiling surface temperature, the loop's own condensation reference. |
 | `surface_minimum` | no | `20` | Only with `surface_temperature`: the lowest surface temperature while the loop cools, in °C. `null` turns it off. |
 | `condensation_switch` | no | | A `binary_sensor` that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on, unavailable, or unknown, the loop does not cool. |
+| `weight` | no | `1` | The loop's positive share of demand for the source's `start_threshold`, such as its emitter output in kW. |
 | `runs` | plant loops only | | When a [plant loop](#plant-loops) runs. |
 
 A loop may cool only with a condensation reference: its pump's `supply_temperature` or its own `surface_temperature`.
@@ -590,7 +595,7 @@ These are problems in variations of the reference plant, with the path, the word
 | --- | --- | --- |
 | `hydronicus` | Plant file format | Plant file format 1 is no longer read; describe the Plant in format 2. |
 | `zones.Living room` | Zone Living room | A slug starts with a lowercase letter and holds only lowercase letters, digits, and underscores. |
-| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature, surface_minimum, condensation_switch. |
+| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature, surface_minimum, condensation_switch, weight. |
 | `zones.living_area.loops.floor.pump` | Zone Living area, loop Floor, pump | There is no pump underfloor. |
 | `zones.living_area.loops.floor.modes` | Zone Living area, loop Floor, modes | A loop that cools needs a condensation reference: a supply_temperature on pump floor or the loop's surface_temperature. Without one the loop is heat only. |
 | `pumps.heat_pump.min_flow_loops` | Pump Heat pump, min-flow loops | A source-driven pump with min_flow: path needs min_flow_loops, the loops held open while it may run, or min_flow: guaranteed when a separator protects it. |

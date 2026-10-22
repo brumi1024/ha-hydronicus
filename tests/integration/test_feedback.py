@@ -51,6 +51,33 @@ async def test_pump_starts_before_flow_proof_and_source_waits_for_both_proofs(
     assert hass.states.get("switch.valve").state == "on", "running proof retains the flow path"
 
 
+async def test_a_source_health_sensor_releases_the_request_at_once_and_is_logged(
+    hass: HomeAssistant, actuators: Actuators, caplog: pytest.LogCaptureFixture
+) -> None:
+    text = PLANT.replace(
+        "name: Review",
+        "name: Review\nsource: {request: switch.source, min_on: 3600, min_off: 0, post_run: 0, "
+        "health_sensor: binary_sensor.modbus_healthy}",
+    )
+    hass.states.async_set("binary_sensor.modbus_healthy", "on")
+    entry = await start(hass, text)
+    assert hass.states.get("switch.source").state == "on"
+
+    hass.states.async_set("binary_sensor.modbus_healthy", "off")
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.source").state == "off", "the minimum on time does not hold it"
+    assert hass.states.get("switch.pump").state == "on", "the calling zone still circulates"
+    assert entry.runtime_data.view.desired.source_fault == (
+        "source health sensor binary_sensor.modbus_healthy reports a fault"
+    )
+    assert "releases its source: source health sensor" in caplog.text
+
+    hass.states.async_set("binary_sensor.modbus_healthy", "on")
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.source").state == "on"
+    assert "the source reads healthy again" in caplog.text
+
+
 @pytest.mark.parametrize("proof", ["on", "unavailable"])
 async def test_autonomous_source_operation_keeps_the_source_driven_path_open(
     hass: HomeAssistant, actuators: Actuators, proof: str

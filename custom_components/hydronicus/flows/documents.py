@@ -207,6 +207,15 @@ def _protection_values(document: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# Source keys that only the plant file sets, which every form keeps as they are.
+_SOURCE_FILE_KEYS: Final = (
+    "max_starts_per_hour",
+    "start_threshold",
+    "heat_sink_loops",
+    "health_sensor",
+)
+
+
 def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Document:
     """Return the document with the Plant's name, timing, and source from the form.
 
@@ -266,6 +275,7 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     supply = dict(values.get("supply", _mapping(old, "supply")) or {})
     if supply.get("entity"):
         source["supply"] = {key: value for key, value in supply.items() if value is not None}
+    source.update({key: deepcopy(old[key]) for key in _SOURCE_FILE_KEYS if key in old})
     result["source"] = source
     return result
 
@@ -294,6 +304,7 @@ def with_mode(document: Mapping[str, Any], entity: str, heat: str, cool: str) ->
             "running_sensor",
             "supply",
             "feedback_timeout",
+            *_SOURCE_FILE_KEYS,
         )
         if key in source
     }
@@ -511,6 +522,8 @@ def with_loop(
     if "surface_temperature" in loop:
         _put_setting(loop, "surface_minimum", values.get("surface_minimum"), old)
     _put(loop, "condensation_switch", values.get("condensation_switch"))
+    # Only the plant file sets a loop's weight.
+    _put(loop, "weight", old.get("weight"))
     table[slug] = loop
     return result, slug
 
@@ -522,6 +535,10 @@ def without_loop(document: Mapping[str, Any], zone: str | None, slug: str) -> Do
     loops.pop(slug, None)
     if not loops:
         owner.pop("loops", None)
+    source = result.get("source")
+    if isinstance(source, dict) and isinstance(sinks := source.get("heat_sink_loops"), list):
+        ref = str(LoopRef(zone, slug))
+        _put(source, "heat_sink_loops", [item for item in sinks if item != ref] or None)
     return result
 
 

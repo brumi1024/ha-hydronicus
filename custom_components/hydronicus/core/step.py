@@ -82,6 +82,7 @@ __all__ = [
     "GUARD_REFERENCE_MAX_AGE",
     "GUARD_RELEASE",
     "HUMIDITY_RELEASE",
+    "START_WINDOW",
     "TICK",
     "AreaSensors",
     "DemandState",
@@ -119,6 +120,8 @@ GUARD_REFERENCE_MAX_AGE: Final = 1800.0
 CALL_TIMEOUT: Final = 10.0
 # Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
 TICK: Final = 0.001
+# The window ``Source.max_starts_per_hour`` counts observed request starts in, in seconds.
+START_WINDOW: Final = 3600.0
 # An exercise gives up this long after its valves' travel and opening time and its
 # pump's run time: the reconciler's ``TRAVEL_GRACE``, which three calls to a valve
 # that does not respond take before its Repair.
@@ -296,6 +299,8 @@ class State:
     # Observed request transitions own minimum cycle timers, never desired changes.
     source_observed: bool | None = None
     source_observed_changed: float | None = None
+    # When the request was observed to turn on within ``START_WINDOW``, oldest first.
+    source_starts: tuple[float, ...] = ()
     # Each zone's demand, by zone slug.
     demands: Mapping[str, DemandState] = field(default_factory=dict)
     # Each cooling loop's condensation guard, by ``str(LoopRef)``.
@@ -337,6 +342,7 @@ class State:
             "source_changed": self.source_changed,
             "source_observed": self.source_observed,
             "source_observed_changed": self.source_observed_changed,
+            "source_starts": list(self.source_starts),
             "demands": {
                 slug: {
                     "mode": demand.mode.value,
@@ -383,6 +389,7 @@ class State:
             source_changed=_optional_float(data.get("source_changed")),
             source_observed=data.get("source_observed"),
             source_observed_changed=_optional_float(data.get("source_observed_changed")),
+            source_starts=tuple(float(value) for value in data.get("source_starts", ())),
             demands={
                 slug: DemandState(
                     Mode(value["mode"]),
@@ -526,6 +533,7 @@ class _Evaluation:
                 source_changed=None,
                 source_observed=None,
                 source_observed_changed=None,
+                source_starts=(),
                 exercise=None,
                 overruns={},
                 ready={},
@@ -557,6 +565,17 @@ class _Evaluation:
             )
         ):
             self.source_observed_changed = self.since(plant.source.request)
+        # A start is the request observed turning on; a clock stepping backwards
+        # keeps a start that seems to lie ahead.
+        starts = [start for start in state.source_starts if start > now - START_WINDOW]
+        if (
+            self.source_observed is True
+            and state.source_observed is not True
+            and self.source_observed_changed is not None
+            and self.source_observed_changed not in starts
+        ):
+            starts.append(self.source_observed_changed)
+        self.source_starts = tuple(sorted(starts))
         self.deadlines: list[float] = []
         self.reasons: dict[str, str] = {}
         # The timers holding objects as they are, by target and kind.
@@ -722,6 +741,37 @@ class _Evaluation:
         observed = self.obs.readiness.get(entity)
         return None if observed is None else observed.on
 
+    def source_fault(self) -> str | None:
+        """Why the source's health sensor forbids a request, or None while it reads healthy."""
+        source = self.plant.source
+        if source is None or source.health_sensor is None:
+            return None
+        health = self.feedback(source.health_sensor)
+        if health is True:
+            return None
+        state = "reports a fault" if health is False else "is unavailable"
+        return f"source health sensor {source.health_sensor} {state}"
+
+    def source_without_path(self) -> bool:
+        """The request is observed on while no loop may pass flow from a pump that may run.
+
+        ``step()`` never requests the source so, and releases a request that finds
+        itself so; the runtime reports it, since equipment or a person did it.
+        Which mode the flow carries is invariant 5's concern, not this one's. A
+        source-driven pump with guaranteed flow always has its separator.
+        """
+        if self.plant.source is None or self.source_observed is not True:
+            return False
+        if any(
+            pump.driven_by_source and pump.min_flow is MinFlow.GUARANTEED
+            for pump in self.plant.pumps
+        ):
+            return False
+        return not any(
+            self.may_pass(loop) and self.pump_may_run(self._pumps[loop.pump])
+            for loop in self.plant.all_loops
+        )
+
     def pump_feedback(self, pump: Pump) -> tuple[str, ...]:
         return tuple(
             entity for entity in (pump.running_sensor, pump.flow_sensor) if entity is not None
@@ -806,6 +856,7 @@ class _Evaluation:
             source_changed=source_changed,
             source_observed=self.source_observed,
             source_observed_changed=self.source_observed_changed,
+            source_starts=self.source_starts,
             demands=demand_states,
             guards=guards,
             overruns=plan.overruns,
@@ -829,6 +880,8 @@ class _Evaluation:
             exercise=plan.exercising,
             comfort=self.comfort,
             holds=self.current_holds(mode),
+            source_fault=self.source_fault(),
+            source_without_path=self.source_without_path(),
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
@@ -1334,6 +1387,8 @@ class _Plan:
         source = plant.source
         self.surely_requested = source is not None and ev.surely_on(source.request)
         self.wanted = {loop for loop in plant.all_loops if self.is_wanted(loop)}
+        self.heat_sink = self.heat_sink_loops()
+        self.wanted |= self.heat_sink
         self.exercise()
         self.blocked = {
             pump.slug: self.pump_blocked(pump, exercise=pump.slug == self.exercising)
@@ -1399,8 +1454,49 @@ class _Plan:
         return True
 
     def calls_source(self, loop: Loop) -> bool:
-        """A wanted loop asks the source for heat, unless it runs with it or is exercised."""
-        return loop.runs.kind is not RunKind.WITH_SOURCE and loop not in self.exercised
+        """A wanted loop asks for heat, unless it runs with the source, sinks, or is exercised."""
+        return (
+            loop.runs.kind is not RunKind.WITH_SOURCE
+            and loop not in self.heat_sink
+            and loop not in self.exercised
+        )
+
+    def heat_sink_loops(self) -> set[Loop]:
+        """The source's heat sink loops, while its request is held without demand.
+
+        Once every calling loop is satisfied within the source's minimum on
+        time, the request is held until that time ends, and the loops that
+        happened to be open would be its only sink. The heat sink loops open
+        then, and the others close once a heat sink loop is ready, so the
+        source runs out its minimum time into the loops chosen to absorb it.
+        A heat sink loop never asks for heat itself, so the request is released
+        when the minimum on time ends.
+        """
+        ev, source = self.ev, self.plant.source
+        if (
+            source is None
+            or not source.heat_sink_loops
+            or not self.active
+            or self.mode is not Mode.HEAT
+            or not ev.state.source_request
+            or ev.source_observed is not True
+            or ev.source_observed_changed is None
+            or ev.source_fault() is not None
+            or any(loop.runs.kind is not RunKind.WITH_SOURCE for loop in self.wanted)
+            or ev.reached(ev.source_observed_changed + source.min_on)
+        ):
+            return set()
+        sink: set[Loop] = set()
+        for ref in source.heat_sink_loops:
+            loop = self.plant.loop(ref)
+            key = str(loop.ref)
+            missing = [entity for entity in self.needs(loop) if not ev.usable(entity)]
+            if missing:
+                ev.reasons[key] = f"heat sink dropped: {', '.join(missing)} unarmed or unavailable"
+            elif not self.guard_blocked[loop]:
+                ev.reasons[key] = "heat sink for the source minimum on time"
+                sink.add(loop)
+        return sink
 
     def zone_demands(self, slug: str) -> bool:
         demand = self.demands.get(slug)
@@ -1627,6 +1723,9 @@ class _Plan:
         if not (self.active or self.winding_down) or not ev.usable(source.request):
             reasons["source"] = "off"
             return False
+        if (fault := ev.source_fault()) is not None:
+            reasons["source"] = fault
+            return False
         driven = [pump for pump in self.plant.pumps if pump.driven_by_source]
         proofs = [entity for pump in driven for entity in ev.pump_feedback(pump)]
         if source.running_sensor is not None:
@@ -1722,6 +1821,13 @@ class _Plan:
         if not demanded:
             reasons["source"] = "no ready loop calls"
             return False
+        if source.start_threshold is not None:
+            weight = sum(loop.weight for loop in self.wanted if self.calls_source(loop))
+            if weight < source.start_threshold:
+                reasons["source"] = (
+                    f"demand {weight:g} below the start threshold {source.start_threshold:g}"
+                )
+                return False
         if ev.source_observed is not False and state.source_observed is not None:
             reasons["source"] = "waiting for the source request to stop"
             return False
@@ -1731,6 +1837,15 @@ class _Plan:
             and ev.held("source", HoldKind.MIN_OFF, ev.source_observed_changed + source.min_off)
         ):
             reasons["source"] = "held off for its minimum off time"
+            return False
+        limit = source.max_starts_per_hour
+        starts = ev.source_starts
+        if (
+            limit is not None
+            and len(starts) >= limit
+            and ev.held("source", HoldKind.MAX_STARTS, starts[len(starts) - limit] + START_WINDOW)
+        ):
+            reasons["source"] = f"held off: {len(starts)} starts within the last hour"
             return False
         reasons["source"] = "requested"
         return True

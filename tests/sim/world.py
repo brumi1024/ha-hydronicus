@@ -309,8 +309,11 @@ class World:
                     zone.slug, DigitalThermostatState(Mode.OFF, zone.thermostat.target)
                 )
 
+        healthy = plant.source.health_sensor if plant.source is not None else None
         for entity in contacts(plant):
-            self.contacts.setdefault(entity, SwitchBody(changed=self.wall()))
+            # A source starts healthy; every other contact starts off.
+            body = SwitchBody(on=entity == healthy, changed=self.wall())
+            self.contacts.setdefault(entity, body)
 
     def _sensor(self, entity: str, value: float) -> None:
         self.sensors.setdefault(entity, SensorBody(value))
@@ -718,4 +721,5 @@ def contacts(plant: Plant) -> list[str]:
     found.extend(pump.flow_sensor for pump in plant.pumps)
     if plant.source is not None:
         found.append(plant.source.running_sensor)
+        found.append(plant.source.health_sensor)
     return [entity for entity in dict.fromkeys(found) if entity is not None]
