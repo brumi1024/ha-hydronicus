@@ -46,11 +46,19 @@ A controller-owned setting is only read and shown.
 For a Hydronicus-owned setting, a value change that Hydronicus did not command is reported as an event and in the setting's status, and becomes Hydronicus's value from then on.
 A change during a DHW boost ends the boost without restoring the previous value, since the owner has just chosen one.
 
-## Open question: the request while the bridge is unreachable
+## Handover to the wired controller
 
-With the Modbus heating bit as the request, a lost broker or a stopped Home Assistant leaves the bit as it was, and the heat pump goes on heating with nobody to close or open zones.
-A generic bridge cannot fix that without a rule of its own, so the owner chooses one of:
+On 2026-10-23 the owner decided that while Home Assistant is gone, the wired controller runs the heat pump by itself, as it did before Hydronicus.
+The heat pump then heats on its own weather curve whenever its controller says so, which is only safe while it has a sink, so the handover has two halves.
 
-- The dry contact for heating on and off, with a Shelly `auto_off` watchdog that Hydronicus refreshes, as `docs/safety.md` describes under "Cooling while Home Assistant is not running", and Modbus only for DHW and setpoints.
-- A single safety rule in the bridge: clear the heating bit after a configurable time without a heartbeat from Home Assistant, and never set it by itself.
-- Accept the risk and rely on the heat pump's own protections.
+- The bridge restores each whitelisted setting to its configured fallback value, the heating bit on by default, once it has heard no heartbeat from Home Assistant for a configurable time, 10 minutes by default so that a restart does not trigger it.
+  It then writes nothing more until a heartbeat returns, and it publishes `<base>/handover` as `ON` so that Hydronicus does not adopt those writes as the owner's changes.
+  This is the bridge's one rule of its own, and it only ever hands control back, never takes it.
+- The Pro 4PM and Pro 2PM that switch the valves and pumps open every heating zone valve and run the secondary pump once they too have heard no heartbeat for that time, through a small script of their own.
+  Without that half the heat pump would heat into closed valves, the short cycling this work exists to prevent.
+
+When Home Assistant returns, its heartbeat ends the handover, the bridge clears `<base>/handover`, and Hydronicus takes over from the observed state like after any restart: the open valves and the running pump stay until its usual sequence closes what no zone needs.
+The settings the controller changed meanwhile are adopted, since the controller owned them during the handover.
+A Shelly that loses power keeps the valves closed, since they are normally closed, and the heat pump's own protections remain the last layer.
+
+The scan must confirm that the heating bit and the wired controller's own on and off are the same state, which is what makes restoring the bit a handover rather than a command.
