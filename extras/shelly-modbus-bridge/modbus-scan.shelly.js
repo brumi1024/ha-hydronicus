@@ -28,7 +28,6 @@ var CONFIG = {
   slaveId: 0,
   searchFrom: 1,
   searchTo: 247,
-  searchTimeoutMs: 500, // a quiet address counts as absent after this
   searchRetryMs: 60000, // pause before searching again when no address answered
   // [first register, count] read with one FC03 request each (count 1..123).
   // The first block is the health probe; a later block that fails is read one
@@ -36,7 +35,7 @@ var CONFIG = {
   blocks: [[0, 11], [100, 41], [200, 10]],
   pollMs: 10000, // pause between completed cycles
   gapMs: 100, // pause between requests
-  rpcTimeoutMs: 3000, // a request with no answer by then counts as failed
+  rpcTimeoutMs: 10000, // a call whose callback has not come by then counts as lost
   failuresBeforeUnhealthy: 3, // consecutive failed probes
   historySize: 40, // register changes kept for the endpoint
   logChanges: true
@@ -124,9 +123,12 @@ function stopWatchdog() {
   state.watchdog = null;
 }
 
-// Reads count registers from first and calls done(values, error) exactly once,
-// whether the add-on answers, fails, or never answers within timeoutMs.
-function readRegisters(first, count, done, timeoutMs) {
+// Reads count registers from first and calls done(values, error) exactly once.
+// Requests go one at a time, each after the previous call's callback: the
+// add-on holds a request to a quiet address until its own timeout, and the
+// firmware refuses more than 5 calls in progress. The watchdog only gives up
+// on a callback that never comes, and a refused call is reported, not thrown.
+function readRegisters(first, count, done) {
   state.seq++;
   var seq = state.seq;
   function finish(values, error) {
@@ -137,7 +139,7 @@ function readRegisters(first, count, done, timeoutMs) {
   }
   function onTimeout() {
     state.watchdog = null;
-    finish(null, 'timeout');
+    finish(null, 'no callback');
   }
   function onResult(result, code, message) {
     if (code !== 0) {
@@ -148,12 +150,16 @@ function readRegisters(first, count, done, timeoutMs) {
       finish(result.values, null);
     }
   }
-  state.watchdog = Timer.set(timeoutMs || CONFIG.rpcTimeoutMs, false, onTimeout);
-  Shelly.call(
-    'MbRtuClient.ReadHoldingRegisters',
-    { id: CONFIG.serialId, sid: state.slave, addr: first, qty: count },
-    onResult
-  );
+  state.watchdog = Timer.set(CONFIG.rpcTimeoutMs, false, onTimeout);
+  try {
+    Shelly.call(
+      'MbRtuClient.ReadHoldingRegisters',
+      { id: CONFIG.serialId, sid: state.slave, addr: first, qty: count },
+      onResult
+    );
+  } catch (e) {
+    finish(null, 'refused: ' + e.message);
+  }
 }
 
 function later(ms, fn) {
@@ -266,7 +272,7 @@ function probeNext() {
     return;
   }
   state.slave = search.order[search.index];
-  readRegisters(CONFIG.blocks[0][0], 1, onProbe, CONFIG.searchTimeoutMs);
+  readRegisters(CONFIG.blocks[0][0], 1, onProbe);
 }
 
 function onProbe(values, error) {
@@ -280,6 +286,11 @@ function onProbe(values, error) {
   // The add-on's error codes are not documented, so only values count as an
   // answer; the last error is reported if no address answers.
   search.lastError = error;
+  // A refused call never reached the bus, so the same address is tried again.
+  if (error && error.indexOf('refused') === 0) {
+    later(1000, probeNext);
+    return;
+  }
   search.index++;
   later(CONFIG.gapMs, probeNext);
 }
@@ -387,7 +398,6 @@ function validConfig() {
   var b;
   if (CONFIG.slaveId < 0 || CONFIG.slaveId > 247 || CONFIG.slaveId !== Math.floor(CONFIG.slaveId)) return 'slaveId must be 0 (search) or 1..247';
   if (CONFIG.searchFrom < 1 || CONFIG.searchTo > 247 || CONFIG.searchFrom > CONFIG.searchTo) return 'search range must lie within 1..247';
-  if (CONFIG.searchTimeoutMs < 100) return 'searchTimeoutMs too short';
   if (!CONFIG.blocks.length) return 'blocks must not be empty';
   for (b = 0; b < CONFIG.blocks.length; b++) {
     if (CONFIG.blocks[b][1] < 1 || CONFIG.blocks[b][1] > 123) return 'a block reads 1..123 registers';

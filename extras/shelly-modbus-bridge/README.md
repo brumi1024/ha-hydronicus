@@ -27,7 +27,7 @@ A later block that the heat pump refuses is read one register at a time from the
 
 With `slaveId: 0` the script reads one register at each address from `searchFrom` to `searchTo`, 1 to 247, and reads the first address that answers.
 It tries the address it found last time first, so a restart finds it at once.
-A full search waits up to half a second at each quiet address, about two and a half minutes for all of them.
+Each quiet address takes as long as the add-on waits for an answer, a few seconds, so a search through every address may take ten minutes or more; a heat pump at address 1 is found at once.
 If no address answers, the console says so with the last error, and the script searches again a minute later; check the wiring, swap A and B, and check the baud rate and format.
 Once the address is known, you may set it in `slaveId` to skip the search.
 
