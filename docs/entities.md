@@ -183,11 +183,13 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | Entity | Entity ID | State |
 | --- | --- | --- |
 | **Requested** binary sensor | `binary_sensor.<source>_requested` | On while Hydronicus wants the source's request on. |
+| **Fault** binary sensor | `binary_sensor.<source>_fault` | Only with a `health_sensor`: on while that sensor does not read healthy, so the source is kept off. |
 
 Its `observed` attribute is the request switch's own state, and its `reason` says why, such as `held for its minimum on time` or `waiting for the source mode`.
 Its `running`, `running_basis`, and `running_sensor` attributes describe source operation separately from the request.
 Its `holds` attribute lists the source's [timers](#timers), such as its minimum off time and post-run.
 Configured feedback takes precedence; without it, operation is inferred from the request, and unknown feedback remains unknown.
+The **Fault** binary sensor turns on at once, and its `reason` says whether the health sensor reports a fault or is unavailable; an automation can notify on it, while the [Repair](troubleshooting.md#a-source-is-kept-off-by-its-health-sensor) waits 10 minutes.
 
 ## Timers
 

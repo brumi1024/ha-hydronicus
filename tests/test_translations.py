@@ -27,6 +27,7 @@ from custom_components.hydronicus.issues import (
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
+    source_unhealthy,
     zone_area_issue,
 )
 from custom_components.hydronicus.sensor import STATUSES
@@ -40,7 +41,13 @@ ENTITY_KEYS = {
     "button": {"reset_learning"},
     "climate": {"zone"},
     "number": {"heat_setback", "cool_setback"},
-    "binary_sensor": {"heating_demand", "cooling_demand", "loop_flowing", "source_requested"},
+    "binary_sensor": {
+        "heating_demand",
+        "cooling_demand",
+        "loop_flowing",
+        "source_requested",
+        "source_fault",
+    },
     "select": {"mode"},
     "sensor": {"status", "combined_temperature", "dew_point", "duty_cycle", "loop_runtime"},
     "switch": {"control"},
@@ -77,6 +84,7 @@ def _issues() -> list[Issue]:
         outputs_awaiting_confirmation(plant, ["switch.a", "switch.b"]),
         missing_binding(plant, export_plant(plant), "switch.a", "pumps.floor.switch"),
         missing_area_sensor(plant, "Kitchen", "sensor.kitchen"),
+        source_unhealthy(plant, "binary_sensor.modbus_healthy"),
         *(
             zone_area_issue(plant, ZoneAreaProblem(kind, "basement", "workshop"), areas)
             for kind in ZoneAreaProblemKind

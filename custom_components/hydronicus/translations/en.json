@@ -691,6 +691,9 @@
       },
       "source_requested": {
         "name": "Requested"
+      },
+      "source_fault": {
+        "name": "Fault"
       }
     },
     "select": {
@@ -933,6 +936,10 @@
     "invalid_schedule_block": {
       "title": "{plant}, zone {zone}: schedule {entity_id} has blocks it cannot use",
       "description": "In Plant {plant}, zone {zone} follows {entity_id}, and these blocks name a level Hydronicus cannot use: {blocks}. A block's data may name either a preset (comfort, eco, or away) or a heat_target and cool_target from 5 to 35 °C, never both. While such a block is active, the zone holds its manual comfort target. Edit the blocks in the schedule helper; the repair clears automatically once every block is usable."
+    },
+    "source_unhealthy": {
+      "title": "{plant}: {source} is kept off by {entity_id}",
+      "description": "In Plant {plant}, the health sensor {entity_id} of {source} has not read healthy for at least 10 minutes, so Hydronicus released the source's request and does not ask it for heat or cooling. Zones that call still open their loops and run their switched pumps. Check the source and the link that reports its health, such as a Modbus bridge, its wiring, and its broker. The repair clears automatically once the health sensor reads on again."
     }
   },
   "exceptions": {

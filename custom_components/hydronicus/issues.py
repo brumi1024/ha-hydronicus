@@ -1,10 +1,11 @@
 """The Repairs the runtime raises for one Plant.
 
 A failed evaluation, output faults, missing bindings, unconfirmed outputs, zone
-area problems, required sensors that block their zone, and condensation inputs
-that block cooling are Repairs, not entities (contract K7). The runtime computes
-the current set after every evaluation and ``async_sync_issues`` creates the new
-ones and deletes the resolved ones.
+area problems, required sensors that block their zone, condensation inputs
+that block cooling, and a source health sensor that keeps the source off are
+Repairs, not entities (contract K7). The runtime computes the current set after
+every evaluation and ``async_sync_issues`` creates the new ones and deletes the
+resolved ones.
 
 The kinds in ``FIXABLE`` have a fix flow in ``repairs``, which their issue data
 leads to: the Plant's entry, and for a zone's problem its subentry. The others
@@ -44,6 +45,7 @@ class IssueKind(StrEnum):
     ZONE_SENSOR_UNUSABLE = "zone_sensor_unusable"
     CONDENSATION_INPUT_UNUSABLE = "condensation_input_unusable"
     INVALID_SCHEDULE_BLOCK = "invalid_schedule_block"
+    SOURCE_UNHEALTHY = "source_unhealthy"
 
 
 # Kinds with a fix flow; hassfest wants their translations to carry the fix flow
@@ -202,6 +204,18 @@ def zone_sensor_unusable(plant: Plant, zone: str, entity_id: str) -> Issue:
     )
 
 
+def source_unhealthy(plant: Plant, entity_id: str) -> Issue:
+    return Issue(
+        IssueKind.SOURCE_UNHEALTHY,
+        entity_id,
+        {
+            "plant": plant.name,
+            "source": plant.source.title if plant.source else "",
+            "entity_id": entity_id,
+        },
+    )
+
+
 def invalid_schedule_blocks(
     plant: Plant, zone: str, entity_id: str, problems: Iterable[str]
 ) -> Issue:
@@ -261,11 +275,11 @@ def _loop_name(plant: Plant, loop: Loop) -> str:
 class UnusableInputs:
     """When each unusable input began to block what needs it, which delays its Repair.
 
-    A required sensor blocks its zone, keyed by the zone's slug, and a
-    condensation input blocks the cooling of a loop, keyed by ``str(LoopRef)``;
-    each is kept under the kind of its Repair. The runtime updates it after
-    every evaluation and persists it, so a restart neither raises a Repair early
-    nor starts the delay over.
+    A required sensor blocks its zone, keyed by the zone's slug, a condensation
+    input blocks the cooling of a loop, keyed by ``str(LoopRef)``, and a source
+    health sensor blocks the source, keyed by ``source``; each is kept under the
+    kind of its Repair. The runtime updates it after every evaluation and persists
+    it, so a restart neither raises a Repair early nor starts the delay over.
     """
 
     def __init__(self, since: Mapping[tuple[IssueKind, str, str], float] | None = None) -> None:

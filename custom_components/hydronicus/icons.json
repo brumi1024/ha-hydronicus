@@ -40,6 +40,13 @@
           "on": "mdi:heat-pump",
           "off": "mdi:heat-pump-outline"
         }
+      },
+      "source_fault": {
+        "default": "mdi:heat-pump-outline",
+        "state": {
+          "on": "mdi:alert-circle",
+          "off": "mdi:check-circle-outline"
+        }
       }
     },
     "select": {

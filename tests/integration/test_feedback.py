@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.helpers import issue_registry as ir
 
+from custom_components.hydronicus.const import DOMAIN
 from custom_components.hydronicus.core.step import NumericState
+from custom_components.hydronicus.issues import UNUSABLE_REPAIR_AFTER, IssueKind
 from tests.integration.helpers import (
     Actuators,
     async_advance,
@@ -52,7 +55,10 @@ async def test_pump_starts_before_flow_proof_and_source_waits_for_both_proofs(
 
 
 async def test_a_source_health_sensor_releases_the_request_at_once_and_is_logged(
-    hass: HomeAssistant, actuators: Actuators, caplog: pytest.LogCaptureFixture
+    hass: HomeAssistant,
+    actuators: Actuators,
+    caplog: pytest.LogCaptureFixture,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     text = PLANT.replace(
         "name: Review",
@@ -71,11 +77,45 @@ async def test_a_source_health_sensor_releases_the_request_at_once_and_is_logged
         "source health sensor binary_sensor.modbus_healthy reports a fault"
     )
     assert "releases its source: source health sensor" in caplog.text
+    fault = hass.states.get("binary_sensor.heat_source_fault")
+    assert fault.state == "on"
+    assert fault.attributes["reason"] == entry.runtime_data.view.desired.source_fault
+    assert source_unhealthy_issues(hass) == [], "the Repair waits, so a restart raises none"
 
+    await async_advance(hass, freezer, UNUSABLE_REPAIR_AFTER + 10, step=30)
+    assert len(issues := source_unhealthy_issues(hass)) == 1
+    assert issues[0].translation_placeholders["entity_id"] == "binary_sensor.modbus_healthy"
+
+    # The room sensor reports every 30 seconds at most before it is stale.
+    set_temperature(hass, "sensor.room", 18.0)
     hass.states.async_set("binary_sensor.modbus_healthy", "on")
     await hass.async_block_till_done()
     assert hass.states.get("switch.source").state == "on"
     assert "the source reads healthy again" in caplog.text
+    assert hass.states.get("binary_sensor.heat_source_fault").state == "off"
+    assert source_unhealthy_issues(hass) == []
+
+
+def source_unhealthy_issues(hass: HomeAssistant) -> list[ir.IssueEntry]:
+    return [
+        issue
+        for (domain, _), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue.translation_key == IssueKind.SOURCE_UNHEALTHY
+    ]
+
+
+async def test_a_source_without_a_health_sensor_has_no_fault_sensor(
+    hass: HomeAssistant, actuators: Actuators
+) -> None:
+    await start(
+        hass,
+        PLANT.replace(
+            "name: Review",
+            "name: Review\nsource: {request: switch.source, min_on: 0, min_off: 0, post_run: 0}",
+        ),
+    )
+    assert hass.states.get("binary_sensor.heat_source_requested") is not None
+    assert hass.states.get("binary_sensor.heat_source_fault") is None
 
 
 @pytest.mark.parametrize("proof", ["on", "unavailable"])

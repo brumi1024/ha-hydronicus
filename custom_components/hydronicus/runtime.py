@@ -112,6 +112,7 @@ from .issues import (
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
+    source_unhealthy,
     zone_area_issue,
     zone_sensor_unusable,
 )
@@ -565,6 +566,11 @@ class PlantRuntime:
             {
                 IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
                 IssueKind.CONDENSATION_INPUT_UNUSABLE: desired.blocking_condensation_inputs,
+                IssueKind.SOURCE_UNHEALTHY: {"source": (plant.source.health_sensor,)}
+                if desired.source_fault is not None
+                and plant.source is not None
+                and plant.source.health_sensor is not None
+                else {},
             },
             now,
         )
@@ -1181,6 +1187,11 @@ class PlantRuntime:
                     if entity not in missing
                 ),
             )
+        )
+        issues.extend(
+            source_unhealthy(reconciled, entity)
+            for _, entity in self.unusable.reported(IssueKind.SOURCE_UNHEALTHY, now)
+            if entity not in missing
         )
         current = tuple(issues)
         if current != self.issues or not self._issues_synced:
