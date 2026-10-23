@@ -98,6 +98,22 @@
               "outdoor_sensor": "Optional separate temperature sensor used to compare recovery in different outdoor conditions.",
               "max_age": "Maximum age of forecast content since it was first seen and of weather or outdoor sensor reports. Repeated forecasts keep their original age; this is not the provider issue time."
             }
+          },
+          "cycling": {
+            "name": "Cycling protection",
+            "description": "Optional. Keeps a heat pump from short cycling and stops it when it reports a fault.",
+            "data": {
+              "health_sensor": "Source health sensor",
+              "max_starts_per_hour": "Maximum starts per hour",
+              "start_threshold": "Start threshold",
+              "heat_sink_loops": "Heat sink loops"
+            },
+            "data_description": {
+              "health_sensor": "A binary sensor that reads on while the source and its link are healthy, such as a Modbus bridge's health. While it is off or unavailable, the source request is released at once and stays off.",
+              "max_starts_per_hour": "How often the source request may turn on within any hour. Empty means no limit.",
+              "start_threshold": "The total weight of calling loops needed before the source starts. Each loop's weight is set on the loop, 1 by default. Empty starts the source for any calling loop.",
+              "heat_sink_loops": "Heating loops opened when every zone is satisfied before the source's minimum on time ends, so the source runs it out into them."
+            }
           }
         }
       },
@@ -258,7 +274,8 @@
           "surface_temperature": "Surface temperature sensor",
           "surface_minimum": "Cooling surface minimum",
           "condensation_switch": "Condensation switch",
-          "opening_time": "Valve opening time"
+          "opening_time": "Valve opening time",
+          "weight": "Weight"
         },
         "data_description": {
           "name": "Names the loop, such as Ceiling or Floor.",
@@ -268,7 +285,8 @@
           "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
           "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
           "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
-          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait."
+          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
+          "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
         }
       },
       "zone_menu": {
@@ -311,7 +329,8 @@
           "opening_time": "Valve opening time",
           "runs": "Runs",
           "with_zones": "Zones",
-          "remove": "Remove this loop"
+          "remove": "Remove this loop",
+          "weight": "Weight"
         },
         "data_description": {
           "name": "Names the loop, such as Ceiling or Floor.",
@@ -324,7 +343,8 @@
           "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
           "runs": "With the source runs the loop whenever the source is requested. With zones runs it while any of the chosen zones demands.",
           "with_zones": "Only for With zones: the zones this loop runs with.",
-          "remove": "Remove the loop from the Plant."
+          "remove": "Remove the loop from the Plant.",
+          "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
         }
       },
       "min_flow": {
@@ -559,7 +579,8 @@
             "surface_minimum": "Cooling surface minimum",
             "condensation_switch": "Condensation switch",
             "opening_time": "Valve opening time",
-            "remove": "Remove this loop"
+            "remove": "Remove this loop",
+            "weight": "Weight"
           },
           "data_description": {
             "name": "Names the loop, such as Ceiling or Floor.",
@@ -570,7 +591,8 @@
             "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
             "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
             "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
-            "remove": "Remove the loop from the zone."
+            "remove": "Remove the loop from the zone.",
+            "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
           }
         }
       },

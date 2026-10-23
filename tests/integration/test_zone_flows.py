@@ -144,7 +144,13 @@ async def test_reconfigure_a_zone_edits_its_settings_and_its_loops(hass: HomeAss
     result = await async_submit(
         flows,
         result,
-        {"name": "Wall", "valves": ["switch.wall_valve"], "pump": "floor", "opening_time": 300},
+        {
+            "name": "Wall",
+            "valves": ["switch.wall_valve"],
+            "pump": "floor",
+            "opening_time": 300,
+            "weight": 2.5,
+        },
     )
     result = await async_choose(flows, result, "save")
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "reconfigure_successful"
@@ -157,6 +163,7 @@ async def test_reconfigure_a_zone_edits_its_settings_and_its_loops(hass: HomeAss
     assert zone.thermostat == ExternalThermostat("climate.living_wall")
     assert [loop.slug for loop in zone.loops] == ["ceiling", "wall"]
     assert zone.loops[1].valves[0].opening_time == 300.0
+    assert zone.loops[1].weight == 2.5
     assert entry.state is ConfigEntryState.LOADED
 
 

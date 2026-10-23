@@ -225,7 +225,11 @@ class HydronicusConfigFlow(DocumentEdits, ConfigFlow, domain=DOMAIN):
                     if self._mode_entity:
                         return await self.async_step_source_mode()
                     return await self._back(self.async_step_pump)
-        return self._form("plant", forms.plant_schema(self.hass, values), checked)
+        return self._form(
+            "plant",
+            forms.plant_schema(self.hass, values, docs.heat_sink_choices(self._document)),
+            checked,
+        )
 
     async def async_step_source_mode(
         self, user_input: dict[str, Any] | None = None

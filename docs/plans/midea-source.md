@@ -2,7 +2,8 @@
 
 Status: in progress on branch `midea-source` as of 2026-10-23; not released or installed.
 Done: the read-only register scan (`extras/shelly-modbus-bridge/modbus-scan.shelly.js`), and the source's `max_starts_per_hour`, `heat_sink_loops`, `start_threshold`, `health_sensor`, and loop `weight`.
-Next: the owner runs the scan on the real unit, while the source fault's Repair and entity, the E8 log, and the form fields go ahead.
+Also done: the source fault's Repair and **Fault** binary sensor, and the **Cycling protection** form section and loop **Weight** field.
+Next: the owner runs the scan on the real unit; the E8 log waits, as the owner asked on 2026-10-23.
 
 ## Owner decisions
 

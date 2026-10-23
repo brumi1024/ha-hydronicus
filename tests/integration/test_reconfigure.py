@@ -109,6 +109,68 @@ async def test_reconfigure_the_plant_and_its_source(hass: HomeAssistant) -> None
     assert plant.zones == read_plant_file(REFERENCE_PLANT).zones
 
 
+def section_field(result: dict[str, Any], section: str, field: str) -> Any:
+    """Return a field of a form's section: its key and its selector."""
+    for key, value in result["data_schema"].schema.items():
+        if str(key) == section:
+            for inner, selector in value.schema.schema.items():
+                if str(inner) == field:
+                    return inner, selector
+    raise AssertionError(f"{section}.{field}")
+
+
+async def test_reconfigure_sets_keeps_and_clears_the_source_cycling_protection(
+    hass: HomeAssistant,
+) -> None:
+    reference_world(hass)
+    hass.states.async_set("binary_sensor.heat_pump_healthy", "on")
+    entry = await async_import(hass, REFERENCE_PLANT)
+    flow = hass.config_entries.flow
+    plant_step = {
+        "name": "Home",
+        "request": SOURCE_REQUEST,
+        "timing": {"mode_dwell": 3600, "post_run": 180, "min_on": 600, "min_off": 600},
+    }
+
+    result = await async_choose(flow, await async_reconfigure(hass, entry), "plant")
+    _, sinks = section_field(result, "cycling", "heat_sink_loops")
+    offered = [option["value"] for option in sinks.serialize()["selector"]["select"]["options"]]
+    assert "living_area.floor" in offered
+    assert "towel_dryer" not in offered, "a loop that runs with the source is no heat sink"
+    cycling = {
+        "health_sensor": "binary_sensor.heat_pump_healthy",
+        "max_starts_per_hour": 3.0,
+        "start_threshold": 1.5,
+        "heat_sink_loops": ["living_area.floor"],
+    }
+    result = await async_submit(flow, result, {**plant_step, "cycling": cycling})
+    await async_save(hass, result)
+    source = entry.runtime_data.plant.source
+    assert source is not None
+    assert source.health_sensor == "binary_sensor.heat_pump_healthy"
+    assert source.max_starts_per_hour == 3
+    assert source.start_threshold == 1.5
+    assert [str(ref) for ref in source.heat_sink_loops] == ["living_area.floor"]
+
+    result = await async_choose(flow, await async_reconfigure(hass, entry), "plant")
+    key, _ = section_field(result, "cycling", "max_starts_per_hour")
+    assert key.description == {"suggested_value": 3}
+    result = await async_submit(flow, result, plant_step)
+    await async_save(hass, result)
+    assert entry.runtime_data.plant.source == source, "a form without the section keeps it"
+
+    result = await async_choose(flow, await async_reconfigure(hass, entry), "plant")
+    result = await async_submit(flow, result, {**plant_step, "cycling": {}})
+    await async_save(hass, result)
+    cleared = entry.runtime_data.plant.source
+    assert cleared is not None
+    assert (cleared.health_sensor, cleared.max_starts_per_hour, cleared.heat_sink_loops) == (
+        None,
+        None,
+        (),
+    )
+
+
 async def test_reconfigure_adds_a_pump_and_a_plant_loop_and_edits_a_pump(
     hass: HomeAssistant,
 ) -> None:
