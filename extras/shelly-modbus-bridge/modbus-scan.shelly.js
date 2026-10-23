@@ -22,7 +22,14 @@ var CONFIG = {
   baud: 9600,
   format: '8N1',
   configureSerial: true, // set Serial to mb_client with baud and format if it differs
-  slaveId: 1, // the heat pump's Modbus address, set by rotary switch S3
+  // The heat pump's Modbus address, set by rotary switch S3, or 0 to search
+  // searchFrom..searchTo for the address that answers, trying the address
+  // found last time first.
+  slaveId: 0,
+  searchFrom: 1,
+  searchTo: 247,
+  searchTimeoutMs: 500, // a quiet address counts as absent after this
+  searchRetryMs: 60000, // pause before searching again when no address answered
   // [first register, count] read with one FC03 request each (count 1..123).
   // The first block is the health probe; a later block that fails is read one
   // register at a time, so an unsupported address only marks itself.
@@ -49,6 +56,8 @@ var state = {
   cycles: 0,
   lastOk: null,
   serial: 'unchecked',
+  slave: null, // the address being read
+  search: 'off', // off, searching, found, or none
   seq: 0,
   watchdog: null,
   timer: null
@@ -116,8 +125,8 @@ function stopWatchdog() {
 }
 
 // Reads count registers from first and calls done(values, error) exactly once,
-// whether the add-on answers, fails, or never answers.
-function readRegisters(first, count, done) {
+// whether the add-on answers, fails, or never answers within timeoutMs.
+function readRegisters(first, count, done, timeoutMs) {
   state.seq++;
   var seq = state.seq;
   function finish(values, error) {
@@ -139,10 +148,10 @@ function readRegisters(first, count, done) {
       finish(result.values, null);
     }
   }
-  state.watchdog = Timer.set(CONFIG.rpcTimeoutMs, false, onTimeout);
+  state.watchdog = Timer.set(timeoutMs || CONFIG.rpcTimeoutMs, false, onTimeout);
   Shelly.call(
     'MbRtuClient.ReadHoldingRegisters',
-    { id: CONFIG.serialId, sid: CONFIG.slaveId, addr: first, qty: count },
+    { id: CONFIG.serialId, sid: state.slave, addr: first, qty: count },
     onResult
   );
 }
@@ -228,6 +237,77 @@ function startCycle() {
   readNext();
 }
 
+// The address search: one FC03 read of the first block's first register at
+// each address, the remembered one first; the first address that answers wins.
+var search = { order: [], index: 0, lastError: null };
+
+function remembered() {
+  try {
+    var value = Script.storage.getItem('slave');
+    return value === null || value === undefined ? null : Number(value);
+  } catch (e) {
+    return null;
+  }
+}
+
+function remember(address) {
+  try {
+    Script.storage.setItem('slave', String(address));
+  } catch (e) {
+    print('[scan] could not remember address ' + address);
+  }
+}
+
+function probeNext() {
+  if (search.index >= search.order.length) {
+    state.search = 'none';
+    print('[scan] no address in ' + CONFIG.searchFrom + '..' + CONFIG.searchTo + ' answered (last: ' + search.lastError + '); check wiring, A/B polarity, baud and format; searching again in ' + CONFIG.searchRetryMs / 1000 + ' s');
+    later(CONFIG.searchRetryMs, startSearch);
+    return;
+  }
+  state.slave = search.order[search.index];
+  readRegisters(CONFIG.blocks[0][0], 1, onProbe, CONFIG.searchTimeoutMs);
+}
+
+function onProbe(values, error) {
+  if (values) {
+    state.search = 'found';
+    remember(state.slave);
+    print('[scan] address ' + state.slave + ' answers; reading it');
+    later(CONFIG.gapMs, startCycle);
+    return;
+  }
+  // The add-on's error codes are not documented, so only values count as an
+  // answer; the last error is reported if no address answers.
+  search.lastError = error;
+  search.index++;
+  later(CONFIG.gapMs, probeNext);
+}
+
+function startSearch() {
+  var first = remembered();
+  var order = [];
+  var a;
+  if (first !== null && first >= CONFIG.searchFrom && first <= CONFIG.searchTo) order.push(first);
+  for (a = CONFIG.searchFrom; a <= CONFIG.searchTo; a++) {
+    if (a !== first) order.push(a);
+  }
+  search.order = order;
+  search.index = 0;
+  state.search = 'searching';
+  print('[scan] searching addresses ' + CONFIG.searchFrom + '..' + CONFIG.searchTo + (first !== null ? ', ' + first + ' first' : ''));
+  probeNext();
+}
+
+function begin() {
+  if (CONFIG.slaveId > 0) {
+    state.slave = CONFIG.slaveId;
+    startCycle();
+  } else {
+    startSearch();
+  }
+}
+
 function addresses() {
   var list = [];
   var b;
@@ -240,7 +320,7 @@ function addresses() {
 
 function asText() {
   var lines = [
-    'slave ' + CONFIG.slaveId + '  healthy ' + state.healthy + '  cycles ' + state.cycles + '  last ok ' + state.lastOk + '  serial ' + state.serial,
+    'slave ' + state.slave + ' (search ' + state.search + ')  healthy ' + state.healthy + '  cycles ' + state.cycles + '  last ok ' + state.lastOk + '  serial ' + state.serial,
     'addr  dec    hex     bits                 signed  lo   hi   changes  error'
   ];
   var list = addresses();
@@ -281,7 +361,8 @@ function asJson() {
     });
   }
   return JSON.stringify({
-    slave: CONFIG.slaveId,
+    slave: state.slave,
+    search: state.search,
     healthy: state.healthy,
     cycles: state.cycles,
     last_ok: state.lastOk,
@@ -304,7 +385,9 @@ function onRequest(request, response) {
 
 function validConfig() {
   var b;
-  if (CONFIG.slaveId < 1 || CONFIG.slaveId > 247 || CONFIG.slaveId !== Math.floor(CONFIG.slaveId)) return 'slaveId must be 1..247';
+  if (CONFIG.slaveId < 0 || CONFIG.slaveId > 247 || CONFIG.slaveId !== Math.floor(CONFIG.slaveId)) return 'slaveId must be 0 (search) or 1..247';
+  if (CONFIG.searchFrom < 1 || CONFIG.searchTo > 247 || CONFIG.searchFrom > CONFIG.searchTo) return 'search range must lie within 1..247';
+  if (CONFIG.searchTimeoutMs < 100) return 'searchTimeoutMs too short';
   if (!CONFIG.blocks.length) return 'blocks must not be empty';
   for (b = 0; b < CONFIG.blocks.length; b++) {
     if (CONFIG.blocks[b][1] < 1 || CONFIG.blocks[b][1] > 123) return 'a block reads 1..123 registers';
@@ -325,7 +408,7 @@ function onSerialSet(result, code, message) {
     return;
   }
   state.serial = 'configured';
-  startCycle();
+  begin();
 }
 
 function onSerialConfig(result, code, message) {
@@ -337,7 +420,7 @@ function onSerialConfig(result, code, message) {
   var ok = result.mode === 'mb_client' && result.serial && result.serial.baud === CONFIG.baud && result.serial.format === CONFIG.format;
   if (ok) {
     state.serial = 'ok';
-    startCycle();
+    begin();
     return;
   }
   print('[scan] Serial ' + CONFIG.serialId + ' is ' + JSON.stringify(result));

@@ -19,8 +19,17 @@ A later block that the heat pump refuses is read one register at a time from the
 1. Wire the add-on to the heat pump's RS-485 terminals, and keep the Shelly the only Modbus client on the bus.
 2. In the Shelly's web interface, enable the Modbus add-on and reboot if it asks.
 3. Create a script, paste the whole file, and keep the `@meta` comment as its first line, since the firmware creates the `Modbus healthy` component from it.
-4. Set `CONFIG.slaveId` to the address of rotary switch S3, and `CONFIG.serialId` to the add-on's Serial instance, which is 100 on the devices Shelly documents.
-5. Start the script and watch its console.
+4. Set the add-on's Serial component to **Modbus Client**, 9600 baud, 8N1, or leave `configureSerial` on and let the script set it; `CONFIG.serialId` is that component's instance, 100 on the devices Shelly documents.
+5. Leave `CONFIG.slaveId` at 0 to search for the heat pump's address, or set the address of rotary switch S3, where position 0 is reported to mean address 1.
+6. Start the script and watch its console.
+
+### Find the address
+
+With `slaveId: 0` the script reads one register at each address from `searchFrom` to `searchTo`, 1 to 247, and reads the first address that answers.
+It tries the address it found last time first, so a restart finds it at once.
+A full search waits up to half a second at each quiet address, about two and a half minutes for all of them.
+If no address answers, the console says so with the last error, and the script searches again a minute later; check the wiring, swap A and B, and check the baud rate and format.
+Once the address is known, you may set it in `slaveId` to skip the search.
 
 ### Read the registers
 
