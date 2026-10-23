@@ -54,7 +54,8 @@ The heat pump then heats on its own weather curve whenever its controller says s
 - The bridge restores each whitelisted setting to its configured fallback value, the heating bit on by default, once it has heard no heartbeat from Home Assistant for a configurable time, 10 minutes by default so that a restart does not trigger it.
   It then writes nothing more until a heartbeat returns, and it publishes `<base>/handover` as `ON` so that Hydronicus does not adopt those writes as the owner's changes.
   This is the bridge's one rule of its own, and it only ever hands control back, never takes it.
-- The Pro 4PM and Pro 2PM that switch the valves and pumps open every heating zone valve and run the secondary pump once they too have heard no heartbeat for that time, through a small script of their own.
+- The Pro 4PM and Pro 2PM that switch the valves and pumps open the living area's floor and ceiling valves and run the secondary pump once they too have heard no heartbeat for that time, through a small script of their own.
+  The owner chose those two loops on 2026-10-23; the basement and bedroom ceilings stay as they are, and the script leaves every channel it does not name alone.
   Without that half the heat pump would heat into closed valves, the short cycling this work exists to prevent.
 
 When Home Assistant returns, its heartbeat ends the handover, the bridge clears `<base>/handover`, and Hydronicus takes over from the observed state like after any restart: the open valves and the running pump stay until its usual sequence closes what no zone needs.
