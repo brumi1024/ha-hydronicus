@@ -23,8 +23,9 @@ var CONFIG = {
   format: '8N1',
   configureSerial: true, // set Serial to mb_client with baud and format if it differs
   // The heat pump's Modbus address, set by rotary switch S3, or 0 to search
-  // searchFrom..searchTo for the address that answers, trying the address
-  // found last time first.
+  // searchFrom..searchTo for the address that answers. The search tries the
+  // address found last time first, then 1, which community setups use, and 16,
+  // which Midea's service manual gives for S3 at position 0.
   slaveId: 0,
   searchFrom: 1,
   searchTo: 247,
@@ -32,7 +33,9 @@ var CONFIG = {
   // [first register, count] read with one FC03 request each (count 1..123).
   // The first block is the health probe; a later block that fails is read one
   // register at a time, so an unsupported address only marks itself.
-  blocks: [[0, 11], [100, 41], [200, 10]],
+  // The ranges cover the holding registers that community projects read on
+  // Midea R32 controllers (see LABELS); 200..272 are installer parameters.
+  blocks: [[0, 11], [100, 46], [200, 73]],
   pollMs: 10000, // pause between completed cycles
   gapMs: 100, // pause between requests
   rpcTimeoutMs: 10000, // a call whose callback has not come by then counts as lost
@@ -42,6 +45,53 @@ var CONFIG = {
 };
 
 var HEX = '0123456789ABCDEF';
+
+// What each register is believed to hold on Midea R32 controllers, after the
+// register lists of community projects such as svenar-iot/esphome-heatpump.
+// Unconfirmed on older units: the scan exists to check them.
+var LABELS = {
+  0: 'power bits: b0 room temp ctrl, b1 zone 1, b2 zone 2, b3 DHW',
+  1: 'mode set (1 auto, 2 cool, 3 heat)',
+  2: 'T1S water set: lo zone 1, hi zone 2',
+  3: 'Ts air set',
+  4: 'T5S DHW set',
+  5: 'function bits',
+  6: 'weather curve: lo zone 1, hi zone 2',
+  7: 'forced DHW heating',
+  100: 'compressor frequency',
+  101: 'operating mode',
+  104: 'Tw_in water inlet',
+  105: 'Tw_out water outlet',
+  107: 'T4 outdoor',
+  110: 'T1 total outlet',
+  114: 'Ta room',
+  115: 'T5 DHW tank',
+  122: 'compressor run time',
+  124: 'current fault (E0 1, E8 9)',
+  125: 'fault 1',
+  126: 'fault 2',
+  127: 'fault 3',
+  128: 'status bits: b1 defrost, b6 heat by thermostat',
+  129: 'load bits: b3 internal pump, b6 external pump, b13 run',
+  130: 'software version',
+  131: 'wired controller version',
+  132: 'compressor target frequency',
+  138: 'water flow',
+  143: 'electricity consumption',
+  145: 'power output',
+  200: 'appliance type',
+  201: 'T1S cool upper limit: lo z1, hi z2',
+  202: 'T1S cool lower limit: lo z1, hi z2',
+  203: 'T1S heat upper limit: lo z1, hi z2',
+  204: 'T1S heat lower limit: lo z1, hi z2',
+  207: 'DHW set upper limit',
+  208: 'DHW set lower limit',
+  271: 'built-in pump delay'
+};
+
+function label(address) {
+  return LABELS[address] || '';
+}
 
 var state = {
   raw: {}, // address -> last value read
@@ -55,6 +105,7 @@ var state = {
   cycles: 0,
   lastOk: null,
   serial: 'unchecked',
+  serialSet: false, // this script changed the Serial setting
   slave: null, // the address being read
   search: 'off', // off, searching, found, or none
   seq: 0,
@@ -110,7 +161,7 @@ function record(address, value) {
   state.changedAt[address] = now();
   state.history.push({ t: now(), a: address, from: old, to: value });
   if (state.history.length > CONFIG.historySize) state.history.splice(0, 1);
-  if (CONFIG.logChanges) print('[scan] H:' + address + ' ' + describe(old) + ' -> ' + describe(value));
+  if (CONFIG.logChanges) print('[scan] H:' + address + ' ' + label(address) + ': ' + describe(old) + ' -> ' + describe(value));
 }
 
 function recordError(first, count, message) {
@@ -297,16 +348,21 @@ function onProbe(values, error) {
 
 function startSearch() {
   var first = remembered();
+  var preferred = [first, 1, 16];
   var order = [];
   var a;
-  if (first !== null && first >= CONFIG.searchFrom && first <= CONFIG.searchTo) order.push(first);
+  var i;
+  for (i = 0; i < preferred.length; i++) {
+    a = preferred[i];
+    if (a !== null && a >= CONFIG.searchFrom && a <= CONFIG.searchTo && order.indexOf(a) < 0) order.push(a);
+  }
   for (a = CONFIG.searchFrom; a <= CONFIG.searchTo; a++) {
-    if (a !== first) order.push(a);
+    if (order.indexOf(a) < 0) order.push(a);
   }
   search.order = order;
   search.index = 0;
   state.search = 'searching';
-  print('[scan] searching addresses ' + CONFIG.searchFrom + '..' + CONFIG.searchTo + (first !== null ? ', ' + first + ' first' : ''));
+  print('[scan] searching addresses ' + CONFIG.searchFrom + '..' + CONFIG.searchTo + ', starting with ' + order.slice(0, 3).join(', '));
   probeNext();
 }
 
@@ -332,7 +388,7 @@ function addresses() {
 function asText() {
   var lines = [
     'slave ' + state.slave + ' (search ' + state.search + ')  healthy ' + state.healthy + '  cycles ' + state.cycles + '  last ok ' + state.lastOk + '  serial ' + state.serial,
-    'addr  dec    hex     bits                 signed  lo   hi   changes  error'
+    'addr  dec    hex     bits                 signed  lo   hi   changes  error  believed meaning'
   ];
   var list = addresses();
   var i;
@@ -342,10 +398,10 @@ function asText() {
     a = list[i];
     v = state.raw[a];
     if (v === undefined) {
-      lines.push('H:' + a + '  -  ' + (state.errors[a] || 'not read'));
+      lines.push('H:' + a + '  -  ' + (state.errors[a] || 'not read') + '  ' + label(a));
     } else {
       lines.push(
-        'H:' + a + '  ' + v + '  ' + hex4(v) + '  ' + bin16(v) + '  ' + signed16(v) + '  ' + (v & 255) + '  ' + ((v >> 8) & 255) + '  ' + (state.changes[a] || 0) + '  ' + (state.errors[a] || '')
+        'H:' + a + '  ' + v + '  ' + hex4(v) + '  ' + bin16(v) + '  ' + signed16(v) + '  ' + (v & 255) + '  ' + ((v >> 8) & 255) + '  ' + (state.changes[a] || 0) + '  ' + (state.errors[a] || '') + '  ' + label(a)
       );
     }
   }
@@ -353,7 +409,7 @@ function asText() {
   lines.push('changes (oldest first):');
   for (i = 0; i < state.history.length; i++) {
     a = state.history[i];
-    lines.push(a.t + '  H:' + a.a + '  ' + describe(a.from) + '  ->  ' + describe(a.to));
+    lines.push(a.t + '  H:' + a.a + ' ' + label(a.a) + '  ' + describe(a.from) + '  ->  ' + describe(a.to));
   }
   return lines.join('\n');
 }
@@ -417,8 +473,9 @@ function onSerialSet(result, code, message) {
     print('[scan] Serial reconfigured; reboot the Shelly, then start this script again');
     return;
   }
-  state.serial = 'configured';
-  begin();
+  // Read it back, so a setting the firmware did not take is caught here.
+  state.serialSet = true;
+  Shelly.call('Serial.GetConfig', { id: CONFIG.serialId }, onSerialConfig);
 }
 
 function onSerialConfig(result, code, message) {
@@ -429,11 +486,17 @@ function onSerialConfig(result, code, message) {
   }
   var ok = result.mode === 'mb_client' && result.serial && result.serial.baud === CONFIG.baud && result.serial.format === CONFIG.format;
   if (ok) {
-    state.serial = 'ok';
+    state.serial = state.serialSet ? 'configured' : 'ok';
+    print('[scan] Serial ' + CONFIG.serialId + ': Modbus client, ' + CONFIG.baud + ' baud, ' + CONFIG.format);
     begin();
     return;
   }
   print('[scan] Serial ' + CONFIG.serialId + ' is ' + JSON.stringify(result));
+  if (state.serialSet) {
+    state.serial = 'not taken';
+    print('[scan] the Serial setting did not take; set Modbus Client, ' + CONFIG.baud + ', ' + CONFIG.format + ' on the Serial page, reboot, and start this script again');
+    return;
+  }
   if (!CONFIG.configureSerial) {
     state.serial = 'mismatch';
     print('[scan] set it to mb_client ' + CONFIG.baud + ' ' + CONFIG.format + ', or set configureSerial: true');

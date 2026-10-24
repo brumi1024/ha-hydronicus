@@ -10,7 +10,8 @@ These scripts are not part of the Hydronicus release; you install them on the Sh
 It contains no Modbus write call, and `tests/test_extras.py` keeps it that way.
 The only configuration it changes is the Shelly's own Serial component, when `configureSerial` is true.
 
-It polls the holding registers in `CONFIG.blocks` with FC03, by default 0 to 10, 100 to 140 and 200 to 209, every 10 seconds.
+It polls the holding registers in `CONFIG.blocks` with FC03, by default 0 to 10, 100 to 145 and 200 to 272, every 10 seconds, at 9600 baud 8N1 like the community setups that work on these controllers.
+The table labels each register with what community register lists, such as [svenar-iot/esphome-heatpump](https://github.com/svenar-iot/esphome-heatpump), say it holds on R32 controllers; the scan exists to confirm those labels on your unit.
 The first block is the health probe: three failed probes in a row turn the `Modbus healthy` component off, and the next good one turns it on.
 A later block that the heat pump refuses is read one register at a time from then on, so an unsupported address only marks itself.
 
@@ -19,14 +20,15 @@ A later block that the heat pump refuses is read one register at a time from the
 1. Wire the add-on to the heat pump's RS-485 terminals, and keep the Shelly the only Modbus client on the bus.
 2. In the Shelly's web interface, enable the Modbus add-on and reboot if it asks.
 3. Create a script, paste the whole file, and keep the `@meta` comment as its first line, since the firmware creates the `Modbus healthy` component from it.
-4. Set the add-on's Serial component to **Modbus Client**, 9600 baud, 8N1, or leave `configureSerial` on and let the script set it; `CONFIG.serialId` is that component's instance, 100 on the devices Shelly documents.
+4. Set the add-on's Serial component to **Modbus Client**, 9600 baud, 8N1, or leave `configureSerial` on and let the script set it and read the setting back; `CONFIG.serialId` is that component's instance, 100 on the devices Shelly documents.
+   The console then shows `Serial 100: Modbus client, 9600 baud, 8N1`, or says that the setting did not take.
 5. Leave `CONFIG.slaveId` at 0 to search for the heat pump's address, or set the address of rotary switch S3, where position 0 is reported to mean address 1.
 6. Start the script and watch its console.
 
 ### Find the address
 
 With `slaveId: 0` the script reads one register at each address from `searchFrom` to `searchTo`, 1 to 247, and reads the first address that answers.
-It tries the address it found last time first, so a restart finds it at once.
+It tries the address it found last time first, then 1, which working community setups use, then 16, which Midea's service manual gives for S3 at position 0, so a restart or a default address is found at once.
 Each quiet address takes as long as the add-on waits for an answer, a few seconds, so a search through every address may take ten minutes or more; a heat pump at address 1 is found at once.
 If no address answers, the console says so with the last error, and the script searches again a minute later; check the wiring, swap A and B, and check the baud rate and format.
 Once the address is known, you may set it in `slaveId` to skip the search.
