@@ -51,6 +51,14 @@ var SETTINGS = {
   t5s: { reg: 4, mask: 0xffff, kind: 'word' }
 };
 
+// The names a request may use, checked as a list so that a topic such as
+// set/constructor can never match a property every object inherits.
+var NAMES = ['heating', 'dhw', 'curve_enabled', 't1s', 'curve', 't5s'];
+
+function writable(name) {
+  return NAMES.indexOf(name) >= 0;
+}
+
 var BLOCKS = [[0, 11], [100, 32]];
 
 var raw = {};
@@ -62,6 +70,7 @@ var state = {
   lastWrite: {}, // setting -> uptime ms of its last write
   queue: [], // pending {name, value, handover}
   job: null, // the write in progress
+  handoverFailed: false, // a fallback write of this handover was not confirmed
   published: '',
   seq: 0,
   watchdog: null,
@@ -203,8 +212,9 @@ function parse(name, text) {
   }
   var n = Number(text);
   if (!(n === Math.floor(n))) return null;
+  // Every numeric setting has limits; one without them is never written.
   var range = CONFIG.limits[name];
-  if (range && (n < range[0] || n > range[1])) return null;
+  if (!range || !(n >= range[0] && n <= range[1])) return null;
   return n;
 }
 
@@ -239,6 +249,8 @@ function rememberWrite(name) {
 // callbacks can crash a Shelly: read, modify only this setting's bits, write,
 // wait CONFIG.settleMs, read back, report.
 function finishJob() {
+  var job = state.job;
+  if (job.handover && !job.ok) state.handoverFailed = true;
   state.job = null;
   publishState();
   later(CONFIG.gapMs, step);
@@ -252,7 +264,8 @@ function afterReadBack(result, error) {
   } else {
     raw[s.reg] = result.values[0];
     var back = current(job.name);
-    report(job.name, job.value, back, back === job.value, back === job.value ? 'written' : 'not taken by the heat pump');
+    job.ok = back === job.value;
+    report(job.name, job.value, back, job.ok, job.ok ? 'written' : 'not taken by the heat pump');
   }
   finishJob();
 }
@@ -283,17 +296,24 @@ function afterFreshRead(result, error) {
   raw[s.reg] = result.values[0];
   var why = refusal(job);
   if (why) {
-    report(job.name, job.value, current(job.name), why === 'unchanged', why);
+    job.ok = why === 'unchanged';
+    report(job.name, job.value, current(job.name), job.ok, why);
     finishJob();
     return;
   }
   modbus('WriteSingleRegister', { addr: s.reg, value: encode(s, raw[s.reg], job.value) }, afterWrite);
 }
 
+// Queues the fallback writes; the handover counts as done only once every one
+// of them is confirmed, and endCycle queues them again until then.
 function handOver() {
   var names = Object.keys(CONFIG.fallback);
   var i;
+  for (i = 0; i < state.queue.length; i++) {
+    if (state.queue[i].last) return;
+  }
   print('[bridge] no heartbeat for ' + CONFIG.handoverMs / 1000 + ' s: handing over to the wired controller');
+  state.handoverFailed = false;
   for (i = 0; i < names.length; i++) state.queue.push({ name: names[i], value: CONFIG.fallback[names[i]], handover: true });
   state.queue.push({ name: '', last: true });
 }
@@ -301,8 +321,12 @@ function handOver() {
 function nextJob() {
   var job = state.queue.splice(0, 1)[0];
   if (job.last) {
-    state.handover = true;
-    publish('handover', 'ON', true);
+    if (state.handoverFailed) {
+      print('[bridge] handover not confirmed; retrying next cycle');
+    } else {
+      state.handover = true;
+      publish('handover', 'ON', true);
+    }
     later(CONFIG.gapMs, step);
     return;
   }
@@ -354,7 +378,7 @@ function step() {
 
 function onSet(topic, message) {
   var name = topic.slice(topic.lastIndexOf('/') + 1);
-  if (!SETTINGS[name]) {
+  if (!writable(name)) {
     report(name, message, null, false, 'not writable');
     return;
   }

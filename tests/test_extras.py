@@ -46,3 +46,16 @@ def test_the_bridge_writes_only_whitelisted_registers_with_single_register_write
 
 def test_the_bridge_ships_with_writes_off() -> None:
     assert "writesEnabled: false," in BRIDGE.read_text(encoding="utf-8")
+
+
+def test_the_bridge_checks_request_names_against_its_list_not_object_properties() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+
+    names = re.search(r"var NAMES = \[(.*?)\];", source)
+    settings = re.search(r"var SETTINGS = \{(.*?)\n\};", source, re.DOTALL)
+    assert names is not None and settings is not None
+    assert set(re.findall(r"'(\w+)'", names.group(1))) == set(
+        re.findall(r"^\s+(\w+): \{", settings.group(1), re.MULTILINE)
+    )
+    assert "if (!writable(name))" in source
+    assert "!SETTINGS[" not in source
