@@ -10,7 +10,7 @@ These scripts are not part of the Hydronicus release; you install them on the Sh
 It contains no Modbus write call, and `tests/test_extras.py` keeps it that way.
 The only configuration it changes is the Shelly's own Serial component, when `configureSerial` is true.
 
-It polls the holding registers in `CONFIG.blocks` with FC03, by default 0 to 10, 100 to 145 and 200 to 272, every 10 seconds, at 9600 baud 8N1 like the community setups that work on these controllers.
+It polls the holding registers in `CONFIG.blocks` with FC03, by default 0 to 10, 100 to 131, 200 to 246 and 255 to 260, the ones a 2018 M-Thermal controller answers, every 10 seconds, at 9600 baud 8N1 like the community setups that work on these controllers.
 The table labels each register with what community register lists, such as [svenar-iot/esphome-heatpump](https://github.com/svenar-iot/esphome-heatpump), say it holds on R32 controllers; the scan exists to confirm those labels on your unit.
 The first block is the health probe: three failed probes in a row turn the `Modbus healthy` component off, and the next good one turns it on.
 A later block that the heat pump refuses is read one register at a time from then on, so an unsupported address only marks itself.

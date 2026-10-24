@@ -33,9 +33,10 @@ var CONFIG = {
   // [first register, count] read with one FC03 request each (count 1..123).
   // The first block is the health probe; a later block that fails is read one
   // register at a time, so an unsupported address only marks itself.
-  // The ranges cover the holding registers that community projects read on
-  // Midea R32 controllers (see LABELS); 200..272 are installer parameters.
-  blocks: [[0, 11], [100, 46], [200, 73]],
+  // The holding registers a 2018 Midea M-Thermal controller (software 24,
+  // wired controller 28) answers; R32 controllers have more (see LABELS), and
+  // a block a controller refuses is read one register at a time.
+  blocks: [[0, 11], [100, 32], [200, 47], [255, 6]],
   pollMs: 10000, // pause between completed cycles
   gapMs: 100, // pause between requests
   rpcTimeoutMs: 10000, // a call whose callback has not come by then counts as lost
