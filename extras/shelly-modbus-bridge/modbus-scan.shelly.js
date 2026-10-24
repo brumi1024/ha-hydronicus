@@ -51,13 +51,13 @@ var HEX = '0123456789ABCDEF';
 // register lists of community projects such as svenar-iot/esphome-heatpump.
 // Unconfirmed on older units: the scan exists to check them.
 var LABELS = {
-  0: 'power bits: b0 room temp ctrl, b1 zone 1, b2 zone 2, b3 DHW',
+  0: 'power bits: b1 space heating, b2 DHW (confirmed on a 2018 unit)',
   1: 'mode set (1 auto, 2 cool, 3 heat)',
   2: 'T1S water set: lo zone 1, hi zone 2',
   3: 'Ts air set',
   4: 'T5S DHW set',
-  5: 'function bits',
-  6: 'weather curve: lo zone 1, hi zone 2',
+  5: 'function bits: b12 zone 1 weather curve',
+  6: 'weather curve 1..9: lo zone 1, hi zone 2',
   7: 'forced DHW heating',
   100: 'compressor frequency',
   101: 'operating mode',
@@ -73,7 +73,7 @@ var LABELS = {
   126: 'fault 2',
   127: 'fault 3',
   128: 'status bits: b1 defrost, b6 heat by thermostat',
-  129: 'load bits: b3 internal pump, b6 external pump, b13 run',
+  129: 'load bits: b3 internal pump, b6 external pump, b12 alarm, b13 run',
   130: 'software version',
   131: 'wired controller version',
   132: 'compressor target frequency',

@@ -96,7 +96,12 @@ Toggling on the wired controller on 2026-10-24 confirmed:
 
 - DHW on and off sets and clears bit 2 of H:0 (2 to 6 and back), as Shelly's guide says; the community map's bit 3 is wrong for this unit, and bit 2 is not zone 2.
 - H:4 is T5S in whole degrees: an accidental step down to 49 °C and back showed at once.
-- Turning space heating off and on within one poll took the operating mode, H:101, from 3 to 0 and stopped the compressor and both pumps (bits 3 and 6 of H:129 cleared), so H:101 0 is standby and a quick off and on costs a compressor start.
-- Bit 1 of H:0 as space heating and the low byte of H:2 as T1S still wait for a toggle held long enough to see.
+- Space heating off and on clears and sets bit 1 of H:0 (2 to 0 and back), and the operating mode, H:101, follows within about four seconds, 3 to 0 and back, so H:101 0 is standby.
+- Turning space heating off stops the compressor and both pumps (bits 3 and 6 of H:129 cleared), so every off and on costs a compressor start.
+- The wired controller refuses a manual zone 1 setpoint while the weather curve is on, so T1S, the low byte of H:2, stays controller-owned in this setup unless the curve is switched off.
+- A live E8 confirmed the fault encoding: H:124 and H:125 read 9 and bit 12 of H:129 (alarm) set, about four minutes after a heating off and on had stopped the internal pump, which is the pattern the owner suspected.
+
+The community map adds two writable settings that this unit reports: bit 12 of H:5 switches the zone 1 weather curve on and off (it reads on), and the low byte of H:6 selects the zone 1 curve, 1 to 9 (it reads 5), with zone 2 in the high byte.
+Neither has been written yet; both would join the bridge's write whitelist only with read-modify-write and the owner's approval.
 
 Compressor target frequency, water flow, and energy, H:132 onwards, do not exist on this unit, so the E8 log uses H:100 for compressor frequency and bit 3 of H:129 for the internal pump.
