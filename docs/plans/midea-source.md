@@ -102,6 +102,8 @@ Toggling on the wired controller on 2026-10-24 confirmed:
 - A live E8 confirmed the fault encoding: H:124 and H:125 read 9 and bit 12 of H:129 (alarm) set, about four minutes after a heating off and on had stopped the internal pump, which is the pattern the owner suspected.
 
 The community map adds two writable settings that this unit reports: bit 12 of H:5 switches the zone 1 weather curve on and off (it reads on), and the low byte of H:6 selects the zone 1 curve, 1 to 9 (it reads 5), with zone 2 in the high byte.
-Neither has been written yet; both would join the bridge's write whitelist only with read-modify-write and the owner's approval.
+Neither has been written yet.
+On 2026-10-24 the owner decided both join the Phase 2 write whitelist: bit 12 of H:5 and the low byte of H:6, each with read-modify-write, writes only on change, the rate limit, and a read-back.
+Switching the curve off hands T1S to Hydronicus's supply temperature control, which is a separate decision taken when that control is set up.
 
 Compressor target frequency, water flow, and energy, H:132 onwards, do not exist on this unit, so the E8 log uses H:100 for compressor frequency and bit 3 of H:129 for the internal pump.
