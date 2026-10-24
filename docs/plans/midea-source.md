@@ -92,4 +92,11 @@ A first read while the heat pump heated, before any toggle confirmed a bit:
 | H:203, H:204 | 55, 25 | The controller's own T1S heating limits for zone 1. |
 | H:207, H:208 | 60, 40 | The controller's own DHW setpoint limits, so the plan's 35 °C lower limit for T5S is below what the unit accepts. |
 
+Toggling on the wired controller on 2026-10-24 confirmed:
+
+- DHW on and off sets and clears bit 2 of H:0 (2 to 6 and back), as Shelly's guide says; the community map's bit 3 is wrong for this unit, and bit 2 is not zone 2.
+- H:4 is T5S in whole degrees: an accidental step down to 49 °C and back showed at once.
+- Turning space heating off and on within one poll took the operating mode, H:101, from 3 to 0 and stopped the compressor and both pumps (bits 3 and 6 of H:129 cleared), so H:101 0 is standby and a quick off and on costs a compressor start.
+- Bit 1 of H:0 as space heating and the low byte of H:2 as T1S still wait for a toggle held long enough to see.
+
 Compressor target frequency, water flow, and energy, H:132 onwards, do not exist on this unit, so the E8 log uses H:100 for compressor frequency and bit 3 of H:129 for the internal pump.
