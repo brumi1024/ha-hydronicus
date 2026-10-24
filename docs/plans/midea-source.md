@@ -64,3 +64,32 @@ The settings the controller changed meanwhile are adopted, since the controller 
 A Shelly that loses power keeps the valves closed, since they are normally closed, and the heat pump's own protections remain the last layer.
 
 The scan must confirm that the heating bit and the wired controller's own on and off are the same state, which is what makes restoring the bit a handover rather than a command.
+
+## The owner's unit on the bus
+
+On 2026-10-24 the controller answered at Modbus address 16, rotary switch S3 at position 0 as Midea's service manual gives, at 9600 baud 8N1.
+It needs the wired controller's E as signal ground besides A to H2 and B to H1; house protective earth instead of E made the add-on hang.
+It answers holding registers 0 to 10, 100 to 131, 200 to 246, and 255 to 260, and refuses a read that spans any other address with exception 2.
+
+A first read while the heat pump heated, before any toggle confirmed a bit:
+
+| Register | Value | Reading |
+| --- | --- | --- |
+| H:0 | 2 | Bit 1 on, which the community map calls zone 1 water control; neither DHW candidate bit, 2 or 3, is on. |
+| H:1 | 3 | Heat. |
+| H:2 | 34 | T1S zone 1 34 °C in the low byte, zone 2 0. |
+| H:4 | 50 | T5S 50 °C. |
+| H:5 | 4096 | Bit 12 on, an active weather curve on newer units, which matches the owner's setup. |
+| H:6 | 5 | Weather curve 5 for zone 1. |
+| H:100 | 35 | Compressor frequency. |
+| H:101 | 3 | Operating mode heat. |
+| H:104, H:105 | 30, 34 | Tw_in and Tw_out, 4 K apart. |
+| H:107 | 7 | Outdoor temperature T4. |
+| H:115 | 38 | DHW tank T5. |
+| H:124 | 0 | No fault; E0 reads 1 and E8 reads 9 per the service manual. |
+| H:129 | 8776 | Bits 3, 6, 9, and 13: internal pump, external pump, SV3, and run. |
+| H:130, H:131 | 24, 28 | Software and wired controller versions. |
+| H:203, H:204 | 55, 25 | The controller's own T1S heating limits for zone 1. |
+| H:207, H:208 | 60, 40 | The controller's own DHW setpoint limits, so the plan's 35 °C lower limit for T5S is below what the unit accepts. |
+
+Compressor target frequency, water flow, and energy, H:132 onwards, do not exist on this unit, so the E8 log uses H:100 for compressor frequency and bit 3 of H:129 for the internal pump.
