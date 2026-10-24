@@ -27,3 +27,22 @@ def test_the_scan_script_declares_its_health_component_on_the_first_line() -> No
     healthy = meta["vc"]["healthy"]
     assert healthy["type"] == "boolean"
     assert healthy["config"]["meta"]["ui"]["view"] == "label"
+
+
+BRIDGE = EXTRAS / "midea-bridge.shelly.js"
+
+
+def test_the_bridge_writes_only_whitelisted_registers_with_single_register_writes() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+
+    methods = set(re.findall(r"modbus\('(\w+)'", source))
+    assert methods == {"ReadHoldingRegisters", "WriteSingleRegister"}
+    assert "MbRtuClient.Write" not in source, "every call goes through modbus()"
+    settings = re.search(r"var SETTINGS = \{(.*?)\n\};", source, re.DOTALL)
+    assert settings is not None
+    registers = {int(reg) for reg in re.findall(r"reg: (\d+)", settings.group(1))}
+    assert registers == {0, 2, 4, 5, 6}
+
+
+def test_the_bridge_ships_with_writes_off() -> None:
+    assert "writesEnabled: false," in BRIDGE.read_text(encoding="utf-8")

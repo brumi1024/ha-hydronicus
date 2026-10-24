@@ -1,0 +1,481 @@
+// Phase 2 of the Hydronicus Modbus bridge: a Midea heat pump on MQTT.
+//
+// It polls the heat pump's holding registers through the Shelly Pro Modbus
+// Add-on, publishes them to Home Assistant over MQTT with discovery, and
+// executes whitelisted write requests from Home Assistant. It holds no control
+// logic of its own except the handover: once Home Assistant's heartbeat has
+// been missing for CONFIG.handoverMs, it restores each fallback setting once,
+// so the wired controller runs the heat pump by itself, and then writes nothing
+// until a heartbeat returns.
+//
+// Writes are off until CONFIG.writesEnabled is true. Every write reads the
+// register first and changes only its own bit or byte, is sent only when the
+// value differs, is rate limited per setting (turning heating or DHW off is
+// exempt), and is read back after CONFIG.settleMs; the result is published.
+//
+// Topics, with <base> = CONFIG.base:
+//   <base>/state          retained JSON of every mapped value
+//   <base>/modbus_healthy retained ON or OFF
+//   <base>/handover       retained ON or OFF
+//   <base>/write_result   JSON of the last write or refusal
+//   <base>/set/<name>     a requested value from Home Assistant
+//   <base>/heartbeat      any message from Home Assistant, at least every minute
+//
+// Shelly scripts have no hoisting, at most 5 timers and 5 RPC calls in
+// progress, so Modbus calls go strictly one at a time.
+
+var CONFIG = {
+  serialId: 100,
+  slaveId: 16, // the address the register scan found
+  base: 'hydronicus/midea',
+  discoveryPrefix: 'homeassistant',
+  pollMs: 10000,
+  gapMs: 100,
+  rpcTimeoutMs: 10000,
+  failuresBeforeUnhealthy: 3,
+  writesEnabled: false,
+  minWriteIntervalMs: 300000, // per setting
+  settleMs: 1500, // before the read-back
+  handoverMs: 600000, // without a heartbeat
+  fallback: { heating: true }, // restored once at handover
+  limits: { t5s: [40, 55], t1s: [25, 50], curve: [1, 9] }
+};
+
+// The whitelist: each writable setting, its register, and its bits or byte.
+var SETTINGS = {
+  heating: { reg: 0, mask: 0x0002, kind: 'bit', offSafe: true },
+  dhw: { reg: 0, mask: 0x0004, kind: 'bit', offSafe: true },
+  curve_enabled: { reg: 5, mask: 0x1000, kind: 'bit' },
+  t1s: { reg: 2, mask: 0x00ff, kind: 'byte' },
+  curve: { reg: 6, mask: 0x00ff, kind: 'byte' },
+  t5s: { reg: 4, mask: 0xffff, kind: 'word' }
+};
+
+var BLOCKS = [[0, 11], [100, 32]];
+
+var raw = {};
+var state = {
+  healthy: null,
+  failures: 0,
+  handover: false,
+  heartbeatAt: 0,
+  lastWrite: {}, // setting -> uptime ms of its last write
+  queue: [], // pending {name, value, handover}
+  job: null, // the write in progress
+  published: '',
+  seq: 0,
+  watchdog: null,
+  timer: null,
+  block: 0,
+  ok: false
+};
+
+function uptimeMs() {
+  return Shelly.getComponentStatus('sys').uptime * 1000;
+}
+
+function signed16(v) {
+  return v >= 32768 ? v - 65536 : v;
+}
+
+function bit(reg, mask) {
+  return raw[reg] === undefined ? null : (raw[reg] & mask) !== 0;
+}
+
+function lo(reg) {
+  return raw[reg] === undefined ? null : raw[reg] & 255;
+}
+
+function word(reg) {
+  return raw[reg] === undefined ? null : signed16(raw[reg]);
+}
+
+function current(name) {
+  var s = SETTINGS[name];
+  if (s.kind === 'bit') return bit(s.reg, s.mask);
+  if (s.kind === 'byte') return lo(s.reg);
+  return word(s.reg);
+}
+
+function snapshot() {
+  return {
+    heating: bit(0, 0x0002),
+    dhw: bit(0, 0x0004),
+    mode_set: word(1),
+    t1s: lo(2),
+    t5s: word(4),
+    curve_enabled: bit(5, 0x1000),
+    curve: lo(6),
+    compressor_hz: word(100),
+    operating_mode: word(101),
+    tw_in: word(104),
+    tw_out: word(105),
+    t4: word(107),
+    t1: word(110),
+    t5: word(115),
+    fault: word(124),
+    defrost: bit(128, 0x0002),
+    internal_pump: bit(129, 0x0008),
+    external_pump: bit(129, 0x0040),
+    alarm: bit(129, 0x1000),
+    running: bit(129, 0x2000)
+  };
+}
+
+function publish(topic, message, retain) {
+  if (MQTT.isConnected()) MQTT.publish(CONFIG.base + '/' + topic, message, 1, retain);
+}
+
+function publishState() {
+  var text = JSON.stringify(snapshot());
+  if (text === state.published) return;
+  state.published = text;
+  publish('state', text, true);
+}
+
+function setHealthy(value) {
+  if (state.healthy === value) return;
+  state.healthy = value;
+  print('[bridge] modbus_healthy = ' + value);
+  publish('modbus_healthy', value ? 'ON' : 'OFF', true);
+}
+
+function report(name, requested, readBack, ok, reason) {
+  var result = { name: name, requested: requested, read_back: readBack, ok: ok, reason: reason };
+  print('[bridge] write ' + JSON.stringify(result));
+  publish('write_result', JSON.stringify(result), false);
+}
+
+function later(ms, fn) {
+  if (state.timer !== null) Timer.clear(state.timer);
+  state.timer = Timer.set(ms, false, function () {
+    state.timer = null;
+    fn();
+  });
+}
+
+function stopWatchdog() {
+  if (state.watchdog !== null) Timer.clear(state.watchdog);
+  state.watchdog = null;
+}
+
+// One Modbus call; done(result, error) runs exactly once.
+function modbus(method, params, done) {
+  state.seq++;
+  var seq = state.seq;
+  function finish(result, error) {
+    if (seq !== state.seq) return;
+    state.seq++;
+    stopWatchdog();
+    done(result, error);
+  }
+  function onTimeout() {
+    state.watchdog = null;
+    finish(null, 'no callback');
+  }
+  function onResult(result, code, message) {
+    if (code !== 0) finish(null, 'error ' + code + ': ' + message);
+    else finish(result || {}, null);
+  }
+  params.id = CONFIG.serialId;
+  params.sid = CONFIG.slaveId;
+  state.watchdog = Timer.set(CONFIG.rpcTimeoutMs, false, onTimeout);
+  try {
+    Shelly.call('MbRtuClient.' + method, params, onResult);
+  } catch (e) {
+    finish(null, 'refused: ' + e.message);
+  }
+}
+
+// The value to write into a register that holds old, or null if invalid.
+function encode(s, old, value) {
+  if (s.kind === 'bit') return value ? old | s.mask : old & (0xffff ^ s.mask);
+  if (s.kind === 'byte') return (old & 0xff00) | (value & 0xff);
+  return value & 0xffff;
+}
+
+function parse(name, text) {
+  var s = SETTINGS[name];
+  if (s.kind === 'bit') {
+    if (text === 'ON') return true;
+    if (text === 'OFF') return false;
+    return null;
+  }
+  var n = Number(text);
+  if (!(n === Math.floor(n))) return null;
+  var range = CONFIG.limits[name];
+  if (range && (n < range[0] || n > range[1])) return null;
+  return n;
+}
+
+// Checks a request; returns why it is refused, or null. A handover write skips
+// only the handover and rate checks.
+function refusal(job) {
+  var name = job.name;
+  var value = job.value;
+  var s = SETTINGS[name];
+  if (!CONFIG.writesEnabled) return 'writes disabled';
+  if (!state.healthy) return 'modbus unhealthy';
+  if (state.handover && !job.handover) return 'handover active';
+  if (current(name) === value) return 'unchanged';
+  var exempt = job.handover || (s.offSafe && value === false);
+  var last = state.lastWrite[name];
+  if (!exempt && last !== undefined && uptimeMs() - last < CONFIG.minWriteIntervalMs) {
+    return 'rate limited for ' + Math.ceil((CONFIG.minWriteIntervalMs - (uptimeMs() - last)) / 1000) + ' s';
+  }
+  return null;
+}
+
+function rememberWrite(name) {
+  state.lastWrite[name] = uptimeMs();
+  try {
+    Script.storage.setItem('w', JSON.stringify(state.lastWrite));
+  } catch (e) {
+    print('[bridge] could not store the write times');
+  }
+}
+
+// A write runs as a chain of top-level steps on state.job, since deeply nested
+// callbacks can crash a Shelly: read, modify only this setting's bits, write,
+// wait CONFIG.settleMs, read back, report.
+function finishJob() {
+  state.job = null;
+  publishState();
+  later(CONFIG.gapMs, step);
+}
+
+function afterReadBack(result, error) {
+  var job = state.job;
+  var s = SETTINGS[job.name];
+  if (error) {
+    report(job.name, job.value, null, false, 'read-back failed: ' + error);
+  } else {
+    raw[s.reg] = result.values[0];
+    var back = current(job.name);
+    report(job.name, job.value, back, back === job.value, back === job.value ? 'written' : 'not taken by the heat pump');
+  }
+  finishJob();
+}
+
+function readBack() {
+  modbus('ReadHoldingRegisters', { addr: SETTINGS[state.job.name].reg, qty: 1 }, afterReadBack);
+}
+
+function afterWrite(result, error) {
+  var job = state.job;
+  if (error) {
+    report(job.name, job.value, current(job.name), false, 'write failed: ' + error);
+    finishJob();
+    return;
+  }
+  rememberWrite(job.name);
+  later(CONFIG.settleMs, readBack);
+}
+
+function afterFreshRead(result, error) {
+  var job = state.job;
+  var s = SETTINGS[job.name];
+  if (error) {
+    report(job.name, job.value, null, false, 'read failed: ' + error);
+    finishJob();
+    return;
+  }
+  raw[s.reg] = result.values[0];
+  var why = refusal(job);
+  if (why) {
+    report(job.name, job.value, current(job.name), why === 'unchanged', why);
+    finishJob();
+    return;
+  }
+  modbus('WriteSingleRegister', { addr: s.reg, value: encode(s, raw[s.reg], job.value) }, afterWrite);
+}
+
+function handOver() {
+  var names = Object.keys(CONFIG.fallback);
+  var i;
+  print('[bridge] no heartbeat for ' + CONFIG.handoverMs / 1000 + ' s: handing over to the wired controller');
+  for (i = 0; i < names.length; i++) state.queue.push({ name: names[i], value: CONFIG.fallback[names[i]], handover: true });
+  state.queue.push({ name: '', last: true });
+}
+
+function nextJob() {
+  var job = state.queue.splice(0, 1)[0];
+  if (job.last) {
+    state.handover = true;
+    publish('handover', 'ON', true);
+    later(CONFIG.gapMs, step);
+    return;
+  }
+  state.job = job;
+  modbus('ReadHoldingRegisters', { addr: SETTINGS[job.name].reg, qty: 1 }, afterFreshRead);
+}
+
+function endCycle() {
+  if (state.ok) {
+    state.failures = 0;
+    setHealthy(true);
+    publishState();
+  } else {
+    state.failures++;
+    if (state.failures >= CONFIG.failuresBeforeUnhealthy) setHealthy(false);
+  }
+  if (!state.handover && CONFIG.writesEnabled && uptimeMs() - state.heartbeatAt > CONFIG.handoverMs) handOver();
+  state.block = 0;
+  state.ok = false;
+  later(state.queue.length ? CONFIG.gapMs : CONFIG.pollMs, step);
+}
+
+function onBlock(result, error) {
+  var block = BLOCKS[state.block];
+  var i;
+  if (result && result.values && result.values.length === block[1]) {
+    for (i = 0; i < block[1]; i++) raw[block[0] + i] = result.values[i];
+    if (state.block === 0) state.ok = true;
+  } else if (state.block === 0) {
+    print('[bridge] read failed: ' + error);
+  }
+  state.block++;
+  later(CONFIG.gapMs, step);
+}
+
+// The sequencer: pending writes first, between blocks, then the next block.
+function step() {
+  if (state.queue.length) {
+    nextJob();
+    return;
+  }
+  if (state.block >= BLOCKS.length || (state.block > 0 && !state.ok)) {
+    endCycle();
+    return;
+  }
+  var block = BLOCKS[state.block];
+  modbus('ReadHoldingRegisters', { addr: block[0], qty: block[1] }, onBlock);
+}
+
+function onSet(topic, message) {
+  var name = topic.slice(topic.lastIndexOf('/') + 1);
+  if (!SETTINGS[name]) {
+    report(name, message, null, false, 'not writable');
+    return;
+  }
+  var value = parse(name, message);
+  if (value === null) {
+    report(name, message, current(name), false, 'invalid or outside limits');
+    return;
+  }
+  state.queue.push({ name: name, value: value });
+  // Between polls nothing is in flight, so start at once instead of waiting.
+  if (state.job === null && state.watchdog === null) later(CONFIG.gapMs, step);
+}
+
+function onHeartbeat() {
+  state.heartbeatAt = uptimeMs();
+  if (state.handover) {
+    state.handover = false;
+    print('[bridge] heartbeat returned: Home Assistant has control again');
+    publish('handover', 'OFF', true);
+  }
+}
+
+function discovery(component, object, config) {
+  var device = Shelly.getDeviceInfo();
+  config.unique_id = device.id + '_midea_' + object;
+  config.availability = [{ topic: Shelly.getComponentConfig('mqtt').topic_prefix + '/online', payload_available: 'true', payload_not_available: 'false' }];
+  config.device = { identifiers: [device.id + '_midea'], name: 'Midea heat pump', manufacturer: 'Midea' };
+  MQTT.publish(CONFIG.discoveryPrefix + '/' + component + '/' + device.id + '_midea/' + object + '/config', JSON.stringify(config), 1, true);
+}
+
+function sensor(object, name, unit, deviceClass) {
+  var config = { name: name, state_topic: CONFIG.base + '/state', value_template: '{{ value_json.' + object + ' }}' };
+  if (unit) config.unit_of_measurement = unit;
+  if (deviceClass) {
+    config.device_class = deviceClass;
+    config.state_class = 'measurement';
+  }
+  discovery('sensor', object, config);
+}
+
+function flag(object, name, deviceClass) {
+  discovery('binary_sensor', object, {
+    name: name,
+    state_topic: CONFIG.base + '/state',
+    value_template: "{{ 'ON' if value_json." + object + " else 'OFF' }}",
+    device_class: deviceClass
+  });
+}
+
+function control(component, object, name, extra) {
+  var config = { name: name, state_topic: CONFIG.base + '/state', command_topic: CONFIG.base + '/set/' + object };
+  var keys = Object.keys(extra);
+  var i;
+  for (i = 0; i < keys.length; i++) config[keys[i]] = extra[keys[i]];
+  discovery(component, object, config);
+}
+
+function announce() {
+  var t5s = CONFIG.limits.t5s;
+  var t1s = CONFIG.limits.t1s;
+  var curve = CONFIG.limits.curve;
+  control('switch', 'heating', 'Space heating', { value_template: "{{ 'ON' if value_json.heating else 'OFF' }}" });
+  control('switch', 'dhw', 'DHW', { value_template: "{{ 'ON' if value_json.dhw else 'OFF' }}" });
+  control('switch', 'curve_enabled', 'Weather curve', { value_template: "{{ 'ON' if value_json.curve_enabled else 'OFF' }}" });
+  control('number', 't5s', 'DHW setpoint', { value_template: '{{ value_json.t5s }}', min: t5s[0], max: t5s[1], step: 1, mode: 'box', unit_of_measurement: '°C', device_class: 'temperature' });
+  control('number', 't1s', 'Zone 1 water setpoint', { value_template: '{{ value_json.t1s }}', min: t1s[0], max: t1s[1], step: 1, mode: 'box', unit_of_measurement: '°C', device_class: 'temperature' });
+  control('number', 'curve', 'Weather curve number', { value_template: '{{ value_json.curve }}', min: curve[0], max: curve[1], step: 1, mode: 'box' });
+  sensor('tw_in', 'Water inlet', '°C', 'temperature');
+  sensor('tw_out', 'Water outlet', '°C', 'temperature');
+  sensor('t4', 'Outdoor', '°C', 'temperature');
+  sensor('t1', 'Total water outlet', '°C', 'temperature');
+  sensor('t5', 'DHW tank', '°C', 'temperature');
+  sensor('compressor_hz', 'Compressor frequency', 'Hz', 'frequency');
+  sensor('operating_mode', 'Operating mode', null, null);
+  sensor('fault', 'Fault code', null, null);
+  flag('internal_pump', 'Internal pump', 'running');
+  flag('external_pump', 'External pump', 'running');
+  flag('defrost', 'Defrost', 'running');
+  flag('alarm', 'Alarm', 'problem');
+  discovery('binary_sensor', 'modbus_healthy', { name: 'Modbus healthy', state_topic: CONFIG.base + '/modbus_healthy', device_class: 'connectivity' });
+  discovery('binary_sensor', 'handover', { name: 'Handover to controller', state_topic: CONFIG.base + '/handover' });
+  discovery('sensor', 'write_result', { name: 'Last write', state_topic: CONFIG.base + '/write_result', value_template: '{{ value_json.reason }}', json_attributes_topic: CONFIG.base + '/write_result' });
+}
+
+function onConnect() {
+  print('[bridge] MQTT connected');
+  announce();
+  state.published = '';
+  if (state.healthy !== null) publish('modbus_healthy', state.healthy ? 'ON' : 'OFF', true);
+  publish('handover', state.handover ? 'ON' : 'OFF', true);
+  publishState();
+}
+
+function onHomeAssistantStatus(topic, message) {
+  if (message === 'online') onConnect();
+}
+
+function main() {
+  try {
+    var stored = Script.storage.getItem('w');
+    if (stored) state.lastWrite = JSON.parse(stored);
+  } catch (e) {
+    state.lastWrite = {};
+  }
+  // Write times from before a reboot count from now, since uptime restarts.
+  var names = Object.keys(state.lastWrite);
+  var i;
+  for (i = 0; i < names.length; i++) state.lastWrite[names[i]] = uptimeMs();
+  state.heartbeatAt = uptimeMs();
+  try {
+    MQTT.setConnectHandler(onConnect);
+    MQTT.subscribe(CONFIG.base + '/set/+', onSet);
+    MQTT.subscribe(CONFIG.base + '/heartbeat', onHeartbeat);
+    MQTT.subscribe(CONFIG.discoveryPrefix + '/status', onHomeAssistantStatus);
+  } catch (e) {
+    print('[bridge] MQTT is not enabled: set the broker in the Shelly settings, then start this script again (' + e.message + ')');
+    return;
+  }
+  if (MQTT.isConnected()) onConnect();
+  print('[bridge] started; writes ' + (CONFIG.writesEnabled ? 'enabled' : 'disabled'));
+  step();
+}
+
+main();

@@ -50,3 +50,54 @@ Change one thing at a time on the wired controller, wait two poll cycles, and no
 5. Note register 131, which newer Midea controllers use for the controller version, and register 5, whose bit 12 shows an active weather curve on newer units.
 
 The community map for newer Midea units and Shelly's own Midea guide already disagree on the DHW bit of H:0, bit 3 against bit 2, so trust only what the scan shows on your unit.
+
+## Phase 2: the bridge
+
+`midea-bridge.shelly.js` replaces the scan once the register map is confirmed.
+It polls the heat pump every 10 seconds, publishes its values to Home Assistant over MQTT with discovery, and executes write requests from Home Assistant.
+It ships with `writesEnabled: false`, so it only reads until you change that.
+
+### What it writes
+
+Only these settings, each changing only its own bits:
+
+| Setting | Register | Values |
+| --- | --- | --- |
+| `heating` | H:0 bit 1 | `ON`, `OFF` |
+| `dhw` | H:0 bit 2 | `ON`, `OFF` |
+| `curve_enabled` | H:5 bit 12 | `ON`, `OFF` |
+| `t1s` | H:2 low byte | 25 to 50 °C |
+| `curve` | H:6 low byte | 1 to 9 |
+| `t5s` | H:4 | 40 to 55 °C |
+
+Every write reads the register first, is skipped when the value already matches, is refused within 5 minutes of the last write of the same setting unless it turns heating or DHW off, and is read back 1.5 seconds later.
+The result, including a value the heat pump did not take, such as a zone 1 setpoint while the weather curve is on, is published to `<base>/write_result` and shown by the **Last write** sensor.
+Anything else, a value outside its limits, and every request while Modbus is unhealthy are refused and reported.
+
+### The handover
+
+Home Assistant publishes to `<base>/heartbeat` at least once a minute.
+If no heartbeat arrives for 10 minutes, the bridge writes the fallback settings once, space heating on by default, so the wired controller runs the heat pump by itself, publishes `<base>/handover` as `ON`, and refuses requests until a heartbeat returns.
+Set up the heartbeat before you enable writes, or the bridge hands over 10 minutes after it starts.
+An automation like this one sends it:
+
+```yaml
+automation:
+  - alias: "Heat pump bridge heartbeat"
+    triggers:
+      - trigger: time_pattern
+        seconds: 0
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: hydronicus/midea/heartbeat
+          payload: "1"
+```
+
+### Install
+
+1. In the Shelly's settings, enable MQTT with the broker Home Assistant uses and its login.
+2. Stop the scan script, create a new script, and paste `midea-bridge.shelly.js`; set `CONFIG.slaveId` to the address the scan found.
+3. Start it with writes off and check the **Midea heat pump** device in Home Assistant: its temperatures, mode, and switches should match the wired controller.
+4. Add the heartbeat automation.
+5. Only then set `writesEnabled: true`, restart the script, and try one change, such as the DHW setpoint, while you watch the wired controller.
