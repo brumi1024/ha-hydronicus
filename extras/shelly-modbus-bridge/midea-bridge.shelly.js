@@ -13,8 +13,9 @@
 //
 // Writes are off until CONFIG.writesEnabled is true. Every write reads the
 // register first and changes only its own bit or byte, is sent only when the
-// value differs, is rate limited per setting (turning heating or DHW off is
-// exempt), and is read back after CONFIG.settleMs; the result is published.
+// value differs, is rate limited per setting and held to a daily budget per
+// setting (turning heating or DHW off is exempt from both), and is read back
+// after CONFIG.settleMs; the result is published.
 //
 // Topics, with <base> = CONFIG.base:
 //   <base>/state          retained JSON of every mapped value
@@ -38,6 +39,9 @@ var CONFIG = {
   failuresBeforeUnhealthy: 3,
   writesEnabled: false,
   minWriteIntervalMs: 300000, // per setting
+  // The controller keeps written settings across a power cycle, so every write
+  // wears its memory: at most this many writes per setting within a day.
+  dailyWriteBudget: 50,
   settleMs: 1500, // before the read-back
   handoverMs: 600000, // without a heartbeat
   // Restored once at handover, by the mode the heat pump is set to: heating
@@ -87,6 +91,7 @@ var state = {
   handover: false,
   heartbeatAt: 0,
   lastWrite: {}, // setting -> uptime ms of its last write
+  budget: {}, // setting -> {start: uptime ms its day began, count: writes since}
   queue: [], // pending {name, value, handover}
   job: null, // the write in progress
   handoverFailed: false, // a fallback write of this handover was not confirmed
@@ -270,8 +275,20 @@ function parse(name, text) {
   return n;
 }
 
+var DAY_MS = 86400000;
+
+// This setting's day of writes, begun anew once a day has passed.
+function budgetDay(name) {
+  var day = state.budget[name];
+  if (day === undefined || uptimeMs() - day.start >= DAY_MS) {
+    day = { start: uptimeMs(), count: 0 };
+    state.budget[name] = day;
+  }
+  return day;
+}
+
 // Checks a request; returns why it is refused, or null. A handover write skips
-// only the handover and rate checks.
+// only the handover, rate, and budget checks.
 function refusal(job) {
   var name = job.name;
   var value = job.value;
@@ -285,13 +302,21 @@ function refusal(job) {
   if (!exempt && last !== undefined && uptimeMs() - last < CONFIG.minWriteIntervalMs) {
     return 'rate limited for ' + Math.ceil((CONFIG.minWriteIntervalMs - (uptimeMs() - last)) / 1000) + ' s';
   }
+  var day = budgetDay(name);
+  if (!exempt && day.count >= CONFIG.dailyWriteBudget) {
+    return 'daily write budget of ' + CONFIG.dailyWriteBudget + ' used for ' + Math.ceil((DAY_MS - (uptimeMs() - day.start)) / 60000) + ' min';
+  }
   return null;
 }
 
+// Every write counts against the budget, an exempt one too, since it wears the
+// memory just the same.
 function rememberWrite(name) {
   state.lastWrite[name] = uptimeMs();
+  budgetDay(name).count++;
   try {
     Script.storage.setItem('w', JSON.stringify(state.lastWrite));
+    Script.storage.setItem('b', JSON.stringify(state.budget));
   } catch (e) {
     print('[bridge] could not store the write times');
   }
@@ -547,10 +572,20 @@ function main() {
   } catch (e) {
     state.lastWrite = {};
   }
-  // Write times from before a reboot count from now, since uptime restarts.
+  try {
+    var budget = Script.storage.getItem('b');
+    if (budget) state.budget = JSON.parse(budget);
+  } catch (e) {
+    state.budget = {};
+  }
+  // Write times from before a reboot count from now, since uptime restarts;
+  // a day of writes keeps its count and begins again now, so a reboot never
+  // frees the budget early.
   var names = Object.keys(state.lastWrite);
   var i;
   for (i = 0; i < names.length; i++) state.lastWrite[names[i]] = uptimeMs();
+  names = Object.keys(state.budget);
+  for (i = 0; i < names.length; i++) state.budget[names[i]].start = uptimeMs();
   state.heartbeatAt = uptimeMs();
   try {
     MQTT.setConnectHandler(onConnect);

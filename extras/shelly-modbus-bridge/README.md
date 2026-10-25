@@ -72,6 +72,10 @@ Only these settings, each changing only its own bits:
 | `t5s` | H:4 | 40 to 55 °C |
 
 Every write reads the register first, is skipped when the value already matches, is refused within 5 minutes of the last write of the same setting unless it turns heating or DHW off, and is read back 1.5 seconds later.
+Each setting is also held to `CONFIG.dailyWriteBudget` writes a day, 50 by default; a request beyond it is refused with the minutes until its day ends, and turning heating or DHW off and the handover's writes are never refused for it, though they count.
+The budget exists because a Midea controller keeps a setting written over Modbus across a power cycle, so it stores it in non-volatile memory with a limited number of write cycles.
+Normal control writes a setting a few times a day; the 5 minute limit alone would still let a misbehaving automation write one setting about 100,000 times a year, which the budget cuts to about 18,000.
+The day of each setting begins with its first write and is stored with the write times, and a reboot keeps its count and starts it again, so a restart never frees the budget early.
 The result, including a value the heat pump did not take, such as a zone 1 setpoint while the weather curve is on, is published to `<base>/write_result` and shown by the **Last write** sensor.
 Anything else, a value outside its limits, and every request while Modbus is unhealthy are refused and reported.
 
