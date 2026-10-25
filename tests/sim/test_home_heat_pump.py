@@ -348,3 +348,58 @@ def test_a_start_threshold_waits_for_enough_demand() -> None:
         OPENING + 3 * REACTION,
         "two calling loops start the heat pump",
     )
+
+
+def test_a_handover_keeps_a_heat_sink_open_and_sends_the_heat_pump_nothing() -> None:
+    sim = _house()
+    sim.run_for(600.0)
+    calls = len(sim.calls_to(HEAT_PUMP_REQUEST))
+
+    sim.handover(True, request=True)
+    sim.run_until_true(
+        lambda: sim.is_on(FLOOR_PUMP) and all(sim.is_on(valve) for valve in VALVES),
+        OPENING + 3 * REACTION,
+        "every heat sink opens while the wired controller heats",
+    )
+    assert sim.desired.source_handover
+    assert sim.desired.reasons["source"] == "handed over: the source's own controller runs it"
+    assert sim.desired.reasons["living_area.floor"] == "heat sink while the source runs by itself"
+    sim.always_for(
+        lambda: sim.is_on(FLOOR_PUMP) and sim.is_on(FLOOR_VALVE),
+        7200.0,
+        "the heat sinks stay open, however warm the zones, while the heat pump may heat",
+    )
+    assert len(sim.calls_to(HEAT_PUMP_REQUEST)) == calls, "the heat pump is sent nothing"
+    assert sim.repairs() == frozenset()
+
+    sim.handover(False)
+    sim.run_until_true(
+        lambda: not sim.is_on(HEAT_PUMP_REQUEST),
+        2 * REACTION,
+        "back in control, Hydronicus releases the heat pump that no zone needs",
+    )
+    sim.run_until_true(
+        lambda: not sim.is_on(FLOOR_PUMP) and not any(sim.is_on(valve) for valve in VALVES),
+        OVERRUN + 2 * REACTION,
+        "and closes the heat sinks after the pump's overrun",
+    )
+
+
+def test_a_call_during_a_handover_runs_its_loop_and_hydronicus_takes_over_from_there() -> None:
+    sim = _house()
+    sim.handover(True, request=True)
+    sim.run_for(60.0)
+
+    sim.set_zone_temperature("basement", COLD)
+    sim.run_until_true(
+        lambda: sim.is_on(BASEMENT_CEILING) and sim.is_on(FLOOR_PUMP),
+        OPENING + 3 * REACTION,
+        "the calling basement circulates",
+    )
+    sim.handover(False)
+    sim.always_for(
+        lambda: sim.is_on(HEAT_PUMP_REQUEST) and sim.is_on(BASEMENT_CEILING),
+        1800.0,
+        "the heat pump the controller started goes on for the calling zone without a stop",
+    )
+    assert sim.desired.reasons["source"] == "requested"

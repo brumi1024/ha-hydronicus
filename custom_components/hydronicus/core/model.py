@@ -307,6 +307,10 @@ class Source:
     # A binary sensor that reads on while the source and its link are healthy;
     # off, unknown, or unavailable releases the request at once and keeps it off.
     health_sensor: str | None = None
+    # A binary sensor that reads on while something else controls the source,
+    # such as a bridge that handed it to its own controller: Hydronicus then
+    # sends the source nothing and keeps a heat sink open while it may heat.
+    handover_sensor: str | None = None
 
     @property
     def title(self) -> str:
@@ -637,3 +641,6 @@ class Desired:
     # The source request is observed on while no loop of the mode may pass flow
     # from a running pump, which ``step()`` never commands and releases at once.
     source_without_path: bool = False
+    # The source's handover sensor reads on: something else controls the source,
+    # and ``outputs`` holds no target for any of its outputs.
+    source_handover: bool = False

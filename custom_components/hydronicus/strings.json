@@ -104,6 +104,7 @@
             "description": "Optional. Keeps a heat pump from short cycling and stops it when it reports a fault.",
             "data": {
               "health_sensor": "Source health sensor",
+              "handover_sensor": "Source handover sensor",
               "max_starts_per_hour": "Maximum starts per hour",
               "start_threshold": "Start threshold",
               "heat_sink_loops": "Heat sink loops",
@@ -112,6 +113,7 @@
             },
             "data_description": {
               "health_sensor": "A binary sensor that reads on while the source and its link are healthy, such as a Modbus bridge's health. While it is off or unavailable, the source request is released at once and stays off.",
+              "handover_sensor": "A binary sensor that reads on while something else controls the source, such as a bridge that handed the heat pump to its wired controller. Hydronicus then sends the source nothing and keeps the heat sink loops open while it may heat. Needs heat sink loops.",
               "max_starts_per_hour": "How often the source request may turn on within any hour. Empty means no limit.",
               "start_threshold": "The total weight of calling loops needed before the source starts. Each loop's weight is set on the loop, 1 by default. Empty starts the source for any calling loop.",
               "heat_sink_loops": "Heating loops opened when every zone is satisfied before the source's minimum on time ends, so the source runs it out into them.",

@@ -217,6 +217,7 @@ _SOURCE_FILE_KEYS: Final = (
     "hold_after_demand",
     "heat_sink_overshoot",
     "health_sensor",
+    "handover_sensor",
 )
 
 
@@ -295,6 +296,7 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
         _put(source, "hold_after_demand", cycling.get("hold_after_demand"))
         _put(source, "heat_sink_overshoot", cycling.get("heat_sink_overshoot"))
         _put(source, "health_sensor", cycling.get("health_sensor"))
+        _put(source, "handover_sensor", cycling.get("handover_sensor"))
     result["source"] = source
     return result
 

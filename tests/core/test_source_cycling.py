@@ -148,3 +148,37 @@ def test_a_separator_gives_flow_but_no_sink_so_a_closed_plant_is_still_reported(
     _, desired, _ = run(plant, stranded, held)
     assert desired.source_without_path
     assert desired.outputs["switch.boiler"] == OFF
+
+
+def test_a_handover_sends_the_source_nothing_and_opens_its_heat_sink() -> None:
+    radiator = _plant(RADIATOR).all_loops[0]
+    plant = _with(handover_sensor="binary_sensor.handover", heat_sink_loops=(radiator.ref,))
+    handed = observe(
+        plant,
+        on=["switch.boiler"],
+        since={"switch.boiler": NOW - 10},
+        readiness={"binary_sensor.handover": True},
+    )
+
+    state, desired, _ = run(plant, handed)
+    assert desired.source_handover
+    assert "switch.boiler" not in desired.outputs
+    assert desired.outputs["switch.valve"] == ON
+    assert desired.reasons["source"] == "handed over: the source's own controller runs it"
+    assert not desired.source_without_path
+    assert state.source_request, "Hydronicus takes over from the request it finds"
+
+    resting = observe(plant, readiness={"binary_sensor.handover": True})
+    _, desired, _ = run(plant, resting)
+    assert "switch.boiler" not in desired.outputs
+    assert desired.outputs["switch.valve"] == OFF, "a source seen off needs no heat sink"
+
+    back = observe(
+        plant,
+        on=["switch.boiler"],
+        since={"switch.boiler": NOW - 10},
+        readiness={"binary_sensor.handover": False},
+    )
+    _, desired, _ = run(plant, back, state)
+    assert not desired.source_handover
+    assert desired.outputs["switch.boiler"] == OFF, "no zone needs the source it took back"

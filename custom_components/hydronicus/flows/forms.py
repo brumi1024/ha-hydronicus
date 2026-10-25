@@ -78,6 +78,7 @@ PLANT_FIELDS: Final = {
     "source.hold_after_demand": "cycling",
     "source.heat_sink_overshoot": "cycling",
     "source.health_sensor": "cycling",
+    "source.handover_sensor": "cycling",
     "weather": "weather",
 }
 MODE_FIELDS: Final = {"source.mode.heat": "heat", "source.mode.cool": "cool", "source.mode": "heat"}
@@ -397,6 +398,9 @@ def cycling_schema(
     schema: dict[Any, Any] = {
         optional("health_sensor", values): entity(
             hass, "binary_sensor", shown=_list([values.get("health_sensor")])
+        ),
+        optional("handover_sensor", values): entity(
+            hass, "binary_sensor", shown=_list([values.get("handover_sensor")])
         ),
         optional("max_starts_per_hour", values): selector.NumberSelector(
             selector.NumberSelectorConfig(

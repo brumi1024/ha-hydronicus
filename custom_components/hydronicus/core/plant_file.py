@@ -112,6 +112,7 @@ _SOURCE_KEYS: Final = (
     "heat_sink_overshoot",
     "start_threshold",
     "health_sensor",
+    "handover_sensor",
 )
 _SUPPLY_KEYS: Final = (
     "entity",
@@ -380,6 +381,7 @@ def _source(value: object, path: str) -> Source:
             else None
         ),
         health_sensor=_contact(source, "health_sensor", path),
+        handover_sensor=_contact(source, "handover_sensor", path),
     )
 
 
@@ -949,6 +951,12 @@ def _check_heat_sink(plant: Plant, source: Source) -> None:
             "source.hold_after_demand",
             "Holding the request after demand needs heat_sink_loops to take the heat.",
         )
+    if source.handover_sensor is not None and not source.heat_sink_loops:
+        raise PlantFileError(
+            "source.handover_sensor",
+            "A handover sensor needs heat_sink_loops to take the heat while the source "
+            "runs by itself.",
+        )
     seen: set[LoopRef] = set()
     for index, ref in enumerate(source.heat_sink_loops):
         item_path = _join(loops_path, index)
@@ -1132,6 +1140,7 @@ def entity_paths(plant: Plant) -> dict[str, str]:
         bind(plant.source.request, "source.request")
         bind(plant.source.running_sensor, "source.running_sensor")
         bind(plant.source.health_sensor, "source.health_sensor")
+        bind(plant.source.handover_sensor, "source.handover_sensor")
         if plant.source.supply is not None:
             bind(plant.source.supply.entity, "source.supply.entity")
             bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
@@ -1217,6 +1226,7 @@ _KEY_WORDS: Final = {
     "heat_sink_overshoot": "heat sink overshoot",
     "start_threshold": "start threshold",
     "health_sensor": "health sensor",
+    "handover_sensor": "handover sensor",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
@@ -1346,6 +1356,8 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["running_sensor"] = source.running_sensor
     if source.health_sensor is not None:
         document["health_sensor"] = source.health_sensor
+    if source.handover_sensor is not None:
+        document["handover_sensor"] = source.handover_sensor
     if source.max_starts_per_hour is not None:
         document["max_starts_per_hour"] = source.max_starts_per_hour
     if source.start_threshold is not None:

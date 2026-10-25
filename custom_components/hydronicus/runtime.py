@@ -719,7 +719,7 @@ class PlantRuntime:
         return estimates
 
     def _log_source_reports(self, desired: Desired) -> None:
-        """Log when a source fault or a request without an open path begins and ends."""
+        """Log when a source fault, a handover, or a request without a path begins and ends."""
         before = None if self.view is None else self.view.desired
         fault = None if before is None else before.source_fault
         if desired.source_fault != fault:
@@ -729,6 +729,14 @@ class PlantRuntime:
                 )
             else:
                 _LOGGER.info("Plant %s: the source reads healthy again", self.entry.title)
+        if desired.source_handover != (before is not None and before.source_handover):
+            _LOGGER.info(
+                "Plant %s %s",
+                self.entry.title,
+                "hands its source to the source's own controller and sends it nothing"
+                if desired.source_handover
+                else "controls its source again",
+            )
         if desired.source_without_path and not (before is not None and before.source_without_path):
             _LOGGER.warning(
                 "Plant %s found its source request on with no open loop and a running pump; "
@@ -1201,13 +1209,14 @@ class PlantRuntime:
 
 
 def contacts(plant: Plant) -> set[str]:
-    """Every condensation switch, window, equipment proof, and health input a Plant reads."""
+    """Every condensation switch, window, equipment proof, and source input a Plant reads."""
     found = {pump.condensation_switch for pump in plant.pumps}
     found.update(pump.running_sensor for pump in plant.pumps)
     found.update(pump.flow_sensor for pump in plant.pumps)
     if plant.source is not None:
         found.add(plant.source.running_sensor)
         found.add(plant.source.health_sensor)
+        found.add(plant.source.handover_sensor)
     found.update(loop.condensation_switch for loop in plant.all_loops)
     found.update(window for zone in plant.zones for window in zone.windows)
     return {entity for entity in found if entity is not None}

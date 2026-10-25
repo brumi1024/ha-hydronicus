@@ -722,4 +722,5 @@ def contacts(plant: Plant) -> list[str]:
     if plant.source is not None:
         found.append(plant.source.running_sensor)
         found.append(plant.source.health_sensor)
+        found.append(plant.source.handover_sensor)
     return [entity for entity in dict.fromkeys(found) if entity is not None]

@@ -67,6 +67,7 @@ from .model import (
     Plant,
     Pump,
     RunKind,
+    Source,
     SwitchTarget,
     Valve,
     Zone,
@@ -557,6 +558,11 @@ class _Evaluation:
         self.commissioning = state.commissioning
         self.physical_flow_seen = physical_flow_seen
         self.source_observed = None if plant.source is None else self.switch(plant.source.request)
+        self.handover = (
+            plant.source is not None
+            and plant.source.handover_sensor is not None
+            and self.feedback(plant.source.handover_sensor) is True
+        )
         self.source_observed_changed = state.source_observed_changed
         if (
             plant.source is not None
@@ -771,7 +777,7 @@ class _Evaluation:
         separator or a heat exchanger gives a source-driven pump its flow, not
         the source a sink, so only an open loop counts.
         """
-        if self.plant.source is None or self.source_observed is not True:
+        if self.plant.source is None or self.source_observed is not True or self.handover:
             return False
         return not any(
             self.may_pass(loop) and self.pump_may_run(self._pumps[loop.pump])
@@ -858,7 +864,9 @@ class _Evaluation:
             last_mode=plan.label,
             flowing=flowing,
             flow_ended=flow_ended,
-            source_request=plan.request,
+            # During a handover the request Hydronicus holds on to is the one it
+            # finds, so it takes over from there.
+            source_request=self.source_observed is True if self.handover else plan.request,
             source_changed=source_changed,
             source_observed=self.source_observed,
             source_observed_changed=self.source_observed_changed,
@@ -890,6 +898,7 @@ class _Evaluation:
             holds=self.current_holds(mode),
             source_fault=self.source_fault(),
             source_without_path=self.source_without_path(),
+            source_handover=self.handover,
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
@@ -1428,7 +1437,7 @@ class _Plan:
         held = self.hold_for_source()
 
         outputs: dict[str, OutputTarget] = {}
-        if source is not None:
+        if source is not None and not ev.handover:
             outputs[source.request] = SwitchTarget(self.request)
             if source.supply is not None and self.supply_target is not None:
                 outputs[source.supply.entity] = self.supply_target
@@ -1506,6 +1515,8 @@ class _Plan:
         released when that time ends.
         """
         ev, source = self.ev, self.plant.source
+        if source is not None and ev.handover:
+            return self.handover_sink(source)
         if (
             source is None
             or not source.heat_sink_loops
@@ -1531,6 +1542,28 @@ class _Plan:
                 ev.reasons[key] = f"heat sink full: {full}"
             elif not self.guard_blocked[loop]:
                 ev.reasons[key] = "heat sink while the source is held"
+                sink.add(loop)
+        return sink
+
+    def handover_sink(self, source: Source) -> set[Loop]:
+        """The heat sink loops while something else controls the source and it may heat.
+
+        Hydronicus can then neither stop the source nor wait for it, so every
+        heat sink loop it may open takes the heat, however warm its zone, until
+        a calling loop does or the source is seen off.
+        """
+        ev = self.ev
+        if not self.active or self.mode is not Mode.HEAT or not ev.source_may_run() or self.calling:
+            return set()
+        sink: set[Loop] = set()
+        for ref in source.heat_sink_loops:
+            loop = self.plant.loop(ref)
+            key = str(loop.ref)
+            missing = [entity for entity in self.needs(loop) if not ev.usable(entity)]
+            if missing:
+                ev.reasons[key] = f"heat sink dropped: {', '.join(missing)} unarmed or unavailable"
+            else:
+                ev.reasons[key] = "heat sink while the source runs by itself"
                 sink.add(loop)
         return sink
 
@@ -1774,6 +1807,9 @@ class _Plan:
         if source is None:
             return False
         reasons = ev.reasons
+        if ev.handover:
+            reasons["source"] = "handed over: the source's own controller runs it"
+            return False
         if not (self.active or self.winding_down) or not ev.usable(source.request):
             reasons["source"] = "off"
             return False

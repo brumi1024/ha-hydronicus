@@ -27,6 +27,10 @@ Exemptions and bounds, all in physical seconds:
   has failed since it was last on. Keeping a pump running for the source then
   would carry water through a loop the controller is stopping, such as a
   cooling loop whose condensation guard blocks, against invariant 6.
+- Invariant 3 is exempt while the source's handover sensor reads on and the
+  source's own controller switched the request on, for one reaction and the
+  longest opening time of a heat sink loop's valves after that began, since
+  Hydronicus can then only open a heat sink, not stop the source.
 - Invariant 6 allows a cooling loop to flow on while its guard blocks for one
   call, a valve's travel, and a second of slack, and not at all otherwise,
   except a loop of a source-driven pump during the source's post-run, and
@@ -158,6 +162,8 @@ class Checker:
         # The controller desires the source request off, and an off call to it has failed.
         self.release_wanted = False
         self.release_failed = False
+        # Since when the source is requested while its handover sensor reads on.
+        self.handover_since: float | None = None
         # Evaluations cannot run before this time: a blocked event loop or a downtime.
         self.paused_until = -math.inf
 
@@ -393,6 +399,27 @@ class Checker:
         impaired = self.impaired_at.get(source.request, -math.inf)
         return self.release_failed or t - impaired <= CALL_TIMEOUT + LATENCY
 
+    def _handed_over(self) -> bool:
+        source = self.plant.source
+        return (
+            source is not None
+            and source.handover_sensor is not None
+            and self._contact(source.handover_sensor) is True
+        )
+
+    def _handover_grace(self) -> float:
+        source = self.plant.source
+        assert source is not None
+        opening = max(
+            (
+                valve.opening_time
+                for ref in source.heat_sink_loops
+                for valve in self.plant.loop(ref).valves
+            ),
+            default=0.0,
+        )
+        return SPONTANEOUS_GRACE + opening + 2 * LATENCY
+
     def _source_phase(self) -> str:
         return "source requested" if self.world.requested else "source post-run"
 
@@ -400,9 +427,17 @@ class Checker:
         """Invariant 3: the source is requested only with a ready loop of the mode and its pump."""
         if not self.world.requested:
             self.release_failed = False
+            self.handover_since = None
             return
         if any(t - when <= SPONTANEOUS_GRACE for when, _ in self.world.spontaneous):
             return
+        if self._handed_over():
+            if self.handover_since is None:
+                self.handover_since = t
+            if t - self.handover_since <= self._handover_grace():
+                return
+        else:
+            self.handover_since = None
         if self._release_impossible(t):
             return
         label = self.label

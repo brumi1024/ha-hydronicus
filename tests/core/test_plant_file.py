@@ -1483,6 +1483,7 @@ def cycling_document() -> dict[str, Any]:
             "heat_sink_loops": ["living_area.floor"],
             "hold_after_demand": 14400,
             "heat_sink_overshoot": 0.5,
+            "handover_sensor": "binary_sensor.heat_pump_handover",
         }
     )
     document["zones"]["living_area"]["loops"]["floor"]["weight"] = 2.5
@@ -1501,6 +1502,7 @@ def test_source_cycling_limits_roundtrip_through_yaml_and_sorted_storage() -> No
     assert source.start_threshold == 1.5
     assert source.heat_sink_loops == (LoopRef("living_area", "floor"),)
     assert (source.hold_after_demand, source.heat_sink_overshoot) == (14400.0, 0.5)
+    assert entity_paths(plant)["binary_sensor.heat_pump_handover"] == "source.handover_sensor"
     assert plant.loop(LoopRef("living_area", "floor")).weight == 2.5
     assert plant.loop(LoopRef("living_area", "ceiling")).weight == 1.0
     assert entity_paths(plant)["binary_sensor.heat_pump_healthy"] == "source.health_sensor"
@@ -1527,6 +1529,7 @@ def test_source_cycling_limits_are_off_unless_set() -> None:
         "hold_after_demand",
         "heat_sink_overshoot",
         "health_sensor",
+        "handover_sensor",
     } & set(export_plant(parse_plant(reference_document()))["source"])
 
 
@@ -1538,6 +1541,7 @@ def test_source_cycling_limits_are_off_unless_set() -> None:
         ("source.max_starts_per_hour", True, "number"),
         ("source.start_threshold", 0, "positive"),
         ("source.health_sensor", "switch.heat_pump_healthy", "binary_sensor"),
+        ("source.handover_sensor", "sensor.heat_pump_handover", "binary_sensor"),
         ("source.heat_sink_loops", "living_area.floor", "list"),
         ("source.heat_sink_loops.0", "attic.floor", "no loop"),
         ("source.heat_sink_loops.1", "living_area.floor", "listed twice"),
@@ -1565,13 +1569,16 @@ def test_source_cycling_limits_reject_invalid_values(
     assert message in str(error.value)
 
 
-def test_a_hold_after_demand_needs_heat_sink_loops() -> None:
+@pytest.mark.parametrize("key", ["hold_after_demand", "handover_sensor"])
+def test_a_hold_after_demand_and_a_handover_need_heat_sink_loops(key: str) -> None:
     document = cycling_document()
     del document["source"]["heat_sink_loops"]
+    for other in {"hold_after_demand", "handover_sensor"} - {key}:
+        del document["source"][other]
 
     with pytest.raises(PlantFileError) as error:
         parse_plant(document)
-    assert error.value.path == "source.hold_after_demand"
+    assert error.value.path == f"source.{key}"
     assert "heat_sink_loops" in str(error.value)
 
 

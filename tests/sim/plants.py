@@ -167,6 +167,7 @@ zones:
 # heating loop while its zone has room, and released once none has.
 HEAT_PUMP_REQUEST: Final = "switch.midea_heat_pump_space_heating"
 HEAT_PUMP_HEALTHY: Final = "binary_sensor.midea_heat_pump_modbus_healthy"
+HEAT_PUMP_HANDOVER: Final = "binary_sensor.midea_heat_pump_handover_to_controller"
 HOME_HEAT_PUMP: Final = """
 hydronicus: 2
 name: Home
@@ -180,6 +181,7 @@ source:
   hold_after_demand: 14400
   heat_sink_overshoot: 0.5
   health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
+  handover_sensor: binary_sensor.midea_heat_pump_handover_to_controller
 pumps:
   heat_pump: {driven_by: source, min_flow: guaranteed}
   heating: {switch: switch.home_underfloor_heating_pump, overrun: 240}
