@@ -102,6 +102,9 @@ Toggling on the wired controller on 2026-10-24 confirmed:
 - The wired controller refuses a manual zone 1 setpoint while the weather curve is on, so T1S, the low byte of H:2, stays controller-owned in this setup unless the curve is switched off.
 - A live E8 confirmed the fault encoding: H:124 and H:125 read 9 and bit 12 of H:129 (alarm) set, about four minutes after a heating off and on had stopped the internal pump, which is the pattern the owner suspected.
 
+A DHW run on 2026-10-25 showed that the operating mode, H:101, does not name DHW on this controller: it went from 3 to 0 for the switchover and back to 3 for the run, while SV1 (bit 4 of H:129, the valve to the tank coil) turned on and the external pump off.
+The bridge's **Activity** sensor therefore reads fault, defrost, standby, dhw, heating, or cooling from H:124, H:128, H:101, and SV1 together.
+
 The community map adds two writable settings that this unit reports: bit 12 of H:5 switches the zone 1 weather curve on and off (it reads on), and the low byte of H:6 selects the zone 1 curve, 1 to 9 (it reads 5), with zone 2 in the high byte.
 Neither has been written yet.
 On 2026-10-24 the owner decided both join the Phase 2 write whitelist: bit 12 of H:5 and the low byte of H:6, each with read-modify-write, writes only on change, the rate limit, and a read-back.

@@ -106,6 +106,23 @@ function current(name) {
   return word(s.reg);
 }
 
+// What the heat pump does, in words. The operating mode, H:101, reads 3 through a
+// DHW run on a 2018 controller and 0 while it switches over, so a DHW run shows
+// only as SV1, the valve to the tank coil (H:129 bit 4).
+var ACTIVITIES = ['fault', 'defrost', 'standby', 'dhw', 'heating', 'cooling', 'other'];
+
+function activity() {
+  var mode = word(101);
+  if (mode === null) return null;
+  if (word(124)) return 'fault';
+  if (bit(128, 0x0002)) return 'defrost';
+  if (mode === 0) return 'standby';
+  if (bit(129, 0x0010)) return 'dhw';
+  if (mode === 3) return 'heating';
+  if (mode === 2) return 'cooling';
+  return 'other';
+}
+
 function snapshot() {
   return {
     heating: bit(0, 0x0002),
@@ -117,6 +134,8 @@ function snapshot() {
     curve: lo(6),
     compressor_hz: word(100),
     operating_mode: word(101),
+    activity: activity(),
+    dhw_valve: bit(129, 0x0010),
     tw_in: word(104),
     tw_out: word(105),
     t4: word(107),
@@ -452,11 +471,13 @@ function announce() {
   sensor('t1', 'Total water outlet', '°C', 'temperature');
   sensor('t5', 'DHW tank', '°C', 'temperature');
   sensor('compressor_hz', 'Compressor frequency', 'Hz', 'frequency');
-  sensor('operating_mode', 'Operating mode', null, null);
+  discovery('sensor', 'activity', { name: 'Activity', state_topic: CONFIG.base + '/state', value_template: '{{ value_json.activity }}', device_class: 'enum', options: ACTIVITIES });
+  discovery('sensor', 'operating_mode', { name: 'Operating mode code', state_topic: CONFIG.base + '/state', value_template: '{{ value_json.operating_mode }}', entity_category: 'diagnostic' });
   sensor('fault', 'Fault code', null, null);
   flag('internal_pump', 'Internal pump', 'running');
   flag('external_pump', 'External pump', 'running');
   flag('defrost', 'Defrost', 'running');
+  flag('dhw_valve', 'DHW valve', 'opening');
   flag('alarm', 'Alarm', 'problem');
   discovery('binary_sensor', 'modbus_healthy', { name: 'Modbus healthy', state_topic: CONFIG.base + '/modbus_healthy', device_class: 'connectivity' });
   discovery('binary_sensor', 'handover', { name: 'Handover to controller', state_topic: CONFIG.base + '/handover' });
