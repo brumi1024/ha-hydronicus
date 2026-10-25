@@ -101,3 +101,6 @@ automation:
 3. Start it with writes off and check the **Midea heat pump** device in Home Assistant: its temperatures, mode, and switches should match the wired controller.
 4. Add the heartbeat automation.
 5. Only then set `writesEnabled: true`, restart the script, and try one change, such as the DHW setpoint, while you watch the wired controller.
+
+To load a new version through the Shelly's RPC instead of pasting it, stop the script, send the code with `Script.PutCode` in chunks of raw UTF-8, read it back with `Script.GetCode`, and only then start it.
+The firmware does not decode `\u` escapes, so a JSON encoder that escapes non-ASCII text turns the `°C` units into garbage.
