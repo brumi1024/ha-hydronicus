@@ -527,3 +527,23 @@ def test_a_compressor_that_has_just_started_is_not_taken_for_no_load() -> None:
     sim.always_for(
         lambda: sim.is_on(HEAT_PUMP_REQUEST), 3600.0, "a heat pump that delivers heat runs on"
     )
+
+
+def test_arming_the_heat_pump_found_heating_takes_it_over_without_a_stop() -> None:
+    home = plant(HOME_HEAT_PUMP)
+    sim = Sim(home, mode=Mode.HEAT, armed=set(home.outputs()) - {HEAT_PUMP_REQUEST})
+    for zone in ("bedroom_area", "living_area"):
+        sim.set_zone_temperature(zone, WARM)
+    sim.set_zone_temperature("basement", COLD)
+    # Its own controller runs the heat pump into the basement's ceiling.
+    sim.seed_on(HEAT_PUMP_REQUEST)
+    sim.seed_running("basement.ceiling")
+    sim.start()
+    sim.run_for(600)
+    assert sim.is_on(HEAT_PUMP_REQUEST)
+
+    sim.set_armed(home.outputs())
+    sim.run_for(MIN_ON + MIN_OFF)
+
+    assert sim.switched(HEAT_PUMP_REQUEST) == [], "arming a running heat pump stops nothing"
+    assert sim.calls_to(HEAT_PUMP_REQUEST) == []

@@ -190,3 +190,25 @@ async def test_an_output_that_never_follows_is_retried_and_raises_a_repair(
     actuators.ignoring.clear()
     await async_advance(hass, freezer, 400, step=5)
     assert issues_of(hass, IssueKind.OUTPUT_NOT_RESPONDING) == []
+
+
+async def test_arming_a_source_found_running_takes_it_over_without_a_stop(
+    hass: HomeAssistant, actuators: Actuators, freezer: FrozenDateTimeFactory
+) -> None:
+    reference_world(hass)
+    entry = await async_import(hass, REFERENCE_PLANT)
+    others = [entity for entity in REFERENCE_OUTPUTS if entity != SOURCE_REQUEST]
+    await async_set_options(hass, entry, armed=others, control=True)
+    await async_call_for_heat(hass)
+    await async_advance(hass, freezer, 900, step=5)
+    # The source's own controller runs it while Hydronicus may not.
+    hass.states.async_set(SOURCE_REQUEST, "on")
+    await async_advance(hass, freezer, 300, step=5)
+    actuators.clear()
+
+    await async_set_options(hass, entry, armed=REFERENCE_OUTPUTS)
+    await async_advance(hass, freezer, 900, step=5)
+
+    assert f"{SOURCE_REQUEST}:off" not in actuators.shorts()
+    assert hass.states.get(SOURCE_REQUEST).state == "on"
+    assert hass.states.get("sensor.home_status").attributes["reasons"]["source"] == "requested"

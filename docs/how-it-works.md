@@ -70,6 +70,7 @@ Optional switched-pump running and flow feedback must confirm circulation before
 A source-driven pump may start from known-off feedback when first requested, then has the source's `feedback_timeout` to prove operation, 300 seconds by default; unavailable feedback blocks startup.
 A blocked condensation guard, a lost ready loop or pump, a source health sensor that does not read healthy, turning **Control equipment** off, and stopping an old configuration release the source request immediately.
 A source request found on with no loop open behind a running pump is released and logged, since Hydronicus never commands one.
+While the request is unarmed, or handed over to the source's own controller, Hydronicus takes it as it finds it, so arming a source that already runs keeps it running while a zone calls, and releases it as usual when none does.
 
 ## Commands are confirmed
 
