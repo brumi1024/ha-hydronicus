@@ -20,7 +20,8 @@ to ``BACKOFF_MAX``, and an output is reported for a Repair once
 
 An output of a source with a ``write_interval``, such as one behind a bridge
 that refuses faster writes, is sent nothing sooner than that after its last
-send, except a switch turning off, and is retried no faster. Once
+send, except the request or the DHW switch turning off, which stops equipment,
+and is retried no faster. Once
 ``REPAIR_AFTER`` attempts have not been taken, the Repair is its status and it
 is sent again only after ``STATUS_RETRY``, or as soon as its target or its
 observed state changes, since a retry loop against a bridge that refuses would
@@ -236,7 +237,7 @@ def reconcile(
         limited = (
             source is not None
             and source.write_limited(entity)
-            and not (isinstance(target, SwitchTarget) and not target.on)
+            and not (role in _STOPPING_ROLES and isinstance(target, SwitchTarget) and not target.on)
         )
         ready_at = -math.inf if attempt is None else attempt.sent_at + backoff(attempt.count)
         if (
@@ -266,6 +267,11 @@ def reconcile(
         retry_at=min(retries) if retries else None,
         repairs=frozenset(repairs),
     )
+
+
+# The source outputs whose turning off stops equipment, which a write interval never holds;
+# turning off any other, such as a switch that follows the mode, is a setting like the rest.
+_STOPPING_ROLES: Final = frozenset({OutputRole.SOURCE_REQUEST, OutputRole.DHW_SWITCH})
 
 
 def backoff(count: int) -> float:

@@ -405,7 +405,8 @@ class Source:
     # sends the source nothing and keeps a heat sink open while it may heat.
     handover_sensor: str | None = None
     # The fewest seconds between two writes to one of the source's outputs, for
-    # a bridge that refuses faster ones; a switch turning off is never held.
+    # a bridge that refuses faster ones; the request or the DHW switch turning off
+    # is never held.
     write_interval: float | None = None
     dhw: Dhw | None = None
     # A binary sensor or input boolean that reads on while another source supplies

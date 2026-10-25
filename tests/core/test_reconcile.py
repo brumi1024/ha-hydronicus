@@ -375,3 +375,21 @@ def test_an_output_without_a_write_interval_keeps_the_usual_backoff(plant: Plant
 def test_the_last_send_survives_persistence(limited: Plant) -> None:
     first = _run(limited, {"select.hp": OptionTarget("Cool")}, _observed())
     assert ReconcileState.from_dict(first.state.to_dict()) == first.state
+
+
+def test_a_write_limited_setting_turning_off_keeps_its_interval() -> None:
+    plant = read_plant_file(
+        PLANT.replace(
+            "  mode: {entity: select.hp, heat: Heat, cool: Cool}",
+            "  mode: {entity: select.hp, heat: Heat, cool: Cool}\n"
+            "  mode_switches: {switch.curve: [heat]}\n"
+            "  write_interval: 300",
+        )
+    )
+    observed = {**_observed(), "switch.curve": SwitchState(False, NOW - 100)}
+    on = _run(plant, {"switch.curve": ON}, observed)
+    turned = {**observed, "switch.curve": SwitchState(True, NOW + 1)}
+    off = _run(plant, {"switch.curve": OFF}, turned, on.state, NOW + 60)
+    assert off.send == (), "unlike the request, a mode switch turning off waits its interval"
+    later = _run(plant, {"switch.curve": OFF}, turned, off.state, NOW + INTERVAL)
+    assert [action.target for action in later.send] == [OFF]
