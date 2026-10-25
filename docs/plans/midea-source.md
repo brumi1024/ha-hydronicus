@@ -13,6 +13,7 @@ On 2026-10-23 the owner decided:
 - The bridge talks to Home Assistant over MQTT with discovery, not through Shelly virtual components, so the number of registers it exposes has no limit of ten.
 - A setting that Hydronicus owns and that someone changes on the wired controller is reported and adopted: Hydronicus takes the new value as its own and does not write it back.
 - The source-selector valve has no position signal yet, so it stays on the heat pump while Hydronicus controls the heat pump; a position signal later becomes a condition of the request.
+  On 2026-10-25 the owner described it: a thermostat drives the motorized valve to the buffer while the water-jacket fireplace has heated it, and that thermostat stays the authority; Hydronicus gets a source inhibit input from the valve's position and never commands the valve.
 - The bridge scripts live in `extras/shelly-modbus-bridge/` in this repository, outside the release package.
 
 Earlier decisions from the brief stand: the bridge holds no control logic, writes go only to a whitelist with read-modify-write on packed registers, every write is read back, and no write reaches the heat pump before the owner approves Phase 2.
