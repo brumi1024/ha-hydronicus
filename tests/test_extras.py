@@ -41,7 +41,7 @@ def test_the_bridge_writes_only_whitelisted_registers_with_single_register_write
     settings = re.search(r"var SETTINGS = \{(.*?)\n\};", source, re.DOTALL)
     assert settings is not None
     registers = {int(reg) for reg in re.findall(r"reg: (\d+)", settings.group(1))}
-    assert registers == {0, 2, 4, 5, 6}
+    assert registers == {0, 1, 2, 4, 5, 6}
 
 
 def test_the_bridge_ships_with_writes_off() -> None:

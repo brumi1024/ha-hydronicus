@@ -54,7 +54,7 @@ The community map for newer Midea units and Shelly's own Midea guide already dis
 ## Phase 2: the bridge
 
 `midea-bridge.shelly.js` replaces the scan once the register map is confirmed.
-It polls the heat pump every 10 seconds, publishes its values to Home Assistant over MQTT with discovery, and executes write requests from Home Assistant.
+It polls the heat pump every 10 seconds, publishes its values to Home Assistant over MQTT with discovery, at least once a minute even when nothing changed so that a steady temperature stays fresh, and executes write requests from Home Assistant.
 It ships with `writesEnabled: false`, so it only reads until you change that.
 
 ### What it writes
@@ -63,10 +63,11 @@ Only these settings, each changing only its own bits:
 
 | Setting | Register | Values |
 | --- | --- | --- |
-| `heating` | H:0 bit 1 | `ON`, `OFF` |
+| `heating` | H:0 bit 1, zone 1 heating or cooling | `ON`, `OFF` |
+| `mode` | H:1 | `Heat`, `Cool`; auto stays on the wired controller |
 | `dhw` | H:0 bit 2 | `ON`, `OFF` |
 | `curve_enabled` | H:5 bit 12 | `ON`, `OFF` |
-| `t1s` | H:2 low byte | 25 to 50 °C |
+| `t1s` | H:2 low byte | 25 to 50 °C while heating, 16 to 22 °C while cooling |
 | `curve` | H:6 low byte | 1 to 9 |
 | `t5s` | H:4 | 40 to 55 °C |
 
@@ -77,7 +78,9 @@ Anything else, a value outside its limits, and every request while Modbus is unh
 ### The handover
 
 Home Assistant publishes to `<base>/heartbeat` at least once a minute.
-If no heartbeat arrives for 10 minutes, the bridge writes the fallback settings once, space heating on by default, so the wired controller runs the heat pump by itself, publishes `<base>/handover` as `ON`, and refuses requests until a heartbeat returns.
+If no heartbeat arrives for 10 minutes, the bridge writes the fallback settings once, publishes `<base>/handover` as `ON`, and refuses requests until a heartbeat returns.
+While the heat pump is set to heat, the fallback switches zone 1 on, so the wired controller runs the heating by itself; while it is set to cool, the fallback switches zone 1 off, because the wired controller knows no dew point and must not cool unattended.
+The handover counts as done only once every fallback write is confirmed, and is retried every cycle until then.
 Set up the heartbeat before you enable writes, or the bridge hands over 10 minutes after it starts.
 An automation like this one sends it:
 

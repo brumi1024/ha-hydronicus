@@ -1,5 +1,8 @@
 // Phase 2 of the Hydronicus Modbus bridge: a Midea heat pump on MQTT.
 //
+// In cooling, the handover switches zone 1 off instead of on: the wired
+// controller knows no dew point, so it must not cool unattended.
+//
 // It polls the heat pump's holding registers through the Shelly Pro Modbus
 // Add-on, publishes them to Home Assistant over MQTT with discovery, and
 // executes whitelisted write requests from Home Assistant. It holds no control
@@ -37,13 +40,18 @@ var CONFIG = {
   minWriteIntervalMs: 300000, // per setting
   settleMs: 1500, // before the read-back
   handoverMs: 600000, // without a heartbeat
-  fallback: { heating: true }, // restored once at handover
-  limits: { t5s: [40, 55], t1s: [25, 50], curve: [1, 9] }
+  // Restored once at handover, by the mode the heat pump is set to: heating
+  // goes back to the wired controller, cooling stops.
+  fallback: { heat: { heating: true }, cool: { heating: false } },
+  // t1s takes t1s_cool while the mode is cool; ceilings condense below about 16 °C.
+  limits: { t5s: [40, 55], t1s: [25, 50], t1s_cool: [16, 22], curve: [1, 9] },
+  republishMs: 60000 // the state is published at least this often, for freshness
 };
 
 // The whitelist: each writable setting, its register, and its bits or byte.
 var SETTINGS = {
   heating: { reg: 0, mask: 0x0002, kind: 'bit', offSafe: true },
+  mode: { reg: 1, mask: 0xffff, kind: 'mode' },
   dhw: { reg: 0, mask: 0x0004, kind: 'bit', offSafe: true },
   curve_enabled: { reg: 5, mask: 0x1000, kind: 'bit' },
   t1s: { reg: 2, mask: 0x00ff, kind: 'byte' },
@@ -53,7 +61,18 @@ var SETTINGS = {
 
 // The names a request may use, checked as a list so that a topic such as
 // set/constructor can never match a property every object inherits.
-var NAMES = ['heating', 'dhw', 'curve_enabled', 't1s', 'curve', 't5s'];
+var NAMES = ['heating', 'mode', 'dhw', 'curve_enabled', 't1s', 'curve', 't5s'];
+
+// The modes a request may set; auto is left to the wired controller, since
+// Hydronicus sequences every change between heating and cooling itself.
+var MODES = { Heat: 3, Cool: 2 };
+
+function modeName(value) {
+  if (value === 3) return 'Heat';
+  if (value === 2) return 'Cool';
+  if (value === 1) return 'Auto';
+  return null;
+}
 
 function writable(name) {
   return NAMES.indexOf(name) >= 0;
@@ -72,6 +91,7 @@ var state = {
   job: null, // the write in progress
   handoverFailed: false, // a fallback write of this handover was not confirmed
   published: '',
+  publishedAt: 0,
   seq: 0,
   watchdog: null,
   timer: null,
@@ -106,6 +126,10 @@ function current(name) {
   return word(s.reg);
 }
 
+function cooling() {
+  return word(1) === 2;
+}
+
 // What the heat pump does, in words. The operating mode, H:101, reads 3 through a
 // DHW run on a 2018 controller and 0 while it switches over, so a DHW run shows
 // only as SV1, the valve to the tank coil (H:129 bit 4).
@@ -128,6 +152,7 @@ function snapshot() {
     heating: bit(0, 0x0002),
     dhw: bit(0, 0x0004),
     mode_set: word(1),
+    mode: modeName(word(1)),
     t1s: lo(2),
     t5s: word(4),
     curve_enabled: bit(5, 0x1000),
@@ -156,8 +181,11 @@ function publish(topic, message, retain) {
 
 function publishState() {
   var text = JSON.stringify(snapshot());
-  if (text === state.published) return;
+  // An unchanged state is sent again now and then, so that Home Assistant
+  // sees a fresh reading of a temperature that has not moved.
+  if (text === state.published && uptimeMs() - state.publishedAt < CONFIG.republishMs) return;
   state.published = text;
+  state.publishedAt = uptimeMs();
   publish('state', text, true);
 }
 
@@ -219,7 +247,7 @@ function modbus(method, params, done) {
 function encode(s, old, value) {
   if (s.kind === 'bit') return value ? old | s.mask : old & (0xffff ^ s.mask);
   if (s.kind === 'byte') return (old & 0xff00) | (value & 0xff);
-  return value & 0xffff;
+  return value & 0xffff; // a word or a mode
 }
 
 function parse(name, text) {
@@ -229,10 +257,11 @@ function parse(name, text) {
     if (text === 'OFF') return false;
     return null;
   }
+  if (s.kind === 'mode') return MODES[text] === 2 || MODES[text] === 3 ? MODES[text] : null;
   var n = Number(text);
   if (!(n === Math.floor(n))) return null;
   // Every numeric setting has limits; one without them is never written.
-  var range = CONFIG.limits[name];
+  var range = name === 't1s' && cooling() ? CONFIG.limits.t1s_cool : CONFIG.limits[name];
   if (!range || !(n >= range[0] && n <= range[1])) return null;
   return n;
 }
@@ -326,14 +355,15 @@ function afterFreshRead(result, error) {
 // Queues the fallback writes; the handover counts as done only once every one
 // of them is confirmed, and endCycle queues them again until then.
 function handOver() {
-  var names = Object.keys(CONFIG.fallback);
+  var fallback = cooling() ? CONFIG.fallback.cool : CONFIG.fallback.heat;
+  var names = Object.keys(fallback);
   var i;
   for (i = 0; i < state.queue.length; i++) {
     if (state.queue[i].last) return;
   }
-  print('[bridge] no heartbeat for ' + CONFIG.handoverMs / 1000 + ' s: handing over to the wired controller');
+  print('[bridge] no heartbeat for ' + CONFIG.handoverMs / 1000 + ' s: handing over to the wired controller' + (cooling() ? ' with cooling stopped' : ''));
   state.handoverFailed = false;
-  for (i = 0; i < names.length; i++) state.queue.push({ name: names[i], value: CONFIG.fallback[names[i]], handover: true });
+  for (i = 0; i < names.length; i++) state.queue.push({ name: names[i], value: fallback[names[i]], handover: true });
   state.queue.push({ name: '', last: true });
 }
 
@@ -459,11 +489,12 @@ function announce() {
   var t5s = CONFIG.limits.t5s;
   var t1s = CONFIG.limits.t1s;
   var curve = CONFIG.limits.curve;
-  control('switch', 'heating', 'Space heating', { value_template: "{{ 'ON' if value_json.heating else 'OFF' }}" });
+  control('switch', 'heating', 'Zone 1 heating or cooling', { value_template: "{{ 'ON' if value_json.heating else 'OFF' }}" });
+  control('select', 'mode', 'Mode', { value_template: "{{ value_json.mode if value_json.mode in ['Heat', 'Cool'] else 'None' }}", options: ['Heat', 'Cool'] });
   control('switch', 'dhw', 'DHW', { value_template: "{{ 'ON' if value_json.dhw else 'OFF' }}" });
   control('switch', 'curve_enabled', 'Weather curve', { value_template: "{{ 'ON' if value_json.curve_enabled else 'OFF' }}" });
   control('number', 't5s', 'DHW setpoint', { value_template: '{{ value_json.t5s }}', min: t5s[0], max: t5s[1], step: 1, mode: 'box', unit_of_measurement: '°C', device_class: 'temperature' });
-  control('number', 't1s', 'Zone 1 water setpoint', { value_template: '{{ value_json.t1s }}', min: t1s[0], max: t1s[1], step: 1, mode: 'box', unit_of_measurement: '°C', device_class: 'temperature' });
+  control('number', 't1s', 'Zone 1 water setpoint', { value_template: '{{ value_json.t1s }}', min: CONFIG.limits.t1s_cool[0], max: t1s[1], step: 1, mode: 'box', unit_of_measurement: '°C', device_class: 'temperature' });
   control('number', 'curve', 'Weather curve number', { value_template: '{{ value_json.curve }}', min: curve[0], max: curve[1], step: 1, mode: 'box' });
   sensor('tw_in', 'Water inlet', '°C', 'temperature');
   sensor('tw_out', 'Water outlet', '°C', 'temperature');
