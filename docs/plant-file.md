@@ -195,6 +195,8 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | `feedback_timeout` | no | `300` | Positive seconds allowed after an observed source request for source running feedback and source-driven pump running or flow feedback to confirm operation. Missing or unknown feedback blocks startup. |
 | `supply` | no | | Optional [supply temperature control](#supply-temperature-control). |
 | `dhw` | no | | Optional [domestic hot water](#domestic-hot-water) settings that Hydronicus owns. |
+| `inhibit_sensor` | no | | A `binary_sensor` or `input_boolean` that reads on while another source supplies the zones, such as a fireplace's buffer that its own valve selects. While it reads on, the request is released at once, whatever `min_on` says, and stays off, with no fault and no Repair; the calling zones still open their loops and run their switched pumps. Unknown or unavailable counts as off. |
+| `no_load` | no | | Optional [no-load guard](#no-load-guard). |
 | `max_starts_per_hour` | no | no limit | The most times the request may be observed turning on within any hour, a whole number. A start beyond it waits until the oldest start is an hour old. |
 | `start_threshold` | no | none | The total `weight` of calling loops needed before the request starts. Loops below it still open and circulate; a running request is never cut short by it. |
 | `heat_sink_loops` | no | | Heating loops, such as `[living_area.floor]`, that Hydronicus opens when every calling loop is satisfied while the request is held for its `min_on` or its `hold_after_demand`. The source then runs into them, and the other loops close once one of them is ready. A heat sink loop never asks for heat itself. |
@@ -237,6 +239,21 @@ Every configured fixed or curve supply temperature of the setpoint's `modes` mus
 A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
 A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
 See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).
+
+### No-load guard
+
+The source's `no_load` mapping releases a heat pump whose compressor runs while its leaving and returning water stay within `delta` of each other, so its heat has nowhere to go: another source supplies the zones, every valve is closed, a pump failed, or air blocks the flow.
+It trips once the request is on, the compressor has run for `duration`, and the water has stayed within `delta` for `duration` too; Hydronicus then releases the request and holds it off for `hold_off`.
+A missing or stale reading never trips it, and two trips within a day raise a Repair.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `supply_temperature` | yes | | The heat pump's leaving water temperature `sensor`. |
+| `return_temperature` | yes | | The heat pump's returning water temperature `sensor`. |
+| `compressor_sensor` | yes | | A `sensor` that reads above zero while the compressor runs, such as its frequency. |
+| `delta` | no | `1` | The temperature difference in K under which the water counts as carrying no heat. |
+| `duration` | no | `600` | How long the compressor must run, and the difference stay under `delta`, before the guard trips, in seconds. |
+| `hold_off` | no | `1800` | How long the request then stays off, in seconds. |
 
 ### Domestic hot water
 

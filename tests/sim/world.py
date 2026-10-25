@@ -293,6 +293,10 @@ class World:
                 self._sensor(pump.supply_temperature, DEFAULT_REFERENCE)
         if plant.source and plant.source.supply and plant.source.supply.outdoor_sensor:
             self._sensor(plant.source.supply.outdoor_sensor, 5.0)
+        if plant.source and (guard := plant.source.no_load) is not None:
+            self._sensor(guard.supply_temperature, 35.0)
+            self._sensor(guard.return_temperature, 31.0)
+            self._sensor(guard.compressor_sensor, 0.0)
         for zone in plant.zones:
             for sensor in zone.temperature:
                 self._sensor(sensor.entity, DEFAULT_TEMPERATURE)
@@ -729,4 +733,5 @@ def contacts(plant: Plant) -> list[str]:
         found.append(plant.source.running_sensor)
         found.append(plant.source.health_sensor)
         found.append(plant.source.handover_sensor)
+        found.append(plant.source.inhibit_sensor)
     return [entity for entity in dict.fromkeys(found) if entity is not None]

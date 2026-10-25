@@ -64,6 +64,7 @@ from .model import (
     LoopRun,
     MinFlow,
     Mode,
+    NoLoadGuard,
     Plant,
     Preset,
     Pump,
@@ -116,7 +117,18 @@ _SOURCE_KEYS: Final = (
     "handover_sensor",
     "write_interval",
     "dhw",
+    "inhibit_sensor",
+    "no_load",
 )
+_NO_LOAD_KEYS: Final = (
+    "supply_temperature",
+    "return_temperature",
+    "compressor_sensor",
+    "delta",
+    "duration",
+    "hold_off",
+)
+_INHIBIT_DOMAINS: Final = ("binary_sensor", "input_boolean")
 _DHW_KEYS: Final = ("switch", "setpoint", "minimum", "maximum", "tolerance", "step", "max_boost")
 _SUPPLY_KEYS: Final = (
     "entity",
@@ -394,6 +406,34 @@ def _source(value: object, path: str) -> Source:
             else None
         ),
         dhw=_dhw(source["dhw"], _join(path, "dhw")) if "dhw" in source else None,
+        inhibit_sensor=(
+            _entity(source["inhibit_sensor"], _join(path, "inhibit_sensor"), _INHIBIT_DOMAINS)
+            if "inhibit_sensor" in source
+            else None
+        ),
+        no_load=(
+            _no_load(source["no_load"], _join(path, "no_load")) if "no_load" in source else None
+        ),
+    )
+
+
+def _no_load(value: object, path: str) -> NoLoadGuard:
+    document = _mapping(value, path, _NO_LOAD_KEYS)
+    defaults = NoLoadGuard("", "", "")
+
+    def sensor(key: str) -> str:
+        return _entity(_required(document, key, path), _join(path, key), _SENSOR_DOMAINS)
+
+    def setting(key: str) -> float:
+        return _number(document.get(key, getattr(defaults, key)), _join(path, key), positive=True)
+
+    return NoLoadGuard(
+        supply_temperature=sensor("supply_temperature"),
+        return_temperature=sensor("return_temperature"),
+        compressor_sensor=sensor("compressor_sensor"),
+        delta=setting("delta"),
+        duration=setting("duration"),
+        hold_off=setting("hold_off"),
     )
 
 
@@ -1212,6 +1252,11 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
         if plant.source.mode is not None:
             bind(plant.source.mode.entity, "source.mode.entity")
+        bind(plant.source.inhibit_sensor, "source.inhibit_sensor")
+        if (guard := plant.source.no_load) is not None:
+            bind(guard.supply_temperature, "source.no_load.supply_temperature")
+            bind(guard.return_temperature, "source.no_load.return_temperature")
+            bind(guard.compressor_sensor, "source.no_load.compressor_sensor")
         if plant.source.dhw is not None:
             bind(plant.source.dhw.switch, "source.dhw.switch")
             bind(plant.source.dhw.setpoint, "source.dhw.setpoint")
@@ -1300,6 +1345,13 @@ _KEY_WORDS: Final = {
     "dhw": "DHW",
     "setpoint": "setpoint",
     "max_boost": "maximum boost",
+    "inhibit_sensor": "inhibit sensor",
+    "no_load": "no-load guard",
+    "return_temperature": "return temperature sensor",
+    "compressor_sensor": "compressor sensor",
+    "delta": "temperature difference",
+    "duration": "duration",
+    "hold_off": "hold off",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
@@ -1433,6 +1485,20 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["handover_sensor"] = source.handover_sensor
     if source.write_interval is not None:
         document["write_interval"] = _export_number(source.write_interval)
+    if source.inhibit_sensor is not None:
+        document["inhibit_sensor"] = source.inhibit_sensor
+    if (guard := source.no_load) is not None:
+        guard_defaults = NoLoadGuard("", "", "")
+        document["no_load"] = {
+            "supply_temperature": guard.supply_temperature,
+            "return_temperature": guard.return_temperature,
+            "compressor_sensor": guard.compressor_sensor,
+            **{
+                key: _export_number(getattr(guard, key))
+                for key in ("delta", "duration", "hold_off")
+                if getattr(guard, key) != getattr(guard_defaults, key)
+            },
+        }
     if (dhw := source.dhw) is not None:
         defaults = Dhw()
         exported: dict[str, Any] = {}

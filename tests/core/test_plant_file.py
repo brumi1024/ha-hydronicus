@@ -1659,3 +1659,66 @@ def test_a_supply_rejects_invalid_modes_and_steps(
         parse_plant(document)
     assert error.value.path == path
     assert message in str(error.value)
+
+
+def test_an_inhibit_and_a_no_load_guard_roundtrip() -> None:
+    document = reference_document()
+    document["source"]["inhibit_sensor"] = "input_boolean.fireplace_heating"
+    document["source"]["no_load"] = {
+        "supply_temperature": "sensor.water_outlet",
+        "return_temperature": "sensor.water_inlet",
+        "compressor_sensor": "sensor.compressor_frequency",
+        "delta": 1.5,
+    }
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.no_load is not None
+    assert plant.source.inhibit_sensor == "input_boolean.fireplace_heating"
+    assert (plant.source.no_load.delta, plant.source.no_load.duration) == (1.5, 600.0)
+    exported = export_plant(plant)["source"]
+    assert exported["no_load"] == document["source"]["no_load"]
+    assert exported["inhibit_sensor"] == "input_boolean.fireplace_heating"
+    assert read_plant_file(write_plant_file(plant)) == plant
+    paths = entity_paths(plant)
+    assert paths["sensor.compressor_frequency"] == "source.no_load.compressor_sensor"
+    assert paths["input_boolean.fireplace_heating"] == "source.inhibit_sensor"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "path", "message"),
+    [
+        ("inhibit_sensor", "switch.fireplace", "source.inhibit_sensor", "input_boolean"),
+        ("no_load", {"supply_temperature": "sensor.a"}, "source.no_load.return_temperature", ""),
+        (
+            "no_load",
+            {
+                "supply_temperature": "sensor.a",
+                "return_temperature": "sensor.b",
+                "compressor_sensor": "binary_sensor.c",
+            },
+            "source.no_load.compressor_sensor",
+            "sensor",
+        ),
+        (
+            "no_load",
+            {
+                "supply_temperature": "sensor.a",
+                "return_temperature": "sensor.b",
+                "compressor_sensor": "sensor.c",
+                "hold_off": 0,
+            },
+            "source.no_load.hold_off",
+            "positive",
+        ),
+    ],
+)
+def test_an_inhibit_and_a_no_load_guard_reject_invalid_values(
+    key: str, value: object, path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"][key] = value
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)

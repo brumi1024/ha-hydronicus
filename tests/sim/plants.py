@@ -176,6 +176,9 @@ HEAT_PUMP_SETPOINT: Final = "number.midea_heat_pump_zone_1_water_setpoint"
 HEAT_PUMP_WATER_OUTLET: Final = "sensor.midea_heat_pump_water_outlet"
 HEAT_PUMP_DHW: Final = "switch.midea_heat_pump_dhw"
 HEAT_PUMP_DHW_SETPOINT: Final = "number.midea_heat_pump_dhw_setpoint"
+HEAT_PUMP_WATER_INLET: Final = "sensor.midea_heat_pump_water_inlet"
+HEAT_PUMP_COMPRESSOR: Final = "sensor.midea_heat_pump_compressor_frequency"
+FIREPLACE_HEATING: Final = "input_boolean.home_fireplace_heating"
 HOME_HEAT_PUMP: Final = """
 hydronicus: 2
 name: Home
@@ -193,6 +196,11 @@ source:
   health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
   handover_sensor: binary_sensor.midea_heat_pump_handover_to_controller
   write_interval: 300
+  inhibit_sensor: input_boolean.home_fireplace_heating
+  no_load:
+    supply_temperature: sensor.midea_heat_pump_water_outlet
+    return_temperature: sensor.midea_heat_pump_water_inlet
+    compressor_sensor: sensor.midea_heat_pump_compressor_frequency
   supply:
     entity: number.midea_heat_pump_zone_1_water_setpoint
     modes: [cool]

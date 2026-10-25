@@ -49,6 +49,8 @@ class SensorKind(StrEnum):
     # Supply water.
     WATER = "water"
     HUMIDITY = "humidity"
+    # A plain finite number in its own unit, such as a compressor frequency.
+    LEVEL = "level"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +67,7 @@ _PLAUSIBLE: Final = {
     SensorKind.AIR: _Plausible(-50.0, 100.0),
     SensorKind.WATER: _Plausible(-50.0, 150.0),
     SensorKind.HUMIDITY: _Plausible(0.0, 100.0),
+    SensorKind.LEVEL: _Plausible(-1e9, 1e9),
 }
 
 
@@ -133,8 +136,11 @@ def reading(state: State | None, kind: SensorKind, now: float) -> Reading:
     except ValueError:
         return Reading(None, updated)
     unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
-    normalize = humidity_from_unit if kind is SensorKind.HUMIDITY else celsius_from_unit
-    normalized = normalize(value, unit)
+    if kind is SensorKind.LEVEL:
+        normalized: float | None = value
+    else:
+        normalize = humidity_from_unit if kind is SensorKind.HUMIDITY else celsius_from_unit
+        normalized = normalize(value, unit)
     plausible = _PLAUSIBLE[kind]
     if (
         normalized is None

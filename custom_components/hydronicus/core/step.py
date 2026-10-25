@@ -124,6 +124,8 @@ CALL_TIMEOUT: Final = 10.0
 TICK: Final = 0.001
 # The window ``Source.max_starts_per_hour`` counts observed request starts in, in seconds.
 START_WINDOW: Final = 3600.0
+# The window in which the no-load guard's trips are counted for its Repair, in seconds.
+NO_LOAD_WINDOW: Final = 86400.0
 # An exercise gives up this long after its valves' travel and opening time and its
 # pump's run time: the reconciler's ``TRAVEL_GRACE``, which three calls to a valve
 # that does not respond take before its Repair.
@@ -336,6 +338,13 @@ class State:
     exercise_ended: Mapping[str, float] = field(default_factory=dict)
     # The source's owned DHW settings and its boost.
     dhw: DhwState = DhwState()
+    # The no-load guard: since when the compressor runs, since when the water has
+    # stayed within its difference, until when it holds the source off, and when
+    # it tripped within ``NO_LOAD_WINDOW``.
+    compressor_since: float | None = None
+    no_load_since: float | None = None
+    no_load_until: float | None = None
+    no_load_trips: tuple[float, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -384,6 +393,10 @@ class State:
             },
             "exercise_ended": dict(self.exercise_ended),
             "dhw": self.dhw.to_dict(),
+            "compressor_since": self.compressor_since,
+            "no_load_since": self.no_load_since,
+            "no_load_until": self.no_load_until,
+            "no_load_trips": list(self.no_load_trips),
         }
 
     @classmethod
@@ -432,6 +445,10 @@ class State:
                 slug: float(value) for slug, value in data.get("exercise_ended", {}).items()
             },
             dhw=DhwState.from_dict(data.get("dhw", {})),
+            compressor_since=_optional_float(data.get("compressor_since")),
+            no_load_since=_optional_float(data.get("no_load_since")),
+            no_load_until=_optional_float(data.get("no_load_until")),
+            no_load_trips=tuple(float(value) for value in data.get("no_load_trips", ())),
         )
 
 
@@ -570,6 +587,13 @@ class _Evaluation:
             and plant.source.handover_sensor is not None
             and self.feedback(plant.source.handover_sensor) is True
         )
+        self.inhibited = (
+            f"another source supplies the zones: {plant.source.inhibit_sensor} is on"
+            if plant.source is not None
+            and plant.source.inhibit_sensor is not None
+            and self.feedback(plant.source.inhibit_sensor) is True
+            else None
+        )
         self.source_observed_changed = state.source_observed_changed
         if (
             plant.source is not None
@@ -620,6 +644,7 @@ class _Evaluation:
         self._loops_of: dict[str, list[Loop]] = {pump.slug: [] for pump in plant.pumps}
         for loop in plant.all_loops:
             self._loops_of[loop.pump].append(loop)
+        self.no_load_state = self.no_load()
 
     # Time
 
@@ -791,6 +816,49 @@ class _Evaluation:
             for loop in self.plant.all_loops
         )
 
+    def no_load(self) -> tuple[float | None, float | None, float | None, tuple[float, ...]]:
+        """The no-load guard: when the compressor started, the low difference began, it holds
+        the source off until, and its trips within ``NO_LOAD_WINDOW``.
+
+        It trips once the request is on, the compressor has run for its duration,
+        and the leaving and returning water have stayed within its difference for
+        its duration too. A reading that is missing or stale never trips it.
+        """
+        state, now = self.state, self.now
+        trips = tuple(trip for trip in state.no_load_trips if trip > now - NO_LOAD_WINDOW)
+        source = self.plant.source
+        guard = None if source is None else source.no_load
+        until = state.no_load_until
+        if until is not None and self.reached(until):
+            until = None
+        if guard is None:
+            return None, None, until, trips
+
+        def fresh(entity: str) -> float | None:
+            reading = self.obs.sensors.get(entity)
+            if reading is None or reading.value is None or not isfinite(reading.value):
+                return None
+            stale = self.reached(reading.updated + GUARD_REFERENCE_MAX_AGE)
+            return None if stale else reading.value
+
+        compressor = fresh(guard.compressor_sensor)
+        running = self.source_observed is True and compressor is not None and compressor > 0
+        started = (state.compressor_since or now) if running else None
+        supply, back = fresh(guard.supply_temperature), fresh(guard.return_temperature)
+        low = (
+            running
+            and started is not None
+            and supply is not None
+            and back is not None
+            and abs(supply - back) < guard.delta
+        )
+        since = (state.no_load_since or now) if low else None
+        if started is not None and since is not None:
+            trip_at = max(started, since) + guard.duration
+            if self.reached(trip_at):
+                return None, None, now + guard.hold_off, (*trips, now)
+        return started, since, until, trips
+
     def pump_feedback(self, pump: Pump) -> tuple[str, ...]:
         return tuple(
             entity for entity in (pump.running_sensor, pump.flow_sensor) if entity is not None
@@ -894,6 +962,10 @@ class _Evaluation:
             exercise=plan.next_exercise,
             exercise_ended=plan.exercise_ended,
             dhw=state.dhw if dhw is None else dhw.state,
+            compressor_since=self.no_load_state[0],
+            no_load_since=self.no_load_state[1],
+            no_load_until=self.no_load_state[2],
+            no_load_trips=self.no_load_state[3],
         )
         desired = Desired(
             outputs=outputs,
@@ -913,10 +985,23 @@ class _Evaluation:
             dhw=None if dhw is None else dhw.state,
             dhw_reason=None if dhw is None else dhw.reason,
             dhw_events=() if dhw is None else dhw.events,
+            source_inhibited=self.inhibited,
+            source_no_load=self.no_load_reason(),
+            no_load_trips=self.no_load_state[3],
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
         return next_state, desired, due
+
+    def no_load_reason(self) -> str | None:
+        """Why the no-load guard holds the source off, or None while it does not."""
+        source, until = self.plant.source, self.no_load_state[2]
+        if source is None or source.no_load is None or until is None:
+            return None
+        return (
+            f"the source ran with its water within {source.no_load.delta:g} K, "
+            "so its heat had nowhere to go"
+        )
 
     def dhw(self) -> DhwResult | None:
         """The source's DHW: adopt what changed elsewhere, apply the owner's command, target."""
@@ -1569,6 +1654,8 @@ class _Plan:
             or not ev.state.source_request
             or (until := self.sink_until()) is None
             or ev.source_fault() is not None
+            or ev.inhibited is not None
+            or ev.no_load_state[2] is not None
             or any(loop.runs.kind is not RunKind.WITH_SOURCE for loop in self.wanted)
             or ev.reached(until)
         ):
@@ -1874,6 +1961,13 @@ class _Plan:
             return False
         if (fault := ev.source_fault()) is not None:
             reasons["source"] = fault
+            return False
+        if ev.inhibited is not None:
+            reasons["source"] = ev.inhibited
+            return False
+        if (until := ev.no_load_state[2]) is not None:
+            ev.hold("source", HoldKind.NO_LOAD, until)
+            reasons["source"] = f"held off: {ev.no_load_reason()}"
             return False
         driven = [pump for pump in self.plant.pumps if pump.driven_by_source]
         proofs = [entity for pump in driven for entity in ev.pump_feedback(pump)]

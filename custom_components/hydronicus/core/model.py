@@ -326,6 +326,28 @@ class Dhw:
 
 
 @dataclass(frozen=True, slots=True)
+class NoLoadGuard:
+    """Releases a source whose compressor runs while its water barely changes temperature.
+
+    A heat pump whose leaving and returning water stay within ``delta`` of each
+    other while its compressor runs has nowhere to put its heat: another source
+    supplies the zones, every valve is closed, a pump failed, or air blocks the
+    flow. The request is then released and held off for ``hold_off``.
+    """
+
+    supply_temperature: str
+    return_temperature: str
+    # A numeric sensor, such as the compressor frequency, that reads above zero
+    # while the compressor runs.
+    compressor_sensor: str
+    delta: float = 1.0
+    # How long the compressor must have run, and the water stayed within
+    # ``delta``, before the guard trips, in seconds.
+    duration: float = 600.0
+    hold_off: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
 class Source:
     """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
 
@@ -365,6 +387,11 @@ class Source:
     # a bridge that refuses faster ones; a switch turning off is never held.
     write_interval: float | None = None
     dhw: Dhw | None = None
+    # A binary sensor or input boolean that reads on while another source supplies
+    # the zones, such as a fireplace's buffer: the request is then released at
+    # once and stays off, while the zones go on circulating. No fault, no Repair.
+    inhibit_sensor: str | None = None
+    no_load: NoLoadGuard | None = None
 
     @property
     def title(self) -> str:
@@ -661,6 +688,7 @@ class HoldKind(StrEnum):
     POST_RUN = "post_run"
     FEEDBACK = "feedback"
     MAX_STARTS = "max_starts"
+    NO_LOAD = "no_load"
     MODE_DWELL = "mode_dwell"
     WINDOW_OPEN_DELAY = "window_open_delay"
     WINDOW_CLOSE_DELAY = "window_close_delay"
@@ -726,3 +754,8 @@ class Desired:
     dhw: DhwState | None = None
     dhw_reason: str | None = None
     dhw_events: tuple[str, ...] = ()
+    # Why the source is kept off for another source or a missing load, if it is.
+    source_inhibited: str | None = None
+    source_no_load: str | None = None
+    # When the no-load guard tripped within the last day, oldest first.
+    no_load_trips: tuple[float, ...] = ()

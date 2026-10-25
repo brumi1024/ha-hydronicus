@@ -982,6 +982,10 @@
     "source_unhealthy": {
       "title": "{plant}: {source} is kept off by {entity_id}",
       "description": "In Plant {plant}, the health sensor {entity_id} of {source} has not read healthy for at least 10 minutes, so Hydronicus released the source's request and does not ask it for heat or cooling. Zones that call still open their loops and run their switched pumps. Check the source and the link that reports its health, such as a Modbus bridge, its wiring, and its broker. The repair clears automatically once the health sensor reads on again."
+    },
+    "source_no_load": {
+      "title": "{plant}: {source} keeps running without a load",
+      "description": "In Plant {plant}, {source} tripped its no-load guard {trips} times within a day: its compressor ran while its leaving and returning water stayed within the guard's temperature difference, so its heat had nowhere to go. Each time Hydronicus released the source's request and held it off. Check whether another source supplies the zones, such as a fireplace's buffer selected by its own valve, a closed valve or a stopped pump on the heat pump's side, and air in the circuit. The repair clears once a day has passed without two trips."
     }
   },
   "exceptions": {

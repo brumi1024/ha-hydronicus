@@ -46,6 +46,7 @@ class IssueKind(StrEnum):
     CONDENSATION_INPUT_UNUSABLE = "condensation_input_unusable"
     INVALID_SCHEDULE_BLOCK = "invalid_schedule_block"
     SOURCE_UNHEALTHY = "source_unhealthy"
+    SOURCE_NO_LOAD = "source_no_load"
 
 
 # Kinds with a fix flow; hassfest wants their translations to carry the fix flow
@@ -74,6 +75,9 @@ _WARNINGS = frozenset(
 # How long an input stays unusable before its Repair is raised, in seconds, so
 # that a restart or a short spell of unavailability raises nothing.
 UNUSABLE_REPAIR_AFTER: Final = 600.0
+# The no-load guard's trips within a day that raise its Repair: one may be a
+# fluke, such as a defrost, a second is a pattern.
+NO_LOAD_REPAIR_TRIPS: Final = 2
 
 _ROLE_NAMES = {
     OutputRole.SOURCE_REQUEST: "source request",
@@ -214,6 +218,18 @@ def source_unhealthy(plant: Plant, entity_id: str) -> Issue:
             "plant": plant.name,
             "source": plant.source.title if plant.source else "",
             "entity_id": entity_id,
+        },
+    )
+
+
+def source_no_load(plant: Plant, trips: int) -> Issue:
+    return Issue(
+        IssueKind.SOURCE_NO_LOAD,
+        "source",
+        {
+            "plant": plant.name,
+            "source": plant.source.title if plant.source else "",
+            "trips": str(trips),
         },
     )
 

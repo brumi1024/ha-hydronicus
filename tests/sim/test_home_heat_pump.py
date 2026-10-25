@@ -17,10 +17,14 @@ from tests.sim.harness import Sim
 from tests.sim.plants import (
     BASEMENT_CEILING,
     BEDROOM_CEILING,
+    FIREPLACE_HEATING,
     FLOOR_PUMP,
     FLOOR_VALVE,
+    HEAT_PUMP_COMPRESSOR,
     HEAT_PUMP_HEALTHY,
     HEAT_PUMP_REQUEST,
+    HEAT_PUMP_WATER_INLET,
+    HEAT_PUMP_WATER_OUTLET,
     HOME_HEAT_PUMP,
     LIVING_CEILING,
     plant,
@@ -39,6 +43,8 @@ ROOM = 21.2
 COLD = 19.5
 HOLD = 14400.0
 WRITE_INTERVAL = 300.0
+NO_LOAD_DURATION = 600.0
+NO_LOAD_HOLD_OFF = 1800.0
 VALVES = (BASEMENT_CEILING, BEDROOM_CEILING, LIVING_CEILING, FLOOR_VALVE)
 
 
@@ -436,3 +442,88 @@ def test_a_write_the_bridge_ignores_is_retried_at_its_interval_then_hourly() -> 
     )
     sim.run_for(REACTION)
     assert HEAT_PUMP_REQUEST not in sim.repairs()
+
+
+def test_the_fireplace_buffer_keeps_the_heat_pump_off_while_the_zones_still_heat() -> None:
+    sim = _house()
+    requested = _heat_basement(sim)
+    sim.run_for(300.0)
+
+    sim.set_contact(FIREPLACE_HEATING, True)
+    sim.run_until_true(
+        lambda: not sim.is_on(HEAT_PUMP_REQUEST),
+        REACTION,
+        "the heat pump is released at once, within its minimum run",
+    )
+    assert sim.t < requested + MIN_ON
+    assert sim.desired.reasons["source"] == (
+        f"another source supplies the zones: {FIREPLACE_HEATING} is on"
+    )
+    sim.always_for(
+        lambda: (
+            not sim.is_on(HEAT_PUMP_REQUEST)
+            and sim.is_on(BASEMENT_CEILING)
+            and sim.is_on(FLOOR_PUMP)
+        ),
+        3600.0,
+        "the basement goes on heating from the buffer",
+    )
+    assert sim.desired.source_fault is None and sim.repairs() == frozenset()
+
+    sim.set_contact(FIREPLACE_HEATING, False)
+    sim.run_until_true(
+        lambda: sim.is_on(HEAT_PUMP_REQUEST),
+        2 * REACTION,
+        "the heat pump heats again once the buffer is no longer selected",
+    )
+
+
+def _running_without_load(sim: Sim) -> None:
+    """The compressor runs while the water comes back as warm as it left."""
+    sim.set_sensor(HEAT_PUMP_COMPRESSOR, 35.0)
+    sim.set_sensor(HEAT_PUMP_WATER_OUTLET, 34.0)
+    sim.set_sensor(HEAT_PUMP_WATER_INLET, 33.6)
+
+
+def test_a_heat_pump_running_without_a_load_is_released_and_held_off() -> None:
+    sim = _house()
+    requested = _heat_basement(sim)
+    sim.set_sensor(HEAT_PUMP_COMPRESSOR, 35.0)
+    sim.run_for(300.0)
+
+    _running_without_load(sim)
+    tripped = sim.run_until_true(
+        lambda: not sim.is_on(HEAT_PUMP_REQUEST),
+        NO_LOAD_DURATION + 2 * REACTION,
+        "the no-load guard releases the heat pump, within its minimum run",
+    )
+    assert tripped >= requested + 300.0 + NO_LOAD_DURATION - REACTION
+    assert sim.t < requested + MIN_ON
+    sim.set_sensor(HEAT_PUMP_COMPRESSOR, 0.0)
+    sim.always_for(
+        lambda: not sim.is_on(HEAT_PUMP_REQUEST),
+        tripped + NO_LOAD_HOLD_OFF - sim.t - REACTION,
+        "and holds it off, while the basement still calls",
+    )
+    assert sim.desired.source_no_load is not None
+    assert len(sim.desired.no_load_trips) == 1
+    assert abs(sim.desired.no_load_trips[0] - sim.world.wall(tripped)) <= 1.0
+    sim.run_until_true(
+        lambda: sim.is_on(HEAT_PUMP_REQUEST), 2 * REACTION, "the heat pump may start again then"
+    )
+
+
+def test_a_compressor_that_has_just_started_is_not_taken_for_no_load() -> None:
+    sim = _house()
+    _heat_basement(sim)
+    _running_without_load(sim)
+
+    sim.always_for(
+        lambda: sim.is_on(HEAT_PUMP_REQUEST),
+        NO_LOAD_DURATION - REACTION,
+        "the water needs time to warm after a start",
+    )
+    sim.set_sensor(HEAT_PUMP_WATER_INLET, 30.0)
+    sim.always_for(
+        lambda: sim.is_on(HEAT_PUMP_REQUEST), 3600.0, "a heat pump that delivers heat runs on"
+    )

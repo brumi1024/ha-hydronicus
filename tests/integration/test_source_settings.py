@@ -1,4 +1,4 @@
-"""The source's DHW in Home Assistant: its entities, the boost actions, and adoption."""
+"""The source in Home Assistant: its DHW entities and boost actions, the inhibit, and no load."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.hydronicus.const import DOMAIN
 from tests.integration.helpers import (
@@ -112,3 +113,75 @@ async def test_a_boost_needs_a_plant_with_a_dhw_setpoint(hass: HomeAssistant) ->
         await async_call(hass, DOMAIN, "boost_dhw", config_entry_id=entry.entry_id, temperature=55)
     with pytest.raises(ServiceValidationError):
         await async_call(hass, DOMAIN, "end_dhw_boost", config_entry_id="missing")
+
+
+NO_LOAD = """
+hydronicus: 2
+name: Flat
+source:
+  request: switch.boiler
+  name: Heat pump
+  min_on: 0
+  min_off: 0
+  inhibit_sensor: input_boolean.fireplace_heating
+  no_load:
+    supply_temperature: sensor.water_outlet
+    return_temperature: sensor.water_inlet
+    compressor_sensor: sensor.compressor_frequency
+pumps:
+  pump: {switch: switch.pump}
+zones:
+  flat:
+    temperature: [sensor.flat]
+    loops:
+      radiator: {valves: [{entity: switch.valve, opening_time: 10}], pump: pump}
+"""
+
+
+def _issue_ids(hass: HomeAssistant) -> set[str]:
+    return {
+        issue.translation_key or ""
+        for (domain, _), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN
+    }
+
+
+async def test_a_source_that_keeps_running_without_a_load_raises_a_repair(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    Actuators(hass)
+    for entity in ("switch.boiler", "switch.pump", "switch.valve"):
+        hass.states.async_set(entity, "off")
+    hass.states.async_set("input_boolean.fireplace_heating", "off")
+
+    def report() -> None:
+        """The bridge republishes its state every minute, so it stays fresh."""
+        hass.states.async_set("sensor.flat", "19", {"unit_of_measurement": "°C"})
+        hass.states.async_set("sensor.compressor_frequency", "35", {"unit_of_measurement": "Hz"})
+        for entity in ("sensor.water_outlet", "sensor.water_inlet"):
+            hass.states.async_set(entity, "34", {"unit_of_measurement": "°C"})
+
+    async def advance(seconds: float) -> None:
+        for _ in range(int(seconds // 60)):
+            report()
+            await async_advance(hass, freezer, 60, step=10)
+
+    report()
+    entry = await async_import(hass, NO_LOAD)
+    await async_set_options(hass, entry, armed=entry.runtime_data.plant.outputs(), control=True)
+    await async_call(hass, "select", "select_option", entity_id="select.flat_mode", option="heat")
+    await async_call(hass, "climate", "set_hvac_mode", entity_id="climate.flat", hvac_mode="heat")
+
+    await advance(120)
+    assert hass.states.get("switch.boiler").state == "on"
+    await advance(600)
+    assert hass.states.get("switch.boiler").state == "off", "the guard releases the source"
+    assert "source_no_load" not in _issue_ids(hass), "one trip may be a fluke"
+
+    await advance(1800 + 900)
+    assert "source_no_load" in _issue_ids(hass), "a second trip within a day is a pattern"
+
+    hass.states.async_set("input_boolean.fireplace_heating", "on")
+    await advance(3600)
+    assert hass.states.get("switch.boiler").state == "off", "the buffer keeps the source off"
+    assert hass.states.get("switch.valve").state == "on", "while the zone still circulates"

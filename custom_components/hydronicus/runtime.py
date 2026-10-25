@@ -102,6 +102,7 @@ from .entity import zone_unique_id
 from .flow_history import FlowHistory
 from .forecast import WeatherForecast
 from .issues import (
+    NO_LOAD_REPAIR_TRIPS,
     Issue,
     IssueKind,
     UnusableInputs,
@@ -114,6 +115,7 @@ from .issues import (
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
+    source_no_load,
     source_unhealthy,
     zone_area_issue,
     zone_sensor_unusable,
@@ -975,6 +977,10 @@ class PlantRuntime:
         for pump in plant.pumps:
             if pump.supply_temperature is not None:
                 kinds[pump.supply_temperature] = SensorKind.WATER
+        if plant.source is not None and (guard := plant.source.no_load) is not None:
+            kinds[guard.supply_temperature] = SensorKind.WATER
+            kinds[guard.return_temperature] = SensorKind.WATER
+            kinds[guard.compressor_sensor] = SensorKind.LEVEL
         for loop in plant.all_loops:
             if loop.surface_temperature is not None:
                 kinds[loop.surface_temperature] = SensorKind.AIR
@@ -1253,6 +1259,8 @@ class PlantRuntime:
             for _, entity in self.unusable.reported(IssueKind.SOURCE_UNHEALTHY, now)
             if entity not in missing
         )
+        if len(trips := self.state.no_load_trips) >= NO_LOAD_REPAIR_TRIPS:
+            issues.append(source_no_load(reconciled, len(trips)))
         current = tuple(issues)
         if current != self.issues or not self._issues_synced:
             self.issues, self._issues_synced = current, True
@@ -1269,6 +1277,7 @@ def contacts(plant: Plant) -> set[str]:
         found.add(plant.source.running_sensor)
         found.add(plant.source.health_sensor)
         found.add(plant.source.handover_sensor)
+        found.add(plant.source.inhibit_sensor)
     found.update(loop.condensation_switch for loop in plant.all_loops)
     found.update(window for zone in plant.zones for window in zone.windows)
     return {entity for entity in found if entity is not None}
