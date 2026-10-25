@@ -17,6 +17,9 @@ On 2026-10-23 the owner decided:
 
 Earlier decisions from the brief stand: the bridge holds no control logic, writes go only to a whitelist with read-modify-write on packed registers, every write is read back, and no write reaches the heat pump before the owner approves Phase 2.
 
+On 2026-10-25 the owner decided the house cools through its ceilings in summer, so the bridge switches between heat and cool (auto stays on the wired controller), limits the cooling setpoint to 16 to 22 °C, and at a handover while cooling switches zone 1 off instead of on.
+Hydronicus keeps cooling disabled until it has a condensation reference; the heat pump's leaving water, `sensor.midea_heat_pump_water_outlet`, is the candidate, colder than the secondary supply and so on the safe side.
+
 ## The plant
 
 The heat pump heats a plate heat exchanger that only the zones load, with no bypass, so the zones are its only sink and it must never run with every zone valve closed.
