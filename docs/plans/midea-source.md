@@ -22,11 +22,12 @@ On 2026-10-25 the owner decided:
 - Cooling does not use the weather curve: while cooling, the curve is off and Hydronicus owns the zone 1 setpoint within 16 to 22 °C; heating keeps the curve, so T1S stays controller-owned in heat.
 - A secondary supply sensor is fitted before the next cooling season and becomes the ceilings' condensation reference; cooling stays off on home until then, and ceiling surface sensors are not added.
 
+- Hydronicus switches the weather curve with the mode: `switch.midea_heat_pump_weather_curve` is on while heating and off while cooling, through the source's new `mode_switches`, and the cooling setpoint and the request wait until the curve shows the mode's state.
+
 Still open:
 
 1. How Hydronicus learns that the fireplace's buffer supplies the zones: `input_boolean.home_fireplace_heating` by hand for now, which ha-config must create first, and a direct signal later; see section 8.
-2. Who switches the weather curve between the seasons: the owner by hand with each change of mode, or Hydronicus, which would need a new source output that follows the mode.
-3. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
+2. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
 
 ### Measurements the owner takes first
 
@@ -100,6 +101,8 @@ mode_dwell: 7200
 source:
   request: switch.midea_heat_pump_space_heating
   mode: {entity: select.midea_heat_pump_mode, heat: Heat, cool: Cool}
+  mode_switches:
+    switch.midea_heat_pump_weather_curve: [heat]
   post_run: 0
   min_on: 1500
   min_off: 720
@@ -209,6 +212,8 @@ What Tw_out does not cover, plainly:
 
 - It reads the primary loop, the heat pump's leaving water before the plate heat exchanger; the secondary supply that reaches the ceilings is a little warmer, by the exchanger's approach and the pipes' gains, so the guard errs on the safe side.
 - It is meaningful only while the internal pump runs; while it rests, Tw_out reads standing water that warms toward the plant room, while no cooling reaches the secondary either, so it overstates the supply temperature exactly when nothing is cooled.
+- It stays fresh only if Home Assistant takes each of the bridge's minutely publishes as a report: an MQTT sensor reports only on change unless its discovery sets `force_update`, so a steady Tw_out would go stale after 30 minutes and block cooling.
+  The bridge's discovery sets `force_update` on the water temperatures since 2026-10-25, once the owner loads that version; the compressor frequency needs it too, for the no-load guard, and so will the secondary supply sensor if it reaches Home Assistant through MQTT.
 - It is no surface temperature: it says nothing about a ceiling panel that a cold supply has cooled below the dew point locally, which the 2 K margin and the release band cover only as margins.
 
 The owner decided to fit one secondary supply sensor before the next cooling season: a clip-on probe on the flow pipe after the heating pump through a Shelly add-on, which reads the water that reaches the ceilings, whenever the heating pump runs, independent of the heat pump's pump.
@@ -256,7 +261,7 @@ The new source settings are plant file keys; only the hold, the overshoot, and t
 2. In ha-config, create `input_boolean.home_fireplace_heating`.
 3. Decide the points still open at the top, then release a Hydronicus version with this branch.
 4. Edit the Plant on home from the snippet above, for now without the ceilings' cooling and the supply setpoint, arm the new outputs one by one while watching **Last write**, and keep Control equipment off for a Dry run day first.
-5. Before the next cooling season, fit the secondary supply sensor, bind it as the heating pump's `supply_temperature`, give the ceilings `modes: [heat, cool]`, add the supply setpoint, and switch the weather curve off whenever the mode is cool.
+5. Before the next cooling season, fit the secondary supply sensor, bind it as the heating pump's `supply_temperature`, give the ceilings `modes: [heat, cool]`, and add the supply setpoint; the weather curve switch is in the Plant from the start and only acts when the mode changes.
 
 Deploying a Hydronicus version and editing the Plant on home are the owner's steps; nothing on this branch arms an output, writes to the heat pump, or changes the live Plant.
 
