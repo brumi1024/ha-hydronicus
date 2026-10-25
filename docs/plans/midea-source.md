@@ -1,6 +1,6 @@
 # A Midea heat pump as the source, through a Shelly Modbus bridge
 
-Status: built on branch `midea-source` as of 2026-10-25, not pushed, released, or installed; the owner decides and deploys.
+Status: released as Hydronicus 0.7.0 on 2026-10-25; not installed on home, where deploying and editing the Plant are the owner's steps.
 Done: the read-only register scan (`extras/shelly-modbus-bridge/modbus-scan.shelly.js`), and the source's `max_starts_per_hour`, `heat_sink_loops`, `start_threshold`, `health_sensor`, and loop `weight`.
 Also done: the source fault's Repair and **Fault** binary sensor, and the **Cycling protection** form section and loop **Weight** field.
 On 2026-10-25 the Phase 2 bridge runs on the owner's Pro 3EM with writes off, on the Mosquitto broker of home, and Home Assistant discovered its 21 entities, which match the wired controller.
