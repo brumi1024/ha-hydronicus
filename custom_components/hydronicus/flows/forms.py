@@ -757,6 +757,8 @@ def output_labels(plant: Plant) -> dict[str, str]:
             what = "Source request switch"
         elif role is OutputRole.SOURCE_MODE:
             what = "Source mode select"
+        elif role is OutputRole.SOURCE_MODE_SWITCH:
+            what = "Source switch that follows the mode"
         elif role is OutputRole.SOURCE_SETPOINT:
             what = "Source supply temperature setpoint"
         elif role is OutputRole.DHW_SWITCH:

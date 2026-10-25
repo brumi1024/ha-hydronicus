@@ -22,6 +22,7 @@ from custom_components.hydronicus.core.model import (
     LoopRun,
     MinFlow,
     Mode,
+    ModeSwitch,
     OutputRole,
     Plant,
     Pump,
@@ -1717,6 +1718,40 @@ def test_an_inhibit_and_a_no_load_guard_reject_invalid_values(
 ) -> None:
     document = reference_document()
     document["source"][key] = value
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+def test_mode_switches_roundtrip_and_are_source_outputs() -> None:
+    document = reference_document()
+    document["source"]["mode_switches"] = {"switch.weather_curve": ["heat"]}
+    plant = parse_plant(document)
+
+    assert plant.source is not None
+    assert plant.source.mode_switches == (
+        ModeSwitch("switch.weather_curve", frozenset({Mode.HEAT})),
+    )
+    assert plant.outputs()["switch.weather_curve"] is OutputRole.SOURCE_MODE_SWITCH
+    assert plant.source.mode_switches[0].on(Mode.COOL) is False
+    assert plant.source.mode_switches[0].on(Mode.OFF) is None
+    assert export_plant(plant)["source"]["mode_switches"] == {"switch.weather_curve": ["heat"]}
+    assert read_plant_file(write_plant_file(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("value", "path", "message"),
+    [
+        (["switch.weather_curve"], "source.mode_switches", "mapping"),
+        ({"select.weather_curve": ["heat"]}, "source.mode_switches.select.weather_curve", "switch"),
+        ({"switch.weather_curve": []}, "source.mode_switches.switch.weather_curve", "one mode"),
+    ],
+)
+def test_mode_switches_reject_invalid_values(value: object, path: str, message: str) -> None:
+    document = reference_document()
+    document["source"]["mode_switches"] = value
 
     with pytest.raises(PlantFileError) as error:
         parse_plant(document)

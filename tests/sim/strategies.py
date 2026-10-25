@@ -43,6 +43,7 @@ from custom_components.hydronicus.core.model import (
     LoopRun,
     MinFlow,
     Mode,
+    ModeSwitch,
     OutputRole,
     Plant,
     Pump,
@@ -223,6 +224,9 @@ def _sources() -> st.SearchStrategy[Source]:
         Source,
         request=st.just("switch.source_request"),
         mode=st.none() | st.just(SourceModeSelect("select.source_mode", "Heat", "Cool")),
+        mode_switches=st.sampled_from(
+            [(), (ModeSwitch("switch.source_curve", frozenset({Mode.HEAT})),)]
+        ),
         post_run=st.sampled_from([0.0, 60.0, 180.0]),
         min_on=st.sampled_from([0.0, 120.0, 600.0]),
         min_off=st.sampled_from([0.0, 120.0, 600.0]),

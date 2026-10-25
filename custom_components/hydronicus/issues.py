@@ -82,6 +82,7 @@ NO_LOAD_REPAIR_TRIPS: Final = 2
 _ROLE_NAMES = {
     OutputRole.SOURCE_REQUEST: "source request",
     OutputRole.SOURCE_MODE: "source mode select",
+    OutputRole.SOURCE_MODE_SWITCH: "source mode switch",
     OutputRole.SOURCE_SETPOINT: "source supply temperature",
     OutputRole.DHW_SWITCH: "DHW switch",
     OutputRole.DHW_SETPOINT: "DHW setpoint",

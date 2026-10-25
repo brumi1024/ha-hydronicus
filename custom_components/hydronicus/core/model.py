@@ -77,6 +77,7 @@ class OutputRole(StrEnum):
 
     SOURCE_REQUEST = "source_request"
     SOURCE_MODE = "source_mode"
+    SOURCE_MODE_SWITCH = "source_mode_switch"
     SOURCE_SETPOINT = "source_setpoint"
     DHW_SWITCH = "dhw_switch"
     DHW_SETPOINT = "dhw_setpoint"
@@ -92,6 +93,7 @@ NUMERIC_ROLES: Final = frozenset({OutputRole.SOURCE_SETPOINT, OutputRole.DHW_SET
 SETTING_ROLES: Final = frozenset(
     {
         OutputRole.SOURCE_MODE,
+        OutputRole.SOURCE_MODE_SWITCH,
         OutputRole.SOURCE_SETPOINT,
         OutputRole.DHW_SWITCH,
         OutputRole.DHW_SETPOINT,
@@ -276,6 +278,23 @@ class SourceModeSelect:
 
 
 @dataclass(frozen=True, slots=True)
+class ModeSwitch:
+    """A switch of the source that is on in some modes and off in the others.
+
+    Such as a heat pump's weather curve, on while heating and off while cooling,
+    so that a cooling setpoint is the source's own.
+    """
+
+    entity: str
+    # The modes it is on in; it is off in every other mode but off.
+    modes: frozenset[Mode]
+
+    def on(self, mode: Mode) -> bool | None:
+        """Whether it is on in a mode, or None in off, where it stays as it is."""
+        return None if mode is Mode.OFF else mode in self.modes
+
+
+@dataclass(frozen=True, slots=True)
 class SupplyControl:
     """A bounded source supply setpoint, optionally compensated for outdoor temperature."""
 
@@ -353,6 +372,8 @@ class Source:
 
     request: str
     mode: SourceModeSelect | None = None
+    # Switches that follow the mode, set with the mode select before the source runs.
+    mode_switches: tuple[ModeSwitch, ...] = ()
     post_run: float = DEFAULT_POST_RUN
     min_on: float = DEFAULT_MIN_ON
     min_off: float = DEFAULT_MIN_OFF
@@ -411,6 +432,7 @@ class Source:
             for entity in (
                 self.request,
                 None if self.mode is None else self.mode.entity,
+                *(switch.entity for switch in self.mode_switches),
                 None if self.supply is None else self.supply.entity,
                 None if self.dhw is None else self.dhw.switch,
                 None if self.dhw is None else self.dhw.setpoint,
@@ -615,6 +637,8 @@ class Plant:
             outputs.setdefault(self.source.request, OutputRole.SOURCE_REQUEST)
             if self.source.mode is not None:
                 outputs.setdefault(self.source.mode.entity, OutputRole.SOURCE_MODE)
+            for switch in self.source.mode_switches:
+                outputs.setdefault(switch.entity, OutputRole.SOURCE_MODE_SWITCH)
             if self.source.supply is not None:
                 outputs.setdefault(self.source.supply.entity, OutputRole.SOURCE_SETPOINT)
             if (dhw := self.source.dhw) is not None:

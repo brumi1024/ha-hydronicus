@@ -188,6 +188,7 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | `name` | no | `Heat source` | The source's name, which names its device. |
 | `request` | yes | | The `switch` that asks the source for heat or cooling. |
 | `mode` | no | | The `select` that switches the source between heating and cooling, as a mapping of `entity`, the select, `heat`, its option for heating, and `cool`, its option for cooling, such as `{entity: select.heat_pump_mode, heat: Heat, cool: Cool}`. The two options must differ. |
+| `mode_switches` | no | | Switches of the source that follow the mode, each with the modes it is on in, such as `{switch.heat_pump_weather_curve: [heat]}` for a weather curve that heating uses and cooling does not. Each is off in the other mode and left as it is while the Plant is off. Hydronicus sets them with the mode select, and the supply setpoint and the request wait until they show the mode's state. They keep the source's `write_interval`. |
 | `post_run` | no | `180` | How long the source keeps its own pumps running after the request ends. Hydronicus keeps their loops open for that long. |
 | `min_on` | no | `600` | The shortest time the request stays on, measured from observed activation. |
 | `min_off` | no | `600` | The shortest time the request stays off, measured from observed shutdown. |
@@ -246,6 +247,7 @@ See [supply control](how-it-works.md#supply-temperature-control) and the [comfor
 The source's `no_load` mapping releases a heat pump whose compressor runs while its leaving and returning water stay within `delta` of each other, so its heat has nowhere to go: another source supplies the zones, every valve is closed, a pump failed, or air blocks the flow.
 It trips once the request is on, the compressor has run for `duration`, and the water has stayed within `delta` for `duration` too; Hydronicus then releases the request and holds it off for `hold_off`.
 A missing or stale reading never trips it, and two trips within a day raise a Repair.
+Its readings go stale like a condensation reference, 30 minutes after their last report, so a sensor that reports only when its value changes, such as an MQTT sensor without `force_update`, can keep the guard from tripping while the compressor runs steadily.
 
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |
@@ -287,7 +289,7 @@ Every loop runs on exactly one pump, and a pump can drive any number of loops.
 | `overrun` | no | `180` | For a switched pump: how long it keeps running after heating demand ends, with its loops held open. Cooling stops a pump without overrun. A source-driven pump has no overrun; the source's `post_run` covers it. |
 | `min_flow` | no | `path` | `path` when the pump needs an open loop while it runs, `guaranteed` when a hydraulic separator, buffer, or bypass gives it a path whatever the loops do. |
 | `min_flow_loops` | see below | | For a source-driven pump with `min_flow: path`: the loops Hydronicus holds open whenever none of the pump's other loops is ready while the pump may run. |
-| `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. |
+| `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. It goes stale 30 minutes after its last report and then blocks cooling, so a sensor that reports only on change, such as an MQTT sensor without `force_update`, must still report at least that often while its value is steady. |
 | `condensation_switch` | no | | A `binary_sensor` on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on, unavailable, or unknown, none of the pump's loops cools. |
 | `running_sensor` | no | | A `binary_sensor` that reports whether the pump actually runs. |
 | `flow_sensor` | no | | A `binary_sensor` that reports whether circulation is proved. This is an input, not a water-volume or energy meter. |

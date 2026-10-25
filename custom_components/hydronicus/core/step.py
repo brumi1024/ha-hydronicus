@@ -1573,6 +1573,9 @@ class _Plan:
             option = None if source.mode is None else source.mode.option(self.mode)
             if option is not None and source.mode is not None:
                 outputs[source.mode.entity] = OptionTarget(option)
+            for switch in source.mode_switches:
+                if (on := switch.on(self.mode)) is not None:
+                    outputs[switch.entity] = SwitchTarget(on)
         for pump in plant.pumps:
             if pump.switch is not None:
                 outputs[pump.switch] = SwitchTarget(self.pumps_on[pump.slug])
@@ -1885,11 +1888,15 @@ class _Plan:
         if self.mode not in config.modes:
             ev.reasons["source_supply"] = f"kept by the source's own controller in {self.mode}"
             return None
-        if source.mode is not None and not satisfies(
-            ev.obs.outputs.get(source.mode.entity),
-            OptionTarget(source.mode.option(self.mode) or ""),
-        ):
-            # Its range may follow the mode, so the setpoint waits for the select.
+        if (
+            source.mode is not None
+            and not satisfies(
+                ev.obs.outputs.get(source.mode.entity),
+                OptionTarget(source.mode.option(self.mode) or ""),
+            )
+        ) or not self.mode_switches_set():
+            # Its range and whether the source takes it may follow the mode, so
+            # the setpoint waits for the select and the mode switches.
             ev.reasons["source_supply"] = "waiting for the source mode"
             return None
         proposal = supply_target(config, self.mode, ev.obs.sensors, ev.now)
@@ -1947,6 +1954,20 @@ class _Plan:
             return None
         ev.reasons["source_supply"] = f"supply target {value:.1f} °C"
         return NumericTarget(value, config.tolerance)
+
+    def mode_switches_set(self) -> bool:
+        """Every switch that follows the mode shows the mode's state, with no call on its way."""
+        ev, source = self.ev, self.plant.source
+        if source is None:
+            return True
+        for switch in source.mode_switches:
+            on = switch.on(self.mode)
+            if on is not None and (
+                not satisfies(ev.obs.outputs.get(switch.entity), SwitchTarget(on))
+                or ev.pending(switch.entity) is not None
+            ):
+                return False
+        return True
 
     def source_request(self) -> bool:
         ev, source = self.ev, self.plant.source
@@ -2025,6 +2046,9 @@ class _Plan:
             if not satisfies(ev.obs.outputs.get(select), target) or ev.pending(select):
                 reasons["source"] = "waiting for the source mode"
                 return False
+        if not self.mode_switches_set():
+            reasons["source"] = "waiting for the source's mode switches"
+            return False
         if any(self.blocked[pump.slug] for pump in driven):
             wrong_mode = any(
                 self.label not in loop.modes and (not loop.valves or ev.may_pass(loop))

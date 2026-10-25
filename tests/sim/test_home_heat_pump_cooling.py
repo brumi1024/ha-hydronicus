@@ -18,6 +18,7 @@ from tests.sim.plants import (
     BEDROOM_CEILING,
     FLOOR_PUMP,
     FLOOR_VALVE,
+    HEAT_PUMP_CURVE,
     HEAT_PUMP_MODE,
     HEAT_PUMP_REQUEST,
     HEAT_PUMP_SETPOINT,
@@ -42,6 +43,8 @@ COOL = 23.5
 
 def _summer(*, temperature: float = WARM, humidity: float = 45.0) -> Sim:
     sim = Sim(plant(HOME_HEAT_PUMP), mode=Mode.COOL)
+    # The winter left the weather curve on.
+    sim.seed_on(HEAT_PUMP_CURVE)
     for zone in ZONES:
         sim.set_zone_temperature(zone, temperature)
         sim.set_zone_humidity(zone, humidity)
@@ -65,9 +68,13 @@ def test_a_cooling_call_sets_the_mode_then_the_setpoint_then_runs_the_ceilings()
     _start(sim)
 
     mode = next(call for call in sim.calls_to(HEAT_PUMP_MODE))
+    (curve,) = sim.calls_to(HEAT_PUMP_CURVE)
     setpoint = next(call for call in sim.calls_to(HEAT_PUMP_SETPOINT))
     request = next(call for call in sim.calls_to(HEAT_PUMP_REQUEST))
-    assert mode.t < setpoint.t < request.t, "the setpoint waits for the mode select"
+    assert curve.t < setpoint.t and mode.t < setpoint.t < request.t, (
+        "the setpoint waits for the mode select and the weather curve off"
+    )
+    assert not sim.is_on(HEAT_PUMP_CURVE), "cooling does not use the weather curve"
     assert setpoint.target == NumericTarget(18.0, 0.5)
     assert sim.world.number(HEAT_PUMP_SETPOINT) == 18.0
     assert not sim.is_on(FLOOR_VALVE), "the floor heats only"
@@ -191,6 +198,10 @@ def test_a_change_to_heating_stops_cooling_waits_the_dwell_and_leaves_the_setpoi
         "after the dwell the heat pump heats",
     )
     assert sim.is_on(FLOOR_VALVE)
+    assert sim.is_on(HEAT_PUMP_CURVE), "heating runs on the weather curve again"
+    assert sim.switched(HEAT_PUMP_CURVE)[-1][0] < sim.switched(HEAT_PUMP_REQUEST)[-1][0], (
+        "the curve is on before the heat pump heats"
+    )
     assert len(sim.calls_to(HEAT_PUMP_SETPOINT)) == setpoint_calls, (
         "the weather curve keeps the heating setpoint"
     )

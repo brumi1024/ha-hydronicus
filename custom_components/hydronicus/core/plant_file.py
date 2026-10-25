@@ -64,6 +64,7 @@ from .model import (
     LoopRun,
     MinFlow,
     Mode,
+    ModeSwitch,
     NoLoadGuard,
     Plant,
     Preset,
@@ -102,6 +103,7 @@ _SOURCE_KEYS: Final = (
     "name",
     "request",
     "mode",
+    "mode_switches",
     "post_run",
     "min_on",
     "min_off",
@@ -370,6 +372,11 @@ def _source(value: object, path: str) -> Source:
             _required(source, "request", path), _join(path, "request"), _SWITCH_DOMAINS
         ),
         mode=_source_mode(source["mode"], _join(path, "mode")) if "mode" in source else None,
+        mode_switches=(
+            _mode_switches(source["mode_switches"], _join(path, "mode_switches"))
+            if "mode_switches" in source
+            else ()
+        ),
         post_run=_number(source.get("post_run", DEFAULT_POST_RUN), _join(path, "post_run")),
         min_on=_number(source.get("min_on", DEFAULT_MIN_ON), _join(path, "min_on")),
         min_off=_number(source.get("min_off", DEFAULT_MIN_OFF), _join(path, "min_off")),
@@ -482,6 +489,18 @@ def _dhw(value: object, path: str) -> Dhw:
         max_boost=_number(
             document.get("max_boost", defaults.max_boost), _join(path, "max_boost"), positive=True
         ),
+    )
+
+
+def _mode_switches(value: object, path: str) -> tuple[ModeSwitch, ...]:
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected a mapping of switches to the modes they are on in.")
+    return tuple(
+        ModeSwitch(
+            _entity(entity, _join(path, str(entity)), _SWITCH_DOMAINS),
+            _modes(modes, _join(path, str(entity))),
+        )
+        for entity, modes in value.items()
     )
 
 
@@ -1258,6 +1277,8 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
         if plant.source.mode is not None:
             bind(plant.source.mode.entity, "source.mode.entity")
+        for switch in plant.source.mode_switches:
+            bind(switch.entity, f"source.mode_switches.{switch.entity}")
         bind(plant.source.inhibit_sensor, "source.inhibit_sensor")
         bind(plant.source.compressor_sensor, "source.compressor_sensor")
         if (guard := plant.source.no_load) is not None:
@@ -1353,6 +1374,7 @@ _KEY_WORDS: Final = {
     "setpoint": "setpoint",
     "max_boost": "maximum boost",
     "inhibit_sensor": "inhibit sensor",
+    "mode_switches": "mode switches",
     "no_load": "no-load guard",
     "return_temperature": "return temperature sensor",
     "compressor_sensor": "compressor sensor",
@@ -1478,6 +1500,11 @@ def _export_source(source: Source) -> dict[str, Any]:
             "entity": source.mode.entity,
             "heat": source.mode.heat,
             "cool": source.mode.cool,
+        }
+    if source.mode_switches:
+        document["mode_switches"] = {
+            switch.entity: [str(mode) for mode in _LOOP_MODES if mode in switch.modes]
+            for switch in source.mode_switches
         }
     document["post_run"] = _export_number(source.post_run)
     document["min_on"] = _export_number(source.min_on)

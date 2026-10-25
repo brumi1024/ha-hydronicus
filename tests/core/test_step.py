@@ -1750,6 +1750,27 @@ def test_a_cooling_only_setpoint_waits_for_the_mode_rounds_up_and_leaves_heating
     assert desired.source_request, "heating does not wait for a setpoint it does not own"
 
 
+def test_a_mode_switch_follows_the_mode_and_the_source_waits_for_it() -> None:
+    plant = _plant(
+        HEAT_PUMP.replace(
+            "request: switch.hp",
+            "request: switch.hp\n  mode_switches: {switch.curve: [heat]}",
+        )
+    )
+    on = ["switch.c_floor", "switch.floor_pump", "switch.a_ceiling"]
+    waiting = observe(plant, temperatures={"c": 19.0}, on=on)
+    desired = run(plant, waiting)[1]
+    assert desired.outputs["switch.curve"] == SwitchTarget(True)
+    assert not desired.source_request
+    assert desired.reasons["source"] == "waiting for the source's mode switches"
+
+    ready = observe(plant, temperatures={"c": 19.0}, on=[*on, "switch.curve"])
+    assert run(plant, ready)[1].source_request
+    cooling = observe(plant, mode=Mode.COOL, temperatures={"a": 26.0}, option="Cool")
+    assert run(plant, cooling)[1].outputs["switch.curve"] == SwitchTarget(False)
+    assert "switch.curve" not in run(plant, observe(plant, mode=Mode.OFF))[1].outputs
+
+
 def test_a_heating_setpoint_rounds_to_its_nearest_step_within_its_limits() -> None:
     from custom_components.hydronicus.core.model import NumericTarget
     from custom_components.hydronicus.core.step import NumericState
