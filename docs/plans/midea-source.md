@@ -3,7 +3,8 @@
 Status: in progress on branch `midea-source` as of 2026-10-23; not released or installed.
 Done: the read-only register scan (`extras/shelly-modbus-bridge/modbus-scan.shelly.js`), and the source's `max_starts_per_hour`, `heat_sink_loops`, `start_threshold`, `health_sensor`, and loop `weight`.
 Also done: the source fault's Repair and **Fault** binary sensor, and the **Cycling protection** form section and loop **Weight** field.
-Next: the owner runs the scan on the real unit; the E8 log waits, as the owner asked on 2026-10-23.
+On 2026-10-25 the Phase 2 bridge runs on the owner's Pro 3EM with writes off, on the Mosquitto broker of home, and Home Assistant discovered its 21 entities, which match the wired controller.
+Next: a heartbeat automation in ha-config, then writes on; the E8 log waits, as the owner asked on 2026-10-23.
 
 ## Owner decisions
 
