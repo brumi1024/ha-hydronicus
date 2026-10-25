@@ -94,6 +94,13 @@
           "on": "mdi:power-plug",
           "off": "mdi:power-plug-off"
         }
+      },
+      "dhw": {
+        "default": "mdi:water-boiler",
+        "state": {
+          "on": "mdi:water-boiler",
+          "off": "mdi:water-boiler-off"
+        }
       }
     },
     "button": {
@@ -107,12 +114,21 @@
       },
       "cool_setback": {
         "default": "mdi:thermometer-plus"
+      },
+      "dhw_target": {
+        "default": "mdi:thermometer-water"
       }
     }
   },
   "services": {
     "export_plant": {
       "service": "mdi:file-export-outline"
+    },
+    "boost_dhw": {
+      "service": "mdi:water-boiler-alert"
+    },
+    "end_dhw_boost": {
+      "service": "mdi:water-boiler"
     }
   }
 }

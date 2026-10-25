@@ -40,7 +40,7 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 ENTITY_KEYS = {
     "button": {"reset_learning"},
     "climate": {"zone"},
-    "number": {"heat_setback", "cool_setback"},
+    "number": {"heat_setback", "cool_setback", "dhw_target"},
     "binary_sensor": {
         "heating_demand",
         "cooling_demand",
@@ -50,7 +50,7 @@ ENTITY_KEYS = {
     },
     "select": {"mode"},
     "sensor": {"status", "combined_temperature", "dew_point", "duty_cycle", "loop_runtime"},
-    "switch": {"control"},
+    "switch": {"control", "dhw"},
 }
 
 
@@ -155,9 +155,10 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
     assert set(STRINGS["exceptions"]) == {
         "invalid_plant",
         "plant_not_found",
+        "no_dhw_setpoint",
         "unsupported_hvac_mode",
     }
-    assert set(STRINGS["services"]) == {"export_plant"}
+    assert set(STRINGS["services"]) == {"export_plant", "boost_dhw", "end_dhw_boost"}
 
 
 def test_every_form_field_has_a_label() -> None:

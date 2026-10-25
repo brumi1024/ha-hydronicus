@@ -79,6 +79,8 @@ _ROLE_NAMES = {
     OutputRole.SOURCE_REQUEST: "source request",
     OutputRole.SOURCE_MODE: "source mode select",
     OutputRole.SOURCE_SETPOINT: "source supply temperature",
+    OutputRole.DHW_SWITCH: "DHW switch",
+    OutputRole.DHW_SETPOINT: "DHW setpoint",
     OutputRole.PUMP: "pump",
     OutputRole.VALVE: "valve",
 }

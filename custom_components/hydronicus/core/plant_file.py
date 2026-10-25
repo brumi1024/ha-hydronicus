@@ -54,6 +54,7 @@ from .model import (
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
+    Dhw,
     DigitalThermostat,
     Exercise,
     ExternalThermostat,
@@ -114,7 +115,9 @@ _SOURCE_KEYS: Final = (
     "health_sensor",
     "handover_sensor",
     "write_interval",
+    "dhw",
 )
+_DHW_KEYS: Final = ("switch", "setpoint", "minimum", "maximum", "tolerance", "step", "max_boost")
 _SUPPLY_KEYS: Final = (
     "entity",
     "outdoor_sensor",
@@ -389,6 +392,49 @@ def _source(value: object, path: str) -> Source:
             _number(source["write_interval"], _join(path, "write_interval"), positive=True)
             if "write_interval" in source
             else None
+        ),
+        dhw=_dhw(source["dhw"], _join(path, "dhw")) if "dhw" in source else None,
+    )
+
+
+def _dhw(value: object, path: str) -> Dhw:
+    document = _mapping(value, path, _DHW_KEYS)
+    switch = (
+        _entity(document["switch"], _join(path, "switch"), _SWITCH_DOMAINS)
+        if "switch" in document
+        else None
+    )
+    setpoint = (
+        _entity(document["setpoint"], _join(path, "setpoint"), ("number",))
+        if "setpoint" in document
+        else None
+    )
+    if switch is None and setpoint is None:
+        raise PlantFileError(path, "Bind a DHW switch, a setpoint, or both.")
+    defaults = Dhw()
+    minimum = _number(
+        document.get("minimum", defaults.minimum), _join(path, "minimum"), signed=True
+    )
+    maximum = _number(
+        document.get("maximum", defaults.maximum), _join(path, "maximum"), signed=True
+    )
+    if minimum >= maximum:
+        raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
+    return Dhw(
+        switch=switch,
+        setpoint=setpoint,
+        minimum=minimum,
+        maximum=maximum,
+        tolerance=_number(
+            document.get("tolerance", defaults.tolerance), _join(path, "tolerance"), positive=True
+        ),
+        step=(
+            _number(document["step"], _join(path, "step"), positive=True)
+            if "step" in document
+            else None
+        ),
+        max_boost=_number(
+            document.get("max_boost", defaults.max_boost), _join(path, "max_boost"), positive=True
         ),
     )
 
@@ -1166,6 +1212,9 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
         if plant.source.mode is not None:
             bind(plant.source.mode.entity, "source.mode.entity")
+        if plant.source.dhw is not None:
+            bind(plant.source.dhw.switch, "source.dhw.switch")
+            bind(plant.source.dhw.setpoint, "source.dhw.setpoint")
     for pump in plant.pumps:
         bind(pump.switch, f"pumps.{pump.slug}.switch")
         bind(pump.running_sensor, f"pumps.{pump.slug}.running_sensor")
@@ -1248,6 +1297,9 @@ _KEY_WORDS: Final = {
     "health_sensor": "health sensor",
     "handover_sensor": "handover sensor",
     "write_interval": "write interval",
+    "dhw": "DHW",
+    "setpoint": "setpoint",
+    "max_boost": "maximum boost",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
@@ -1381,6 +1433,17 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["handover_sensor"] = source.handover_sensor
     if source.write_interval is not None:
         document["write_interval"] = _export_number(source.write_interval)
+    if (dhw := source.dhw) is not None:
+        defaults = Dhw()
+        exported: dict[str, Any] = {}
+        if dhw.switch is not None:
+            exported["switch"] = dhw.switch
+        if dhw.setpoint is not None:
+            exported["setpoint"] = dhw.setpoint
+        for key in ("minimum", "maximum", "tolerance", "step", "max_boost"):
+            if (setting := getattr(dhw, key)) != getattr(defaults, key):
+                exported[key] = _export_number(setting)
+        document["dhw"] = exported
     if source.max_starts_per_hour is not None:
         document["max_starts_per_hour"] = source.max_starts_per_hour
     if source.start_threshold is not None:

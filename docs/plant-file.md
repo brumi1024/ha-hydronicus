@@ -194,6 +194,7 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | `running_sensor` | no | | A `binary_sensor` that reports whether the source actually runs, independently of its request switch. |
 | `feedback_timeout` | no | `300` | Positive seconds allowed after an observed source request for source running feedback and source-driven pump running or flow feedback to confirm operation. Missing or unknown feedback blocks startup. |
 | `supply` | no | | Optional [supply temperature control](#supply-temperature-control). |
+| `dhw` | no | | Optional [domestic hot water](#domestic-hot-water) settings that Hydronicus owns. |
 | `max_starts_per_hour` | no | no limit | The most times the request may be observed turning on within any hour, a whole number. A start beyond it waits until the oldest start is an hour old. |
 | `start_threshold` | no | none | The total `weight` of calling loops needed before the request starts. Loops below it still open and circulate; a running request is never cut short by it. |
 | `heat_sink_loops` | no | | Heating loops, such as `[living_area.floor]`, that Hydronicus opens when every calling loop is satisfied while the request is held for its `min_on` or its `hold_after_demand`. The source then runs into them, and the other loops close once one of them is ready. A heat sink loop never asks for heat itself. |
@@ -236,6 +237,24 @@ Every configured fixed or curve supply temperature of the setpoint's `modes` mus
 A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
 A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
 See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).
+
+### Domestic hot water
+
+The source's `dhw` mapping binds the source's own DHW switch, its DHW setpoint `number`, or both, which Hydronicus then owns and shows as its **DHW** switch and **DHW target** number.
+Both are outputs that must be armed, and like the source's other outputs they keep its `write_interval`.
+A change made elsewhere, such as on the heat pump's wired controller, is adopted: it becomes Hydronicus's value and is never written back.
+The `hydronicus.boost_dhw` action raises the setpoint for a bounded time and then restores the owned target, also after a restart, and once the setpoint is back if it was unavailable when the boost ended; a change made elsewhere during a boost ends it without restoring.
+While the source's handover sensor reads on, or Control equipment is off, Hydronicus sends them nothing.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `switch` | one of the two | | The `switch` that turns the source's DHW on and off. |
+| `setpoint` | one of the two | | The `number` that sets the DHW tank temperature. |
+| `minimum` | no | `40` | The lowest DHW target in °C; a lower owned, adopted, or boost value is clamped and logged. |
+| `maximum` | no | `55` | The highest DHW target in °C; must exceed `minimum`. |
+| `tolerance` | no | `0.5` | The difference in K accepted as confirmation of the setpoint. |
+| `step` | no | | The setpoint's resolution, such as `1` for whole degrees. |
+| `max_boost` | no | `7200` | The longest a boost may last, in seconds. |
 
 ## Pumps
 

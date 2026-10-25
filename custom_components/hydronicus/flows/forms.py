@@ -759,6 +759,10 @@ def output_labels(plant: Plant) -> dict[str, str]:
             what = "Source mode select"
         elif role is OutputRole.SOURCE_SETPOINT:
             what = "Source supply temperature setpoint"
+        elif role is OutputRole.DHW_SWITCH:
+            what = "Source DHW switch"
+        elif role is OutputRole.DHW_SETPOINT:
+            what = "Source DHW setpoint"
         elif role is OutputRole.PUMP:
             pump = next(pump for pump in plant.pumps if pump.switch == entity_id)
             what = f"Pump {pump.title}"

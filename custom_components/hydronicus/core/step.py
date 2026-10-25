@@ -49,7 +49,9 @@ from .demand import (
     zone_demand,
     zone_values,
 )
+from .dhw import DhwCommand, DhwResult, DhwState, dhw_step
 from .model import (
+    SETTING_ROLES,
     Demand,
     Desired,
     DigitalThermostat,
@@ -62,7 +64,6 @@ from .model import (
     Mode,
     NumericTarget,
     OptionTarget,
-    OutputRole,
     OutputTarget,
     Plant,
     Pump,
@@ -212,6 +213,8 @@ class Observations:
     # Optional predictions never authorize control; comfort policy checks consent,
     # confidence, expiry, and the owner's existing early-start bound.
     recovery: Mapping[str, RecoveryEstimate] = field(default_factory=dict)
+    # The owner's last command to the source's DHW through Hydronicus's entities.
+    dhw_command: DhwCommand | None = None
 
 
 def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
@@ -331,6 +334,8 @@ class State:
     # When the last exercise of each pump ended, by pump slug, so that one that
     # gave up or was only proposed in Dry run does not start again within the interval.
     exercise_ended: Mapping[str, float] = field(default_factory=dict)
+    # The source's owned DHW settings and its boost.
+    dhw: DhwState = DhwState()
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -378,6 +383,7 @@ class State:
                 "done": self.exercise.done,
             },
             "exercise_ended": dict(self.exercise_ended),
+            "dhw": self.dhw.to_dict(),
         }
 
     @classmethod
@@ -425,6 +431,7 @@ class State:
             exercise_ended={
                 slug: float(value) for slug, value in data.get("exercise_ended", {}).items()
             },
+            dhw=DhwState.from_dict(data.get("dhw", {})),
         )
 
 
@@ -838,6 +845,9 @@ class _Evaluation:
         )
         plan = _Plan(self, mode, label, active, winding_down, plan_demands, blocked_by_guard)
         outputs = plan.outputs()
+        dhw = self.dhw()
+        if dhw is not None:
+            outputs.update(dhw.targets)
 
         live = obs.control or (state.live and not self.finished())
         ready = {
@@ -883,6 +893,7 @@ class _Evaluation:
             idle_since=self.idle_times,
             exercise=plan.next_exercise,
             exercise_ended=plan.exercise_ended,
+            dhw=state.dhw if dhw is None else dhw.state,
         )
         desired = Desired(
             outputs=outputs,
@@ -899,10 +910,46 @@ class _Evaluation:
             source_fault=self.source_fault(),
             source_without_path=self.source_without_path(),
             source_handover=self.handover,
+            dhw=None if dhw is None else dhw.state,
+            dhw_reason=None if dhw is None else dhw.reason,
+            dhw_events=() if dhw is None else dhw.events,
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
         return next_state, desired, due
+
+    def dhw(self) -> DhwResult | None:
+        """The source's DHW: adopt what changed elsewhere, apply the owner's command, target."""
+        source = self.plant.source
+        if source is None or source.dhw is None:
+            return None
+        config = source.dhw
+        # Changes are judged on what the outputs really show, never a Dry run proposal.
+        physical = (
+            self.obs.outputs if self.obs.physical_outputs is None else self.obs.physical_outputs
+        )
+
+        def ours(entity: str) -> bool:
+            sent = self.obs.sent.get(entity)
+            return sent is not None and satisfies(physical.get(entity), sent.target)
+
+        switch = physical.get(config.switch) if config.switch is not None else None
+        setpoint = physical.get(config.setpoint) if config.setpoint is not None else None
+        return dhw_step(
+            config,
+            switch.on if isinstance(switch, SwitchState) and not switch.moving else None,
+            setpoint.value
+            if isinstance(setpoint, NumericState)
+            and setpoint.value is not None
+            and isfinite(setpoint.value)
+            else None,
+            ours,
+            self.state.dhw,
+            self.obs.dhw_command,
+            self.now,
+            self.reached,
+            commands=not self.forced_off and not self.handover,
+        )
 
     def current_holds(self, mode: Mode) -> tuple[Hold, ...]:
         """The holds in force, ordered by when they end; a guard holds only in cool."""
@@ -1366,10 +1413,7 @@ class _Evaluation:
                 continue
             if self.pending(entity) is not None:
                 return False
-            if (
-                role not in (OutputRole.SOURCE_MODE, OutputRole.SOURCE_SETPOINT)
-                and self.switch(entity) is not False
-            ):
+            if role not in SETTING_ROLES and self.switch(entity) is not False:
                 return False
         source = self.plant.source
         return (

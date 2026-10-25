@@ -174,6 +174,8 @@ HEAT_PUMP_HANDOVER: Final = "binary_sensor.midea_heat_pump_handover_to_controlle
 HEAT_PUMP_MODE: Final = "select.midea_heat_pump_mode"
 HEAT_PUMP_SETPOINT: Final = "number.midea_heat_pump_zone_1_water_setpoint"
 HEAT_PUMP_WATER_OUTLET: Final = "sensor.midea_heat_pump_water_outlet"
+HEAT_PUMP_DHW: Final = "switch.midea_heat_pump_dhw"
+HEAT_PUMP_DHW_SETPOINT: Final = "number.midea_heat_pump_dhw_setpoint"
 HOME_HEAT_PUMP: Final = """
 hydronicus: 2
 name: Home
@@ -198,6 +200,13 @@ source:
     minimum: 16
     maximum: 22
     step: 1
+  dhw:
+    switch: switch.midea_heat_pump_dhw
+    setpoint: number.midea_heat_pump_dhw_setpoint
+    minimum: 40
+    maximum: 55
+    step: 1
+    max_boost: 10800
 pumps:
   heat_pump: {driven_by: source, min_flow: guaranteed}
   heating:

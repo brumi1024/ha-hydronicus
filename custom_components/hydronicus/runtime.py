@@ -70,7 +70,9 @@ from .areas import (
 )
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.comfort import Setbacks, next_period_target
+from .core.dhw import DhwCommand, DhwState
 from .core.model import (
+    NUMERIC_ROLES,
     Desired,
     DigitalThermostat,
     ExternalThermostat,
@@ -182,6 +184,8 @@ class PlantRuntime:
         self.thermostats: dict[str, DigitalThermostatState] = {}
         # The owner's setbacks of each scheduled zone that has changed them, by zone slug.
         self.setbacks: dict[str, Setbacks] = {}
+        # The owner's last DHW command, until an evaluation has applied it.
+        self.dhw_command: DhwCommand | None = None
         # Each followed schedule helper's week from ``schedule.get_schedule``, or None
         # when it could not be read; absent until the first read finishes.
         self.schedule_weeks: dict[str, Mapping[str, Any] | None] = {}
@@ -422,6 +426,46 @@ class PlantRuntime:
         self.request_evaluation()
 
     @callback
+    def command_dhw(
+        self,
+        *,
+        on: bool | None = None,
+        target: float | None = None,
+        boost: float | None = None,
+        boost_for: float | None = None,
+        end_boost: bool = False,
+    ) -> None:
+        """Take the owner's DHW command from an entity or the boost action, and evaluate."""
+        # Each command is stamped later than the last, so that each applies once.
+        last = max(
+            (
+                at
+                for at in (
+                    self.state.dhw.command_at,
+                    None if self.dhw_command is None else self.dhw_command.at,
+                )
+                if at is not None
+            ),
+            default=0.0,
+        )
+        at = max(dt_util.utcnow().timestamp(), last + 0.001)
+        pending = self.dhw_command
+        if pending is not None:
+            # A command no evaluation has applied yet keeps what this one leaves alone.
+            on = pending.on if on is None else on
+            target = pending.target if target is None else target
+            if boost is None and not end_boost:
+                boost, boost_for, end_boost = pending.boost, pending.boost_for, pending.end_boost
+        self.dhw_command = DhwCommand(at, on, target, boost, boost_for, end_boost)
+        self.request_evaluation()
+
+    @property
+    def dhw(self) -> DhwState | None:
+        """The owned DHW settings, None before the first evaluation or without DHW."""
+        view = self.view
+        return None if view is None else view.desired.dhw
+
+    @callback
     def set_mode(self, mode: Mode) -> None:
         """Take the Plant mode the mode select requests."""
         self.requested_mode = mode
@@ -559,6 +603,13 @@ class PlantRuntime:
             live=state.live,
         )
         self._log_source_reports(desired)
+        for event in desired.dhw_events:
+            _LOGGER.info("Plant %s: %s", self.entry.title, event)
+        command = self.dhw_command
+        if command is not None and (
+            state.dhw.command_at is not None and state.dhw.command_at >= command.at
+        ):
+            self.dhw_command = None
         self.state, self.reconcile_state = state, result.state
         self._dispatcher.discard_obsolete(observations.armed, desired.outputs)
         self.evaluation_error = None
@@ -847,7 +898,7 @@ class PlantRuntime:
             if role is OutputRole.SOURCE_MODE:
                 option = option_value(state)
                 outputs[entity] = OptionState(option, self.memory.since(entity, option, changed))
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 value = numeric_value(state)
                 outputs[entity] = NumericState(value, self.memory.since(entity, value, changed))
             else:
@@ -902,6 +953,7 @@ class PlantRuntime:
                 for slug in self.scheduled_zones()
                 if (setbacks := self.zone_setbacks(slug)) is not None
             },
+            dhw_command=self.dhw_command,
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1050,7 +1102,7 @@ class PlantRuntime:
             value: bool | str | float | None
             if role is OutputRole.SOURCE_MODE:
                 value = option_value(new_state)
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 value = numeric_value(new_state)
             else:
                 value = switch_memory_value(new_state)

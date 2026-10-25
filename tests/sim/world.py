@@ -38,7 +38,9 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
+from custom_components.hydronicus.core.dhw import DhwCommand
 from custom_components.hydronicus.core.model import (
+    NUMERIC_ROLES,
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -258,6 +260,8 @@ class World:
         # Incremented on every change a Home Assistant state listener would see.
         self.version = 0
         self.post_run_end = 0.0
+        # The owner's last DHW command through Hydronicus's entities.
+        self.dhw_command: DhwCommand | None = None
         self._queue: list[_Happening] = []
         self._seq = itertools.count()
         self._last_landing: dict[str, float] = {}
@@ -273,7 +277,7 @@ class World:
             if role is OutputRole.SOURCE_MODE:
                 assert plant.source is not None and plant.source.mode is not None
                 self.selects.setdefault(entity, SelectBody(option=plant.source.mode.heat))
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 self.numbers.setdefault(entity, NumberBody(changed=self.wall()))
             else:
                 self.switches.setdefault(entity, SwitchBody(changed=self.wall()))
@@ -627,6 +631,7 @@ class World:
         expected = {
             OutputRole.SOURCE_MODE: OptionTarget,
             OutputRole.SOURCE_SETPOINT: NumericTarget,
+            OutputRole.DHW_SETPOINT: NumericTarget,
         }.get(role, SwitchTarget)
         if not isinstance(action.target, expected):
             raise AssertionError(f"reconcile() sent {action}, but {action.entity} is a {role}")
@@ -681,7 +686,7 @@ class World:
         for entity, role in self.plant.outputs().items():
             if role is OutputRole.SOURCE_MODE:
                 outputs[entity] = self.selects[entity].observe()
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 outputs[entity] = self.numbers[entity].observe()
             else:
                 observed = self.switches[entity].observe()
@@ -700,6 +705,7 @@ class World:
             sensors={entity: self.reading(entity, now) for entity in self.sensors},
             areas=dict(self.areas),
             thermostats=dict(self.thermostats),
+            dhw_command=self.dhw_command,
         )
 
     def reading(self, entity: str, now: float | None = None) -> Reading:

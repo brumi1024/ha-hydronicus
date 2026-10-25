@@ -765,6 +765,9 @@
     "switch": {
       "control": {
         "name": "Control equipment"
+      },
+      "dhw": {
+        "name": "DHW"
       }
     },
     "climate": {
@@ -843,6 +846,17 @@
       },
       "cool_setback": {
         "name": "Cooling setback"
+      },
+      "dhw_target": {
+        "name": "DHW target",
+        "state_attributes": {
+          "boost": {
+            "name": "Boost"
+          },
+          "boost_until": {
+            "name": "Boost until"
+          }
+        }
       }
     },
     "button": {
@@ -979,6 +993,9 @@
     },
     "unsupported_hvac_mode": {
       "message": "The zone thermostat has no mode {mode}. Choose one of: {modes}."
+    },
+    "no_dhw_setpoint": {
+      "message": "Plant {plant} has no DHW setpoint to boost."
     }
   },
   "services": {
@@ -989,6 +1006,34 @@
         "config_entry_id": {
           "name": "Plant",
           "description": "The Hydronicus Plant to export."
+        }
+      }
+    },
+    "boost_dhw": {
+      "name": "Boost DHW",
+      "description": "Raises the DHW target of a Plant's source for a bounded time, such as while solar power is in surplus, and restores the owned target when it ends.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose source heats the DHW."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "The boosted DHW target; it is kept within the DHW limits."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "How long the boost lasts, at most the Plant's maximum boost, which is also the default."
+        }
+      }
+    },
+    "end_dhw_boost": {
+      "name": "End DHW boost",
+      "description": "Ends a DHW boost now and restores the owned target.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose DHW boost ends."
         }
       }
     }

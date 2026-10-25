@@ -213,15 +213,21 @@ class Checker:
             expected = {
                 OutputRole.SOURCE_MODE: OptionTarget,
                 OutputRole.SOURCE_SETPOINT: NumericTarget,
+                OutputRole.DHW_SETPOINT: NumericTarget,
             }.get(role, SwitchTarget)
             if not isinstance(target, expected):
                 raise InvariantViolation("K2", self.world.t, f"Desired {entity}: {target}")
             if isinstance(target, NumericTarget):
                 source = self.plant.source
-                assert source is not None and source.supply is not None
-                supply = source.supply
+                assert source is not None
+                limits = (
+                    source.dhw
+                    if role is OutputRole.DHW_SETPOINT and source.dhw is not None
+                    else source.supply
+                )
+                assert limits is not None
                 if not math.isfinite(target.value) or not (
-                    supply.minimum <= target.value <= supply.maximum
+                    limits.minimum <= target.value <= limits.maximum
                 ):
                     raise InvariantViolation(
                         "supply", self.world.t, f"Supply target {target.value} exceeds its bounds"

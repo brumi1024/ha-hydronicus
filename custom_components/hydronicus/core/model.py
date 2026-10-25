@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from .comfort import ComfortTarget
+    from .dhw import DhwState
 
 
 class Mode(StrEnum):
@@ -77,8 +78,25 @@ class OutputRole(StrEnum):
     SOURCE_REQUEST = "source_request"
     SOURCE_MODE = "source_mode"
     SOURCE_SETPOINT = "source_setpoint"
+    DHW_SWITCH = "dhw_switch"
+    DHW_SETPOINT = "dhw_setpoint"
     PUMP = "pump"
     VALVE = "valve"
+
+
+# The roles of numeric outputs, which take a ``NumericTarget``; every other role
+# but the source mode is a switch.
+NUMERIC_ROLES: Final = frozenset({OutputRole.SOURCE_SETPOINT, OutputRole.DHW_SETPOINT})
+# The roles that set the source up rather than run the hydronics, which the off
+# sequence leaves as they are.
+SETTING_ROLES: Final = frozenset(
+    {
+        OutputRole.SOURCE_MODE,
+        OutputRole.SOURCE_SETPOINT,
+        OutputRole.DHW_SWITCH,
+        OutputRole.DHW_SETPOINT,
+    }
+)
 
 
 DEFAULT_MODE_DWELL: Final = 3600.0
@@ -281,6 +299,32 @@ class SupplyControl:
     step: float | None = None
 
 
+DEFAULT_DHW_MINIMUM: Final = 40.0
+DEFAULT_DHW_MAXIMUM: Final = 55.0
+DEFAULT_DHW_BOOST: Final = 7200.0
+
+
+@dataclass(frozen=True, slots=True)
+class Dhw:
+    """The source's domestic hot water: a switch, a setpoint, or both, which Hydronicus owns.
+
+    A change made elsewhere, such as on the source's own controller, is adopted
+    as Hydronicus's value and never written back.
+    """
+
+    switch: str | None = None
+    setpoint: str | None = None
+    # Hard limits of the setpoint, in °C: an owned or adopted value outside them
+    # is clamped.
+    minimum: float = DEFAULT_DHW_MINIMUM
+    maximum: float = DEFAULT_DHW_MAXIMUM
+    tolerance: float = 0.5
+    # The setpoint's resolution, such as 1 for whole degrees.
+    step: float | None = None
+    # The longest a boost may raise the setpoint, in seconds.
+    max_boost: float = DEFAULT_DHW_BOOST
+
+
 @dataclass(frozen=True, slots=True)
 class Source:
     """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
@@ -320,6 +364,7 @@ class Source:
     # The fewest seconds between two writes to one of the source's outputs, for
     # a bridge that refuses faster ones; a switch turning off is never held.
     write_interval: float | None = None
+    dhw: Dhw | None = None
 
     @property
     def title(self) -> str:
@@ -330,13 +375,15 @@ class Source:
         return self.write_interval is not None and entity in self.outputs()
 
     def outputs(self) -> tuple[str, ...]:
-        """The source's own outputs: its request, mode select, and supply setpoint."""
+        """The source's own outputs: its request, mode select, supply setpoint, and DHW."""
         return tuple(
             entity
             for entity in (
                 self.request,
                 None if self.mode is None else self.mode.entity,
                 None if self.supply is None else self.supply.entity,
+                None if self.dhw is None else self.dhw.switch,
+                None if self.dhw is None else self.dhw.setpoint,
             )
             if entity is not None
         )
@@ -540,6 +587,11 @@ class Plant:
                 outputs.setdefault(self.source.mode.entity, OutputRole.SOURCE_MODE)
             if self.source.supply is not None:
                 outputs.setdefault(self.source.supply.entity, OutputRole.SOURCE_SETPOINT)
+            if (dhw := self.source.dhw) is not None:
+                if dhw.switch is not None:
+                    outputs.setdefault(dhw.switch, OutputRole.DHW_SWITCH)
+                if dhw.setpoint is not None:
+                    outputs.setdefault(dhw.setpoint, OutputRole.DHW_SETPOINT)
         for pump in self.pumps:
             if pump.switch is not None:
                 outputs.setdefault(pump.switch, OutputRole.PUMP)
@@ -669,3 +721,8 @@ class Desired:
     # The source's handover sensor reads on: something else controls the source,
     # and ``outputs`` holds no target for any of its outputs.
     source_handover: bool = False
+    # The owned DHW settings, why the DHW outputs are as they are, and what changed
+    # this evaluation that the owner should hear about.
+    dhw: DhwState | None = None
+    dhw_reason: str | None = None
+    dhw_events: tuple[str, ...] = ()
