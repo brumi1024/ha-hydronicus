@@ -1,11 +1,11 @@
 # A Midea heat pump as the source, through a Shelly Modbus bridge
 
-Status: in progress on branch `midea-source` as of 2026-10-23; not released or installed.
+Status: built on branch `midea-source` as of 2026-10-25, not pushed, released, or installed; the owner decides and deploys.
 Done: the read-only register scan (`extras/shelly-modbus-bridge/modbus-scan.shelly.js`), and the source's `max_starts_per_hour`, `heat_sink_loops`, `start_threshold`, `health_sensor`, and loop `weight`.
 Also done: the source fault's Repair and **Fault** binary sensor, and the **Cycling protection** form section and loop **Weight** field.
 On 2026-10-25 the Phase 2 bridge runs on the owner's Pro 3EM with writes off, on the Mosquitto broker of home, and Home Assistant discovered its 21 entities, which match the wired controller.
 Since 2026-10-25 the bridge runs with writes on, and the heartbeat automation in ha-config keeps it from handing over.
-Next: [the control plan](#the-control-plan-of-2026-10-25) below; the E8 log waits, as the owner asked on 2026-10-23.
+Since then the branch carries everything [the control plan](#the-control-plan-of-2026-10-25) below needs in Hydronicus; the E8 log waits, as the owner asked on 2026-10-23.
 
 ## The control plan of 2026-10-25
 
@@ -16,10 +16,11 @@ Hydronicus stays generic: everything below binds the bridge's entities as ordina
 ### Decisions for the owner
 
 1. The control strategy: hold the request after demand into bounded heat sinks, as recommended below, or release it per call.
-2. The request backend: the bridge's `switch.midea_heat_pump_space_heating`, recommended, or a dry contact through a Pro 4PM or Pro 2PM channel and an interposing relay.
-3. Whether to switch the weather curve off, for a fixed cooling setpoint and later for Hydronicus's own heating supply control; until then T1S stays controller-owned.
-4. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
-5. Whether to add a secondary supply sensor before cooling goes live, recommended, and whether ceiling surface sensors are worth it, not recommended yet.
+2. How Hydronicus learns that the fireplace's buffer supplies the zones: `input_boolean.home_fireplace_heating` by hand for now, which ha-config must create first, and a direct signal later; see section 8.
+3. The request backend: the bridge's `switch.midea_heat_pump_space_heating`, recommended, or a dry contact through a Pro 4PM or Pro 2PM channel and an interposing relay.
+4. Whether to switch the weather curve off, for a fixed cooling setpoint and later for Hydronicus's own heating supply control; until then T1S stays controller-owned.
+5. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
+6. Whether to add a secondary supply sensor before cooling goes live, recommended, and whether ceiling surface sensors are worth it, not recommended yet.
 
 ### Measurements the owner takes first
 
@@ -29,6 +30,7 @@ Hydronicus stays generic: everything below binds the bridge's entities as ordina
 - The Y-strainer, the air vent, and the internal pump on the primary side.
   E8 is a water flow failure that the flow switch reports when the internal pump starts and no flow follows; after a restart from standstill it points at a strainer that is clogging, air, or a pump that is slow to start, which a service visit fixes and no control strategy does.
   Fewer restarts lower the exposure; they do not remove the cause.
+  A second E8 on 2026-10-25 at 01:10 UTC came after a DHW run with no heating toggle: the compressor stopped at 01:06, the internal pump stopped by itself at 01:08, and the fault followed its restart; so the heat pump restarts its own pump too, and no strategy of Hydronicus's can prevent those restarts.
 
 ### 1. The control strategy
 
@@ -85,11 +87,13 @@ If the internal pump stops whenever the compressor rests on its curve, every com
 
 So the first measurement decides it: with a pump that runs through the compressor's rests, the hybrid is clearly better; with one that stops, the E8 exposure is the heat pump's own cycling, which longer compressor runs, that is fewer open loops and a lower curve, reduce, and the strategy matters less than the service visit.
 
-Recommendation: the hybrid, with these defaults for the house:
+Recommendation: the hybrid, with these defaults for the house, which `HOME_HEAT_PUMP` in `tests/sim/plants.py` runs with the zones' sensors and thermostats of the simulator:
 
 ```yaml
+mode_dwell: 7200
 source:
   request: switch.midea_heat_pump_space_heating
+  mode: {entity: select.midea_heat_pump_mode, heat: Heat, cool: Cool}
   post_run: 0
   min_on: 1500
   min_off: 720
@@ -100,7 +104,35 @@ source:
   health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
   handover_sensor: binary_sensor.midea_heat_pump_handover_to_controller
   write_interval: 300
+  inhibit_sensor: input_boolean.home_fireplace_heating
+  no_load:
+    supply_temperature: sensor.midea_heat_pump_water_outlet
+    return_temperature: sensor.midea_heat_pump_water_inlet
+    compressor_sensor: sensor.midea_heat_pump_compressor_frequency
+  compressor_sensor: sensor.midea_heat_pump_compressor_frequency
+  supply:
+    entity: number.midea_heat_pump_zone_1_water_setpoint
+    modes: [cool]
+    cool_temperature: 18
+    minimum: 16
+    maximum: 22
+    step: 1
+  dhw:
+    switch: switch.midea_heat_pump_dhw
+    setpoint: number.midea_heat_pump_dhw_setpoint
+    minimum: 40
+    maximum: 55
+    step: 1
+    max_boost: 10800
+pumps:
+  heat_pump: {driven_by: source, min_flow: guaranteed}
+  heating:
+    switch: switch.home_underfloor_heating_pump
+    overrun: 240
+    supply_temperature: sensor.midea_heat_pump_water_outlet
 ```
+
+The ceilings get `modes: [heat, cool]`, the floor stays heat only, and each zone gets `max_humidity: 65`; the towel dryer loop stays as it is today.
 
 `min_off` stays above the bridge's 5 minute write limit, so turning heating back on is never refused, and `min_on` keeps each run long enough for the defrost and the oil return the compressor needs.
 The heat sink loops are listed in the order the owner prefers them; all of them take heat while their zones have room.
@@ -117,7 +149,7 @@ The dry contact through a Pro 4PM or Pro 2PM channel and an interposing relay re
   Its running sensor, `binary_sensor.midea_heat_pump_internal_pump`, is bound only once the owner has measured that it stays on through the compressor's rests, since a running sensor that drops would release the request.
 - The new `handover_sensor` reads on while something else controls the source: Hydronicus then sends the source nothing, treats it as possibly running, and keeps its heat sink loops open while it may heat; see section 4.
 
-`HOME_HEAT_PUMP` in `tests/sim/plants.py` is that Plant with the simulator's entity names, and the scenarios in `tests/sim/test_home_heat_pump.py` run it.
+`HOME_HEAT_PUMP` in `tests/sim/plants.py` is that Plant with the bridge's entity IDs, and the scenarios in `tests/sim/test_home_heat_pump.py`, `test_home_heat_pump_cooling.py`, and `test_home_heat_pump_dhw.py` run it.
 
 ### 3. DHW and setpoints
 
@@ -146,11 +178,14 @@ The bridge refuses a write within 5 minutes of the same setting's last write, un
   In heating the wired controller switches zone 1 on: Hydronicus treats the source as possibly running and keeps its heat sink loops open while the request shows on or unknown.
   In cooling it switches zone 1 off, and Hydronicus closes the cooling loops as it would after any release.
   When the heartbeat returns and the sensor reads off, Hydronicus takes over from the observed state, as after a restart.
+- Until the bridge fix of 2026-10-25 is loaded on the Shelly, a bridge restart publishes one state in which every switch reads off for about a second.
+  Hydronicus then counts a stop and a start of the request, which restarts its minimum run and adds to its starts per hour, and adopts the DHW switch as off and on again with two log lines; it sends no harmful write, because the bridge skips a write that changes nothing.
+  Loading the fix removes it; Hydronicus adds no debounce of its own.
 
 ### 5. Diagnostics
 
-The source gets an optional `compressor_sensor`, a numeric sensor that reads above zero while the compressor runs, here `sensor.midea_heat_pump_compressor_frequency`.
-Hydronicus then publishes **Compressor starts**, the starts within the last hour, and **Compressor cycle**, the mean length of the runs that ended within the last 24 hours, counted from that sensor's history like the loops' runtime.
+The source's optional `compressor_sensor` is a numeric sensor that reads above zero while the compressor runs, here `sensor.midea_heat_pump_compressor_frequency`.
+Hydronicus then publishes **Compressor starts**, the starts within the last hour, and **Compressor cycle**, the mean length of the runs that ended within the last 24 hours, counted from that sensor's readings at each evaluation and kept with the Plant's state.
 The E8 and E0 event log, with the time, the activity before, the time since the last DHW run, the time since the internal pump last started, Tw_in, Tw_out, and the compressor frequency, is proposed as a diagnostics entry that keeps the last 20 faults; it is not built until the owner asks.
 
 ### 6. Cooling
@@ -183,16 +218,41 @@ The simulated summer day in `tests/sim/test_home_heat_pump_cooling.py` covers a 
 The exercise never requests the source and keeps its own heat sink rules; Dry run proposes the DHW outputs like every other output and never sends them.
 The simulator's world now models the heat pump's own pump, its restart delay, and an E8 after a pump start from standstill, through `HeatPumpHouse` in `tests/sim/heat_pump.py`.
 
+### 8. The fireplace's buffer
+
+The water-jacket fireplace heats a 2000 L buffer, and its own thermostat drives a motorized selector valve so that the zones run from the buffer instead of the plate heat exchanger.
+That thermostat stays the authority, and Hydronicus never commands the valve; with the buffer selected the heat pump has no load, so its request must be released at once and stay off.
+
+- The source's new `inhibit_sensor`, a `binary_sensor` or an `input_boolean`, reads on while another source supplies the zones.
+  The request is then released at once, whatever its minimum run, with the reason "another source supplies the zones", no fault, and no Repair; the zones and the heating pump go on serving demand from the buffer, and the DHW is unaffected.
+  Unknown or unavailable counts as off, so a helper that does not exist yet never keeps the heat pump off; it does raise the missing binding Repair, so ha-config must create `input_boolean.home_fireplace_heating` before the Plant binds it.
+- A direct signal is better than a switch someone must remember to flip: a contact sensor on the selector valve's position indicator, a Shelly input on the valve motor's drive, or a probe at the top of the buffer compared with the thermostat's setpoint, in that order of preference, since the first two read the valve itself.
+- The new `no_load` guard is the safety net whatever the inhibit says: once the request is on, the compressor has run for 10 minutes, and Tw_out and Tw_in have stayed within 1 K for 10 minutes too, the heat has nowhere to go, the buffer selected, every valve closed, a failed pump, or air, and Hydronicus releases the request and holds it off for 30 minutes.
+  A missing or stale reading never trips it, and two trips within a day raise the `source_no_load` Repair.
+  The heat pump's low ΔT has been the owner's only hint that the fireplace heats; it is a fair guard, but too slow and too weak to control on, which is why the inhibit exists.
+
 ### Build order on this branch
 
-1. `hold_after_demand` and `heat_sink_overshoot`, with the strategy comparison: done.
-2. The source-driven pump without loops, the handover sensor, and the Home Plant with the bridge's bindings.
-3. `write_interval` and the reconciler's giving up on a write that is not taken.
-4. Cooling: `supply.modes`, the wait for the mode select, and the summer day.
+1. `hold_after_demand` and `heat_sink_overshoot`, with the strategy comparison.
+2. The handover sensor, and a request found on with no open loop reported even behind a separator.
+3. `write_interval`, and a write the bridge does not take becoming a status that is retried hourly.
+4. Cooling: `supply.modes` and `supply.step`, the wait for the mode select, and the summer day.
 5. DHW: switch, target, limits, adoption, and the boost with its restore.
-6. The compressor diagnostics.
+6. The inhibit and the no-load guard.
+7. The compressor diagnostics.
 
-Deploying a Hydronicus version and editing the Plant on home are the owner's steps; nothing on this branch arms an output or changes the live Plant.
+All seven are built, with core, simulator, and integration tests, and `make verify` passes.
+The new source settings are plant file keys; only the hold, the overshoot, and the handover sensor are in the **Cycling protection** form so far.
+
+### The owner's steps
+
+1. The measurements above, and the primary circuit's service.
+2. In ha-config, create `input_boolean.home_fireplace_heating`.
+3. Decide the open points at the top, then release a Hydronicus version with this branch.
+4. Edit the Plant on home from the snippet above, arm the new outputs one by one while watching **Last write**, and keep Control equipment off for a Dry run day first.
+
+Deploying a Hydronicus version and editing the Plant on home are the owner's steps; nothing on this branch arms an output, writes to the heat pump, or changes the live Plant.
+The DHW switch write through the bridge at 01:24 UTC on 2026-10-25 came from neither the bridge session nor this one, since this work only ran the simulator and tests.
 
 ## Owner decisions
 
@@ -213,7 +273,7 @@ Hydronicus keeps cooling disabled until it has a condensation reference; the hea
 
 The heat pump heats a plate heat exchanger that only the zones load, with no bypass, so the zones are its only sink and it must never run with every zone valve closed.
 The plant file binds it as a source whose request is the bridge's heating switch or, if the owner chooses the dry contact, the Shelly channel that drives the interposing relay.
-Its health sensor is the bridge's `modbus_healthy`, its heat sink is the living area's floor, and it limits itself to three starts an hour with a 25 minute minimum run and a 12 minute minimum rest.
+Its health sensor is the bridge's `modbus_healthy`, and its heat sinks, its hold after demand, and its limits are those of [the control plan](#1-the-control-strategy).
 
 ## The MQTT contract of the bridge
 
