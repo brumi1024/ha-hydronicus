@@ -180,6 +180,10 @@ function publish(topic, message, retain) {
 }
 
 function publishState() {
+  // Nothing is published before the first good read: a state of nulls would
+  // show every switch off for a moment, which Home Assistant would log and
+  // Hydronicus could take for a real change.
+  if (raw[0] === undefined || raw[101] === undefined) return;
   var text = JSON.stringify(snapshot());
   // An unchanged state is sent again now and then, so that Home Assistant
   // sees a fresh reading of a temperature that has not moved.
