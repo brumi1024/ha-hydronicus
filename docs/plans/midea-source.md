@@ -13,20 +13,26 @@ This section is the plan for teaching Hydronicus to run the heat pump through th
 It records what is built on this branch, what the owner decides, and what the owner measures before the Plant on home changes.
 Hydronicus stays generic: everything below binds the bridge's entities as ordinary entities, and nothing in the integration speaks MQTT or Modbus.
 
-### Decisions for the owner
+### Decisions
 
-1. The control strategy: hold the request after demand into bounded heat sinks, as recommended below, or release it per call.
-2. How Hydronicus learns that the fireplace's buffer supplies the zones: `input_boolean.home_fireplace_heating` by hand for now, which ha-config must create first, and a direct signal later; see section 8.
-3. The request backend: the bridge's `switch.midea_heat_pump_space_heating`, recommended, or a dry contact through a Pro 4PM or Pro 2PM channel and an interposing relay.
-4. Whether to switch the weather curve off, for a fixed cooling setpoint and later for Hydronicus's own heating supply control; until then T1S stays controller-owned.
-5. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
-6. Whether to add a secondary supply sensor before cooling goes live, recommended, and whether ceiling surface sensors are worth it, not recommended yet.
+On 2026-10-25 the owner decided:
+
+- The control strategy is the hybrid: the request is held after demand into the bounded heat sinks, as recommended in section 1.
+- The request is the bridge's `switch.midea_heat_pump_space_heating`, not a dry contact.
+- Cooling does not use the weather curve: while cooling, the curve is off and Hydronicus owns the zone 1 setpoint within 16 to 22 °C; heating keeps the curve, so T1S stays controller-owned in heat.
+- A secondary supply sensor is fitted before the next cooling season and becomes the ceilings' condensation reference; cooling stays off on home until then, and ceiling surface sensors are not added.
+
+Still open:
+
+1. How Hydronicus learns that the fireplace's buffer supplies the zones: `input_boolean.home_fireplace_heating` by hand for now, which ha-config must create first, and a direct signal later; see section 8.
+2. Who switches the weather curve between the seasons: the owner by hand with each change of mode, or Hydronicus, which would need a new source output that follows the mode.
+3. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
 
 ### Measurements the owner takes first
 
 - Whether the internal pump keeps running while the compressor rests on its curve: watch `binary_sensor.midea_heat_pump_internal_pump` while `sensor.midea_heat_pump_compressor_frequency` drops to 0 with space heating on.
   The recommended strategy depends on it, see below.
-- Whether the controller accepts a zone 1 setpoint while it cools with the weather curve on: set the mode to cool on a warm day and write 20 °C to `number.midea_heat_pump_zone_1_water_setpoint`, then read `sensor.midea_heat_pump_last_write`.
+- Before the next cooling season, that the controller takes a zone 1 setpoint while it cools with the weather curve off: set the mode to cool, switch the curve off, write 20 °C to `number.midea_heat_pump_zone_1_water_setpoint`, and read `sensor.midea_heat_pump_last_write`.
 - The Y-strainer, the air vent, and the internal pump on the primary side.
   E8 is a water flow failure that the flow switch reports when the internal pump starts and no flow follows; after a restart from standstill it points at a strainer that is clogging, air, or a pump that is slow to start, which a service visit fixes and no control strategy does.
   Fewer restarts lower the exposure; they do not remove the cause.
@@ -196,7 +202,7 @@ Floor cooling would add little capacity next to the ceilings, has no surface sen
 - `select.midea_heat_pump_mode` is the source's mode select, heat `Heat` and cool `Cool`.
 - `number.midea_heat_pump_zone_1_water_setpoint` is the source's supply setpoint, for cooling only through the new `supply.modes: [cool]`, with `cool_temperature: 18`, `minimum: 16`, and `maximum: 22`.
   Hydronicus proposes a cooling setpoint only once the mode select shows cool, since the bridge accepts 16 to 22 °C only then.
-  With the weather curve on, the controller may refuse it; that is the owner's measurement above, and the write becomes a status, not a retry loop.
+  The owner decided that cooling runs with the weather curve off, so the controller takes the setpoint; a setpoint it still refuses, such as with the curve left on, becomes a status, not a retry loop.
 - `sensor.midea_heat_pump_water_outlet`, Tw_out, is the switched heating pump's `supply_temperature`, the condensation reference of every ceiling loop.
 
 What Tw_out does not cover, plainly:
@@ -205,8 +211,8 @@ What Tw_out does not cover, plainly:
 - It is meaningful only while the internal pump runs; while it rests, Tw_out reads standing water that warms toward the plant room, while no cooling reaches the secondary either, so it overstates the supply temperature exactly when nothing is cooled.
 - It is no surface temperature: it says nothing about a ceiling panel that a cold supply has cooled below the dew point locally, which the 2 K margin and the release band cover only as margins.
 
-Recommendation: add one secondary supply sensor, a clip-on probe on the flow pipe after the heating pump through a Shelly add-on, before cooling goes live; it reads the water that reaches the ceilings, whenever the heating pump runs, independent of the heat pump's pump.
-It replaces Tw_out as the pump's `supply_temperature`.
+The owner decided to fit one secondary supply sensor before the next cooling season: a clip-on probe on the flow pipe after the heating pump through a Shelly add-on, which reads the water that reaches the ceilings, whenever the heating pump runs, independent of the heat pump's pump.
+It replaces Tw_out as the heating pump's `supply_temperature`; until then cooling stays off on home, and the simulated Plant keeps Tw_out only so the scenarios have a reference.
 Ceiling surface sensors are not worth it while the supply stays 3.5 K or more above the worst-case dew point, which the supply control already enforces; reconsider them if the ceilings ever run closer.
 Each zone's areas name their humidity sensors, which stay required for cooling: a zone without a usable humidity reading blocks its ceiling's cooling.
 
@@ -248,8 +254,9 @@ The new source settings are plant file keys; only the hold, the overshoot, and t
 
 1. The measurements above, and the primary circuit's service.
 2. In ha-config, create `input_boolean.home_fireplace_heating`.
-3. Decide the open points at the top, then release a Hydronicus version with this branch.
-4. Edit the Plant on home from the snippet above, arm the new outputs one by one while watching **Last write**, and keep Control equipment off for a Dry run day first.
+3. Decide the points still open at the top, then release a Hydronicus version with this branch.
+4. Edit the Plant on home from the snippet above, for now without the ceilings' cooling and the supply setpoint, arm the new outputs one by one while watching **Last write**, and keep Control equipment off for a Dry run day first.
+5. Before the next cooling season, fit the secondary supply sensor, bind it as the heating pump's `supply_temperature`, give the ceilings `modes: [heat, cool]`, add the supply setpoint, and switch the weather curve off whenever the mode is cool.
 
 Deploying a Hydronicus version and editing the Plant on home are the owner's steps; nothing on this branch arms an output, writes to the heat pump, or changes the live Plant.
 
