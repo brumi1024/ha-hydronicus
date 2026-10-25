@@ -252,7 +252,6 @@ The new source settings are plant file keys; only the hold, the overshoot, and t
 4. Edit the Plant on home from the snippet above, arm the new outputs one by one while watching **Last write**, and keep Control equipment off for a Dry run day first.
 
 Deploying a Hydronicus version and editing the Plant on home are the owner's steps; nothing on this branch arms an output, writes to the heat pump, or changes the live Plant.
-The DHW switch write through the bridge at 01:24 UTC on 2026-10-25 came from neither the bridge session nor this one, since this work only ran the simulator and tests.
 
 ## Owner decisions
 
