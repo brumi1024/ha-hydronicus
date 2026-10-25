@@ -1,7 +1,7 @@
 """Control strategies for the maintainer's heat pump, compared on the same simulated house.
 
-Run ``uv run python -m tests.sim.heat_pump_strategies`` for the table that
-``docs/plans/midea-source.md`` quotes. Each strategy is a Plant: the house of
+Run ``uv run python -m tests.sim.heat_pump_strategies`` for the comparison
+table. Each strategy is a Plant: the house of
 ``plants.HOME_HEAT_PUMP`` with realistic thermostats and valve travel, run for
 two days after a six-hour warm-up at a daily outdoor swing of 3 K.
 """

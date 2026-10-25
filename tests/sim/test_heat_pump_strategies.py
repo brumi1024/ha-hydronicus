@@ -1,7 +1,7 @@
-"""The control strategies for the maintainer's heat pump keep what the plan concludes.
+"""The control strategies for the maintainer's heat pump keep their conclusions.
 
-The table in ``docs/plans/midea-source.md`` comes from ``heat_pump_strategies``;
-these checks keep its conclusions true as the core changes, on one mild day.
+The comparison table comes from ``heat_pump_strategies``; these checks keep
+the conclusions that chose the hybrid true as the core changes, on one mild day.
 """
 
 from __future__ import annotations
