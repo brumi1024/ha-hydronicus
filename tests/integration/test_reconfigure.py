@@ -142,6 +142,8 @@ async def test_reconfigure_sets_keeps_and_clears_the_source_cycling_protection(
         "max_starts_per_hour": 3.0,
         "start_threshold": 1.5,
         "heat_sink_loops": ["living_area.floor"],
+        "hold_after_demand": 14400.0,
+        "heat_sink_overshoot": 0.5,
     }
     result = await async_submit(flow, result, {**plant_step, "cycling": cycling})
     await async_save(hass, result)
@@ -151,6 +153,7 @@ async def test_reconfigure_sets_keeps_and_clears_the_source_cycling_protection(
     assert source.max_starts_per_hour == 3
     assert source.start_threshold == 1.5
     assert [str(ref) for ref in source.heat_sink_loops] == ["living_area.floor"]
+    assert (source.hold_after_demand, source.heat_sink_overshoot) == (14400.0, 0.5)
 
     result = await async_choose(flow, await async_reconfigure(hass, entry), "plant")
     key, _ = section_field(result, "cycling", "max_starts_per_hour")
@@ -164,11 +167,13 @@ async def test_reconfigure_sets_keeps_and_clears_the_source_cycling_protection(
     await async_save(hass, result)
     cleared = entry.runtime_data.plant.source
     assert cleared is not None
-    assert (cleared.health_sensor, cleared.max_starts_per_hour, cleared.heat_sink_loops) == (
-        None,
-        None,
-        (),
-    )
+    assert (
+        cleared.health_sensor,
+        cleared.max_starts_per_hour,
+        cleared.heat_sink_loops,
+        cleared.hold_after_demand,
+        cleared.heat_sink_overshoot,
+    ) == (None, None, (), None, 1.0)
 
 
 async def test_reconfigure_adds_a_pump_and_a_plant_loop_and_edits_a_pump(

@@ -208,6 +208,7 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 | `source_min_on` | Switched pump | The pump runs for the source's minimum on time. |
 | `exercise` | Pump | The pump runs for the exercise's run time. |
 | `min_on`, `min_off` | `source` | The source request keeps its minimum on or off time. |
+| `hold_after_demand` | `source` | The source request stays on into its heat sinks after demand ended. |
 | `post_run` | `source` | The source's pumps may still run after its request turned off. |
 | `feedback` | `source` | The source waits for running or flow proof before it gives up. |
 | `max_starts` | `source` | The source waits until its oldest start of the last hour is an hour old. |

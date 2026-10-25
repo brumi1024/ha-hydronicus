@@ -98,6 +98,9 @@ DEFAULT_OPENING_TIME: Final = 180.0
 # battery sensors report only on change, with a heartbeat about once an hour.
 DEFAULT_MAX_AGE: Final = 3600.0
 DEFAULT_SOURCE_TITLE: Final = "Heat source"
+# A heat sink zone may warm this far over its heating target, in kelvin, while
+# the source is held after demand.
+DEFAULT_HEAT_SINK_OVERSHOOT: Final = 1.0
 # While cooling, a loop's surface stays at or above this, in °C: the comfortable
 # floor minimum of ISO 7730 and REHVA. A ceiling may run colder.
 DEFAULT_SURFACE_MINIMUM: Final = 20.0
@@ -291,6 +294,13 @@ class Source:
     # Heating loops held open while the request is held for its minimum on time
     # after demand ended, so the source keeps a sink until its run may end.
     heat_sink_loops: tuple[LoopRef, ...] = ()
+    # Seconds a heating request stays on into the heat sink loops after the last
+    # calling loop is satisfied, so a source whose every stop costs a restart of
+    # its own pumps keeps running between calls; None holds it for ``min_on`` only.
+    hold_after_demand: float | None = None
+    # Beyond ``min_on``, a heat sink loop takes heat only while each zone it
+    # serves reads less than this many kelvin over its heating target.
+    heat_sink_overshoot: float = DEFAULT_HEAT_SINK_OVERSHOOT
     # The total weight of wanted loops that must call before the request starts;
     # None starts it for any calling loop. It never shortens a running request.
     start_threshold: float | None = None
@@ -565,6 +575,7 @@ class HoldKind(StrEnum):
     OVERRUN = "overrun"
     SOURCE_MIN_ON = "source_min_on"
     MIN_ON = "min_on"
+    HOLD_AFTER_DEMAND = "hold_after_demand"
     MIN_OFF = "min_off"
     POST_RUN = "post_run"
     FEEDBACK = "feedback"

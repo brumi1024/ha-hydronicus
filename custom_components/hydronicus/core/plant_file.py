@@ -33,6 +33,7 @@ import yaml
 from .model import (
     DEFAULT_EXERCISE,
     DEFAULT_FROST_PROTECTION,
+    DEFAULT_HEAT_SINK_OVERSHOOT,
     DEFAULT_MAX_AGE,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_MIN_OFF,
@@ -107,6 +108,8 @@ _SOURCE_KEYS: Final = (
     "feedback_timeout",
     "max_starts_per_hour",
     "heat_sink_loops",
+    "hold_after_demand",
+    "heat_sink_overshoot",
     "start_threshold",
     "health_sensor",
 )
@@ -361,6 +364,15 @@ def _source(value: object, path: str) -> Source:
             _loop_refs(source["heat_sink_loops"], _join(path, "heat_sink_loops"))
             if "heat_sink_loops" in source
             else ()
+        ),
+        hold_after_demand=(
+            _number(source["hold_after_demand"], _join(path, "hold_after_demand"))
+            if "hold_after_demand" in source
+            else None
+        ),
+        heat_sink_overshoot=_number(
+            source.get("heat_sink_overshoot", DEFAULT_HEAT_SINK_OVERSHOOT),
+            _join(path, "heat_sink_overshoot"),
         ),
         start_threshold=(
             _number(source["start_threshold"], _join(path, "start_threshold"), positive=True)
@@ -932,6 +944,11 @@ def _check_pump(plant: Plant, pump: Pump) -> None:
 
 def _check_heat_sink(plant: Plant, source: Source) -> None:
     loops_path = "source.heat_sink_loops"
+    if source.hold_after_demand is not None and not source.heat_sink_loops:
+        raise PlantFileError(
+            "source.hold_after_demand",
+            "Holding the request after demand needs heat_sink_loops to take the heat.",
+        )
     seen: set[LoopRef] = set()
     for index, ref in enumerate(source.heat_sink_loops):
         item_path = _join(loops_path, index)
@@ -1196,6 +1213,8 @@ _KEY_WORDS: Final = {
     "max_humidity": "maximum humidity",
     "max_starts_per_hour": "maximum starts per hour",
     "heat_sink_loops": "heat sink loops",
+    "hold_after_demand": "hold after demand",
+    "heat_sink_overshoot": "heat sink overshoot",
     "start_threshold": "start threshold",
     "health_sensor": "health sensor",
 }
@@ -1333,6 +1352,10 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["start_threshold"] = _export_number(source.start_threshold)
     if source.heat_sink_loops:
         document["heat_sink_loops"] = [str(ref) for ref in source.heat_sink_loops]
+    if source.hold_after_demand is not None:
+        document["hold_after_demand"] = _export_number(source.hold_after_demand)
+    if source.heat_sink_overshoot != DEFAULT_HEAT_SINK_OVERSHOOT:
+        document["heat_sink_overshoot"] = _export_number(source.heat_sink_overshoot)
     if source.supply is not None:
         document["supply"] = _export_configuration(
             source.supply, SupplyControl(source.supply.entity), _SUPPLY_KEYS

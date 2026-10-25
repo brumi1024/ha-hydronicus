@@ -301,6 +301,10 @@ class State:
     source_observed_changed: float | None = None
     # When the request was observed to turn on within ``START_WINDOW``, oldest first.
     source_starts: tuple[float, ...] = ()
+    # Whether a loop called for the source at the last evaluation, and when the
+    # last call was seen to end, from which ``Source.hold_after_demand`` counts.
+    source_demanding: bool = False
+    source_demand_ended: float | None = None
     # Each zone's demand, by zone slug.
     demands: Mapping[str, DemandState] = field(default_factory=dict)
     # Each cooling loop's condensation guard, by ``str(LoopRef)``.
@@ -343,6 +347,8 @@ class State:
             "source_observed": self.source_observed,
             "source_observed_changed": self.source_observed_changed,
             "source_starts": list(self.source_starts),
+            "source_demanding": self.source_demanding,
+            "source_demand_ended": self.source_demand_ended,
             "demands": {
                 slug: {
                     "mode": demand.mode.value,
@@ -390,6 +396,8 @@ class State:
             source_observed=data.get("source_observed"),
             source_observed_changed=_optional_float(data.get("source_observed_changed")),
             source_starts=tuple(float(value) for value in data.get("source_starts", ())),
+            source_demanding=bool(data.get("source_demanding", False)),
+            source_demand_ended=_optional_float(data.get("source_demand_ended")),
             demands={
                 slug: DemandState(
                     Mode(value["mode"]),
@@ -581,6 +589,8 @@ class _Evaluation:
         # The timers holding objects as they are, by target and kind.
         self.holds: dict[tuple[str, HoldKind], Hold] = {}
         self.comfort: dict[str, ComfortTarget] = {}
+        # Each zone's aggregated temperature, None while it has no usable reading.
+        self.temperatures: dict[str, float | None] = {}
         # The zones whose demand an open window turns off now.
         self.windows_open: set[str] = set()
         # The zones that frost protection heats, which the demands stage finds.
@@ -758,14 +768,10 @@ class _Evaluation:
         ``step()`` never requests the source so, and releases a request that finds
         itself so; the runtime reports it, since equipment or a person did it.
         Which mode the flow carries is invariant 5's concern, not this one's. A
-        source-driven pump with guaranteed flow always has its separator.
+        separator or a heat exchanger gives a source-driven pump its flow, not
+        the source a sink, so only an open loop counts.
         """
         if self.plant.source is None or self.source_observed is not True:
-            return False
-        if any(
-            pump.driven_by_source and pump.min_flow is MinFlow.GUARANTEED
-            for pump in self.plant.pumps
-        ):
             return False
         return not any(
             self.may_pass(loop) and self.pump_may_run(self._pumps[loop.pump])
@@ -857,6 +863,8 @@ class _Evaluation:
             source_observed=self.source_observed,
             source_observed_changed=self.source_observed_changed,
             source_starts=self.source_starts,
+            source_demanding=plan.calling,
+            source_demand_ended=plan.demand_ended,
             demands=demand_states,
             guards=guards,
             overruns=plan.overruns,
@@ -907,6 +915,7 @@ class _Evaluation:
         for zone in self.plant.zones:
             values = zone_values(zone, obs.areas, obs.sensors, self.reached)
             temperature = None if values is None else aggregate(values, zone.aggregation)
+            self.temperatures[zone.slug] = temperature
             config = zone.thermostat
             thermostat = obs.thermostats.get(zone.slug)
             previous = self.state.demands.get(zone.slug)
@@ -1387,6 +1396,16 @@ class _Plan:
         source = plant.source
         self.surely_requested = source is not None and ev.surely_on(source.request)
         self.wanted = {loop for loop in plant.all_loops if self.is_wanted(loop)}
+        self.heat_sink: set[Loop] = set()
+        self.exercised: set[Loop] = set()
+        self.calling = any(self.calls_source(loop) for loop in self.wanted)
+        self.demand_ended = (
+            None
+            if self.calling
+            else ev.now
+            if ev.state.source_demanding
+            else ev.state.source_demand_ended
+        )
         self.heat_sink = self.heat_sink_loops()
         self.wanted |= self.heat_sink
         self.exercise()
@@ -1461,16 +1480,30 @@ class _Plan:
             and loop not in self.exercised
         )
 
+    def sink_until(self) -> float | None:
+        """Until when a heating request without demand is held, or None without a start.
+
+        That is its minimum on time, or ``Source.hold_after_demand`` after the
+        last call ended when that ends later.
+        """
+        ev, source = self.ev, self.plant.source
+        if source is None or ev.source_observed is not True or ev.source_observed_changed is None:
+            return None
+        until = ev.source_observed_changed + source.min_on
+        if source.hold_after_demand is not None and self.demand_ended is not None:
+            until = max(until, self.demand_ended + source.hold_after_demand)
+        return until
+
     def heat_sink_loops(self) -> set[Loop]:
         """The source's heat sink loops, while its request is held without demand.
 
         Once every calling loop is satisfied within the source's minimum on
-        time, the request is held until that time ends, and the loops that
-        happened to be open would be its only sink. The heat sink loops open
-        then, and the others close once a heat sink loop is ready, so the
-        source runs out its minimum time into the loops chosen to absorb it.
-        A heat sink loop never asks for heat itself, so the request is released
-        when the minimum on time ends.
+        time, or within its hold after demand, the request is held until that
+        time ends, and the loops that happened to be open would be its only
+        sink. The heat sink loops open then, and the others close once a heat
+        sink loop is ready, so the source runs into the loops chosen to absorb
+        it. A heat sink loop never asks for heat itself, so the request is
+        released when that time ends.
         """
         ev, source = self.ev, self.plant.source
         if (
@@ -1479,13 +1512,14 @@ class _Plan:
             or not self.active
             or self.mode is not Mode.HEAT
             or not ev.state.source_request
-            or ev.source_observed is not True
-            or ev.source_observed_changed is None
+            or (until := self.sink_until()) is None
             or ev.source_fault() is not None
             or any(loop.runs.kind is not RunKind.WITH_SOURCE for loop in self.wanted)
-            or ev.reached(ev.source_observed_changed + source.min_on)
+            or ev.reached(until)
         ):
             return set()
+        assert ev.source_observed_changed is not None
+        bounded = ev.reached(ev.source_observed_changed + source.min_on)
         sink: set[Loop] = set()
         for ref in source.heat_sink_loops:
             loop = self.plant.loop(ref)
@@ -1493,10 +1527,30 @@ class _Plan:
             missing = [entity for entity in self.needs(loop) if not ev.usable(entity)]
             if missing:
                 ev.reasons[key] = f"heat sink dropped: {', '.join(missing)} unarmed or unavailable"
+            elif bounded and (full := self.sink_full(loop, source.heat_sink_overshoot)):
+                ev.reasons[key] = f"heat sink full: {full}"
             elif not self.guard_blocked[loop]:
-                ev.reasons[key] = "heat sink for the source minimum on time"
+                ev.reasons[key] = "heat sink while the source is held"
                 sink.add(loop)
         return sink
+
+    def sink_full(self, loop: Loop, overshoot: float) -> str | None:
+        """Why a heat sink loop takes no more heat, or None while its zones have room.
+
+        A zone has room while it reads less than ``overshoot`` over its heating
+        target; one without a usable reading or a target of its own has none.
+        """
+        ev = self.ev
+        for zone in self.plant.dew_point_zones(loop):
+            temperature = ev.temperatures.get(zone.slug)
+            comfort = ev.comfort.get(zone.slug)
+            if temperature is None:
+                return f"{zone.slug} has no usable temperature"
+            if comfort is None:
+                return f"{zone.slug} has no heating target of its own"
+            if temperature >= comfort.target + overshoot:
+                return f"{zone.slug} reads {temperature:.1f} °C"
+        return None
 
     def zone_demands(self, slug: str) -> bool:
         demand = self.demands.get(slug)
@@ -1811,10 +1865,28 @@ class _Plan:
             changed = ev.source_observed_changed if ev.source_observed is True else ev.now
             if changed is None:
                 changed = ev.now
-            if qualifying and (
-                demanded or ev.held("source", HoldKind.MIN_ON, changed + source.min_on)
+            if qualifying and demanded:
+                reasons["source"] = "requested"
+                return True
+            if qualifying and ev.held("source", HoldKind.MIN_ON, changed + source.min_on):
+                reasons["source"] = "held for its minimum on time"
+                return True
+            if qualifying and source.hold_after_demand is not None and self.calling:
+                # A new call keeps a held request while its loops open.
+                reasons["source"] = "requested while the calling loops open"
+                return True
+            if (
+                qualifying
+                and self.heat_sink
+                and source.hold_after_demand is not None
+                and self.demand_ended is not None
+                and ev.held(
+                    "source",
+                    HoldKind.HOLD_AFTER_DEMAND,
+                    self.demand_ended + source.hold_after_demand,
+                )
             ):
-                reasons["source"] = "requested" if demanded else "held for its minimum on time"
+                reasons["source"] = "held after demand, into its heat sink"
                 return True
             reasons["source"] = "released"
             return False
@@ -1907,7 +1979,7 @@ class _Plan:
         carries only water that no source heats or cools.
         """
         ev, state = self.ev, self.ev.state
-        self.exercised: set[Loop] = set()
+        self.exercised = set()
         self.exercise_runs = False
         self.next_exercise: ExerciseState | None = None
         self.exercise_label = Mode.HEAT if self.label is Mode.OFF else self.label

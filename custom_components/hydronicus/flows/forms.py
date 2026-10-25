@@ -75,6 +75,8 @@ PLANT_FIELDS: Final = {
     "source.max_starts_per_hour": "cycling",
     "source.start_threshold": "cycling",
     "source.heat_sink_loops": "cycling",
+    "source.hold_after_demand": "cycling",
+    "source.heat_sink_overshoot": "cycling",
     "source.health_sensor": "cycling",
     "weather": "weather",
 }
@@ -405,6 +407,8 @@ def cycling_schema(
     }
     if loops:
         schema[optional("heat_sink_loops", values)] = choice(loops, multiple=True, listed_=True)
+        schema[optional("hold_after_demand", values)] = seconds()
+        schema[optional("heat_sink_overshoot", values)] = number(low=0, unit="K")
     return vol.Schema(schema)
 
 

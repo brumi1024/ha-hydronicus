@@ -214,6 +214,8 @@ _SOURCE_FILE_KEYS: Final = (
     "max_starts_per_hour",
     "start_threshold",
     "heat_sink_loops",
+    "hold_after_demand",
+    "heat_sink_overshoot",
     "health_sensor",
 )
 
@@ -290,6 +292,8 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
         )
         _put(source, "start_threshold", cycling.get("start_threshold"))
         _put(source, "heat_sink_loops", list(cycling.get("heat_sink_loops") or []))
+        _put(source, "hold_after_demand", cycling.get("hold_after_demand"))
+        _put(source, "heat_sink_overshoot", cycling.get("heat_sink_overshoot"))
         _put(source, "health_sensor", cycling.get("health_sensor"))
     result["source"] = source
     return result

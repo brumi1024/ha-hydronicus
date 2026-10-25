@@ -132,7 +132,7 @@ def test_a_request_found_on_without_an_open_path_is_reported_and_released() -> N
     assert not desired.source_without_path and desired.source_request
 
 
-def test_a_source_behind_a_separator_always_has_a_path() -> None:
+def test_a_separator_gives_flow_but_no_sink_so_a_closed_plant_is_still_reported() -> None:
     plant = _plant(
         RADIATOR.replace(
             "  pump: {switch: switch.pump, overrun: 120}",
@@ -145,4 +145,6 @@ def test_a_source_behind_a_separator_always_has_a_path() -> None:
     )
     stranded = observe(plant, on=["switch.boiler"], since={"switch.boiler": NOW - 100})
 
-    assert not run(plant, stranded, held)[1].source_without_path
+    _, desired, _ = run(plant, stranded, held)
+    assert desired.source_without_path
+    assert desired.outputs["switch.boiler"] == OFF

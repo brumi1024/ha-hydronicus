@@ -1481,6 +1481,8 @@ def cycling_document() -> dict[str, Any]:
             "max_starts_per_hour": 3,
             "start_threshold": 1.5,
             "heat_sink_loops": ["living_area.floor"],
+            "hold_after_demand": 14400,
+            "heat_sink_overshoot": 0.5,
         }
     )
     document["zones"]["living_area"]["loops"]["floor"]["weight"] = 2.5
@@ -1498,6 +1500,7 @@ def test_source_cycling_limits_roundtrip_through_yaml_and_sorted_storage() -> No
     assert source.max_starts_per_hour == 3
     assert source.start_threshold == 1.5
     assert source.heat_sink_loops == (LoopRef("living_area", "floor"),)
+    assert (source.hold_after_demand, source.heat_sink_overshoot) == (14400.0, 0.5)
     assert plant.loop(LoopRef("living_area", "floor")).weight == 2.5
     assert plant.loop(LoopRef("living_area", "ceiling")).weight == 1.0
     assert entity_paths(plant)["binary_sensor.heat_pump_healthy"] == "source.health_sensor"
@@ -1515,9 +1518,16 @@ def test_source_cycling_limits_are_off_unless_set() -> None:
     assert source.start_threshold is None
     assert source.heat_sink_loops == ()
     assert source.health_sensor is None
-    assert not {"max_starts_per_hour", "start_threshold", "heat_sink_loops", "health_sensor"} & set(
-        export_plant(parse_plant(reference_document()))["source"]
-    )
+    assert source.hold_after_demand is None
+    assert source.heat_sink_overshoot == 1.0
+    assert not {
+        "max_starts_per_hour",
+        "start_threshold",
+        "heat_sink_loops",
+        "hold_after_demand",
+        "heat_sink_overshoot",
+        "health_sensor",
+    } & set(export_plant(parse_plant(reference_document()))["source"])
 
 
 @pytest.mark.parametrize(
@@ -1532,6 +1542,8 @@ def test_source_cycling_limits_are_off_unless_set() -> None:
         ("source.heat_sink_loops.0", "attic.floor", "no loop"),
         ("source.heat_sink_loops.1", "living_area.floor", "listed twice"),
         ("source.heat_sink_loops.0", "towel_dryer", "already runs with the source"),
+        ("source.hold_after_demand", -1, "negative"),
+        ("source.heat_sink_overshoot", -0.5, "negative"),
         ("zones.living_area.loops.floor.weight", 0, "positive"),
         ("loops.towel_dryer.weight", float("inf"), "finite"),
     ],
@@ -1551,6 +1563,16 @@ def test_source_cycling_limits_reject_invalid_values(
         parse_plant(document)
     assert error.value.path == path
     assert message in str(error.value)
+
+
+def test_a_hold_after_demand_needs_heat_sink_loops() -> None:
+    document = cycling_document()
+    del document["source"]["heat_sink_loops"]
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == "source.hold_after_demand"
+    assert "heat_sink_loops" in str(error.value)
 
 
 def test_a_heat_sink_must_heat() -> None:

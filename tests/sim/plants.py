@@ -160,24 +160,28 @@ zones:
       floor: {valves: [switch.home_living_area_floor_heating_valve], pump: heating}
 """
 
-# The maintainer's house with its heat pump as the source: the heat pump heats
-# a plate heat exchanger that only the zones load, so it must never run without
-# an open zone, and its cycles are limited. The living area's floor absorbs a
-# run that outlasts every zone's demand.
-HEAT_PUMP_REQUEST: Final = "switch.home_heat_pump_heating"
-HEAT_PUMP_HEALTHY: Final = "binary_sensor.home_heat_pump_modbus_healthy"
+# The maintainer's house with its heat pump as the source, through the Modbus
+# bridge: the heat pump heats a plate heat exchanger that only the zones load,
+# so it must never run without an open zone, and every release restarts its
+# internal pump from standstill. The request is held after demand into every
+# heating loop while its zone has room, and released once none has.
+HEAT_PUMP_REQUEST: Final = "switch.midea_heat_pump_space_heating"
+HEAT_PUMP_HEALTHY: Final = "binary_sensor.midea_heat_pump_modbus_healthy"
 HOME_HEAT_PUMP: Final = """
 hydronicus: 2
 name: Home
 source:
-  request: switch.home_heat_pump_heating
+  request: switch.midea_heat_pump_space_heating
   post_run: 0
   min_on: 1500
   min_off: 720
   max_starts_per_hour: 3
-  heat_sink_loops: [living_area.floor]
-  health_sensor: binary_sensor.home_heat_pump_modbus_healthy
+  heat_sink_loops: [living_area.floor, living_area.ceiling, basement.ceiling, bedroom_area.ceiling]
+  hold_after_demand: 14400
+  heat_sink_overshoot: 0.5
+  health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
 pumps:
+  heat_pump: {driven_by: source, min_flow: guaranteed}
   heating: {switch: switch.home_underfloor_heating_pump, overrun: 240}
 zones:
   basement:
