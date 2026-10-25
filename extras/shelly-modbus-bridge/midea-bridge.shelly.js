@@ -462,8 +462,15 @@ function discovery(component, object, config) {
   MQTT.publish(CONFIG.discoveryPrefix + '/' + component + '/' + device.id + '_midea/' + object + '/config', JSON.stringify(config), 1, true);
 }
 
+// The water temperatures are Hydronicus's condensation reference and the ΔT of
+// its no-load guard, and it ages a reading by its last report. Home Assistant
+// reports an MQTT sensor only when its value changes unless force_update is
+// set, so without it a steady temperature would look stale and block cooling.
+var FRESH = ['tw_in', 'tw_out'];
+
 function sensor(object, name, unit, deviceClass) {
   var config = { name: name, state_topic: CONFIG.base + '/state', value_template: '{{ value_json.' + object + ' }}' };
+  if (FRESH.indexOf(object) >= 0) config.force_update = true;
   if (unit) config.unit_of_measurement = unit;
   if (deviceClass) {
     config.device_class = deviceClass;
