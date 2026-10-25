@@ -119,6 +119,7 @@ _SOURCE_KEYS: Final = (
     "dhw",
     "inhibit_sensor",
     "no_load",
+    "compressor_sensor",
 )
 _NO_LOAD_KEYS: Final = (
     "supply_temperature",
@@ -413,6 +414,11 @@ def _source(value: object, path: str) -> Source:
         ),
         no_load=(
             _no_load(source["no_load"], _join(path, "no_load")) if "no_load" in source else None
+        ),
+        compressor_sensor=(
+            _entity(source["compressor_sensor"], _join(path, "compressor_sensor"), _SENSOR_DOMAINS)
+            if "compressor_sensor" in source
+            else None
         ),
     )
 
@@ -1253,6 +1259,7 @@ def entity_paths(plant: Plant) -> dict[str, str]:
         if plant.source.mode is not None:
             bind(plant.source.mode.entity, "source.mode.entity")
         bind(plant.source.inhibit_sensor, "source.inhibit_sensor")
+        bind(plant.source.compressor_sensor, "source.compressor_sensor")
         if (guard := plant.source.no_load) is not None:
             bind(guard.supply_temperature, "source.no_load.supply_temperature")
             bind(guard.return_temperature, "source.no_load.return_temperature")
@@ -1487,6 +1494,8 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["write_interval"] = _export_number(source.write_interval)
     if source.inhibit_sensor is not None:
         document["inhibit_sensor"] = source.inhibit_sensor
+    if source.compressor_sensor is not None:
+        document["compressor_sensor"] = source.compressor_sensor
     if (guard := source.no_load) is not None:
         guard_defaults = NoLoadGuard("", "", "")
         document["no_load"] = {

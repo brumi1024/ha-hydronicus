@@ -392,6 +392,9 @@ class Source:
     # once and stays off, while the zones go on circulating. No fault, no Repair.
     inhibit_sensor: str | None = None
     no_load: NoLoadGuard | None = None
+    # A numeric sensor that reads above zero while the compressor runs, such as
+    # its frequency, for the compressor's starts and cycle length diagnostics.
+    compressor_sensor: str | None = None
 
     @property
     def title(self) -> str:

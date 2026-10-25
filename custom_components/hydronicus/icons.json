@@ -85,6 +85,12 @@
       },
       "loop_runtime": {
         "default": "mdi:timer-outline"
+      },
+      "compressor_starts": {
+        "default": "mdi:counter"
+      },
+      "compressor_cycle": {
+        "default": "mdi:timer-sync-outline"
       }
     },
     "switch": {

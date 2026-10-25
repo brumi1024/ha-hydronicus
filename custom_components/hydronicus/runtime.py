@@ -68,6 +68,7 @@ from .areas import (
     resolve_area_sensors,
     zone_area_problems,
 )
+from .compressor import CompressorHistory
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.comfort import Setbacks, next_period_target
 from .core.dhw import DhwCommand, DhwState
@@ -193,6 +194,7 @@ class PlantRuntime:
         self.schedule_weeks: dict[str, Mapping[str, Any] | None] = {}
         self.areas = AreaResolution()
         self.flow = FlowHistory()
+        self.compressor = CompressorHistory()
         self.learning = LearningCoordinator(hass, entry.entry_id)
         self.forecast = (
             WeatherForecast(hass, plant.weather, self.request_evaluation)
@@ -253,6 +255,7 @@ class PlantRuntime:
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
             self.unusable = UnusableInputs.from_dict(data.get("unusable_inputs", {}))
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
+            self.compressor = CompressorHistory.from_dict(data.get("compressor", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
             self.setbacks = {
                 zone: Setbacks(float(values["heat"]), float(values["cool"]))
@@ -267,6 +270,7 @@ class PlantRuntime:
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
             self.unusable, self.flow = UnusableInputs(), FlowHistory()
+            self.compressor = CompressorHistory()
             self.setbacks = {}
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
@@ -635,6 +639,10 @@ class PlantRuntime:
             else (frozenset(), frozenset())
         )
         self.flow.update(now, loops, zones)
+        if plant.source is not None and plant.source.compressor_sensor is not None:
+            frequency = observations.sensors.get(plant.source.compressor_sensor)
+            value = None if frequency is None else frequency.value
+            self.compressor.observe(now, None if value is None else value > 0)
         self._sample_learning(plant, observations, desired, fingerprints, zones, now)
         self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
         if self.previous.stopping is not None and not state.live:
@@ -981,6 +989,8 @@ class PlantRuntime:
             kinds[guard.supply_temperature] = SensorKind.WATER
             kinds[guard.return_temperature] = SensorKind.WATER
             kinds[guard.compressor_sensor] = SensorKind.LEVEL
+        if plant.source is not None and plant.source.compressor_sensor is not None:
+            kinds[plant.source.compressor_sensor] = SensorKind.LEVEL
         for loop in plant.all_loops:
             if loop.surface_temperature is not None:
                 kinds[loop.surface_temperature] = SensorKind.AIR
@@ -1164,6 +1174,7 @@ class PlantRuntime:
             "outputs": self.memory.to_dict(),
             "unusable_inputs": self.unusable.to_dict(),
             "flow": self.flow.to_dict(),
+            "compressor": self.compressor.to_dict(),
             "mode": self.requested_mode.value,
             "setbacks": {
                 zone: {"heat": values.heat, "cool": values.cool}

@@ -49,7 +49,15 @@ ENTITY_KEYS = {
         "source_fault",
     },
     "select": {"mode"},
-    "sensor": {"status", "combined_temperature", "dew_point", "duty_cycle", "loop_runtime"},
+    "sensor": {
+        "status",
+        "combined_temperature",
+        "dew_point",
+        "duty_cycle",
+        "loop_runtime",
+        "compressor_starts",
+        "compressor_cycle",
+    },
     "switch": {"control", "dhw"},
 }
 

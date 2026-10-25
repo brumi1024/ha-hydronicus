@@ -185,3 +185,27 @@ async def test_a_source_that_keeps_running_without_a_load_raises_a_repair(
     await advance(3600)
     assert hass.states.get("switch.boiler").state == "off", "the buffer keeps the source off"
     assert hass.states.get("switch.valve").state == "on", "while the zone still circulates"
+
+
+async def test_the_compressor_diagnostics_count_starts_and_cycles(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    text = NO_LOAD.replace(
+        "  inhibit_sensor: input_boolean.fireplace_heating\n",
+        "  compressor_sensor: sensor.compressor_frequency\n",
+    )
+    hass.states.async_set("sensor.compressor_frequency", "0", {"unit_of_measurement": "Hz"})
+    entry = await async_import(hass, text)
+    plant_id = entry.runtime_data.plant.id
+    starts = entity_id_of(hass, "sensor", f"{plant_id}_compressor_starts")
+    cycle = entity_id_of(hass, "sensor", f"{plant_id}_compressor_cycle")
+    assert hass.states.get(starts).state == "0"
+    assert hass.states.get(cycle).state == "unknown"
+
+    for _ in range(2):
+        hass.states.async_set("sensor.compressor_frequency", "40", {"unit_of_measurement": "Hz"})
+        await async_advance(hass, freezer, 600, step=60)
+        hass.states.async_set("sensor.compressor_frequency", "0", {"unit_of_measurement": "Hz"})
+        await async_advance(hass, freezer, 300, step=60)
+    assert hass.states.get(starts).state == "2"
+    assert float(hass.states.get(cycle).state) == 10.0

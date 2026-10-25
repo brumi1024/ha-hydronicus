@@ -27,6 +27,7 @@ from .entity import (
     loop_unique_id,
     plant_device,
     plant_unique_id,
+    source_device,
 )
 from .flow_history import HOUR
 from .runtime import PlantRuntime
@@ -266,6 +267,48 @@ class LoopRuntimeSensor(HydronicusEntity, SensorEntity):
         return {"basis": "Loop flow inferred from equipment feedback while control is live"}
 
 
+class CompressorStartsSensor(HydronicusEntity, SensorEntity):
+    """How often the source's compressor started within the last hour."""
+
+    _attr_translation_key = "compressor_starts"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "compressor_starts"),
+            source_device(runtime),
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self.runtime.compressor.starts_within_hour(dt_util.utcnow().timestamp())
+
+
+class CompressorCycleSensor(HydronicusEntity, SensorEntity):
+    """The mean length of the source compressor's runs that ended within the last day."""
+
+    _attr_translation_key = "compressor_cycle"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_suggested_display_precision = 0
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "compressor_cycle"),
+            source_device(runtime),
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        seconds = self.runtime.compressor.mean_run(dt_util.utcnow().timestamp())
+        return None if seconds is None else round(seconds / 60, 1)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: HydronicusConfigEntry,
@@ -283,4 +326,9 @@ async def async_setup_entry(
     entities.extend(
         (loop.zone, LoopRuntimeSensor(runtime, loop)) for loop in runtime.plant.all_loops
     )
+    source = runtime.plant.source
+    if source is not None and source.compressor_sensor is not None:
+        entities.extend(
+            [(None, CompressorStartsSensor(runtime)), (None, CompressorCycleSensor(runtime))]
+        )
     async_add_plant_entities(runtime, "sensor", async_add_entities, entities)

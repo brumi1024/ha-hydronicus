@@ -760,6 +760,12 @@
       },
       "loop_runtime": {
         "name": "{loop} runtime"
+      },
+      "compressor_starts": {
+        "name": "Compressor starts"
+      },
+      "compressor_cycle": {
+        "name": "Compressor cycle"
       }
     },
     "switch": {

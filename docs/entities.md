@@ -186,6 +186,8 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | **Fault** binary sensor | `binary_sensor.<source>_fault` | Only with a `health_sensor`: on while that sensor does not read healthy, so the source is kept off. |
 | **DHW** switch | `switch.<source>_dhw` | Only with a `dhw` switch: the DHW on or off that Hydronicus owns. Turning it on or off sends the source's DHW switch; a change on the source's own controller is adopted and shows here. |
 | **DHW target** number | `number.<source>_dhw_target` | Only with a `dhw` setpoint: the owned DHW target within its limits. Its `boost` and `boost_until` attributes show a boost from the `hydronicus.boost_dhw` action, which `hydronicus.end_dhw_boost` ends early. |
+| **Compressor starts** sensor | `sensor.<source>_compressor_starts` | Only with a `compressor_sensor`: how often the compressor started within the last hour. Diagnostic. |
+| **Compressor cycle** sensor | `sensor.<source>_compressor_cycle` | Only with a `compressor_sensor`: the mean length, in minutes, of the compressor's runs that ended within the last day. Diagnostic. |
 
 Its `observed` attribute is the request switch's own state, and its `reason` says why, such as `held for its minimum on time` or `waiting for the source mode`.
 Its `running`, `running_basis`, and `running_sensor` attributes describe source operation separately from the request.
