@@ -155,11 +155,16 @@ def plants(draw: st.DrawFn) -> Plant:
             for loop in all_loops
             if Mode.HEAT in loop.modes and loop.runs.kind is not RunKind.WITH_SOURCE
         ]
+        heat_sinks = tuple(draw(st.lists(st.sampled_from(sinks), unique=True))) if sinks else ()
         source = replace(
             source,
-            heat_sink_loops=tuple(draw(st.lists(st.sampled_from(sinks), unique=True)))
-            if sinks
-            else (),
+            heat_sink_loops=heat_sinks,
+            # A hold after demand and a handover need heat sinks to take the heat.
+            hold_after_demand=draw(st.sampled_from([None, 600.0, 3600.0])) if heat_sinks else None,
+            heat_sink_overshoot=draw(st.sampled_from([0.5, 1.0])),
+            handover_sensor=(
+                draw(st.none() | st.just("binary_sensor.source_handover")) if heat_sinks else None
+            ),
         )
     pumps = tuple(
         _pump(draw, index, driven[index], supplies[index], all_loops) for index in range(pump_count)
@@ -225,6 +230,8 @@ def _sources() -> st.SearchStrategy[Source]:
         max_starts_per_hour=st.sampled_from([None, 1, 3]),
         start_threshold=st.sampled_from([None, 1.0, 2.0]),
         health_sensor=st.none() | st.just("binary_sensor.source_healthy"),
+        inhibit_sensor=st.none() | st.just("binary_sensor.source_inhibit"),
+        write_interval=st.sampled_from([None, 300.0]),
     )
 
 

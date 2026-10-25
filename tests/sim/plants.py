@@ -201,6 +201,7 @@ source:
     supply_temperature: sensor.midea_heat_pump_water_outlet
     return_temperature: sensor.midea_heat_pump_water_inlet
     compressor_sensor: sensor.midea_heat_pump_compressor_frequency
+  compressor_sensor: sensor.midea_heat_pump_compressor_frequency
   supply:
     entity: number.midea_heat_pump_zone_1_water_setpoint
     modes: [cool]
