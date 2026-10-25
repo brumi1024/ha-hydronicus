@@ -4,7 +4,195 @@ Status: in progress on branch `midea-source` as of 2026-10-23; not released or i
 Done: the read-only register scan (`extras/shelly-modbus-bridge/modbus-scan.shelly.js`), and the source's `max_starts_per_hour`, `heat_sink_loops`, `start_threshold`, `health_sensor`, and loop `weight`.
 Also done: the source fault's Repair and **Fault** binary sensor, and the **Cycling protection** form section and loop **Weight** field.
 On 2026-10-25 the Phase 2 bridge runs on the owner's Pro 3EM with writes off, on the Mosquitto broker of home, and Home Assistant discovered its 21 entities, which match the wired controller.
-Next: a heartbeat automation in ha-config, then writes on; the E8 log waits, as the owner asked on 2026-10-23.
+Since 2026-10-25 the bridge runs with writes on, and the heartbeat automation in ha-config keeps it from handing over.
+Next: [the control plan](#the-control-plan-of-2026-10-25) below; the E8 log waits, as the owner asked on 2026-10-23.
+
+## The control plan of 2026-10-25
+
+This section is the plan for teaching Hydronicus to run the heat pump through the bridge.
+It records what is built on this branch, what the owner decides, and what the owner measures before the Plant on home changes.
+Hydronicus stays generic: everything below binds the bridge's entities as ordinary entities, and nothing in the integration speaks MQTT or Modbus.
+
+### Decisions for the owner
+
+1. The control strategy: hold the request after demand into bounded heat sinks, as recommended below, or release it per call.
+2. The request backend: the bridge's `switch.midea_heat_pump_space_heating`, recommended, or a dry contact through a Pro 4PM or Pro 2PM channel and an interposing relay.
+3. Whether to switch the weather curve off, for a fixed cooling setpoint and later for Hydronicus's own heating supply control; until then T1S stays controller-owned.
+4. Whether the E8 event log is built now; it stays deferred, as decided on 2026-10-23.
+5. Whether to add a secondary supply sensor before cooling goes live, recommended, and whether ceiling surface sensors are worth it, not recommended yet.
+
+### Measurements the owner takes first
+
+- Whether the internal pump keeps running while the compressor rests on its curve: watch `binary_sensor.midea_heat_pump_internal_pump` while `sensor.midea_heat_pump_compressor_frequency` drops to 0 with space heating on.
+  The recommended strategy depends on it, see below.
+- Whether the controller accepts a zone 1 setpoint while it cools with the weather curve on: set the mode to cool on a warm day and write 20 °C to `number.midea_heat_pump_zone_1_water_setpoint`, then read `sensor.midea_heat_pump_last_write`.
+- The Y-strainer, the air vent, and the internal pump on the primary side.
+  E8 is a water flow failure that the flow switch reports when the internal pump starts and no flow follows; after a restart from standstill it points at a strainer that is clogging, air, or a pump that is slow to start, which a service visit fixes and no control strategy does.
+  Fewer restarts lower the exposure; they do not remove the cause.
+
+### 1. The control strategy
+
+Every release of the space heating request stops the compressor and both pumps, and the next start restarts the internal pump from standstill, the moment E8 struck on 2026-10-24.
+The heat pump heats a plate heat exchanger with no bypass, so it must also never run while no loop carries the secondary water away.
+Three strategies were compared on the same simulated house:
+
+- **a. Request per call:** Hydronicus switches space heating with the zones' demand, protected by `min_on`, `min_off`, and `max_starts_per_hour`, with the floor as the heat sink for the rest of the minimum run.
+- **b. Always on:** space heating stays on and the heat pump heats on its own curve; Hydronicus only keeps a heat sink open whenever no zone calls, and switches heating off only for long idle periods.
+- **c. Hybrid, recommended:** the request starts with demand as in a, and once demand ends it is held for up to `hold_after_demand` into the heat sink loops, each of which takes heat only while its zone is less than `heat_sink_overshoot` over its heating target.
+  When no heat sink has room, or the hold ends, the request is released.
+
+The simulator in `tests/sim/heat_pump.py` models the house's rooms, the four loops' emitters, the secondary water, the plate heat exchanger, and the heat pump: its internal pump, its compressor modulating between 5 and 12 kW to hold its curve, a stop 2 K over the curve and a start 2 K under it, and the measured 3 minute restart delay.
+Its numbers are sized for the house but are assumptions, so the table compares strategies with each other and predicts no absolute energy use.
+`uv run python -m tests.sim.heat_pump_strategies` prints it; each row is two days after a six-hour warm-up with a daily outdoor swing of 3 K, and digital thermostats at their defaults.
+
+| Strategy | Outdoor °C | Requests/day | Pump starts/day | Compressor starts/day | Mean run, min | Heating into closed valves, min/day | Overheat, K h/day | Warmest room, °C |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| today: no source | -3 | 0.0 | 0.0 | 21.5 | 53 | 10 | 0.0 | 21.2 |
+| a: request per call | -3 | 10.0 | 10.0 | 17.0 | 68 | 0 | 0.0 | 21.2 |
+| a: rest 30 min, 2 starts/h | -3 | 9.0 | 9.0 | 17.0 | 68 | 0 | 0.0 | 21.2 |
+| b: always on, floor sink | -3 | 0.0 | 0.0 | 16.5 | 77 | 0 | 0.0 | 21.2 |
+| c: hold 4 h, floor, +0.5 K | -3 | 0.0 | 0.0 | 16.5 | 77 | 0 | 0.0 | 21.2 |
+| c: hold 4 h, all loops, +0.5 K | -3 | 4.0 | 4.0 | 9.0 | 126 | 0 | 0.1 | 21.6 |
+| today: no source | 7 | 0.0 | 0.0 | 49.5 | 17 | 25 | 0.0 | 21.2 |
+| a: request per call | 7 | 13.5 | 13.5 | 44.5 | 19 | 0 | 0.0 | 21.2 |
+| a: rest 30 min, 2 starts/h | 7 | 11.0 | 11.0 | 34.5 | 24 | 0 | 0.0 | 21.2 |
+| b: always on, floor sink | 7 | 1.0 | 1.0 | 63.0 | 18 | 0 | 19.1 | 23.4 |
+| c: hold 4 h, floor, +0.5 K | 7 | 4.5 | 4.5 | 49.5 | 21 | 0 | 0.2 | 21.6 |
+| c: hold 4 h, all loops, +0.5 K | 7 | 5.5 | 5.5 | 24.5 | 32 | 0 | 0.3 | 21.6 |
+| today: no source | 12 | 0.0 | 0.0 | 64.0 | 9 | 29 | 0.0 | 21.3 |
+| a: request per call | 12 | 12.5 | 12.5 | 45.5 | 12 | 0 | 0.0 | 21.3 |
+| a: rest 30 min, 2 starts/h | 12 | 10.5 | 10.5 | 49.0 | 11 | 0 | 0.0 | 21.2 |
+| b: always on, floor sink | 12 | 0.0 | 0.0 | 101.0 | 8 | 0 | 53.4 | 24.5 |
+| c: hold 4 h, floor, +0.5 K | 12 | 7.5 | 7.5 | 57.0 | 11 | 0 | 0.7 | 21.8 |
+| c: hold 4 h, all loops, +0.5 K | 12 | 4.5 | 4.5 | 31.5 | 16 | 0 | 0.4 | 21.6 |
+
+Pump starts count the internal pump starting from standstill, the E8 exposure; requests count the space heating request turning on; overheat sums the kelvin-hours each room spends more than 0.5 K over its target.
+What the table shows:
+
+- Today, without a source, the heat pump heats into closed valves for 10 to 29 minutes a day whenever every zone is satisfied, and short cycles most in mild weather, the pattern this work exists to end.
+- Request per call ends that, but restarts the internal pump 10 to 14 times a day; a longer rest and fewer starts per hour barely help, because the zones call again soon after they are satisfied.
+- Always on restarts the pump almost never, but a floor that takes the heat pump's minimum output for hours overheats the living area by 2.4 to 3.2 K, and with every loop open the comfort rests entirely on the curve.
+- The hybrid with every heating loop as a heat sink and a 0.5 K overshoot restarts the pump 4 to 5.5 times a day in every weather, about 60 percent fewer than request per call, halves the compressor's starts against today, and keeps every room within 0.6 K of its target.
+  The floor alone as the sink restarts less in deep cold but more in mild weather, which is most of the season, and short cycles the compressor as much as today.
+  A longer hold changes nothing, since the sinks fill within the hour; a larger overshoot buys a start a day for over 4 K h of overheat.
+
+If the internal pump stops whenever the compressor rests on its curve, every compressor start is a pump start, and the hybrid cuts requests but not pump starts:
+
+| Strategy | Outdoor °C | Requests/day | Pump starts/day | Compressor starts/day |
+| --- | --- | --- | --- | --- |
+| a, pump stops in thermo-off | 7 | 8.5 | 16.5 | 16.5 |
+| c floor, pump stops in thermo-off | 7 | 1.5 | 14.5 | 14.5 |
+
+So the first measurement decides it: with a pump that runs through the compressor's rests, the hybrid is clearly better; with one that stops, the E8 exposure is the heat pump's own cycling, which longer compressor runs, that is fewer open loops and a lower curve, reduce, and the strategy matters less than the service visit.
+
+Recommendation: the hybrid, with these defaults for the house:
+
+```yaml
+source:
+  request: switch.midea_heat_pump_space_heating
+  post_run: 0
+  min_on: 1500
+  min_off: 720
+  max_starts_per_hour: 3
+  heat_sink_loops: [living_area.floor, living_area.ceiling, basement.ceiling, bedroom_area.ceiling]
+  hold_after_demand: 14400
+  heat_sink_overshoot: 0.5
+  health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
+  handover_sensor: binary_sensor.midea_heat_pump_handover_to_controller
+  write_interval: 300
+```
+
+`min_off` stays above the bridge's 5 minute write limit, so turning heating back on is never refused, and `min_on` keeps each run long enough for the defrost and the oil return the compressor needs.
+The heat sink loops are listed in the order the owner prefers them; all of them take heat while their zones have room.
+
+### 2. Binding the source to the bridge
+
+The source binds `switch.midea_heat_pump_space_heating` as its request.
+The dry contact through a Pro 4PM or Pro 2PM channel and an interposing relay remains possible and needs no change in Hydronicus, since it is also a switch, but it loses the bridge's read-back and its refusal reasons, and the wired controller's own on and off would then fight the contact; the bridge's switch is recommended.
+
+- `health_sensor` is `binary_sensor.midea_heat_pump_modbus_healthy`: a lost Shelly, broker, or Modbus link releases the request at once and keeps it off.
+  An E8 or E0 does not: the link stays healthy, and switching heating off and on during an E8 would only restart the pump again, so the request stays and the heat pump's own retry runs; `binary_sensor.midea_heat_pump_alarm` shows the fault.
+- The internal circulator joins the Plant as a source-driven pump with guaranteed flow and no loops: the plate heat exchanger gives it flow whatever the valves do.
+  A source-driven pump with guaranteed flow normally means a separator that also absorbs the heat; one without loops does not, so the request found on with no open path is still reported for it.
+  Its running sensor, `binary_sensor.midea_heat_pump_internal_pump`, is bound only once the owner has measured that it stays on through the compressor's rests, since a running sensor that drops would release the request.
+- The new `handover_sensor` reads on while something else controls the source: Hydronicus then sends the source nothing, treats it as possibly running, and keeps its heat sink loops open while it may heat; see section 4.
+
+`HOME_HEAT_PUMP` in `tests/sim/plants.py` is that Plant with the simulator's entity names, and the scenarios in `tests/sim/test_home_heat_pump.py` run it.
+
+### 3. DHW and setpoints
+
+The source gets an optional `dhw` section: a switch, a setpoint number, its hard limits, and a boost.
+Each setting has one owner by the decision of 2026-10-23: Hydronicus owns the DHW switch and T5S, and a change on the wired controller is reported and adopted as Hydronicus's own value, never written back.
+
+- Hydronicus publishes a **DHW** switch and a **DHW target** number, whose values are the owned ones; the owner changes them there or on the wired controller.
+- An owned target outside `minimum` and `maximum`, 40 and 55 °C here, is clamped and logged, including a value adopted from the wired controller, since a hard limit protects the tank and the heat pump.
+- A boost, through the `hydronicus.boost_dhw` action with a temperature and a duration, raises T5S within the limits for at most `boost.max_duration` and then restores the owned target.
+  The boost's end and the target to restore are persisted with the Plant's state, so a restart restores it at the right time and a lost link restores it once the setpoint is available again.
+  A change on the wired controller during a boost ends the boost without restoring, since the owner has just chosen a value.
+  A PV surplus automation calls the action when surplus starts and lets the duration bound it.
+- While the handover sensor reads on, the controller owns every setting and Hydronicus sends none; the values it changed are adopted when the handover ends.
+- T1S, the zone 1 setpoint, stays controller-owned while the weather curve is on, because the controller refuses it; Hydronicus binds it only for cooling, see section 6.
+
+### 4. Tolerating the bridge
+
+The bridge refuses a write within 5 minutes of the same setting's last write, unless it turns heating or DHW off, and shows a refusal or an ignored value only in `sensor.midea_heat_pump_last_write`.
+
+- The source's new `write_interval` keeps Hydronicus from writing a source output, the DHW outputs included, sooner than that after its last write to it, except a switch turning off.
+  The reconciler then retries such an output no faster than the interval, so three refusals take 10 minutes, not 70 seconds, before the output's Repair.
+- A write that is still not taken after those attempts becomes a status: the reconciler stops sending it, keeps the **Output not responding** Repair, and sends again only when the target changes or the output's state does.
+  A switch turning off is never given up.
+- A supply setpoint that changes only within its tolerance or within the write interval is held at its observed value; cooling's safety does not depend on that write, since the request is released while the observed setpoint is below what the dew point needs.
+- While the handover sensor reads on, the bridge refuses everything, so Hydronicus sends the source nothing and raises no Repair for it.
+  In heating the wired controller switches zone 1 on: Hydronicus treats the source as possibly running and keeps its heat sink loops open while the request shows on or unknown.
+  In cooling it switches zone 1 off, and Hydronicus closes the cooling loops as it would after any release.
+  When the heartbeat returns and the sensor reads off, Hydronicus takes over from the observed state, as after a restart.
+
+### 5. Diagnostics
+
+The source gets an optional `compressor_sensor`, a numeric sensor that reads above zero while the compressor runs, here `sensor.midea_heat_pump_compressor_frequency`.
+Hydronicus then publishes **Compressor starts**, the starts within the last hour, and **Compressor cycle**, the mean length of the runs that ended within the last 24 hours, counted from that sensor's history like the loops' runtime.
+The E8 and E0 event log, with the time, the activity before, the time since the last DHW run, the time since the internal pump last started, Tw_in, Tw_out, and the compressor frequency, is proposed as a diagnostics entry that keeps the last 20 faults; it is not built until the owner asks.
+
+### 6. Cooling
+
+The ceilings of the basement, the living area, and the bedroom area cool; the living area's floor stays heat only.
+Floor cooling would add little capacity next to the ceilings, has no surface sensor for its 20 °C surface minimum, and puts any condensation where people walk.
+
+- `select.midea_heat_pump_mode` is the source's mode select, heat `Heat` and cool `Cool`.
+- `number.midea_heat_pump_zone_1_water_setpoint` is the source's supply setpoint, for cooling only through the new `supply.modes: [cool]`, with `cool_temperature: 18`, `minimum: 16`, and `maximum: 22`.
+  Hydronicus proposes a cooling setpoint only once the mode select shows cool, since the bridge accepts 16 to 22 °C only then.
+  With the weather curve on, the controller may refuse it; that is the owner's measurement above, and the write becomes a status, not a retry loop.
+- `sensor.midea_heat_pump_water_outlet`, Tw_out, is the switched heating pump's `supply_temperature`, the condensation reference of every ceiling loop.
+
+What Tw_out does not cover, plainly:
+
+- It reads the primary loop, the heat pump's leaving water before the plate heat exchanger; the secondary supply that reaches the ceilings is a little warmer, by the exchanger's approach and the pipes' gains, so the guard errs on the safe side.
+- It is meaningful only while the internal pump runs; while it rests, Tw_out reads standing water that warms toward the plant room, while no cooling reaches the secondary either, so it overstates the supply temperature exactly when nothing is cooled.
+- It is no surface temperature: it says nothing about a ceiling panel that a cold supply has cooled below the dew point locally, which the 2 K margin and the release band cover only as margins.
+
+Recommendation: add one secondary supply sensor, a clip-on probe on the flow pipe after the heating pump through a Shelly add-on, before cooling goes live; it reads the water that reaches the ceilings, whenever the heating pump runs, independent of the heat pump's pump.
+It replaces Tw_out as the pump's `supply_temperature`.
+Ceiling surface sensors are not worth it while the supply stays 3.5 K or more above the worst-case dew point, which the supply control already enforces; reconsider them if the ceilings ever run closer.
+Each zone's areas name their humidity sensors, which stay required for cooling: a zone without a usable humidity reading blocks its ceiling's cooling.
+
+Defaults for the house: `mode_dwell: 7200`, so a change between heating and cooling waits two hours after the old mode's flow; each zone's `max_humidity: 65`, five points under the default, since ceilings condense first; and the guard's fixed 2 K margin and 1 K release above the worst-case dew point.
+The simulated summer day in `tests/sim/test_home_heat_pump_cooling.py` covers a humid afternoon that raises the cooling setpoint and then blocks a ceiling, Tw_out going stale, the bridge's handover while cooling, and a change of mode.
+
+### 7. Exercise, Dry run, and the simulator
+
+The exercise never requests the source and keeps its own heat sink rules; Dry run proposes the DHW outputs like every other output and never sends them.
+The simulator's world now models the heat pump's own pump, its restart delay, and an E8 after a pump start from standstill, through `HeatPumpHouse` in `tests/sim/heat_pump.py`.
+
+### Build order on this branch
+
+1. `hold_after_demand` and `heat_sink_overshoot`, with the strategy comparison: done.
+2. The source-driven pump without loops, the handover sensor, and the Home Plant with the bridge's bindings.
+3. `write_interval` and the reconciler's giving up on a write that is not taken.
+4. Cooling: `supply.modes`, the wait for the mode select, and the summer day.
+5. DHW: switch, target, limits, adoption, and the boost with its restore.
+6. The compressor diagnostics.
+
+Deploying a Hydronicus version and editing the Plant on home are the owner's steps; nothing on this branch arms an output or changes the live Plant.
 
 ## Owner decisions
 
