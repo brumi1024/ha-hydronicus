@@ -178,10 +178,11 @@ Each setting has one owner by the decision of 2026-10-23: Hydronicus owns the DH
 
 The bridge refuses a write within 5 minutes of the same setting's last write, unless it turns heating or DHW off, and shows a refusal or an ignored value only in `sensor.midea_heat_pump_last_write`.
 
-- The source's new `write_interval` keeps Hydronicus from writing a source output, the DHW outputs included, sooner than that after its last write to it, except a switch turning off.
+- The source's new `write_interval` keeps Hydronicus from writing a source output, the DHW outputs included, sooner than that after its last write to it, except the request or the DHW switch turning off, which the bridge also exempts; the weather curve turning off is held like any setting, since the bridge limits it too.
   The reconciler then retries such an output no faster than the interval, so three refusals take 10 minutes, not 70 seconds, before the output's Repair.
 - A write that is still not taken after those attempts becomes a status: the reconciler keeps the output's Repair and sends it again only after an hour, or as soon as the target or the output's state changes.
-  A switch turning off is never held.
+  The request or the DHW switch turning off is never held.
+- The curve is switched off, and its read-back awaited, before the first cooling setpoint, since the controller refuses a setpoint while the curve is on; a change of mode keeps the dwell of two hours, so the curve is never written twice within the bridge's 5 minutes in normal use, and a refused curve write is retried at the interval like the other settings.
 - A supply setpoint that changes only within its tolerance or within the write interval is held at its observed value; cooling's safety does not depend on that write, since the request is released while the observed setpoint is below what the dew point needs.
 - While the handover sensor reads on, the bridge refuses everything, so Hydronicus sends the source nothing and raises no Repair for it.
   In heating the wired controller switches zone 1 on: Hydronicus treats the source as possibly running and keeps its heat sink loops open while the request shows on or unknown.
