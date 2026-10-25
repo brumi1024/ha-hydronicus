@@ -226,9 +226,13 @@ Configure this only when Hydronicus owns the supply setpoint; do not let another
 | `heat_cold` | no | `45` | Supply target at or below `outdoor_cold`. |
 | `heat_warm` | no | `25` | Supply target at or above `outdoor_warm`; must not exceed `heat_cold`. |
 | `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
+| `modes` | no | `[heat, cool]` | The modes in which Hydronicus owns the setpoint, such as `[cool]` for a heat pump whose own weather curve keeps the heating setpoint. In another mode Hydronicus sends the number nothing and does not wait for it. |
+| `step` | no | | The setpoint's resolution, such as `1` for a heat pump that takes whole degrees. A cooling target is rounded up to it, so it stays above the dew point margin, and a heating target to the nearest step within `minimum` and `maximum`. |
+
+With a mode select, a target is proposed only once the select shows the mode, since a heat pump's setpoint range often follows its mode.
 
 The curve is linear between its two endpoints and stays at an endpoint outside their outdoor range.
-Every configured fixed or curve supply temperature must lie within `minimum` and `maximum`.
+Every configured fixed or curve supply temperature of the setpoint's `modes` must lie within `minimum` and `maximum`.
 A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
 A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
 See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).

@@ -164,15 +164,23 @@ zones:
 # bridge: the heat pump heats a plate heat exchanger that only the zones load,
 # so it must never run without an open zone, and every release restarts its
 # internal pump from standstill. The request is held after demand into every
-# heating loop while its zone has room, and released once none has.
+# heating loop while its zone has room, and released once none has. The
+# ceilings cool, with the heat pump's leaving water as their condensation
+# reference and the zone 1 setpoint as the cooling supply target; the floor
+# heats only.
 HEAT_PUMP_REQUEST: Final = "switch.midea_heat_pump_space_heating"
 HEAT_PUMP_HEALTHY: Final = "binary_sensor.midea_heat_pump_modbus_healthy"
 HEAT_PUMP_HANDOVER: Final = "binary_sensor.midea_heat_pump_handover_to_controller"
+HEAT_PUMP_MODE: Final = "select.midea_heat_pump_mode"
+HEAT_PUMP_SETPOINT: Final = "number.midea_heat_pump_zone_1_water_setpoint"
+HEAT_PUMP_WATER_OUTLET: Final = "sensor.midea_heat_pump_water_outlet"
 HOME_HEAT_PUMP: Final = """
 hydronicus: 2
 name: Home
+mode_dwell: 7200
 source:
   request: switch.midea_heat_pump_space_heating
+  mode: {entity: select.midea_heat_pump_mode, heat: Heat, cool: Cool}
   post_run: 0
   min_on: 1500
   min_off: 720
@@ -183,31 +191,50 @@ source:
   health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
   handover_sensor: binary_sensor.midea_heat_pump_handover_to_controller
   write_interval: 300
+  supply:
+    entity: number.midea_heat_pump_zone_1_water_setpoint
+    modes: [cool]
+    cool_temperature: 18
+    minimum: 16
+    maximum: 22
+    step: 1
 pumps:
   heat_pump: {driven_by: source, min_flow: guaranteed}
-  heating: {switch: switch.home_underfloor_heating_pump, overrun: 240}
+  heating:
+    switch: switch.home_underfloor_heating_pump
+    overrun: 240
+    supply_temperature: sensor.midea_heat_pump_water_outlet
 zones:
   basement:
     temperature: [sensor.basement_temperature]
+    humidity: [sensor.basement_humidity]
+    max_humidity: 65
     thermostat: {digital: {min_on: 0, min_off: 0}}
     loops:
       ceiling:
         valves: [{entity: switch.home_basement_ceiling_heating_valve, opening_time: 15}]
         pump: heating
+        modes: [heat, cool]
   bedroom_area:
     temperature: [sensor.bedroom_area_temperature]
+    humidity: [sensor.bedroom_area_humidity]
+    max_humidity: 65
     thermostat: {digital: {min_on: 0, min_off: 0}}
     loops:
       ceiling:
         valves: [{entity: switch.home_bedroom_area_ceiling_heating_valve, opening_time: 15}]
         pump: heating
+        modes: [heat, cool]
   living_area:
     temperature: [sensor.living_area_temperature]
+    humidity: [sensor.living_area_humidity]
+    max_humidity: 65
     thermostat: {digital: {min_on: 0, min_off: 0}}
     loops:
       ceiling:
         valves: [{entity: switch.home_living_area_ceiling_heating_valve, opening_time: 15}]
         pump: heating
+        modes: [heat, cool]
       floor:
         valves: [{entity: switch.home_living_area_floor_heating_valve, opening_time: 15}]
         pump: heating

@@ -128,6 +128,8 @@ _SUPPLY_KEYS: Final = (
     "heat_cold",
     "heat_warm",
     "max_age",
+    "modes",
+    "step",
 )
 _SCHEDULE_KEYS: Final = (
     "entity",
@@ -413,8 +415,16 @@ def _supply(value: object, path: str) -> SupplyControl:
             positive=key in ("tolerance", "max_age"),
         )
         for key in _SUPPLY_KEYS
-        if key not in ("entity", "outdoor_sensor")
+        if key not in ("entity", "outdoor_sensor", "modes", "step")
     }
+    modes = (
+        _modes(document["modes"], _join(path, "modes")) if "modes" in document else defaults.modes
+    )
+    step = (
+        _number(document["step"], _join(path, "step"), positive=True)
+        if "step" in document
+        else None
+    )
     if settings["minimum"] >= settings["maximum"]:
         raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
     if settings["outdoor_cold"] >= settings["outdoor_warm"]:
@@ -427,7 +437,11 @@ def _supply(value: object, path: str) -> SupplyControl:
             _join(path, "heat_warm"),
             "The warm-weather heating target must not exceed the cold-weather target.",
         )
-    for key in ("heat_temperature", "cool_temperature", "heat_cold", "heat_warm"):
+    checked = [
+        *(("heat_temperature", "heat_cold", "heat_warm") if Mode.HEAT in modes else ()),
+        *(("cool_temperature",) if Mode.COOL in modes else ()),
+    ]
+    for key in checked:
         _within(settings[key], _join(path, key), low=settings["minimum"], high=settings["maximum"])
     _within(
         settings["tolerance"],
@@ -439,7 +453,7 @@ def _supply(value: object, path: str) -> SupplyControl:
         if "outdoor_sensor" in document
         else None
     )
-    return SupplyControl(entity=entity, outdoor_sensor=outdoor, **settings)
+    return SupplyControl(entity=entity, outdoor_sensor=outdoor, modes=modes, step=step, **settings)
 
 
 def _schedule(value: object, path: str) -> Schedule:
@@ -1513,10 +1527,14 @@ def _export_configuration(
     document: dict[str, Any] = {"entity": value.entity}
     for key in keys:
         setting = getattr(value, key)
-        if setting != getattr(defaults, key):
-            document[key] = (
-                _export_number(setting) if isinstance(setting, (float, int)) else setting
-            )
+        if setting == getattr(defaults, key):
+            continue
+        if isinstance(setting, frozenset):
+            document[key] = [str(mode) for mode in _LOOP_MODES if mode in setting]
+        elif isinstance(setting, (float, int)):
+            document[key] = _export_number(setting)
+        else:
+            document[key] = setting
     return document
 
 

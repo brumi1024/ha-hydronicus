@@ -273,6 +273,12 @@ class SupplyControl:
     heat_cold: float = 45.0
     heat_warm: float = 25.0
     max_age: float = DEFAULT_MAX_AGE
+    # The modes the setpoint is Hydronicus's in; in another, the source's own
+    # controller keeps it, such as a heat pump on its weather curve.
+    modes: frozenset[Mode] = frozenset({Mode.HEAT, Mode.COOL})
+    # The setpoint's resolution, such as 1 for whole degrees: a cooling target is
+    # rounded up, so it stays above the dew point, and a heating target to nearest.
+    step: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

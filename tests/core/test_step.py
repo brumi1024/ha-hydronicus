@@ -1709,6 +1709,65 @@ def test_cooling_supply_target_protects_full_confirmation_band_above_dew_point()
     assert "exceeds" in desired.reasons["source"]
 
 
+def test_a_cooling_only_setpoint_waits_for_the_mode_rounds_up_and_leaves_heating_alone() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        HEAT_PUMP.replace(
+            "request: switch.hp",
+            "request: switch.hp\n  supply: {entity: number.supply, modes: [cool], "
+            "cool_temperature: 18, minimum: 16, maximum: 22, step: 1}",
+        )
+    )
+    cooling = observe(
+        plant,
+        mode=Mode.COOL,
+        temperatures={"a": 26.0},
+        sensors={"sensor.a_rh": Reading(55, NOW), "sensor.supply": Reading(25, NOW)},
+        on=["switch.a_ceiling"],
+        option="Heat",
+    )
+    cooling = replace(cooling, outputs={**cooling.outputs, "number.supply": NumericState(34, NOW)})
+    desired = run(plant, cooling)[1]
+    assert "number.supply" not in desired.outputs
+    assert desired.reasons["source_supply"] == "waiting for the source mode"
+
+    switched = replace(cooling, outputs={**cooling.outputs, "select.hp": OptionState("Cool", NOW)})
+    desired = run(plant, switched)[1]
+    # 55 % at 26 °C is a dew point of 16.4 °C; 16.4 + 2 + 1 + 0.5 rounds up to 20.
+    assert desired.outputs["number.supply"] == NumericTarget(20.0, 0.5)
+
+    heating = observe(
+        plant,
+        temperatures={"c": 19.0},
+        on=["switch.c_floor", "switch.floor_pump", "switch.a_ceiling"],
+    )
+    heating = replace(heating, outputs={**heating.outputs, "number.supply": NumericState(34, NOW)})
+    desired = run(plant, heating)[1]
+    assert "number.supply" not in desired.outputs
+    assert desired.reasons["source_supply"] == "kept by the source's own controller in heat"
+    assert desired.source_request, "heating does not wait for a setpoint it does not own"
+
+
+def test_a_heating_setpoint_rounds_to_its_nearest_step_within_its_limits() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        RADIATOR.replace(
+            "request: switch.boiler,",
+            "request: switch.boiler, supply: {entity: number.supply, heat_temperature: 34.6, "
+            "maximum: 34.8, heat_cold: 34.8, step: 1},",
+        )
+    )
+    observed = observe(plant, temperatures={"room": 19.0}, on=["switch.valve", "switch.pump"])
+    observed = replace(
+        observed, outputs={**observed.outputs, "number.supply": NumericState(30, NOW)}
+    )
+    assert run(plant, observed)[1].outputs["number.supply"] == NumericTarget(34.8, 0.5)
+
+
 def test_running_heating_source_keeps_running_during_safe_curve_adjustment() -> None:
     from custom_components.hydronicus.core.model import NumericTarget
     from custom_components.hydronicus.core.step import NumericState

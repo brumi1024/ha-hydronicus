@@ -1613,3 +1613,49 @@ def test_a_heat_sink_path_reads_in_words() -> None:
     assert (
         describe_path(cycling_document(), "source.heat_sink_loops.0") == "Source, heat sink loop 1"
     )
+
+
+def test_a_cooling_only_supply_with_a_step_roundtrips_and_skips_the_heating_limits() -> None:
+    document = reference_document()
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "modes": ["cool"],
+        "cool_temperature": 19,
+        "minimum": 16,
+        "maximum": 22,
+        "step": 1,
+    }
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.supply.modes == frozenset({Mode.COOL})
+    assert plant.source.supply.step == 1.0
+    assert export_plant(plant)["source"]["supply"] == document["source"]["supply"]
+    assert read_plant_file(write_plant_file(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "path", "message"),
+    [
+        ("modes", [], "source.supply.modes", "at least one mode"),
+        ("modes", ["off"], "source.supply.modes.0", "heat"),
+        ("step", 0, "source.supply.step", "positive"),
+        ("modes", ["heat", "cool"], "source.supply.heat_temperature", "at most 22"),
+    ],
+)
+def test_a_supply_rejects_invalid_modes_and_steps(
+    key: str, value: object, path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "modes": ["cool"],
+        "minimum": 16,
+        "maximum": 22,
+        key: value,
+    }
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)

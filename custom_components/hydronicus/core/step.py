@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from math import isfinite
+from math import ceil, isfinite
 from typing import Any, Final
 
 from .comfort import ComfortTarget, ScheduleState, Setbacks, comfort_target
@@ -1751,6 +1751,16 @@ class _Plan:
         if source is None or source.supply is None or self.mode is Mode.OFF:
             return None
         config = source.supply
+        if self.mode not in config.modes:
+            ev.reasons["source_supply"] = f"kept by the source's own controller in {self.mode}"
+            return None
+        if source.mode is not None and not satisfies(
+            ev.obs.outputs.get(source.mode.entity),
+            OptionTarget(source.mode.option(self.mode) or ""),
+        ):
+            # Its range may follow the mode, so the setpoint waits for the select.
+            ev.reasons["source_supply"] = "waiting for the source mode"
+            return None
         proposal = supply_target(config, self.mode, ev.obs.sensors, ev.now)
         if self.mode is Mode.HEAT and config.outdoor_sensor is not None:
             reading = ev.obs.sensors.get(config.outdoor_sensor)
@@ -1796,9 +1806,14 @@ class _Plan:
             # whole band above the condensation threshold and release margin.
             floor = max((point for point in points if point is not None), default=-273.15)
             value = max(value, floor + CONDENSATION_MARGIN + GUARD_RELEASE + config.tolerance)
-            if value > config.maximum:
-                ev.reasons["source_supply"] = "safe cooling supply temperature exceeds its maximum"
-                return None
+        if config.step is not None:
+            steps = value / config.step
+            value = config.step * (ceil(steps - 1e-9) if self.mode is Mode.COOL else round(steps))
+            if self.mode is Mode.HEAT:
+                value = min(config.maximum, max(config.minimum, value))
+        if self.mode is Mode.COOL and value > config.maximum:
+            ev.reasons["source_supply"] = "safe cooling supply temperature exceeds its maximum"
+            return None
         ev.reasons["source_supply"] = f"supply target {value:.1f} °C"
         return NumericTarget(value, config.tolerance)
 
@@ -1833,7 +1848,7 @@ class _Plan:
         ):
             reasons["source"] = "source or pump did not confirm running or flow"
             return False
-        if source.supply is not None:
+        if source.supply is not None and self.mode in source.supply.modes:
             entity = source.supply.entity
             if self.supply_target is None:
                 reasons["source"] = reasons.get("source_supply", "no supply temperature proposal")
