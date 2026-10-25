@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 
 import pytest
 
@@ -19,6 +20,7 @@ from custom_components.hydronicus.core.reconcile import (
     BACKOFF_MAX,
     CALL_TIMEOUT,
     REPAIR_AFTER,
+    STATUS_RETRY,
     TRAVEL_GRACE,
     Action,
     Attempt,
@@ -308,3 +310,68 @@ def test_numeric_confirmation_persistence_and_dependency_order(plant: Plant) -> 
     assert not dry.send
     assert dry.state.dry_run["number.supply"] == NumericState(35, NOW)
     assert ReconcileState.from_dict(dry.state.to_dict()) == dry.state
+
+
+# A source behind a bridge that refuses a write within five minutes of the last.
+INTERVAL = 300.0
+
+
+@pytest.fixture
+def limited(plant: Plant) -> Plant:
+    assert plant.source is not None
+    return replace(plant, source=replace(plant.source, write_interval=INTERVAL))
+
+
+def test_a_write_limited_output_waits_its_interval_after_the_last_send(limited: Plant) -> None:
+    first = _run(limited, {"select.hp": OptionTarget("Cool")}, _observed())
+    assert [action.entity for action in first.send] == ["select.hp"]
+    assert first.state.last_sent == {"select.hp": NOW}
+
+    taken = _observed(option="Cool")
+    changed = _run(limited, {"select.hp": OptionTarget("Heat")}, taken, first.state, NOW + 60)
+    assert changed.send == (), "a new target waits for the interval"
+    assert changed.retry_at == NOW + INTERVAL + TICK
+    later = _run(limited, {"select.hp": OptionTarget("Heat")}, taken, changed.state, NOW + INTERVAL)
+    assert [action.entity for action in later.send] == ["select.hp"]
+
+
+def test_a_write_limited_switch_turns_off_at_once(limited: Plant) -> None:
+    on = _run(limited, {"switch.hp": ON}, _observed())
+    off = _run(limited, {"switch.hp": OFF}, _observed(on=["switch.hp"]), on.state, NOW + 30)
+    assert [action.target for action in off.send] == [OFF]
+    again = _run(limited, {"switch.hp": ON}, _observed(), off.state, NOW + 60)
+    assert again.send == (), "turning it on again keeps the interval"
+
+
+def test_a_refused_write_is_retried_at_the_interval_then_becomes_a_status(limited: Plant) -> None:
+    target = {"select.hp": OptionTarget("Cool")}
+    refused = _observed()
+    state, now, sends = ReconcileState(), NOW, []
+    for _ in range(REPAIR_AFTER + 2):
+        result = _run(limited, target, refused, state, now)
+        sends.extend(now for _ in result.send)
+        state, now = result.state, now + INTERVAL
+    assert sends == [NOW + count * INTERVAL for count in range(REPAIR_AFTER)]
+    assert result.repairs == {"select.hp"}
+    last = NOW + (REPAIR_AFTER - 1) * INTERVAL
+    assert result.retry_at == last + STATUS_RETRY + TICK, "then only once an hour"
+    hourly = _run(limited, target, refused, state, last + STATUS_RETRY)
+    assert [action.entity for action in hourly.send] == ["select.hp"]
+
+    changed = {**refused, "select.hp": OptionState("Heat", now)}
+    resumed = _run(limited, target, changed, state, now)
+    assert [action.entity for action in resumed.send] == ["select.hp"]
+
+
+def test_an_output_without_a_write_interval_keeps_the_usual_backoff(plant: Plant) -> None:
+    first = _run(plant, {"select.hp": OptionTarget("Cool")}, _observed())
+    again = _run(
+        plant, {"select.hp": OptionTarget("Cool")}, _observed(), first.state, NOW + backoff(1)
+    )
+    assert [action.entity for action in again.send] == ["select.hp"]
+    assert again.state.last_sent == {}
+
+
+def test_the_last_send_survives_persistence(limited: Plant) -> None:
+    first = _run(limited, {"select.hp": OptionTarget("Cool")}, _observed())
+    assert ReconcileState.from_dict(first.state.to_dict()) == first.state

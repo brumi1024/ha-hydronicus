@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from custom_components.hydronicus.core.model import Mode, Plant
+from custom_components.hydronicus.core.reconcile import STATUS_RETRY
 from custom_components.hydronicus.core.step import START_WINDOW
 from tests.sim.harness import Sim
 from tests.sim.plants import (
@@ -24,6 +25,7 @@ from tests.sim.plants import (
     LIVING_CEILING,
     plant,
 )
+from tests.sim.world import FaultKind
 
 REACTION = 15.0
 OPENING = 15.0
@@ -36,6 +38,7 @@ WARM = 21.5
 ROOM = 21.2
 COLD = 19.5
 HOLD = 14400.0
+WRITE_INTERVAL = 300.0
 VALVES = (BASEMENT_CEILING, BEDROOM_CEILING, LIVING_CEILING, FLOOR_VALVE)
 
 
@@ -269,7 +272,9 @@ def test_the_heat_pump_rests_for_its_minimum_off_time() -> None:
 def _short_cycles() -> Plant:
     home = plant(HOME_HEAT_PUMP)
     assert home.source is not None
-    return replace(home, source=replace(home.source, min_on=120.0, min_off=120.0))
+    return replace(
+        home, source=replace(home.source, min_on=120.0, min_off=120.0, write_interval=None)
+    )
 
 
 def _cycle(sim: Sim) -> float:
@@ -403,3 +408,31 @@ def test_a_call_during_a_handover_runs_its_loop_and_hydronicus_takes_over_from_t
         "the heat pump the controller started goes on for the calling zone without a stop",
     )
     assert sim.desired.reasons["source"] == "requested"
+
+
+def test_a_write_the_bridge_ignores_is_retried_at_its_interval_then_hourly() -> None:
+    sim = _house()
+    sim.fault(HEAT_PUMP_REQUEST, FaultKind.TIMEOUT, 1800.0)
+    sim.set_zone_temperature("basement", COLD)
+    sim.run_until_true(
+        lambda: bool(sim.calls_to(HEAT_PUMP_REQUEST)),
+        OPENING + 3 * REACTION,
+        "the heat pump is asked for heat once the basement's loop runs",
+    )
+    first = sim.calls_to(HEAT_PUMP_REQUEST)[0].t
+
+    sim.run_until(first + 2 * WRITE_INTERVAL - REACTION)
+    assert len(sim.calls_to(HEAT_PUMP_REQUEST)) == 2, "retried no faster than the bridge allows"
+    assert HEAT_PUMP_REQUEST not in sim.repairs(), "a refusal within the interval raises nothing"
+    sim.run_until(first + 2 * WRITE_INTERVAL + REACTION)
+    assert HEAT_PUMP_REQUEST in sim.repairs(), "three writes not taken raise the Repair"
+
+    sim.run_until(first + 2 * WRITE_INTERVAL + STATUS_RETRY - REACTION)
+    assert len(sim.calls_to(HEAT_PUMP_REQUEST)) == 3, "then the Repair is the status"
+    sim.run_until_true(
+        lambda: sim.is_on(HEAT_PUMP_REQUEST),
+        2 * REACTION,
+        "the hourly retry starts the heat pump once the bridge takes writes again",
+    )
+    sim.run_for(REACTION)
+    assert HEAT_PUMP_REQUEST not in sim.repairs()

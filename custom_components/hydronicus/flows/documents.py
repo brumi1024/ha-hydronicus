@@ -221,6 +221,10 @@ _SOURCE_FILE_KEYS: Final = (
 )
 
 
+# Source settings no form shows, which every form keeps as they are.
+_SOURCE_KEPT_KEYS: Final = ("write_interval",)
+
+
 def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Document:
     """Return the document with the Plant's name, timing, and source from the form.
 
@@ -297,6 +301,7 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
         _put(source, "heat_sink_overshoot", cycling.get("heat_sink_overshoot"))
         _put(source, "health_sensor", cycling.get("health_sensor"))
         _put(source, "handover_sensor", cycling.get("handover_sensor"))
+    source.update({key: deepcopy(old[key]) for key in _SOURCE_KEPT_KEYS if key in old})
     result["source"] = source
     return result
 
@@ -326,6 +331,7 @@ def with_mode(document: Mapping[str, Any], entity: str, heat: str, cool: str) ->
             "supply",
             "feedback_timeout",
             *_SOURCE_FILE_KEYS,
+            *_SOURCE_KEPT_KEYS,
         )
         if key in source
     }

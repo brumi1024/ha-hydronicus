@@ -311,10 +311,29 @@ class Source:
     # such as a bridge that handed it to its own controller: Hydronicus then
     # sends the source nothing and keeps a heat sink open while it may heat.
     handover_sensor: str | None = None
+    # The fewest seconds between two writes to one of the source's outputs, for
+    # a bridge that refuses faster ones; a switch turning off is never held.
+    write_interval: float | None = None
 
     @property
     def title(self) -> str:
         return self.name or DEFAULT_SOURCE_TITLE
+
+    def write_limited(self, entity: str) -> bool:
+        """Whether writes to one of the source's outputs keep ``write_interval``."""
+        return self.write_interval is not None and entity in self.outputs()
+
+    def outputs(self) -> tuple[str, ...]:
+        """The source's own outputs: its request, mode select, and supply setpoint."""
+        return tuple(
+            entity
+            for entity in (
+                self.request,
+                None if self.mode is None else self.mode.entity,
+                None if self.supply is None else self.supply.entity,
+            )
+            if entity is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)

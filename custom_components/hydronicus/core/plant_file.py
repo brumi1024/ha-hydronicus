@@ -113,6 +113,7 @@ _SOURCE_KEYS: Final = (
     "start_threshold",
     "health_sensor",
     "handover_sensor",
+    "write_interval",
 )
 _SUPPLY_KEYS: Final = (
     "entity",
@@ -382,6 +383,11 @@ def _source(value: object, path: str) -> Source:
         ),
         health_sensor=_contact(source, "health_sensor", path),
         handover_sensor=_contact(source, "handover_sensor", path),
+        write_interval=(
+            _number(source["write_interval"], _join(path, "write_interval"), positive=True)
+            if "write_interval" in source
+            else None
+        ),
     )
 
 
@@ -1227,6 +1233,7 @@ _KEY_WORDS: Final = {
     "start_threshold": "start threshold",
     "health_sensor": "health sensor",
     "handover_sensor": "handover sensor",
+    "write_interval": "write interval",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
@@ -1358,6 +1365,8 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["health_sensor"] = source.health_sensor
     if source.handover_sensor is not None:
         document["handover_sensor"] = source.handover_sensor
+    if source.write_interval is not None:
+        document["write_interval"] = _export_number(source.write_interval)
     if source.max_starts_per_hour is not None:
         document["max_starts_per_hour"] = source.max_starts_per_hour
     if source.start_threshold is not None:

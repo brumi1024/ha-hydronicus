@@ -1484,6 +1484,7 @@ def cycling_document() -> dict[str, Any]:
             "hold_after_demand": 14400,
             "heat_sink_overshoot": 0.5,
             "handover_sensor": "binary_sensor.heat_pump_handover",
+            "write_interval": 300,
         }
     )
     document["zones"]["living_area"]["loops"]["floor"]["weight"] = 2.5
@@ -1503,6 +1504,8 @@ def test_source_cycling_limits_roundtrip_through_yaml_and_sorted_storage() -> No
     assert source.heat_sink_loops == (LoopRef("living_area", "floor"),)
     assert (source.hold_after_demand, source.heat_sink_overshoot) == (14400.0, 0.5)
     assert entity_paths(plant)["binary_sensor.heat_pump_handover"] == "source.handover_sensor"
+    assert source.write_interval == 300.0
+    assert source.write_limited(source.request) and not source.write_limited("switch.other")
     assert plant.loop(LoopRef("living_area", "floor")).weight == 2.5
     assert plant.loop(LoopRef("living_area", "ceiling")).weight == 1.0
     assert entity_paths(plant)["binary_sensor.heat_pump_healthy"] == "source.health_sensor"
@@ -1530,6 +1533,7 @@ def test_source_cycling_limits_are_off_unless_set() -> None:
         "heat_sink_overshoot",
         "health_sensor",
         "handover_sensor",
+        "write_interval",
     } & set(export_plant(parse_plant(reference_document()))["source"])
 
 
@@ -1542,6 +1546,7 @@ def test_source_cycling_limits_are_off_unless_set() -> None:
         ("source.start_threshold", 0, "positive"),
         ("source.health_sensor", "switch.heat_pump_healthy", "binary_sensor"),
         ("source.handover_sensor", "sensor.heat_pump_handover", "binary_sensor"),
+        ("source.write_interval", 0, "positive"),
         ("source.heat_sink_loops", "living_area.floor", "list"),
         ("source.heat_sink_loops.0", "attic.floor", "no loop"),
         ("source.heat_sink_loops.1", "living_area.floor", "listed twice"),

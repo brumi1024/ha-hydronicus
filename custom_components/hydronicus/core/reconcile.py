@@ -18,6 +18,14 @@ is still unmet is sent again after a backoff that doubles from ``BACKOFF_MIN``
 to ``BACKOFF_MAX``, and an output is reported for a Repair once
 ``REPAIR_AFTER`` attempts have failed.
 
+An output of a source with a ``write_interval``, such as one behind a bridge
+that refuses faster writes, is sent nothing sooner than that after its last
+send, except a switch turning off, and is retried no faster. Once
+``REPAIR_AFTER`` attempts have not been taken, the Repair is its status and it
+is sent again only after ``STATUS_RETRY``, or as soon as its target or its
+observed state changes, since a retry loop against a bridge that refuses would
+change nothing.
+
 A valve entity that reports it is opening or closing toward its target is on
 its way there, so it is not sent the target again while it moves. It is
 reported for a Repair once it has moved for its opening time and
@@ -30,6 +38,7 @@ states, so the virtual sequence advances exactly as it would live.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Final
@@ -61,6 +70,7 @@ __all__ = [
     "BACKOFF_MIN",
     "CALL_TIMEOUT",
     "REPAIR_AFTER",
+    "STATUS_RETRY",
     "TRAVEL_GRACE",
     "Action",
     "Attempt",
@@ -76,6 +86,8 @@ __all__ = [
 BACKOFF_MIN: Final = 10.0
 BACKOFF_MAX: Final = 300.0
 REPAIR_AFTER: Final = 3
+# Seconds before a write-limited output that was not taken is sent again unchanged.
+STATUS_RETRY: Final = 3600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +117,8 @@ class ReconcileState:
     attempts: Mapping[str, Attempt] = field(default_factory=dict)
     # Dry run: the proposed state of each output, which counts as observed.
     dry_run: Mapping[str, OutputState] = field(default_factory=dict)
+    # When each write-limited output was last sent anything, within its interval.
+    last_sent: Mapping[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -118,6 +132,7 @@ class ReconcileState:
                 for entity, attempt in self.attempts.items()
             },
             "dry_run": {entity: _output_to_dict(state) for entity, state in self.dry_run.items()},
+            "last_sent": dict(self.last_sent),
         }
 
     @classmethod
@@ -136,6 +151,7 @@ class ReconcileState:
                 entity: _output_from_dict(value)
                 for entity, value in data.get("dry_run", {}).items()
             },
+            last_sent={entity: float(value) for entity, value in data.get("last_sent", {}).items()},
         )
 
 
@@ -174,6 +190,9 @@ def reconcile(
     if not live:
         return _dry_run(roles, desired, outputs, state, now, armed)
     travel = {valve.entity: valve.opening_time for loop in plant.all_loops for valve in loop.valves}
+    source = plant.source
+    interval = 0.0 if source is None or source.write_interval is None else source.write_interval
+    last_sent = {entity: sent for entity, sent in state.last_sent.items() if now < sent + interval}
     attempts: dict[str, Attempt] = {}
     send: list[tuple[int, Action]] = []
     retries: list[float] = []
@@ -214,16 +233,35 @@ def reconcile(
                 attempts[entity] = attempt
             retries.append(arrival + TICK)
             continue
-        if attempt is not None and now < attempt.sent_at + backoff(attempt.count):
-            attempts[entity] = attempt
-            retries.append(attempt.sent_at + backoff(attempt.count) + TICK)
+        limited = (
+            source is not None
+            and source.write_limited(entity)
+            and not (isinstance(target, SwitchTarget) and not target.on)
+        )
+        ready_at = -math.inf if attempt is None else attempt.sent_at + backoff(attempt.count)
+        if (
+            limited
+            and attempt is not None
+            and failed >= REPAIR_AFTER
+            and observed.since <= attempt.sent_at
+        ):
+            # Not taken: a status until the target or the output changes, or for an hour.
+            ready_at = attempt.sent_at + STATUS_RETRY
+        if limited and entity in last_sent:
+            ready_at = max(ready_at, last_sent[entity] + interval)
+        if now < ready_at:
+            if attempt is not None:
+                attempts[entity] = attempt
+            retries.append(ready_at + TICK)
             continue
         attempts[entity] = Attempt(target, failed + 1, now)
+        if interval and source is not None and source.write_limited(entity):
+            last_sent[entity] = now
         retries.append(now + CALL_TIMEOUT + TICK)
         send.append((_phase(role, target), Action(entity, target)))
     send.sort(key=lambda item: item[0])
     return Reconciled(
-        state=ReconcileState(attempts=attempts),
+        state=ReconcileState(attempts=attempts, last_sent=last_sent),
         send=tuple(action for _, action in send),
         retry_at=min(retries) if retries else None,
         repairs=frozenset(repairs),

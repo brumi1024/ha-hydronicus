@@ -182,6 +182,7 @@ source:
   heat_sink_overshoot: 0.5
   health_sensor: binary_sensor.midea_heat_pump_modbus_healthy
   handover_sensor: binary_sensor.midea_heat_pump_handover_to_controller
+  write_interval: 300
 pumps:
   heat_pump: {driven_by: source, min_flow: guaranteed}
   heating: {switch: switch.home_underfloor_heating_pump, overrun: 240}
