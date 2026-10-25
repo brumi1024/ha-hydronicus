@@ -942,9 +942,16 @@ class _Evaluation:
             last_mode=plan.label,
             flowing=flowing,
             flow_ended=flow_ended,
-            # During a handover the request Hydronicus holds on to is the one it
-            # finds, so it takes over from there.
-            source_request=self.source_observed is True if self.handover else plan.request,
+            # While Hydronicus sends the request nothing, during a handover or
+            # while it is unarmed, the request it holds on to is the one it
+            # finds, so arming or a handback takes over from there without a stop.
+            source_request=(
+                self.source_observed is True
+                if self.handover or not self.usable(plant.source.request)
+                else plan.request
+            )
+            if plant.source is not None
+            else plan.request,
             source_changed=source_changed,
             source_observed=self.source_observed,
             source_observed_changed=self.source_observed_changed,

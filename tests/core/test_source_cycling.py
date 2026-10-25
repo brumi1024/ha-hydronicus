@@ -182,3 +182,23 @@ def test_a_handover_sends_the_source_nothing_and_opens_its_heat_sink() -> None:
     _, desired, _ = run(plant, back, state)
     assert not desired.source_handover
     assert desired.outputs["switch.boiler"] == OFF, "no zone needs the source it took back"
+
+
+def test_arming_a_request_found_running_takes_it_over_without_a_stop() -> None:
+    plant = _plant(RADIATOR)
+    unarmed = set(plant.outputs()) - {"switch.boiler"}
+    found = {"switch.boiler": NOW - 3600}
+    running = [*RUNNING, "switch.boiler"]
+
+    state, _, _ = run(
+        plant, observe(plant, temperatures=COLD, on=running, since=found, armed=unarmed)
+    )
+    assert state.source_request, "Hydronicus takes over from the request it finds"
+
+    _, desired, _ = run(plant, observe(plant, temperatures=COLD, on=running, since=found), state)
+    assert desired.outputs["switch.boiler"] == ON
+    assert desired.reasons["source"] == "requested"
+
+    warm = observe(plant, temperatures={"room": 23.0}, on=running, since=found)
+    _, desired, _ = run(plant, warm, state)
+    assert desired.outputs["switch.boiler"] == OFF, "a request found without demand is released"
