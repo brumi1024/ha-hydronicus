@@ -188,12 +188,25 @@ Hydronicus reaches it only through generic Home Assistant entities, whichever in
 | `name` | no | `Heat source` | The source's name, which names its device. |
 | `request` | yes | | The `switch` that asks the source for heat or cooling. |
 | `mode` | no | | The `select` that switches the source between heating and cooling, as a mapping of `entity`, the select, `heat`, its option for heating, and `cool`, its option for cooling, such as `{entity: select.heat_pump_mode, heat: Heat, cool: Cool}`. The two options must differ. |
+| `mode_switches` | no | | Switches of the source that follow the mode, each with the modes it is on in, such as `{switch.heat_pump_weather_curve: [heat]}` for a weather curve that heating uses and cooling does not. Each is off in the other mode and left as it is while the Plant is off. Hydronicus sets them with the mode select, and the supply setpoint and the request wait until they show the mode's state. They keep the source's `write_interval`. |
 | `post_run` | no | `180` | How long the source keeps its own pumps running after the request ends. Hydronicus keeps their loops open for that long. |
 | `min_on` | no | `600` | The shortest time the request stays on, measured from observed activation. |
 | `min_off` | no | `600` | The shortest time the request stays off, measured from observed shutdown. |
 | `running_sensor` | no | | A `binary_sensor` that reports whether the source actually runs, independently of its request switch. |
 | `feedback_timeout` | no | `300` | Positive seconds allowed after an observed source request for source running feedback and source-driven pump running or flow feedback to confirm operation. Missing or unknown feedback blocks startup. |
 | `supply` | no | | Optional [supply temperature control](#supply-temperature-control). |
+| `dhw` | no | | Optional [domestic hot water](#domestic-hot-water) settings that Hydronicus owns. |
+| `inhibit_sensor` | no | | A `binary_sensor` or `input_boolean` that reads on while another source supplies the zones, such as a fireplace's buffer that its own valve selects. While it reads on, the request is released at once, whatever `min_on` says, and stays off, with no fault and no Repair; the calling zones still open their loops and run their switched pumps. Unknown or unavailable counts as off. |
+| `no_load` | no | | Optional [no-load guard](#no-load-guard). |
+| `compressor_sensor` | no | | A `sensor` that reads above zero while the compressor runs, such as its frequency. Hydronicus then publishes the compressor's **Compressor starts** within the last hour and its mean **Compressor cycle**. |
+| `max_starts_per_hour` | no | no limit | The most times the request may be observed turning on within any hour, a whole number. A start beyond it waits until the oldest start is an hour old. |
+| `start_threshold` | no | none | The total `weight` of calling loops needed before the request starts. Loops below it still open and circulate; a running request is never cut short by it. |
+| `heat_sink_loops` | no | | Heating loops, such as `[living_area.floor]`, that Hydronicus opens when every calling loop is satisfied while the request is held for its `min_on` or its `hold_after_demand`. The source then runs into them, and the other loops close once one of them is ready. A heat sink loop never asks for heat itself. |
+| `hold_after_demand` | no | none | Seconds the heating request stays on into the `heat_sink_loops` after the last calling loop is satisfied, such as `14400`, for a heat pump whose every stop restarts its own pumps. A new call during the hold needs no new start. It needs `heat_sink_loops`. |
+| `heat_sink_overshoot` | no | `1` | Beyond `min_on`, a heat sink loop takes heat only while each zone it serves reads less than this many kelvin over its heating target; a zone with no usable reading or no digital thermostat has no room. The request is released once no heat sink has room. |
+| `health_sensor` | no | | A `binary_sensor` that reads on while the source and its link are healthy, such as a Modbus bridge's health. While it reads off, unknown, or unavailable, the request is released at once, whatever `min_on` says, and stays off; the calling zones still circulate. |
+| `handover_sensor` | no | | A `binary_sensor` that reads on while something else controls the source, such as a Modbus bridge that handed the heat pump to its wired controller. While it reads on, Hydronicus sends the request, the mode select, and the supply setpoint nothing, so a bridge that refuses them raises no Repair, and in heating it keeps every `heat_sink_loops` loop open while the request shows on or unknown, however warm its zone. When it reads off again, Hydronicus takes over from the request as it finds it. It needs `heat_sink_loops`. |
+| `write_interval` | no | none | The fewest seconds between two writes to one of the source's outputs, its request, mode select, mode switches, supply setpoint, and DHW outputs, for a bridge that refuses faster ones, such as `300`. The request or the DHW switch turning off is never held, since that stops equipment; a mode switch turning off is held like any setting. Such an output is retried no faster either, and once three writes have not been taken, Hydronicus keeps its Repair and sends it again only after an hour, or as soon as its target or its state changes. Keep `min_off` above it, so a request turning on again is not held. |
 
 A Plant without a source still opens valves and runs the pumps it switches, which suits a boiler that follows its own controls.
 
@@ -218,12 +231,50 @@ Configure this only when Hydronicus owns the supply setpoint; do not let another
 | `heat_cold` | no | `45` | Supply target at or below `outdoor_cold`. |
 | `heat_warm` | no | `25` | Supply target at or above `outdoor_warm`; must not exceed `heat_cold`. |
 | `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
+| `modes` | no | `[heat, cool]` | The modes in which Hydronicus owns the setpoint, such as `[cool]` for a heat pump whose own weather curve keeps the heating setpoint. In another mode Hydronicus sends the number nothing and does not wait for it. |
+| `step` | no | | The setpoint's resolution, such as `1` for a heat pump that takes whole degrees. A cooling target is rounded up to it, so it stays above the dew point margin, and a heating target to the nearest step within `minimum` and `maximum`. |
+
+With a mode select, a target is proposed only once the select shows the mode, since a heat pump's setpoint range often follows its mode.
 
 The curve is linear between its two endpoints and stays at an endpoint outside their outdoor range.
-Every configured fixed or curve supply temperature must lie within `minimum` and `maximum`.
+Every configured fixed or curve supply temperature of the setpoint's `modes` must lie within `minimum` and `maximum`.
 A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
 A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
 See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).
+
+### No-load guard
+
+The source's `no_load` mapping releases a heat pump whose compressor runs while its leaving and returning water stay within `delta` of each other, so its heat has nowhere to go: another source supplies the zones, every valve is closed, a pump failed, or air blocks the flow.
+It trips once the request is on, the compressor has run for `duration`, and the water has stayed within `delta` for `duration` too; Hydronicus then releases the request and holds it off for `hold_off`.
+A missing or stale reading never trips it, and two trips within a day raise a Repair.
+Its readings go stale like a condensation reference, 30 minutes after their last report, so a sensor that reports only when its value changes, such as an MQTT sensor without `force_update`, can keep the guard from tripping while the compressor runs steadily.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `supply_temperature` | yes | | The heat pump's leaving water temperature `sensor`. |
+| `return_temperature` | yes | | The heat pump's returning water temperature `sensor`. |
+| `compressor_sensor` | yes | | A `sensor` that reads above zero while the compressor runs, such as its frequency. |
+| `delta` | no | `1` | The temperature difference in K under which the water counts as carrying no heat. |
+| `duration` | no | `600` | How long the compressor must run, and the difference stay under `delta`, before the guard trips, in seconds. |
+| `hold_off` | no | `1800` | How long the request then stays off, in seconds. |
+
+### Domestic hot water
+
+The source's `dhw` mapping binds the source's own DHW switch, its DHW setpoint `number`, or both, which Hydronicus then owns and shows as its **DHW** switch and **DHW target** number.
+Both are outputs that must be armed, and like the source's other outputs they keep its `write_interval`.
+A change made elsewhere, such as on the heat pump's wired controller, is adopted: it becomes Hydronicus's value and is never written back.
+The `hydronicus.boost_dhw` action raises the setpoint for a bounded time and then restores the owned target, also after a restart, and once the setpoint is back if it was unavailable when the boost ended; a change made elsewhere during a boost ends it without restoring.
+While the source's handover sensor reads on, or Control equipment is off, Hydronicus sends them nothing.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `switch` | one of the two | | The `switch` that turns the source's DHW on and off. |
+| `setpoint` | one of the two | | The `number` that sets the DHW tank temperature. |
+| `minimum` | no | `40` | The lowest DHW target in °C; a lower owned, adopted, or boost value is clamped and logged. |
+| `maximum` | no | `55` | The highest DHW target in °C; must exceed `minimum`. |
+| `tolerance` | no | `0.5` | The difference in K accepted as confirmation of the setpoint. |
+| `step` | no | | The setpoint's resolution, such as `1` for whole degrees. |
+| `max_boost` | no | `7200` | The longest a boost may last, in seconds. |
 
 ## Pumps
 
@@ -238,7 +289,7 @@ Every loop runs on exactly one pump, and a pump can drive any number of loops.
 | `overrun` | no | `180` | For a switched pump: how long it keeps running after heating demand ends, with its loops held open. Cooling stops a pump without overrun. A source-driven pump has no overrun; the source's `post_run` covers it. |
 | `min_flow` | no | `path` | `path` when the pump needs an open loop while it runs, `guaranteed` when a hydraulic separator, buffer, or bypass gives it a path whatever the loops do. |
 | `min_flow_loops` | see below | | For a source-driven pump with `min_flow: path`: the loops Hydronicus holds open whenever none of the pump's other loops is ready while the pump may run. |
-| `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. |
+| `supply_temperature` | no | | A `sensor` of the water temperature this pump supplies. It is the condensation reference that lets the pump's loops cool. It goes stale 30 minutes after its last report and then blocks cooling, so a sensor that reports only on change, such as an MQTT sensor without `force_update`, must still report at least that often while its value is steady. |
 | `condensation_switch` | no | | A `binary_sensor` on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on, unavailable, or unknown, none of the pump's loops cools. |
 | `running_sensor` | no | | A `binary_sensor` that reports whether the pump actually runs. |
 | `flow_sensor` | no | | A `binary_sensor` that reports whether circulation is proved. This is an input, not a water-volume or energy meter. |
@@ -301,6 +352,7 @@ A loop with no valve is always an open path, and its pump is its only control.
 | `surface_temperature` | no | | A `sensor` of the floor or ceiling surface temperature, the loop's own condensation reference. |
 | `surface_minimum` | no | `20` | Only with `surface_temperature`: the lowest surface temperature while the loop cools, in °C. `null` turns it off. |
 | `condensation_switch` | no | | A `binary_sensor` that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on, unavailable, or unknown, the loop does not cool. |
+| `weight` | no | `1` | The loop's positive share of demand for the source's `start_threshold`, such as its emitter output in kW. |
 | `runs` | plant loops only | | When a [plant loop](#plant-loops) runs. |
 
 A loop may cool only with a condensation reference: its pump's `supply_temperature` or its own `surface_temperature`.
@@ -590,7 +642,7 @@ These are problems in variations of the reference plant, with the path, the word
 | --- | --- | --- |
 | `hydronicus` | Plant file format | Plant file format 1 is no longer read; describe the Plant in format 2. |
 | `zones.Living room` | Zone Living room | A slug starts with a lowercase letter and holds only lowercase letters, digits, and underscores. |
-| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature, surface_minimum, condensation_switch. |
+| `zones.living_area.loops.floor.pumps` | Zone Living area, loop Floor, pumps | Unknown key; expected one of: name, valves, pump, modes, surface_temperature, surface_minimum, condensation_switch, weight. |
 | `zones.living_area.loops.floor.pump` | Zone Living area, loop Floor, pump | There is no pump underfloor. |
 | `zones.living_area.loops.floor.modes` | Zone Living area, loop Floor, modes | A loop that cools needs a condensation reference: a supply_temperature on pump floor or the loop's surface_temperature. Without one the loop is heat only. |
 | `pumps.heat_pump.min_flow_loops` | Pump Heat pump, min-flow loops | A source-driven pump with min_flow: path needs min_flow_loops, the loops held open while it may run, or min_flow: guaranteed when a separator protects it. |

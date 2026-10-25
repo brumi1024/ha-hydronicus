@@ -189,6 +189,7 @@ def plant_values(document: Mapping[str, Any]) -> dict[str, Any]:
             "feedback_timeout": source.get("feedback_timeout", 300.0),
         },
         "protection": _protection_values(document),
+        "cycling": {key: deepcopy(source[key]) for key in _SOURCE_FILE_KEYS if key in source},
     }
 
 
@@ -205,6 +206,23 @@ def _protection_values(document: Mapping[str, Any]) -> dict[str, Any]:
         "frost_protection": frost_on,
         "frost_temperature": frost if frost_on else DEFAULT_FROST_PROTECTION,
     }
+
+
+# The source's cycling protection, which the Plant form's cycling section edits
+# and every other form keeps as it is.
+_SOURCE_FILE_KEYS: Final = (
+    "max_starts_per_hour",
+    "start_threshold",
+    "heat_sink_loops",
+    "hold_after_demand",
+    "heat_sink_overshoot",
+    "health_sensor",
+    "handover_sensor",
+)
+
+
+# Source settings no form shows, which every form keeps as they are.
+_SOURCE_KEPT_KEYS: Final = ("write_interval",)
 
 
 def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Document:
@@ -266,6 +284,24 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     supply = dict(values.get("supply", _mapping(old, "supply")) or {})
     if supply.get("entity"):
         source["supply"] = {key: value for key, value in supply.items() if value is not None}
+    # Without the cycling section the stored cycling protection stays.
+    cycling = values.get("cycling")
+    if cycling is None:
+        source.update({key: deepcopy(old[key]) for key in _SOURCE_FILE_KEYS if key in old})
+    else:
+        starts = cycling.get("max_starts_per_hour")
+        _put(
+            source,
+            "max_starts_per_hour",
+            int(starts) if isinstance(starts, float) and starts.is_integer() else starts,
+        )
+        _put(source, "start_threshold", cycling.get("start_threshold"))
+        _put(source, "heat_sink_loops", list(cycling.get("heat_sink_loops") or []))
+        _put(source, "hold_after_demand", cycling.get("hold_after_demand"))
+        _put(source, "heat_sink_overshoot", cycling.get("heat_sink_overshoot"))
+        _put(source, "health_sensor", cycling.get("health_sensor"))
+        _put(source, "handover_sensor", cycling.get("handover_sensor"))
+    source.update({key: deepcopy(old[key]) for key in _SOURCE_KEPT_KEYS if key in old})
     result["source"] = source
     return result
 
@@ -294,6 +330,8 @@ def with_mode(document: Mapping[str, Any], entity: str, heat: str, cool: str) ->
             "running_sensor",
             "supply",
             "feedback_timeout",
+            *_SOURCE_FILE_KEYS,
+            *_SOURCE_KEPT_KEYS,
         )
         if key in source
     }
@@ -422,6 +460,20 @@ def own_min_flow_loops(document: Mapping[str, Any], slug: str) -> list[str]:
 # Loops
 
 
+def heat_sink_choices(document: Mapping[str, Any]) -> dict[str, str]:
+    """Return the loops that may be a heat sink: they heat and do not run with the source."""
+    choices: dict[str, str] = {}
+    for ref, label in loop_refs(document).items():
+        parsed = LoopRef.parse(ref)
+        owner = document if parsed.zone is None else zones(document).get(parsed.zone, {})
+        loop = _mapping(owner, "loops").get(parsed.loop, {})
+        if Mode.HEAT.value in loop.get("modes", [Mode.HEAT.value]) and loop.get("runs") != (
+            RunKind.WITH_SOURCE.value
+        ):
+            choices[ref] = label
+    return choices
+
+
 def loop_refs(document: Mapping[str, Any], pump: str | None = None) -> dict[str, str]:
     """Return every loop's reference with its label, or only the loops of one pump."""
     refs: dict[str, str] = {}
@@ -451,6 +503,7 @@ def loop_values(document: Mapping[str, Any], zone: str | None, slug: str | None)
             "modes": [Mode.HEAT.value],
             "opening_time": DEFAULT_OPENING_TIME,
             "surface_minimum": DEFAULT_SURFACE_MINIMUM,
+            "weight": 1.0,
         }
     owner = document if zone is None else zones(document).get(zone, {})
     loop = _mapping(owner, "loops").get(slug, {})
@@ -470,6 +523,7 @@ def loop_values(document: Mapping[str, Any], zone: str | None, slug: str | None)
         "opening_time": opening[0] if opening else DEFAULT_OPENING_TIME,
         "surface_minimum": loop.get("surface_minimum", DEFAULT_SURFACE_MINIMUM),
         "condensation_switch": loop.get("condensation_switch"),
+        "weight": loop.get("weight", 1.0),
     }
     if zone is None:
         values["runs"] = (
@@ -511,6 +565,8 @@ def with_loop(
     if "surface_temperature" in loop:
         _put_setting(loop, "surface_minimum", values.get("surface_minimum"), old)
     _put(loop, "condensation_switch", values.get("condensation_switch"))
+    weight = values.get("weight", old.get("weight", 1.0))
+    _put(loop, "weight", None if weight == 1.0 else weight)
     table[slug] = loop
     return result, slug
 
@@ -522,6 +578,10 @@ def without_loop(document: Mapping[str, Any], zone: str | None, slug: str) -> Do
     loops.pop(slug, None)
     if not loops:
         owner.pop("loops", None)
+    source = result.get("source")
+    if isinstance(source, dict) and isinstance(sinks := source.get("heat_sink_loops"), list):
+        ref = str(LoopRef(zone, slug))
+        _put(source, "heat_sink_loops", [item for item in sinks if item != ref] or None)
     return result
 
 

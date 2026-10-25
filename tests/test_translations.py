@@ -27,6 +27,7 @@ from custom_components.hydronicus.issues import (
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
+    source_unhealthy,
     zone_area_issue,
 )
 from custom_components.hydronicus.sensor import STATUSES
@@ -39,11 +40,25 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 ENTITY_KEYS = {
     "button": {"reset_learning"},
     "climate": {"zone"},
-    "number": {"heat_setback", "cool_setback"},
-    "binary_sensor": {"heating_demand", "cooling_demand", "loop_flowing", "source_requested"},
+    "number": {"heat_setback", "cool_setback", "dhw_target"},
+    "binary_sensor": {
+        "heating_demand",
+        "cooling_demand",
+        "loop_flowing",
+        "source_requested",
+        "source_fault",
+    },
     "select": {"mode"},
-    "sensor": {"status", "combined_temperature", "dew_point", "duty_cycle", "loop_runtime"},
-    "switch": {"control"},
+    "sensor": {
+        "status",
+        "combined_temperature",
+        "dew_point",
+        "duty_cycle",
+        "loop_runtime",
+        "compressor_starts",
+        "compressor_cycle",
+    },
+    "switch": {"control", "dhw"},
 }
 
 
@@ -77,6 +92,7 @@ def _issues() -> list[Issue]:
         outputs_awaiting_confirmation(plant, ["switch.a", "switch.b"]),
         missing_binding(plant, export_plant(plant), "switch.a", "pumps.floor.switch"),
         missing_area_sensor(plant, "Kitchen", "sensor.kitchen"),
+        source_unhealthy(plant, "binary_sensor.modbus_healthy"),
         *(
             zone_area_issue(plant, ZoneAreaProblem(kind, "basement", "workshop"), areas)
             for kind in ZoneAreaProblemKind
@@ -147,9 +163,10 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
     assert set(STRINGS["exceptions"]) == {
         "invalid_plant",
         "plant_not_found",
+        "no_dhw_setpoint",
         "unsupported_hvac_mode",
     }
-    assert set(STRINGS["services"]) == {"export_plant"}
+    assert set(STRINGS["services"]) == {"export_plant", "boost_dhw", "end_dhw_boost"}
 
 
 def test_every_form_field_has_a_label() -> None:

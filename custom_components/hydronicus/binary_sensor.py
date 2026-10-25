@@ -1,4 +1,4 @@
-"""Zone demand, loop flow, and the source request (contract K7)."""
+"""Zone demand, loop flow, the source request, and the source fault (contract K7)."""
 
 from __future__ import annotations
 
@@ -166,6 +166,40 @@ class SourceRequestedSensor(HydronicusEntity, BinarySensorEntity):
         }
 
 
+class SourceFaultSensor(HydronicusEntity, BinarySensorEntity):
+    """Whether the source's health sensor keeps the source off."""
+
+    _attr_translation_key = "source_fault"
+    _unrecorded_attributes = frozenset({"reason"})
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "source_fault"),
+            source_device(runtime),
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.view is not None
+
+    @property
+    def is_on(self) -> bool:
+        view = self.runtime.view
+        return view is not None and view.desired.source_fault is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        view = self.runtime.view
+        source = self.runtime.plant.source
+        assert source is not None
+        return {
+            "health_sensor": source.health_sensor,
+            "reason": None if view is None else view.desired.source_fault,
+        }
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: HydronicusConfigEntry,
@@ -176,6 +210,8 @@ async def async_setup_entry(
     entities: list[tuple[str | None, Entity]] = []
     if plant.source is not None:
         entities.append((None, SourceRequestedSensor(runtime)))
+        if plant.source.health_sensor is not None:
+            entities.append((None, SourceFaultSensor(runtime)))
     for loop in plant.loops:
         entities.append((None, LoopFlowingSensor(runtime, loop)))
     for zone in plant.zones:

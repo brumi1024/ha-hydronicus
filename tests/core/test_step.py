@@ -182,6 +182,7 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         flow_ended=NOW,
         source_request=True,
         source_changed=NOW - 5,
+        source_starts=(NOW - 900, NOW - 5),
         demands={
             "room": DemandState(Mode.HEAT, True, NOW),
             "hall": DemandState(Mode.OFF, False, None),
@@ -1706,6 +1707,86 @@ def test_cooling_supply_target_protects_full_confirmation_band_above_dew_point()
     desired = run(impossible, confirmed)[1]
     assert not desired.source_request
     assert "exceeds" in desired.reasons["source"]
+
+
+def test_a_cooling_only_setpoint_waits_for_the_mode_rounds_up_and_leaves_heating_alone() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        HEAT_PUMP.replace(
+            "request: switch.hp",
+            "request: switch.hp\n  supply: {entity: number.supply, modes: [cool], "
+            "cool_temperature: 18, minimum: 16, maximum: 22, step: 1}",
+        )
+    )
+    cooling = observe(
+        plant,
+        mode=Mode.COOL,
+        temperatures={"a": 26.0},
+        sensors={"sensor.a_rh": Reading(55, NOW), "sensor.supply": Reading(25, NOW)},
+        on=["switch.a_ceiling"],
+        option="Heat",
+    )
+    cooling = replace(cooling, outputs={**cooling.outputs, "number.supply": NumericState(34, NOW)})
+    desired = run(plant, cooling)[1]
+    assert "number.supply" not in desired.outputs
+    assert desired.reasons["source_supply"] == "waiting for the source mode"
+
+    switched = replace(cooling, outputs={**cooling.outputs, "select.hp": OptionState("Cool", NOW)})
+    desired = run(plant, switched)[1]
+    # 55 % at 26 °C is a dew point of 16.4 °C; 16.4 + 2 + 1 + 0.5 rounds up to 20.
+    assert desired.outputs["number.supply"] == NumericTarget(20.0, 0.5)
+
+    heating = observe(
+        plant,
+        temperatures={"c": 19.0},
+        on=["switch.c_floor", "switch.floor_pump", "switch.a_ceiling"],
+    )
+    heating = replace(heating, outputs={**heating.outputs, "number.supply": NumericState(34, NOW)})
+    desired = run(plant, heating)[1]
+    assert "number.supply" not in desired.outputs
+    assert desired.reasons["source_supply"] == "kept by the source's own controller in heat"
+    assert desired.source_request, "heating does not wait for a setpoint it does not own"
+
+
+def test_a_mode_switch_follows_the_mode_and_the_source_waits_for_it() -> None:
+    plant = _plant(
+        HEAT_PUMP.replace(
+            "request: switch.hp",
+            "request: switch.hp\n  mode_switches: {switch.curve: [heat]}",
+        )
+    )
+    on = ["switch.c_floor", "switch.floor_pump", "switch.a_ceiling"]
+    waiting = observe(plant, temperatures={"c": 19.0}, on=on)
+    desired = run(plant, waiting)[1]
+    assert desired.outputs["switch.curve"] == SwitchTarget(True)
+    assert not desired.source_request
+    assert desired.reasons["source"] == "waiting for the source's mode switches"
+
+    ready = observe(plant, temperatures={"c": 19.0}, on=[*on, "switch.curve"])
+    assert run(plant, ready)[1].source_request
+    cooling = observe(plant, mode=Mode.COOL, temperatures={"a": 26.0}, option="Cool")
+    assert run(plant, cooling)[1].outputs["switch.curve"] == SwitchTarget(False)
+    assert "switch.curve" not in run(plant, observe(plant, mode=Mode.OFF))[1].outputs
+
+
+def test_a_heating_setpoint_rounds_to_its_nearest_step_within_its_limits() -> None:
+    from custom_components.hydronicus.core.model import NumericTarget
+    from custom_components.hydronicus.core.step import NumericState
+
+    plant = _plant(
+        RADIATOR.replace(
+            "request: switch.boiler,",
+            "request: switch.boiler, supply: {entity: number.supply, heat_temperature: 34.6, "
+            "maximum: 34.8, heat_cold: 34.8, step: 1},",
+        )
+    )
+    observed = observe(plant, temperatures={"room": 19.0}, on=["switch.valve", "switch.pump"])
+    observed = replace(
+        observed, outputs={**observed.outputs, "number.supply": NumericState(30, NOW)}
+    )
+    assert run(plant, observed)[1].outputs["number.supply"] == NumericTarget(34.8, 0.5)
 
 
 def test_running_heating_source_keeps_running_during_safe_curve_adjustment() -> None:

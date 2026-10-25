@@ -72,6 +72,13 @@ PLANT_FIELDS: Final = {
     "source.running_sensor": "running_sensor",
     "source.feedback_timeout": "timing",
     "source.supply": "supply",
+    "source.max_starts_per_hour": "cycling",
+    "source.start_threshold": "cycling",
+    "source.heat_sink_loops": "cycling",
+    "source.hold_after_demand": "cycling",
+    "source.heat_sink_overshoot": "cycling",
+    "source.health_sensor": "cycling",
+    "source.handover_sensor": "cycling",
     "weather": "weather",
 }
 MODE_FIELDS: Final = {"source.mode.heat": "heat", "source.mode.cool": "cool", "source.mode": "heat"}
@@ -97,6 +104,7 @@ LOOP_FIELDS: Final = {
     "surface_temperature": "surface_temperature",
     "surface_minimum": "surface_minimum",
     "condensation_switch": "condensation_switch",
+    "weight": "weight",
 }
 # A zone's own problem, a missing temperature reading, shows on its sensors.
 ZONE_FIELDS: Final = {
@@ -383,7 +391,35 @@ def _list(value: Any) -> list[str]:
 # Forms
 
 
-def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+def cycling_schema(
+    hass: HomeAssistant, values: Mapping[str, Any], loops: Mapping[str, str]
+) -> vol.Schema:
+    """The source's cycling protection; heat sink loops are offered once loops exist."""
+    schema: dict[Any, Any] = {
+        optional("health_sensor", values): entity(
+            hass, "binary_sensor", shown=_list([values.get("health_sensor")])
+        ),
+        optional("handover_sensor", values): entity(
+            hass, "binary_sensor", shown=_list([values.get("handover_sensor")])
+        ),
+        optional("max_starts_per_hour", values): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX
+            )
+        ),
+        optional("start_threshold", values): number(low=0.1),
+    }
+    if loops:
+        schema[optional("heat_sink_loops", values)] = choice(loops, multiple=True, listed_=True)
+        schema[optional("hold_after_demand", values)] = seconds()
+        schema[optional("heat_sink_overshoot", values)] = number(low=0, unit="K")
+    return vol.Schema(schema)
+
+
+def plant_schema(
+    hass: HomeAssistant, values: Mapping[str, Any], loops: Mapping[str, str] | None = None
+) -> vol.Schema:
+    """The Plant form; ``loops`` are the heat sink loops its cycling section offers."""
     timing = values.get("timing") or {}
     protection = values.get("protection") or {}
     return vol.Schema(
@@ -404,6 +440,10 @@ def plant_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
             ),
             vol.Optional("weather"): section(
                 weather_schema(hass, values.get("weather") or {}), {"collapsed": True}
+            ),
+            vol.Optional("cycling"): section(
+                cycling_schema(hass, values.get("cycling") or {}, loops or {}),
+                {"collapsed": True},
             ),
             vol.Optional("timing"): section(
                 vol.Schema(
@@ -640,6 +680,7 @@ def loop_schema(
                 hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
             ),
             _default("opening_time", values, 180): seconds(),
+            _default("weight", values, 1): number(low=0.1),
         }
     )
     if removable:
@@ -716,8 +757,14 @@ def output_labels(plant: Plant) -> dict[str, str]:
             what = "Source request switch"
         elif role is OutputRole.SOURCE_MODE:
             what = "Source mode select"
+        elif role is OutputRole.SOURCE_MODE_SWITCH:
+            what = "Source switch that follows the mode"
         elif role is OutputRole.SOURCE_SETPOINT:
             what = "Source supply temperature setpoint"
+        elif role is OutputRole.DHW_SWITCH:
+            what = "Source DHW switch"
+        elif role is OutputRole.DHW_SETPOINT:
+            what = "Source DHW setpoint"
         elif role is OutputRole.PUMP:
             pump = next(pump for pump in plant.pumps if pump.switch == entity_id)
             what = f"Pump {pump.title}"

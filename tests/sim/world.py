@@ -38,7 +38,9 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
+from custom_components.hydronicus.core.dhw import DhwCommand
 from custom_components.hydronicus.core.model import (
+    NUMERIC_ROLES,
     ExternalThermostat,
     Loop,
     LoopRef,
@@ -258,6 +260,8 @@ class World:
         # Incremented on every change a Home Assistant state listener would see.
         self.version = 0
         self.post_run_end = 0.0
+        # The owner's last DHW command through Hydronicus's entities.
+        self.dhw_command: DhwCommand | None = None
         self._queue: list[_Happening] = []
         self._seq = itertools.count()
         self._last_landing: dict[str, float] = {}
@@ -273,7 +277,7 @@ class World:
             if role is OutputRole.SOURCE_MODE:
                 assert plant.source is not None and plant.source.mode is not None
                 self.selects.setdefault(entity, SelectBody(option=plant.source.mode.heat))
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 self.numbers.setdefault(entity, NumberBody(changed=self.wall()))
             else:
                 self.switches.setdefault(entity, SwitchBody(changed=self.wall()))
@@ -289,6 +293,10 @@ class World:
                 self._sensor(pump.supply_temperature, DEFAULT_REFERENCE)
         if plant.source and plant.source.supply and plant.source.supply.outdoor_sensor:
             self._sensor(plant.source.supply.outdoor_sensor, 5.0)
+        if plant.source and (guard := plant.source.no_load) is not None:
+            self._sensor(guard.supply_temperature, 35.0)
+            self._sensor(guard.return_temperature, 31.0)
+            self._sensor(guard.compressor_sensor, 0.0)
         for zone in plant.zones:
             for sensor in zone.temperature:
                 self._sensor(sensor.entity, DEFAULT_TEMPERATURE)
@@ -309,8 +317,11 @@ class World:
                     zone.slug, DigitalThermostatState(Mode.OFF, zone.thermostat.target)
                 )
 
+        healthy = plant.source.health_sensor if plant.source is not None else None
         for entity in contacts(plant):
-            self.contacts.setdefault(entity, SwitchBody(changed=self.wall()))
+            # A source starts healthy; every other contact starts off.
+            body = SwitchBody(on=entity == healthy, changed=self.wall())
+            self.contacts.setdefault(entity, body)
 
     def _sensor(self, entity: str, value: float) -> None:
         self.sensors.setdefault(entity, SensorBody(value))
@@ -624,6 +635,7 @@ class World:
         expected = {
             OutputRole.SOURCE_MODE: OptionTarget,
             OutputRole.SOURCE_SETPOINT: NumericTarget,
+            OutputRole.DHW_SETPOINT: NumericTarget,
         }.get(role, SwitchTarget)
         if not isinstance(action.target, expected):
             raise AssertionError(f"reconcile() sent {action}, but {action.entity} is a {role}")
@@ -678,7 +690,7 @@ class World:
         for entity, role in self.plant.outputs().items():
             if role is OutputRole.SOURCE_MODE:
                 outputs[entity] = self.selects[entity].observe()
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 outputs[entity] = self.numbers[entity].observe()
             else:
                 observed = self.switches[entity].observe()
@@ -697,6 +709,7 @@ class World:
             sensors={entity: self.reading(entity, now) for entity in self.sensors},
             areas=dict(self.areas),
             thermostats=dict(self.thermostats),
+            dhw_command=self.dhw_command,
         )
 
     def reading(self, entity: str, now: float | None = None) -> Reading:
@@ -718,4 +731,7 @@ def contacts(plant: Plant) -> list[str]:
     found.extend(pump.flow_sensor for pump in plant.pumps)
     if plant.source is not None:
         found.append(plant.source.running_sensor)
+        found.append(plant.source.health_sensor)
+        found.append(plant.source.handover_sensor)
+        found.append(plant.source.inhibit_sensor)
     return [entity for entity in dict.fromkeys(found) if entity is not None]

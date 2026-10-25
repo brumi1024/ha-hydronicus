@@ -98,6 +98,28 @@
               "outdoor_sensor": "Optional separate temperature sensor used to compare recovery in different outdoor conditions.",
               "max_age": "Maximum age of forecast content since it was first seen and of weather or outdoor sensor reports. Repeated forecasts keep their original age; this is not the provider issue time."
             }
+          },
+          "cycling": {
+            "name": "Cycling protection",
+            "description": "Optional. Keeps a heat pump from short cycling and stops it when it reports a fault.",
+            "data": {
+              "health_sensor": "Source health sensor",
+              "handover_sensor": "Source handover sensor",
+              "max_starts_per_hour": "Maximum starts per hour",
+              "start_threshold": "Start threshold",
+              "heat_sink_loops": "Heat sink loops",
+              "hold_after_demand": "Hold after demand",
+              "heat_sink_overshoot": "Heat sink overshoot"
+            },
+            "data_description": {
+              "health_sensor": "A binary sensor that reads on while the source and its link are healthy, such as a Modbus bridge's health. While it is off or unavailable, the source request is released at once and stays off.",
+              "handover_sensor": "A binary sensor that reads on while something else controls the source, such as a bridge that handed the heat pump to its wired controller. Hydronicus then sends the source nothing and keeps the heat sink loops open while it may heat. Needs heat sink loops.",
+              "max_starts_per_hour": "How often the source request may turn on within any hour. Empty means no limit.",
+              "start_threshold": "The total weight of calling loops needed before the source starts. Each loop's weight is set on the loop, 1 by default. Empty starts the source for any calling loop.",
+              "heat_sink_loops": "Heating loops opened when every zone is satisfied before the source's minimum on time ends, so the source runs it out into them.",
+              "hold_after_demand": "How long the source stays on into the heat sink loops after the last zone is satisfied, so a heat pump whose every stop restarts its pumps runs on between calls. Empty holds it for its minimum on time only.",
+              "heat_sink_overshoot": "Beyond the minimum on time, a heat sink loop takes heat only while its zone is less than this many kelvin over its heating target. The source is released once no heat sink has room."
+            }
           }
         }
       },
@@ -258,7 +280,8 @@
           "surface_temperature": "Surface temperature sensor",
           "surface_minimum": "Cooling surface minimum",
           "condensation_switch": "Condensation switch",
-          "opening_time": "Valve opening time"
+          "opening_time": "Valve opening time",
+          "weight": "Weight"
         },
         "data_description": {
           "name": "Names the loop, such as Ceiling or Floor.",
@@ -268,7 +291,8 @@
           "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
           "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
           "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
-          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait."
+          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
+          "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
         }
       },
       "zone_menu": {
@@ -311,7 +335,8 @@
           "opening_time": "Valve opening time",
           "runs": "Runs",
           "with_zones": "Zones",
-          "remove": "Remove this loop"
+          "remove": "Remove this loop",
+          "weight": "Weight"
         },
         "data_description": {
           "name": "Names the loop, such as Ceiling or Floor.",
@@ -324,7 +349,8 @@
           "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
           "runs": "With the source runs the loop whenever the source is requested. With zones runs it while any of the chosen zones demands.",
           "with_zones": "Only for With zones: the zones this loop runs with.",
-          "remove": "Remove the loop from the Plant."
+          "remove": "Remove the loop from the Plant.",
+          "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
         }
       },
       "min_flow": {
@@ -559,7 +585,8 @@
             "surface_minimum": "Cooling surface minimum",
             "condensation_switch": "Condensation switch",
             "opening_time": "Valve opening time",
-            "remove": "Remove this loop"
+            "remove": "Remove this loop",
+            "weight": "Weight"
           },
           "data_description": {
             "name": "Names the loop, such as Ceiling or Floor.",
@@ -570,7 +597,8 @@
             "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
             "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
             "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
-            "remove": "Remove the loop from the zone."
+            "remove": "Remove the loop from the zone.",
+            "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
           }
         }
       },
@@ -691,6 +719,9 @@
       },
       "source_requested": {
         "name": "Requested"
+      },
+      "source_fault": {
+        "name": "Fault"
       }
     },
     "select": {
@@ -729,11 +760,20 @@
       },
       "loop_runtime": {
         "name": "{loop} runtime"
+      },
+      "compressor_starts": {
+        "name": "Compressor starts"
+      },
+      "compressor_cycle": {
+        "name": "Compressor cycle"
       }
     },
     "switch": {
       "control": {
         "name": "Control equipment"
+      },
+      "dhw": {
+        "name": "DHW"
       }
     },
     "climate": {
@@ -812,6 +852,17 @@
       },
       "cool_setback": {
         "name": "Cooling setback"
+      },
+      "dhw_target": {
+        "name": "DHW target",
+        "state_attributes": {
+          "boost": {
+            "name": "Boost"
+          },
+          "boost_until": {
+            "name": "Boost until"
+          }
+        }
       }
     },
     "button": {
@@ -933,6 +984,14 @@
     "invalid_schedule_block": {
       "title": "{plant}, zone {zone}: schedule {entity_id} has blocks it cannot use",
       "description": "In Plant {plant}, zone {zone} follows {entity_id}, and these blocks name a level Hydronicus cannot use: {blocks}. A block's data may name either a preset (comfort, eco, or away) or a heat_target and cool_target from 5 to 35 °C, never both. While such a block is active, the zone holds its manual comfort target. Edit the blocks in the schedule helper; the repair clears automatically once every block is usable."
+    },
+    "source_unhealthy": {
+      "title": "{plant}: {source} is kept off by {entity_id}",
+      "description": "In Plant {plant}, the health sensor {entity_id} of {source} has not read healthy for at least 10 minutes, so Hydronicus released the source's request and does not ask it for heat or cooling. Zones that call still open their loops and run their switched pumps. Check the source and the link that reports its health, such as a Modbus bridge, its wiring, and its broker. The repair clears automatically once the health sensor reads on again."
+    },
+    "source_no_load": {
+      "title": "{plant}: {source} keeps running without a load",
+      "description": "In Plant {plant}, {source} tripped its no-load guard {trips} times within a day: its compressor ran while its leaving and returning water stayed within the guard's temperature difference, so its heat had nowhere to go. Each time Hydronicus released the source's request and held it off. Check whether another source supplies the zones, such as a fireplace's buffer selected by its own valve, a closed valve or a stopped pump on the heat pump's side, and air in the circuit. The repair clears once a day has passed without two trips."
     }
   },
   "exceptions": {
@@ -944,6 +1003,9 @@
     },
     "unsupported_hvac_mode": {
       "message": "The zone thermostat has no mode {mode}. Choose one of: {modes}."
+    },
+    "no_dhw_setpoint": {
+      "message": "Plant {plant} has no DHW setpoint to boost."
     }
   },
   "services": {
@@ -954,6 +1016,34 @@
         "config_entry_id": {
           "name": "Plant",
           "description": "The Hydronicus Plant to export."
+        }
+      }
+    },
+    "boost_dhw": {
+      "name": "Boost DHW",
+      "description": "Raises the DHW target of a Plant's source for a bounded time, such as while solar power is in surplus, and restores the owned target when it ends.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose source heats the DHW."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "The boosted DHW target; it is kept within the DHW limits."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "How long the boost lasts, at most the Plant's maximum boost, which is also the default."
+        }
+      }
+    },
+    "end_dhw_boost": {
+      "name": "End DHW boost",
+      "description": "Ends a DHW boost now and restores the owned target.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose DHW boost ends."
         }
       }
     }

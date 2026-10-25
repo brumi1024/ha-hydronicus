@@ -47,6 +47,9 @@ Guided setup walks from the source to the pumps, then the zones and their loops,
    **Source feedback timeout** gives requested equipment time to report operation, 300 seconds by default.
    **Supply temperature control** selects the optional supply number, bounds, fixed targets, and outdoor heating curve.
    **Weather forecast** selects optional hourly forecasts and an outdoor reading for recovery learning, independently of source control.
+   **Cycling protection** keeps a heat pump from short cycling: a **Source health sensor** that keeps the source off while it is not healthy, **Maximum starts per hour**, a **Start threshold** of calling loops by their **Weight**, and **Heat sink loops** that take the rest of a minimum run once every zone is satisfied.
+   **Hold after demand** keeps the source on into the heat sink loops for longer, and **Heat sink overshoot** limits how warm their zones may get meanwhile.
+   Heat sink loops can be chosen once loops exist, so guided setup offers them only when the Plant is reconfigured; see the [source](plant-file.md#source) keys.
 2. **Source modes**, only with a mode select: which of its options means heating and which means cooling.
 3. **Pump**, once per pump: its **Pump switch**, or none for a pump the source runs by itself, such as a heat pump's own circulator.
    The **Minimum flow** says whether the pump **Needs an open loop**, or whether **A separator guarantees its flow**; see [minimum flow](how-it-works.md#minimum-flow).

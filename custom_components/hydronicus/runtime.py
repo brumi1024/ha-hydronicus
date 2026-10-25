@@ -68,9 +68,12 @@ from .areas import (
     resolve_area_sensors,
     zone_area_problems,
 )
+from .compressor import CompressorHistory
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.comfort import Setbacks, next_period_target
+from .core.dhw import DhwCommand, DhwState
 from .core.model import (
+    NUMERIC_ROLES,
     Desired,
     DigitalThermostat,
     ExternalThermostat,
@@ -100,6 +103,7 @@ from .entity import zone_unique_id
 from .flow_history import FlowHistory
 from .forecast import WeatherForecast
 from .issues import (
+    NO_LOAD_REPAIR_TRIPS,
     Issue,
     IssueKind,
     UnusableInputs,
@@ -112,6 +116,8 @@ from .issues import (
     missing_binding,
     output_not_responding,
     outputs_awaiting_confirmation,
+    source_no_load,
+    source_unhealthy,
     zone_area_issue,
     zone_sensor_unusable,
 )
@@ -181,11 +187,14 @@ class PlantRuntime:
         self.thermostats: dict[str, DigitalThermostatState] = {}
         # The owner's setbacks of each scheduled zone that has changed them, by zone slug.
         self.setbacks: dict[str, Setbacks] = {}
+        # The owner's last DHW command, until an evaluation has applied it.
+        self.dhw_command: DhwCommand | None = None
         # Each followed schedule helper's week from ``schedule.get_schedule``, or None
         # when it could not be read; absent until the first read finishes.
         self.schedule_weeks: dict[str, Mapping[str, Any] | None] = {}
         self.areas = AreaResolution()
         self.flow = FlowHistory()
+        self.compressor = CompressorHistory()
         self.learning = LearningCoordinator(hass, entry.entry_id)
         self.forecast = (
             WeatherForecast(hass, plant.weather, self.request_evaluation)
@@ -246,6 +255,7 @@ class PlantRuntime:
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
             self.unusable = UnusableInputs.from_dict(data.get("unusable_inputs", {}))
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
+            self.compressor = CompressorHistory.from_dict(data.get("compressor", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
             self.setbacks = {
                 zone: Setbacks(float(values["heat"]), float(values["cool"]))
@@ -260,6 +270,7 @@ class PlantRuntime:
             self.state, self.reconcile_state = State(), ReconcileState()
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
             self.unusable, self.flow = UnusableInputs(), FlowHistory()
+            self.compressor = CompressorHistory()
             self.setbacks = {}
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
@@ -421,6 +432,46 @@ class PlantRuntime:
         self.request_evaluation()
 
     @callback
+    def command_dhw(
+        self,
+        *,
+        on: bool | None = None,
+        target: float | None = None,
+        boost: float | None = None,
+        boost_for: float | None = None,
+        end_boost: bool = False,
+    ) -> None:
+        """Take the owner's DHW command from an entity or the boost action, and evaluate."""
+        # Each command is stamped later than the last, so that each applies once.
+        last = max(
+            (
+                at
+                for at in (
+                    self.state.dhw.command_at,
+                    None if self.dhw_command is None else self.dhw_command.at,
+                )
+                if at is not None
+            ),
+            default=0.0,
+        )
+        at = max(dt_util.utcnow().timestamp(), last + 0.001)
+        pending = self.dhw_command
+        if pending is not None:
+            # A command no evaluation has applied yet keeps what this one leaves alone.
+            on = pending.on if on is None else on
+            target = pending.target if target is None else target
+            if boost is None and not end_boost:
+                boost, boost_for, end_boost = pending.boost, pending.boost_for, pending.end_boost
+        self.dhw_command = DhwCommand(at, on, target, boost, boost_for, end_boost)
+        self.request_evaluation()
+
+    @property
+    def dhw(self) -> DhwState | None:
+        """The owned DHW settings, None before the first evaluation or without DHW."""
+        view = self.view
+        return None if view is None else view.desired.dhw
+
+    @callback
     def set_mode(self, mode: Mode) -> None:
         """Take the Plant mode the mode select requests."""
         self.requested_mode = mode
@@ -557,6 +608,14 @@ class PlantRuntime:
             armed=observations.armed,
             live=state.live,
         )
+        self._log_source_reports(desired)
+        for event in desired.dhw_events:
+            _LOGGER.info("Plant %s: %s", self.entry.title, event)
+        command = self.dhw_command
+        if command is not None and (
+            state.dhw.command_at is not None and state.dhw.command_at >= command.at
+        ):
+            self.dhw_command = None
         self.state, self.reconcile_state = state, result.state
         self._dispatcher.discard_obsolete(observations.armed, desired.outputs)
         self.evaluation_error = None
@@ -564,6 +623,11 @@ class PlantRuntime:
             {
                 IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
                 IssueKind.CONDENSATION_INPUT_UNUSABLE: desired.blocking_condensation_inputs,
+                IssueKind.SOURCE_UNHEALTHY: {"source": (plant.source.health_sensor,)}
+                if desired.source_fault is not None
+                and plant.source is not None
+                and plant.source.health_sensor is not None
+                else {},
             },
             now,
         )
@@ -575,6 +639,10 @@ class PlantRuntime:
             else (frozenset(), frozenset())
         )
         self.flow.update(now, loops, zones)
+        if plant.source is not None and plant.source.compressor_sensor is not None:
+            frequency = observations.sensors.get(plant.source.compressor_sensor)
+            value = None if frequency is None else frequency.value
+            self.compressor.observe(now, None if value is None else value > 0)
         self._sample_learning(plant, observations, desired, fingerprints, zones, now)
         self.proposals.extend(Proposal(now, a.entity, a.target) for a in result.proposed)
         if self.previous.stopping is not None and not state.live:
@@ -711,6 +779,32 @@ class PlantRuntime:
                     )
         return estimates
 
+    def _log_source_reports(self, desired: Desired) -> None:
+        """Log when a source fault, a handover, or a request without a path begins and ends."""
+        before = None if self.view is None else self.view.desired
+        fault = None if before is None else before.source_fault
+        if desired.source_fault != fault:
+            if desired.source_fault is not None:
+                _LOGGER.warning(
+                    "Plant %s releases its source: %s", self.entry.title, desired.source_fault
+                )
+            else:
+                _LOGGER.info("Plant %s: the source reads healthy again", self.entry.title)
+        if desired.source_handover != (before is not None and before.source_handover):
+            _LOGGER.info(
+                "Plant %s %s",
+                self.entry.title,
+                "hands its source to the source's own controller and sends it nothing"
+                if desired.source_handover
+                else "controls its source again",
+            )
+        if desired.source_without_path and not (before is not None and before.source_without_path):
+            _LOGGER.warning(
+                "Plant %s found its source request on with no open loop and a running pump; "
+                "it releases the request",
+                self.entry.title,
+            )
+
     def _sample_learning(
         self,
         plant: Plant,
@@ -814,7 +908,7 @@ class PlantRuntime:
             if role is OutputRole.SOURCE_MODE:
                 option = option_value(state)
                 outputs[entity] = OptionState(option, self.memory.since(entity, option, changed))
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 value = numeric_value(state)
                 outputs[entity] = NumericState(value, self.memory.since(entity, value, changed))
             else:
@@ -869,6 +963,7 @@ class PlantRuntime:
                 for slug in self.scheduled_zones()
                 if (setbacks := self.zone_setbacks(slug)) is not None
             },
+            dhw_command=self.dhw_command,
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -890,6 +985,12 @@ class PlantRuntime:
         for pump in plant.pumps:
             if pump.supply_temperature is not None:
                 kinds[pump.supply_temperature] = SensorKind.WATER
+        if plant.source is not None and (guard := plant.source.no_load) is not None:
+            kinds[guard.supply_temperature] = SensorKind.WATER
+            kinds[guard.return_temperature] = SensorKind.WATER
+            kinds[guard.compressor_sensor] = SensorKind.LEVEL
+        if plant.source is not None and plant.source.compressor_sensor is not None:
+            kinds[plant.source.compressor_sensor] = SensorKind.LEVEL
         for loop in plant.all_loops:
             if loop.surface_temperature is not None:
                 kinds[loop.surface_temperature] = SensorKind.AIR
@@ -1017,7 +1118,7 @@ class PlantRuntime:
             value: bool | str | float | None
             if role is OutputRole.SOURCE_MODE:
                 value = option_value(new_state)
-            elif role is OutputRole.SOURCE_SETPOINT:
+            elif role in NUMERIC_ROLES:
                 value = numeric_value(new_state)
             else:
                 value = switch_memory_value(new_state)
@@ -1073,6 +1174,7 @@ class PlantRuntime:
             "outputs": self.memory.to_dict(),
             "unusable_inputs": self.unusable.to_dict(),
             "flow": self.flow.to_dict(),
+            "compressor": self.compressor.to_dict(),
             "mode": self.requested_mode.value,
             "setbacks": {
                 zone: {"heat": values.heat, "cool": values.cool}
@@ -1163,6 +1265,13 @@ class PlantRuntime:
                 ),
             )
         )
+        issues.extend(
+            source_unhealthy(reconciled, entity)
+            for _, entity in self.unusable.reported(IssueKind.SOURCE_UNHEALTHY, now)
+            if entity not in missing
+        )
+        if len(trips := self.state.no_load_trips) >= NO_LOAD_REPAIR_TRIPS:
+            issues.append(source_no_load(reconciled, len(trips)))
         current = tuple(issues)
         if current != self.issues or not self._issues_synced:
             self.issues, self._issues_synced = current, True
@@ -1171,12 +1280,15 @@ class PlantRuntime:
 
 
 def contacts(plant: Plant) -> set[str]:
-    """Every condensation switch, window, and independent equipment proof a Plant reads."""
+    """Every condensation switch, window, equipment proof, and source input a Plant reads."""
     found = {pump.condensation_switch for pump in plant.pumps}
     found.update(pump.running_sensor for pump in plant.pumps)
     found.update(pump.flow_sensor for pump in plant.pumps)
     if plant.source is not None:
         found.add(plant.source.running_sensor)
+        found.add(plant.source.health_sensor)
+        found.add(plant.source.handover_sensor)
+        found.add(plant.source.inhibit_sensor)
     found.update(loop.condensation_switch for loop in plant.all_loops)
     found.update(window for zone in plant.zones for window in zone.windows)
     return {entity for entity in found if entity is not None}

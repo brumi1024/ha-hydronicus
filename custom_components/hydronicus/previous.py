@@ -16,7 +16,7 @@ from typing import Any
 
 from homeassistant.core import StateMachine
 
-from .core.model import OutputRole, Plant
+from .core.model import NUMERIC_ROLES, OutputRole, Plant
 from .core.plant_file import export_plant, parse_plant
 from .observe import numeric_value, option_value, switch_value
 
@@ -103,7 +103,7 @@ class PreviousConfiguration:
             state = states.get(entity)
             if roles[entity] is OutputRole.SOURCE_MODE:
                 return option_value(state)
-            if roles[entity] is OutputRole.SOURCE_SETPOINT:
+            if roles[entity] in NUMERIC_ROLES:
                 return numeric_value(state)
             return switch_value(state)
 

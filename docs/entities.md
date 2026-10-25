@@ -183,11 +183,17 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | Entity | Entity ID | State |
 | --- | --- | --- |
 | **Requested** binary sensor | `binary_sensor.<source>_requested` | On while Hydronicus wants the source's request on. |
+| **Fault** binary sensor | `binary_sensor.<source>_fault` | Only with a `health_sensor`: on while that sensor does not read healthy, so the source is kept off. |
+| **DHW** switch | `switch.<source>_dhw` | Only with a `dhw` switch: the DHW on or off that Hydronicus owns. Turning it on or off sends the source's DHW switch; a change on the source's own controller is adopted and shows here. |
+| **DHW target** number | `number.<source>_dhw_target` | Only with a `dhw` setpoint: the owned DHW target within its limits. Its `boost` and `boost_until` attributes show a boost from the `hydronicus.boost_dhw` action, which `hydronicus.end_dhw_boost` ends early. |
+| **Compressor starts** sensor | `sensor.<source>_compressor_starts` | Only with a `compressor_sensor`: how often the compressor started within the last hour. Diagnostic. |
+| **Compressor cycle** sensor | `sensor.<source>_compressor_cycle` | Only with a `compressor_sensor`: the mean length, in minutes, of the compressor's runs that ended within the last day. Diagnostic. |
 
 Its `observed` attribute is the request switch's own state, and its `reason` says why, such as `held for its minimum on time` or `waiting for the source mode`.
 Its `running`, `running_basis`, and `running_sensor` attributes describe source operation separately from the request.
 Its `holds` attribute lists the source's [timers](#timers), such as its minimum off time and post-run.
 Configured feedback takes precedence; without it, operation is inferred from the request, and unknown feedback remains unknown.
+The **Fault** binary sensor turns on at once, and its `reason` says whether the health sensor reports a fault or is unavailable; an automation can notify on it, while the [Repair](troubleshooting.md#a-source-is-kept-off-by-its-health-sensor) waits 10 minutes.
 
 ## Timers
 
@@ -206,8 +212,10 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 | `source_min_on` | Switched pump | The pump runs for the source's minimum on time. |
 | `exercise` | Pump | The pump runs for the exercise's run time. |
 | `min_on`, `min_off` | `source` | The source request keeps its minimum on or off time. |
+| `hold_after_demand` | `source` | The source request stays on into its heat sinks after demand ended. |
 | `post_run` | `source` | The source's pumps may still run after its request turned off. |
 | `feedback` | `source` | The source waits for running or flow proof before it gives up. |
+| `max_starts` | `source` | The source waits until its oldest start of the last hour is an hour old. |
 | `mode_dwell` | `mode` | A mode change waits for the dwell after the old mode's flow. |
 | `window_open_delay`, `window_close_delay` | Zone | A window's delay before it turns demand off, or lets it back on. |
 | `demand_min_on`, `demand_min_off` | Zone | The thermostat keeps its decision for its minimum on or off time. |

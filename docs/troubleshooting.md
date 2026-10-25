@@ -131,6 +131,8 @@ Diagnostics list them by the key in the second column.
 | [A sensor blocks its zone](#a-sensor-blocks-its-zone) | `zone_sensor_unusable` | Error |
 | [A condensation input blocks cooling](#a-condensation-input-blocks-cooling) | `condensation_input_unusable` | Error |
 | [A schedule has blocks it cannot use](#a-schedule-has-blocks-it-cannot-use) | `invalid_schedule_block` | Error |
+| [A source is kept off by its health sensor](#a-source-is-kept-off-by-its-health-sensor) | `source_unhealthy` | Error |
+| [A source keeps running without a load](#a-source-keeps-running-without-a-load) | `source_no_load` | Error |
 
 ### Plant is not valid
 
@@ -202,6 +204,19 @@ A block of the zone's comfort schedule names a level Hydronicus cannot use, such
 The Repair lists each such block by day and start time.
 While one is active, the zone holds its manual comfort target and its `schedule_status` is `invalid_block`.
 Edit the block's data in the schedule helper; see [comfort schedules](how-it-works.md#comfort-schedules) for what a block may name.
+
+### A source is kept off by its health sensor
+
+The source's `health_sensor` has not read healthy for 10 minutes, so Hydronicus released the source's request and does not ask it for heat or cooling.
+Zones that call still open their loops and run their switched pumps.
+Check the source and the link that reports its health, such as a Modbus bridge, its wiring, and its broker.
+The source's **Fault** binary sensor shows the same at once, for a notification that should not wait.
+
+### A source keeps running without a load
+
+The source's `no_load` guard tripped twice within a day: its compressor ran while its leaving and returning water stayed within the guard's `delta`, so its heat had nowhere to go, and each time Hydronicus released the request and held it off for the guard's `hold_off`.
+Check whether another source supplies the zones, such as a fireplace's buffer that its own valve selected, and bind that signal as the source's `inhibit_sensor`; then check for a closed valve or a stopped pump on the heat pump's side, and for air in the circuit.
+The Repair clears once a day has passed without two trips.
 
 ## Commissioning optional controls
 

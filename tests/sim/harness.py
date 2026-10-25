@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Final
 
+from custom_components.hydronicus.core.dhw import DhwCommand
 from custom_components.hydronicus.core.model import Desired, LoopRef, Mode, Plant
 from custom_components.hydronicus.core.reconcile import (
     Reconciled,
@@ -246,6 +247,41 @@ class Sim:
 
     def spontaneous_off(self, entity: str) -> None:
         self.world.spontaneous_off(entity)
+
+    def command_dhw(self, **command: float | bool | None) -> None:
+        """Change the DHW through Hydronicus's entities or its boost action, as the owner does."""
+        self.world.dhw_command = DhwCommand(self.world.wall(), **command)  # type: ignore[arg-type]
+        self.world.changed()
+
+    def set_number(self, entity: str, value: float) -> None:
+        """Change a number output physically, as its device's own controls do."""
+        self.world.numbers[entity].value = value
+        self.world.numbers[entity].changed = self.world.wall()
+        self.world.changed()
+
+    def handover(self, on: bool, *, request: bool | None = None) -> None:
+        """Hand the source to its own controller, or take it back, as a bridge does.
+
+        The handover sensor reads ``on``; while it does, every call to a source
+        output is rejected. ``request`` is what the controller switches the
+        request to as the handover begins, if anything.
+        """
+        source = self.plant.source
+        assert source is not None and source.handover_sensor is not None
+        entities = set(source.outputs())
+        world = self.world
+        world.faults = [
+            replace(fault, end=self.t) if fault.entity in entities and fault.end > self.t else fault
+            for fault in world.faults
+        ]
+        if on:
+            world.faults.extend(
+                Fault(entity, self.t, math.inf, FaultKind.REJECT) for entity in entities
+            )
+        self.set_contact(source.handover_sensor, on)
+        if request is not None and world.is_on(source.request) is not request:
+            world.spontaneous.append((self.t, source.request))
+            world.set_switch(source.request, request)
 
     def jump_clock(self, seconds: float) -> None:
         """Step the wall clock; physical time goes on as before."""

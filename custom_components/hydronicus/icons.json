@@ -40,6 +40,13 @@
           "on": "mdi:heat-pump",
           "off": "mdi:heat-pump-outline"
         }
+      },
+      "source_fault": {
+        "default": "mdi:heat-pump-outline",
+        "state": {
+          "on": "mdi:alert-circle",
+          "off": "mdi:check-circle-outline"
+        }
       }
     },
     "select": {
@@ -78,6 +85,12 @@
       },
       "loop_runtime": {
         "default": "mdi:timer-outline"
+      },
+      "compressor_starts": {
+        "default": "mdi:counter"
+      },
+      "compressor_cycle": {
+        "default": "mdi:timer-sync-outline"
       }
     },
     "switch": {
@@ -86,6 +99,13 @@
         "state": {
           "on": "mdi:power-plug",
           "off": "mdi:power-plug-off"
+        }
+      },
+      "dhw": {
+        "default": "mdi:water-boiler",
+        "state": {
+          "on": "mdi:water-boiler",
+          "off": "mdi:water-boiler-off"
         }
       }
     },
@@ -100,12 +120,21 @@
       },
       "cool_setback": {
         "default": "mdi:thermometer-plus"
+      },
+      "dhw_target": {
+        "default": "mdi:thermometer-water"
       }
     }
   },
   "services": {
     "export_plant": {
       "service": "mdi:file-export-outline"
+    },
+    "boost_dhw": {
+      "service": "mdi:water-boiler-alert"
+    },
+    "end_dhw_boost": {
+      "service": "mdi:water-boiler"
     }
   }
 }

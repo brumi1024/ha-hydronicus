@@ -22,6 +22,7 @@ from custom_components.hydronicus.core.model import (
     LoopRun,
     MinFlow,
     Mode,
+    ModeSwitch,
     OutputRole,
     Plant,
     Pump,
@@ -1470,3 +1471,289 @@ def test_predictive_settings_reject_missing_prerequisites(
     with pytest.raises(PlantFileError) as error:
         parse_plant(document)
     assert error.value.path == f"zones.basement.thermostat.digital.{field}"
+
+
+def cycling_document() -> dict[str, Any]:
+    """The reference plant with every source cycling limit and a weighted loop."""
+    document = reference_document()
+    document["source"].update(
+        {
+            "health_sensor": "binary_sensor.heat_pump_healthy",
+            "max_starts_per_hour": 3,
+            "start_threshold": 1.5,
+            "heat_sink_loops": ["living_area.floor"],
+            "hold_after_demand": 14400,
+            "heat_sink_overshoot": 0.5,
+            "handover_sensor": "binary_sensor.heat_pump_handover",
+            "write_interval": 300,
+        }
+    )
+    document["zones"]["living_area"]["loops"]["floor"]["weight"] = 2.5
+    return document
+
+
+def test_source_cycling_limits_roundtrip_through_yaml_and_sorted_storage() -> None:
+    plant = parse_plant(cycling_document())
+
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    source = plant.source
+    assert source is not None
+    assert source.max_starts_per_hour == 3
+    assert source.start_threshold == 1.5
+    assert source.heat_sink_loops == (LoopRef("living_area", "floor"),)
+    assert (source.hold_after_demand, source.heat_sink_overshoot) == (14400.0, 0.5)
+    assert entity_paths(plant)["binary_sensor.heat_pump_handover"] == "source.handover_sensor"
+    assert source.write_interval == 300.0
+    assert source.write_limited(source.request) and not source.write_limited("switch.other")
+    assert plant.loop(LoopRef("living_area", "floor")).weight == 2.5
+    assert plant.loop(LoopRef("living_area", "ceiling")).weight == 1.0
+    assert entity_paths(plant)["binary_sensor.heat_pump_healthy"] == "source.health_sensor"
+    assert "binary_sensor.heat_pump_healthy" not in plant.outputs()
+    exported = export_plant(plant)
+    assert exported["zones"]["living_area"]["loops"]["floor"]["weight"] == 2.5
+    assert "weight" not in exported["zones"]["living_area"]["loops"]["ceiling"]
+
+
+def test_source_cycling_limits_are_off_unless_set() -> None:
+    source = parse_plant(reference_document()).source
+
+    assert source is not None
+    assert source.max_starts_per_hour is None
+    assert source.start_threshold is None
+    assert source.heat_sink_loops == ()
+    assert source.health_sensor is None
+    assert source.hold_after_demand is None
+    assert source.heat_sink_overshoot == 1.0
+    assert not {
+        "max_starts_per_hour",
+        "start_threshold",
+        "heat_sink_loops",
+        "hold_after_demand",
+        "heat_sink_overshoot",
+        "health_sensor",
+        "handover_sensor",
+        "write_interval",
+    } & set(export_plant(parse_plant(reference_document()))["source"])
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        ("source.max_starts_per_hour", 0, "positive"),
+        ("source.max_starts_per_hour", 2.5, "whole number"),
+        ("source.max_starts_per_hour", True, "number"),
+        ("source.start_threshold", 0, "positive"),
+        ("source.health_sensor", "switch.heat_pump_healthy", "binary_sensor"),
+        ("source.handover_sensor", "sensor.heat_pump_handover", "binary_sensor"),
+        ("source.write_interval", 0, "positive"),
+        ("source.heat_sink_loops", "living_area.floor", "list"),
+        ("source.heat_sink_loops.0", "attic.floor", "no loop"),
+        ("source.heat_sink_loops.1", "living_area.floor", "listed twice"),
+        ("source.heat_sink_loops.0", "towel_dryer", "already runs with the source"),
+        ("source.hold_after_demand", -1, "negative"),
+        ("source.heat_sink_overshoot", -0.5, "negative"),
+        ("zones.living_area.loops.floor.weight", 0, "positive"),
+        ("loops.towel_dryer.weight", float("inf"), "finite"),
+    ],
+)
+def test_source_cycling_limits_reject_invalid_values(
+    path: str, value: object, message: str
+) -> None:
+    document = cycling_document()
+    if path == "source.heat_sink_loops.1":
+        document["source"]["heat_sink_loops"] = ["living_area.floor", value]
+    elif path == "source.heat_sink_loops.0":
+        document["source"]["heat_sink_loops"] = [value]
+    else:
+        _set(path, value)(document)
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize("key", ["hold_after_demand", "handover_sensor"])
+def test_a_hold_after_demand_and_a_handover_need_heat_sink_loops(key: str) -> None:
+    document = cycling_document()
+    del document["source"]["heat_sink_loops"]
+    for other in {"hold_after_demand", "handover_sensor"} - {key}:
+        del document["source"][other]
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == f"source.{key}"
+    assert "heat_sink_loops" in str(error.value)
+
+
+def test_a_heat_sink_must_heat() -> None:
+    plant = parse_plant(cycling_document())
+    floor = plant.loop(LoopRef("living_area", "floor"))
+    zones = tuple(
+        replace(
+            zone,
+            loops=tuple(
+                replace(loop, modes=frozenset({Mode.COOL}), surface_temperature="sensor.surface")
+                if loop == floor
+                else loop
+                for loop in zone.loops
+            ),
+        )
+        for zone in plant.zones
+    )
+
+    with pytest.raises(PlantFileError) as error:
+        validate_plant(replace(plant, zones=zones))
+    assert error.value.path == "source.heat_sink_loops.0"
+    assert "does not heat" in str(error.value)
+
+
+def test_a_heat_sink_path_reads_in_words() -> None:
+    assert (
+        describe_path(cycling_document(), "source.heat_sink_loops.0") == "Source, heat sink loop 1"
+    )
+
+
+def test_a_cooling_only_supply_with_a_step_roundtrips_and_skips_the_heating_limits() -> None:
+    document = reference_document()
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "modes": ["cool"],
+        "cool_temperature": 19,
+        "minimum": 16,
+        "maximum": 22,
+        "step": 1,
+    }
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.supply.modes == frozenset({Mode.COOL})
+    assert plant.source.supply.step == 1.0
+    assert export_plant(plant)["source"]["supply"] == document["source"]["supply"]
+    assert read_plant_file(write_plant_file(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "path", "message"),
+    [
+        ("modes", [], "source.supply.modes", "at least one mode"),
+        ("modes", ["off"], "source.supply.modes.0", "heat"),
+        ("step", 0, "source.supply.step", "positive"),
+        ("modes", ["heat", "cool"], "source.supply.heat_temperature", "at most 22"),
+    ],
+)
+def test_a_supply_rejects_invalid_modes_and_steps(
+    key: str, value: object, path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "modes": ["cool"],
+        "minimum": 16,
+        "maximum": 22,
+        key: value,
+    }
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+def test_an_inhibit_and_a_no_load_guard_roundtrip() -> None:
+    document = reference_document()
+    document["source"]["inhibit_sensor"] = "input_boolean.fireplace_heating"
+    document["source"]["no_load"] = {
+        "supply_temperature": "sensor.water_outlet",
+        "return_temperature": "sensor.water_inlet",
+        "compressor_sensor": "sensor.compressor_frequency",
+        "delta": 1.5,
+    }
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.no_load is not None
+    assert plant.source.inhibit_sensor == "input_boolean.fireplace_heating"
+    assert (plant.source.no_load.delta, plant.source.no_load.duration) == (1.5, 600.0)
+    exported = export_plant(plant)["source"]
+    assert exported["no_load"] == document["source"]["no_load"]
+    assert exported["inhibit_sensor"] == "input_boolean.fireplace_heating"
+    assert read_plant_file(write_plant_file(plant)) == plant
+    paths = entity_paths(plant)
+    assert paths["sensor.compressor_frequency"] == "source.no_load.compressor_sensor"
+    assert paths["input_boolean.fireplace_heating"] == "source.inhibit_sensor"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "path", "message"),
+    [
+        ("inhibit_sensor", "switch.fireplace", "source.inhibit_sensor", "input_boolean"),
+        ("no_load", {"supply_temperature": "sensor.a"}, "source.no_load.return_temperature", ""),
+        (
+            "no_load",
+            {
+                "supply_temperature": "sensor.a",
+                "return_temperature": "sensor.b",
+                "compressor_sensor": "binary_sensor.c",
+            },
+            "source.no_load.compressor_sensor",
+            "sensor",
+        ),
+        (
+            "no_load",
+            {
+                "supply_temperature": "sensor.a",
+                "return_temperature": "sensor.b",
+                "compressor_sensor": "sensor.c",
+                "hold_off": 0,
+            },
+            "source.no_load.hold_off",
+            "positive",
+        ),
+    ],
+)
+def test_an_inhibit_and_a_no_load_guard_reject_invalid_values(
+    key: str, value: object, path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"][key] = value
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+def test_mode_switches_roundtrip_and_are_source_outputs() -> None:
+    document = reference_document()
+    document["source"]["mode_switches"] = {"switch.weather_curve": ["heat"]}
+    plant = parse_plant(document)
+
+    assert plant.source is not None
+    assert plant.source.mode_switches == (
+        ModeSwitch("switch.weather_curve", frozenset({Mode.HEAT})),
+    )
+    assert plant.outputs()["switch.weather_curve"] is OutputRole.SOURCE_MODE_SWITCH
+    assert plant.source.mode_switches[0].on(Mode.COOL) is False
+    assert plant.source.mode_switches[0].on(Mode.OFF) is None
+    assert export_plant(plant)["source"]["mode_switches"] == {"switch.weather_curve": ["heat"]}
+    assert read_plant_file(write_plant_file(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("value", "path", "message"),
+    [
+        (["switch.weather_curve"], "source.mode_switches", "mapping"),
+        ({"select.weather_curve": ["heat"]}, "source.mode_switches.select.weather_curve", "switch"),
+        ({"switch.weather_curve": []}, "source.mode_switches.switch.weather_curve", "one mode"),
+    ],
+)
+def test_mode_switches_reject_invalid_values(value: object, path: str, message: str) -> None:
+    document = reference_document()
+    document["source"]["mode_switches"] = value
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)

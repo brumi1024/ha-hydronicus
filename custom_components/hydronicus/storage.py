@@ -8,8 +8,9 @@ owns the schema; this module only moves it in and out of Home Assistant's config
 entry objects.
 
 Home Assistant cannot veto the removal of a subentry, so Plant-level references
-to a removed zone, in a pump's ``min_flow_loops`` and a plant loop's
-``with_zones``, are pruned from the entry data before the Plant is read again.
+to a removed zone, in a pump's ``min_flow_loops``, the source's
+``heat_sink_loops``, and a plant loop's ``with_zones``, are pruned from the
+entry data before the Plant is read again.
 """
 
 from __future__ import annotations
@@ -187,9 +188,9 @@ def pruned_entry_data(entry: ConfigEntry) -> dict[str, Any] | None:
     """Return entry data without references to zones that have no subentry, or None.
 
     A removed zone leaves its slug in plant loops' ``with_zones`` and its loops
-    in source-driven pumps' ``min_flow_loops``. Pruning them may still leave an
-    invalid Plant, such as a pump with no min-flow loop left, which reading the
-    Plant then reports.
+    in source-driven pumps' ``min_flow_loops`` and the source's
+    ``heat_sink_loops``. Pruning them may still leave an invalid Plant, such as
+    a pump with no min-flow loop left, which reading the Plant then reports.
     """
     zones = set(zone_data(entry))
     data = deepcopy(dict(entry.data))
@@ -204,6 +205,15 @@ def pruned_entry_data(entry: ConfigEntry) -> dict[str, Any] | None:
             if kept != refs:
                 pump["min_flow_loops"] = kept
                 changed = True
+    source = data.get("source")
+    if isinstance(source, dict) and isinstance(sinks := source.get("heat_sink_loops"), list):
+        kept = [ref for ref in sinks if _zone_of(ref) is None or _zone_of(ref) in zones]
+        if kept != sinks:
+            if kept:
+                source["heat_sink_loops"] = kept
+            else:
+                source.pop("heat_sink_loops")
+            changed = True
     loops = data.get("loops")
     if isinstance(loops, list):
         for loop in loops:

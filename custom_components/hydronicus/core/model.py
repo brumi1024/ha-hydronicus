@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from .comfort import ComfortTarget
+    from .dhw import DhwState
 
 
 class Mode(StrEnum):
@@ -76,9 +77,28 @@ class OutputRole(StrEnum):
 
     SOURCE_REQUEST = "source_request"
     SOURCE_MODE = "source_mode"
+    SOURCE_MODE_SWITCH = "source_mode_switch"
     SOURCE_SETPOINT = "source_setpoint"
+    DHW_SWITCH = "dhw_switch"
+    DHW_SETPOINT = "dhw_setpoint"
     PUMP = "pump"
     VALVE = "valve"
+
+
+# The roles of numeric outputs, which take a ``NumericTarget``; every other role
+# but the source mode is a switch.
+NUMERIC_ROLES: Final = frozenset({OutputRole.SOURCE_SETPOINT, OutputRole.DHW_SETPOINT})
+# The roles that set the source up rather than run the hydronics, which the off
+# sequence leaves as they are.
+SETTING_ROLES: Final = frozenset(
+    {
+        OutputRole.SOURCE_MODE,
+        OutputRole.SOURCE_MODE_SWITCH,
+        OutputRole.SOURCE_SETPOINT,
+        OutputRole.DHW_SWITCH,
+        OutputRole.DHW_SETPOINT,
+    }
+)
 
 
 DEFAULT_MODE_DWELL: Final = 3600.0
@@ -98,6 +118,9 @@ DEFAULT_OPENING_TIME: Final = 180.0
 # battery sensors report only on change, with a heartbeat about once an hour.
 DEFAULT_MAX_AGE: Final = 3600.0
 DEFAULT_SOURCE_TITLE: Final = "Heat source"
+# A heat sink zone may warm this far over its heating target, in kelvin, while
+# the source is held after demand.
+DEFAULT_HEAT_SINK_OVERSHOOT: Final = 1.0
 # While cooling, a loop's surface stays at or above this, in °C: the comfortable
 # floor minimum of ISO 7730 and REHVA. A ceiling may run colder.
 DEFAULT_SURFACE_MINIMUM: Final = 20.0
@@ -220,6 +243,9 @@ class Loop:
     # The lowest surface temperature while cooling, in °C; None turns it off. It
     # needs ``surface_temperature``.
     surface_minimum: float | None = DEFAULT_SURFACE_MINIMUM
+    # The loop's share of demand, such as its emitter output, for the source's
+    # ``start_threshold``.
+    weight: float = 1.0
 
     @property
     def slug(self) -> str:
@@ -252,6 +278,23 @@ class SourceModeSelect:
 
 
 @dataclass(frozen=True, slots=True)
+class ModeSwitch:
+    """A switch of the source that is on in some modes and off in the others.
+
+    Such as a heat pump's weather curve, on while heating and off while cooling,
+    so that a cooling setpoint is the source's own.
+    """
+
+    entity: str
+    # The modes it is on in; it is off in every other mode but off.
+    modes: frozenset[Mode]
+
+    def on(self, mode: Mode) -> bool | None:
+        """Whether it is on in a mode, or None in off, where it stays as it is."""
+        return None if mode is Mode.OFF else mode in self.modes
+
+
+@dataclass(frozen=True, slots=True)
 class SupplyControl:
     """A bounded source supply setpoint, optionally compensated for outdoor temperature."""
 
@@ -267,6 +310,60 @@ class SupplyControl:
     heat_cold: float = 45.0
     heat_warm: float = 25.0
     max_age: float = DEFAULT_MAX_AGE
+    # The modes the setpoint is Hydronicus's in; in another, the source's own
+    # controller keeps it, such as a heat pump on its weather curve.
+    modes: frozenset[Mode] = frozenset({Mode.HEAT, Mode.COOL})
+    # The setpoint's resolution, such as 1 for whole degrees: a cooling target is
+    # rounded up, so it stays above the dew point, and a heating target to nearest.
+    step: float | None = None
+
+
+DEFAULT_DHW_MINIMUM: Final = 40.0
+DEFAULT_DHW_MAXIMUM: Final = 55.0
+DEFAULT_DHW_BOOST: Final = 7200.0
+
+
+@dataclass(frozen=True, slots=True)
+class Dhw:
+    """The source's domestic hot water: a switch, a setpoint, or both, which Hydronicus owns.
+
+    A change made elsewhere, such as on the source's own controller, is adopted
+    as Hydronicus's value and never written back.
+    """
+
+    switch: str | None = None
+    setpoint: str | None = None
+    # Hard limits of the setpoint, in °C: an owned or adopted value outside them
+    # is clamped.
+    minimum: float = DEFAULT_DHW_MINIMUM
+    maximum: float = DEFAULT_DHW_MAXIMUM
+    tolerance: float = 0.5
+    # The setpoint's resolution, such as 1 for whole degrees.
+    step: float | None = None
+    # The longest a boost may raise the setpoint, in seconds.
+    max_boost: float = DEFAULT_DHW_BOOST
+
+
+@dataclass(frozen=True, slots=True)
+class NoLoadGuard:
+    """Releases a source whose compressor runs while its water barely changes temperature.
+
+    A heat pump whose leaving and returning water stay within ``delta`` of each
+    other while its compressor runs has nowhere to put its heat: another source
+    supplies the zones, every valve is closed, a pump failed, or air blocks the
+    flow. The request is then released and held off for ``hold_off``.
+    """
+
+    supply_temperature: str
+    return_temperature: str
+    # A numeric sensor, such as the compressor frequency, that reads above zero
+    # while the compressor runs.
+    compressor_sensor: str
+    delta: float = 1.0
+    # How long the compressor must have run, and the water stayed within
+    # ``delta``, before the guard trips, in seconds.
+    duration: float = 600.0
+    hold_off: float = 1800.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +372,8 @@ class Source:
 
     request: str
     mode: SourceModeSelect | None = None
+    # Switches that follow the mode, set with the mode select before the source runs.
+    mode_switches: tuple[ModeSwitch, ...] = ()
     post_run: float = DEFAULT_POST_RUN
     min_on: float = DEFAULT_MIN_ON
     min_off: float = DEFAULT_MIN_OFF
@@ -283,10 +382,64 @@ class Source:
     supply: SupplyControl | None = None
     # Seconds after a request turns on for independent running and flow proof.
     feedback_timeout: float = 300.0
+    # The most observed request starts within any hour; None turns the limit off.
+    max_starts_per_hour: int | None = None
+    # Heating loops held open while the request is held for its minimum on time
+    # after demand ended, so the source keeps a sink until its run may end.
+    heat_sink_loops: tuple[LoopRef, ...] = ()
+    # Seconds a heating request stays on into the heat sink loops after the last
+    # calling loop is satisfied, so a source whose every stop costs a restart of
+    # its own pumps keeps running between calls; None holds it for ``min_on`` only.
+    hold_after_demand: float | None = None
+    # Beyond ``min_on``, a heat sink loop takes heat only while each zone it
+    # serves reads less than this many kelvin over its heating target.
+    heat_sink_overshoot: float = DEFAULT_HEAT_SINK_OVERSHOOT
+    # The total weight of wanted loops that must call before the request starts;
+    # None starts it for any calling loop. It never shortens a running request.
+    start_threshold: float | None = None
+    # A binary sensor that reads on while the source and its link are healthy;
+    # off, unknown, or unavailable releases the request at once and keeps it off.
+    health_sensor: str | None = None
+    # A binary sensor that reads on while something else controls the source,
+    # such as a bridge that handed it to its own controller: Hydronicus then
+    # sends the source nothing and keeps a heat sink open while it may heat.
+    handover_sensor: str | None = None
+    # The fewest seconds between two writes to one of the source's outputs, for
+    # a bridge that refuses faster ones; the request or the DHW switch turning off
+    # is never held.
+    write_interval: float | None = None
+    dhw: Dhw | None = None
+    # A binary sensor or input boolean that reads on while another source supplies
+    # the zones, such as a fireplace's buffer: the request is then released at
+    # once and stays off, while the zones go on circulating. No fault, no Repair.
+    inhibit_sensor: str | None = None
+    no_load: NoLoadGuard | None = None
+    # A numeric sensor that reads above zero while the compressor runs, such as
+    # its frequency, for the compressor's starts and cycle length diagnostics.
+    compressor_sensor: str | None = None
 
     @property
     def title(self) -> str:
         return self.name or DEFAULT_SOURCE_TITLE
+
+    def write_limited(self, entity: str) -> bool:
+        """Whether writes to one of the source's outputs keep ``write_interval``."""
+        return self.write_interval is not None and entity in self.outputs()
+
+    def outputs(self) -> tuple[str, ...]:
+        """The source's own outputs: its request, mode select, supply setpoint, and DHW."""
+        return tuple(
+            entity
+            for entity in (
+                self.request,
+                None if self.mode is None else self.mode.entity,
+                *(switch.entity for switch in self.mode_switches),
+                None if self.supply is None else self.supply.entity,
+                None if self.dhw is None else self.dhw.switch,
+                None if self.dhw is None else self.dhw.setpoint,
+            )
+            if entity is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,8 +638,15 @@ class Plant:
             outputs.setdefault(self.source.request, OutputRole.SOURCE_REQUEST)
             if self.source.mode is not None:
                 outputs.setdefault(self.source.mode.entity, OutputRole.SOURCE_MODE)
+            for switch in self.source.mode_switches:
+                outputs.setdefault(switch.entity, OutputRole.SOURCE_MODE_SWITCH)
             if self.source.supply is not None:
                 outputs.setdefault(self.source.supply.entity, OutputRole.SOURCE_SETPOINT)
+            if (dhw := self.source.dhw) is not None:
+                if dhw.switch is not None:
+                    outputs.setdefault(dhw.switch, OutputRole.DHW_SWITCH)
+                if dhw.setpoint is not None:
+                    outputs.setdefault(dhw.setpoint, OutputRole.DHW_SETPOINT)
         for pump in self.pumps:
             if pump.switch is not None:
                 outputs.setdefault(pump.switch, OutputRole.PUMP)
@@ -551,9 +711,12 @@ class HoldKind(StrEnum):
     OVERRUN = "overrun"
     SOURCE_MIN_ON = "source_min_on"
     MIN_ON = "min_on"
+    HOLD_AFTER_DEMAND = "hold_after_demand"
     MIN_OFF = "min_off"
     POST_RUN = "post_run"
     FEEDBACK = "feedback"
+    MAX_STARTS = "max_starts"
+    NO_LOAD = "no_load"
     MODE_DWELL = "mode_dwell"
     WINDOW_OPEN_DELAY = "window_open_delay"
     WINDOW_CLOSE_DELAY = "window_close_delay"
@@ -606,3 +769,21 @@ class Desired:
     comfort: Mapping[str, ComfortTarget] = field(default_factory=dict)
     # Every timer that holds an object as it is now, ordered by when it ends.
     holds: tuple[Hold, ...] = ()
+    # Why the source's health sensor forbids a request, or None while it reads healthy.
+    source_fault: str | None = None
+    # The source request is observed on while no loop of the mode may pass flow
+    # from a running pump, which ``step()`` never commands and releases at once.
+    source_without_path: bool = False
+    # The source's handover sensor reads on: something else controls the source,
+    # and ``outputs`` holds no target for any of its outputs.
+    source_handover: bool = False
+    # The owned DHW settings, why the DHW outputs are as they are, and what changed
+    # this evaluation that the owner should hear about.
+    dhw: DhwState | None = None
+    dhw_reason: str | None = None
+    dhw_events: tuple[str, ...] = ()
+    # Why the source is kept off for another source or a missing load, if it is.
+    source_inhibited: str | None = None
+    source_no_load: str | None = None
+    # When the no-load guard tripped within the last day, oldest first.
+    no_load_trips: tuple[float, ...] = ()

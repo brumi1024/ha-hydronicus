@@ -96,7 +96,7 @@ class Actuators:
     @callback
     def _handle(self, event: Event[Any]) -> None:
         domain, service = event.data["domain"], event.data["service"]
-        if domain not in ("switch", "valve", "select"):
+        if domain not in ("switch", "valve", "select", "number"):
             return
         entity_ids = event.data["service_data"].get("entity_id", [])
         if isinstance(entity_ids, str):
@@ -120,6 +120,8 @@ class Actuators:
                     state = "open"
                 case "close_valve":
                     state = "closed"
+                case "set_value":
+                    state = str(data["value"])
                 case _:
                     state = str(data["option"])
             self.hass.states.async_set(entity_id, state, attributes)
