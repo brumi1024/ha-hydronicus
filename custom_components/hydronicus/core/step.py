@@ -36,12 +36,14 @@ from .comfort import ComfortTarget, ScheduleState, Setbacks, comfort_target
 from .demand import (
     AreaSensors,
     DemandState,
+    DetectedWindow,
     DigitalThermostatState,
     ExternalThermostatState,
     Reading,
     ThermostatState,
     aggregate,
     coldest_temperature,
+    detect_window,
     fresh,
     frost_demand,
     unusable_sensors,
@@ -325,6 +327,8 @@ class State:
     winding: frozenset[str] = frozenset()
     # The zones whose demand an open window turns off, by slug.
     windows_open: frozenset[str] = frozenset()
+    # What window detection carries for each zone that uses it, by slug.
+    detected_windows: Mapping[str, DetectedWindow] = field(default_factory=dict)
     # The zones that frost protection heats, by zone slug, until they are warm again.
     frost: frozenset[str] = frozenset()
     # Since when each switched pump and valve has not been seen on, by entity, or
@@ -381,6 +385,16 @@ class State:
             "ready": dict(self.ready),
             "winding": sorted(self.winding),
             "windows_open": sorted(self.windows_open),
+            "detected_windows": {
+                slug: {
+                    "mode": window.mode.value,
+                    "samples": [list(sample) for sample in window.samples],
+                    "since": window.since,
+                    "extreme": window.extreme,
+                    "extreme_at": window.extreme_at,
+                }
+                for slug, window in self.detected_windows.items()
+            },
             "frost": sorted(self.frost),
             "idle_since": dict(self.idle_since),
             "exercise": None
@@ -435,6 +449,16 @@ class State:
             ready={entity: float(value) for entity, value in data.get("ready", {}).items()},
             winding=frozenset(str(entity) for entity in data.get("winding", ())),
             windows_open=frozenset(str(zone) for zone in data.get("windows_open", ())),
+            detected_windows={
+                slug: DetectedWindow(
+                    Mode(value["mode"]),
+                    tuple((float(at), float(reading)) for at, reading in value.get("samples", ())),
+                    _optional_float(value.get("since")),
+                    _optional_float(value.get("extreme")),
+                    _optional_float(value.get("extreme_at")),
+                )
+                for slug, value in data.get("detected_windows", {}).items()
+            },
             frost=frozenset(str(zone) for zone in data.get("frost", ())),
             idle_since={
                 entity: _optional_float(value)
@@ -630,6 +654,7 @@ class _Evaluation:
         self.temperatures: dict[str, float | None] = {}
         # The zones whose demand an open window turns off now.
         self.windows_open: set[str] = set()
+        self.detected_windows: dict[str, DetectedWindow] = {}
         # The zones that frost protection heats, which the demands stage finds.
         self.frost: list[str] = []
         # This evaluation's condensation guards, and since when each output is idle.
@@ -964,6 +989,7 @@ class _Evaluation:
             ready=ready,
             winding=frozenset(winding),
             windows_open=frozenset(self.windows_open),
+            detected_windows=self.detected_windows,
             frost=frozenset(self.frost),
             idle_since=self.idle_times,
             exercise=plan.next_exercise,
@@ -1143,18 +1169,43 @@ class _Evaluation:
     ) -> tuple[DemandState, Demand]:
         """Turn a zone's demand off while a window is open, after its thermostat decided.
 
-        The thermostat's own decision goes on underneath, so its hysteresis and
-        minimum times are the same when the window closes. A decision that is on
-        then counts its minimum on time from the end of the inhibit, because the
-        zone's valves have closed meanwhile, so it cannot end as soon as it resumes.
+        A window is open while a window sensor says so, or while window detection
+        finds one from the zone's temperature. The thermostat's own decision goes
+        on underneath, so its hysteresis and minimum times are the same when the
+        window closes. A decision that is on then counts its minimum on time from
+        the end of the inhibit, because the zone's valves have closed meanwhile,
+        so it cannot end as soon as it resumes.
         """
         was_open = zone.slug in self.state.windows_open
+        detected = self.detect_window(zone, demand.mode)
         if self.window_open(zone, was_open):
             self.windows_open.add(zone.slug)
             return state, Demand(demand.mode, False, "window open")
+        if detected is not None:
+            self.windows_open.add(zone.slug)
+            return state, Demand(demand.mode, False, detected)
         if was_open and state.on:
             state = replace(state, since=self.now)
         return state, demand
+
+    def detect_window(self, zone: Zone, mode: Mode) -> str | None:
+        """Run a zone's window detection, and return its reason while it finds a window."""
+        config = zone.window_detection
+        if config is None:
+            return None
+        window, reason, until = detect_window(
+            config,
+            self.state.detected_windows.get(zone.slug),
+            mode,
+            self.temperatures.get(zone.slug),
+            self.now,
+            self.reached,
+        )
+        if window is not None:
+            self.detected_windows[zone.slug] = window
+        if until is not None:
+            self.hold(zone.slug, HoldKind.WINDOW_DETECTED, until)
+        return reason
 
     def window_open(self, zone: Zone, was_open: bool) -> bool:
         """Whether a zone's windows turn its demand off.

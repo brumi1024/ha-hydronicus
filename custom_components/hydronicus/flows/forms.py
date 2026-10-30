@@ -37,6 +37,7 @@ from ..core.model import (
     DEFAULT_EXERCISE,
     DEFAULT_FROST_PROTECTION,
     DEFAULT_MAX_HUMIDITY,
+    DEFAULT_RESPONSE_CHECK,
     DEFAULT_SURFACE_MINIMUM,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
@@ -54,6 +55,7 @@ from ..core.model import (
     Schedule,
     SupplyControl,
     WeatherConfig,
+    WindowDetection,
 )
 from ..core.plant_file import PlantFileError, describe_path, parse_plant
 from .documents import NEW, Document, pumps, title, zones
@@ -837,6 +839,23 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             if zone.thermostat.weather_aware:
                 thermostat += ", weather-aware recovery"
         windows = f", windows {listed(zone.windows)}" if zone.windows else ""
+        detection = zone.window_detection
+        if detection is None:
+            detected = ""
+        elif detection == WindowDetection():
+            detected = ", window detection"
+        else:
+            detected = (
+                f", window detection {detection.change:g} K within {detection.within:g} s, "
+                f"at most {detection.max_duration:g} s"
+            )
+        check = zone.response_check
+        if check == DEFAULT_RESPONSE_CHECK:
+            response = ""
+        elif check is None:
+            response = ", no response check"
+        else:
+            response = f", response check {check.progress:g} K in {check.duration / 3600:g} h"
         if zone.max_humidity == DEFAULT_MAX_HUMIDITY:
             humidity = ""
         elif zone.max_humidity is None:
@@ -845,7 +864,7 @@ def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
             humidity = f", humidity limit {zone.max_humidity:g} %"
         loops = [_loop_line(plant, loop.ref) for loop in zone.loops]
         lines.append(
-            f"- Zone {zone.title}{covering}, {thermostat}{windows}{humidity}"
+            f"- Zone {zone.title}{covering}, {thermostat}{windows}{detected}{response}{humidity}"
             + (f"; loops: {'; '.join(loops)}" if loops else "; no loop of its own")
         )
     for loop in plant.loops:

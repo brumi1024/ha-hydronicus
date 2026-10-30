@@ -25,7 +25,7 @@ When a zone should heat and nothing moves, check these in order:
 | `heating` or `cooling` | `active_loops`, and `proposed` in Dry run. |
 | `exercising` | Nothing else runs, and an idle pump is exercised: `exercising` and `idle_since`. |
 | `changing_over` | The mode is changing: `reasons`, under `mode`. |
-| `degraded` | `outputs_not_responding`, `missing_entities`, `evaluation_error`, and the Repairs. |
+| `degraded` | `outputs_not_responding`, `missing_entities`, `zones_not_responding`, `evaluation_error`, and the Repairs. |
 | `stopping` | `stopping_outputs`; see [removed equipment keeps running](#removed-equipment-keeps-running). |
 | `invalid` | `configuration_problem`, and the [Plant is not valid](#plant-is-not-valid) Repair. |
 | unavailable | The Plant has not evaluated yet or is not loaded; check that every digital thermostat has loaded, and the Repairs. |
@@ -40,6 +40,7 @@ The common reasons:
 | `idle: no usable temperature` | A required sensor of the zone is missing or stale, or the zone has no usable reading. |
 | `idle: thermostat unavailable` | The zone's existing thermostat is unavailable, or reports an action Hydronicus does not know. |
 | `idle: window open` | A window of the zone is open, so the zone does not call until every window has been closed for its delay. |
+| `idle: window open: temperature fell ...` | [Window detection](plant-file.md#window-detection) saw a sudden fall, or a rise in cooling, so the zone does not call until the temperature settles. |
 | `demands: ..., held for its minimum on time` | The zone has reached its target, but its thermostat keeps calling for its minimum on time; `held for its minimum off time` is the same after a call ends. |
 | `demands: frost protection: ...` | The zone is heated because its coldest reading is below the frost protection temperature. |
 | `dropped: ... unarmed or unavailable` | The loop needs an output that is not armed or not available. |
@@ -133,6 +134,7 @@ Diagnostics list them by the key in the second column.
 | [A schedule has blocks it cannot use](#a-schedule-has-blocks-it-cannot-use) | `invalid_schedule_block` | Error |
 | [A source is kept off by its health sensor](#a-source-is-kept-off-by-its-health-sensor) | `source_unhealthy` | Error |
 | [A source keeps running without a load](#a-source-keeps-running-without-a-load) | `source_no_load` | Error |
+| [A zone does not respond](#a-zone-does-not-respond) | `zone_not_responding` | Error |
 
 ### Plant is not valid
 
@@ -217,6 +219,14 @@ The source's **Fault** binary sensor shows the same at once, for a notification 
 The source's `no_load` guard tripped twice within a day: its compressor ran while its leaving and returning water stayed within the guard's `delta`, so its heat had nowhere to go, and each time Hydronicus released the request and held it off for the guard's `hold_off`.
 Check whether another source supplies the zones, such as a fireplace's buffer that its own valve selected, and bind that signal as the source's `inhibit_sensor`; then check for a closed valve or a stopped pump on the heat pump's side, and for air in the circuit.
 The Repair clears once a day has passed without two trips.
+
+### A zone does not respond
+
+The zone's [response check](plant-file.md#response-check) failed: the zone called for 3 hours of observed flow, with the source running when the Plant has one, and its temperature did not move 0.2 K toward the target.
+Hydronicus keeps controlling the zone as before, and the **Status** reads `degraded`.
+Check that the zone's valves really open and its pump really runs, that the source delivers water at the right temperature, that the loop is not air-locked or balanced too low, and that the room sensor sits where the loop can warm or cool it.
+A loop too small for very cold or very hot weather can also hold a room steady short of its target; then raise the supply temperature, or lengthen the zone's `response_check` duration.
+The Repair clears once the temperature moves toward the target, or the zone stops calling.
 
 ## Commissioning optional controls
 

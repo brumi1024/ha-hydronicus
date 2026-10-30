@@ -119,6 +119,8 @@ zones:
     temperature: [sensor.study]
     humidity: [sensor.study_rh]
     windows: [binary_sensor.study_window, binary_sensor.study_door]
+    window_detection: {change: 0.3}
+    response_check: {duration: 21600}
     max_humidity: 65
     loops:
       floor:
@@ -136,6 +138,8 @@ zones:
   hall:
     temperature: [sensor.hall]
     humidity: [sensor.hall_rh]
+    window_detection: true
+    response_check: false
     max_humidity: null
 """
     result = await _submit(hass, text)
@@ -149,11 +153,13 @@ zones:
         "condensation switch binary_sensor.dew",
         "- Zone Study, digital thermostat, "
         "windows binary_sensor.study_window and binary_sensor.study_door, "
-        "humidity limit 65 %; loops: "
+        "window detection 0.3 K within 600 s, at most 1800 s, "
+        "response check 0.2 K in 6 h, humidity limit 65 %; loops: "
         "Floor (heat and cool, pump Pump, 1 valve, surface minimum 18 °C, "
         "condensation switch binary_sensor.study_dew); "
         "Ceiling (heat and cool, pump Pump, 1 valve)",
-        "- Zone Hall, digital thermostat, no humidity limit; no loop of its own",
+        "- Zone Hall, digital thermostat, window detection, no response check, "
+        "no humidity limit; no loop of its own",
         "- Outputs: 3",
     ]
 

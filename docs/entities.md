@@ -32,7 +32,7 @@ A device goes with its object: removing a zone removes its device.
 | `cooling` | The same for cooling. |
 | `exercising` | Nothing else runs, and an idle pump or its valves are [exercised](how-it-works.md#exercise). |
 | `changing_over` | The Plant is stopping the old mode, or waiting for the mode dwell, before the new mode starts. |
-| `degraded` | An output does not respond, a bound entity does not exist, or the latest evaluation failed. |
+| `degraded` | An output does not respond, a bound entity does not exist, a zone does not respond, or the latest evaluation failed. |
 | `stopping` | A change removed outputs that were running, so the Plant first stops the equipment of its old configuration. |
 | `invalid` | The configuration is not valid; the equipment has stopped, and the Plant only observes until you fix it. |
 
@@ -52,6 +52,7 @@ The **Status** sensor's attributes explain the state:
 | `stopping_outputs` | While `stopping`, the outputs of the old configuration not yet seen off. |
 | `configuration_problem` | Why the configuration is not valid, or none. |
 | `frost_protection` | The zones that [frost protection](how-it-works.md#frost-protection) heats. |
+| `zones_not_responding` | Each zone whose [response check](plant-file.md#response-check) failed, with when it did. |
 | `exercising` | The slug of the pump being exercised, or none. |
 | `idle_since` | Each switched pump and valve with the time since which it has been off. |
 | `reasons` | Why, for each zone, loop, output, the source, and the mode. Not recorded in history. |
@@ -126,8 +127,8 @@ The button is a configuration entity on the zone device and disappears when lear
 They start from the configured `heat_setback` and `cool_setback`, can be changed at any time, and keep their value across restarts.
 A zone with an existing thermostat gets no thermostat entity; the existing one is its thermostat.
 
-The demand binary sensors are on while the zone calls, and their `reason` attribute says why or why not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, or `window open`.
-Their `holds` attribute lists the zone's [timers](#timers): a window's open or close delay and the thermostat's minimum on or off time.
+The demand binary sensors are on while the zone calls, and their `reason` attribute says why or why not, such as `heat to 21.0 °C from 19.5 °C`, `thermostat off`, `window open`, or `window open: temperature fell 0.6 K` from [window detection](plant-file.md#window-detection).
+Their `holds` attribute lists the zone's [timers](#timers): a window's open or close delay, a detected window, and the thermostat's minimum on or off time.
 
 The **Combined temperature** sensor is the zone's temperature, combined from its usable sensors.
 Its `areas` attribute shows each area with the sensors it names and their readings, and its `sensors` attribute each extra sensor.
@@ -218,6 +219,7 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 | `max_starts` | `source` | The source waits until its oldest start of the last hour is an hour old. |
 | `mode_dwell` | `mode` | A mode change waits for the dwell after the old mode's flow. |
 | `window_open_delay`, `window_close_delay` | Zone | A window's delay before it turns demand off, or lets it back on. |
+| `window_detected` | Zone | [Window detection](plant-file.md#window-detection) keeps the zone from calling until the temperature settles, or for its maximum duration. |
 | `demand_min_on`, `demand_min_off` | Zone | The thermostat keeps its decision for its minimum on or off time. |
 | `guard_min_blocked` | `<loop>.guard` | A condensation guard stays blocked for its minimum time, in cooling. |
 
@@ -251,7 +253,7 @@ The action fails with a message when the entry is not a Hydronicus Plant, or whe
 
 ### Tell me when the plant needs attention
 
-The **Status** reads `degraded` while an output does not respond, an entity is missing, or the latest evaluation failed.
+The **Status** reads `degraded` while an output does not respond, an entity is missing, a zone does not respond, or the latest evaluation failed.
 This automation sends a notification when that lasts 10 minutes; replace `sensor.home_status` with your Plant's **Status** sensor:
 
 ```yaml

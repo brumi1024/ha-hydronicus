@@ -42,15 +42,26 @@ from .model import (
     DEFAULT_OPENING_TIME,
     DEFAULT_OVERRUN,
     DEFAULT_POST_RUN,
+    DEFAULT_RESPONSE_CHECK,
     DEFAULT_SURFACE_MINIMUM,
     DEFAULT_WINDOW_CLOSE_DELAY,
     DEFAULT_WINDOW_OPEN_DELAY,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
+    MAX_RESPONSE_DURATION,
+    MAX_RESPONSE_PROGRESS,
     MAX_SETBACK,
+    MAX_WINDOW_DETECTION_CHANGE,
+    MAX_WINDOW_DETECTION_MAX_DURATION,
+    MAX_WINDOW_DETECTION_WITHIN,
     MIN_EXERCISE_INTERVAL,
     MIN_EXERCISE_RUN,
     MIN_MAX_HUMIDITY,
+    MIN_RESPONSE_DURATION,
+    MIN_RESPONSE_PROGRESS,
+    MIN_WINDOW_DETECTION_CHANGE,
+    MIN_WINDOW_DETECTION_MAX_DURATION,
+    MIN_WINDOW_DETECTION_WITHIN,
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
@@ -69,6 +80,7 @@ from .model import (
     Plant,
     Preset,
     Pump,
+    ResponseCheck,
     RunKind,
     Schedule,
     Sensor,
@@ -78,6 +90,7 @@ from .model import (
     Thermostat,
     Valve,
     WeatherConfig,
+    WindowDetection,
     Zone,
     ZoneArea,
     title_from_slug,
@@ -203,6 +216,8 @@ _ZONE_KEYS: Final = (
     "windows",
     "window_open_delay",
     "window_close_delay",
+    "window_detection",
+    "response_check",
     "max_humidity",
     "loops",
 )
@@ -227,6 +242,8 @@ _DIGITAL_KEYS: Final = (
 )
 _RUNS_KEYS: Final = ("with_zones",)
 _EXERCISE_KEYS: Final = ("interval", "run")
+_WINDOW_DETECTION_KEYS: Final = ("change", "within", "max_duration")
+_RESPONSE_CHECK_KEYS: Final = ("duration", "progress")
 _LOOP_MODES: Final = (Mode.HEAT, Mode.COOL)
 _DEFAULT_MODES: Final = frozenset({Mode.HEAT})
 _DEFAULT_THERMOSTAT: Final = DigitalThermostat()
@@ -768,7 +785,70 @@ def _zone(slug: str, value: object, path: str) -> Zone:
             zone.get("window_close_delay", DEFAULT_WINDOW_CLOSE_DELAY),
             _join(path, "window_close_delay"),
         ),
+        window_detection=_window_detection(
+            zone.get("window_detection"), _join(path, "window_detection")
+        ),
+        response_check=_response_check(
+            zone.get("response_check", True), _join(path, "response_check")
+        ),
         max_humidity=_max_humidity(zone, path),
+    )
+
+
+def _window_detection(value: object, path: str) -> WindowDetection | None:
+    """Read ``true`` for the defaults, ``false`` or ``null``, which turn it off, or its settings."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return WindowDetection()
+    if not isinstance(value, Mapping):
+        raise PlantFileError(
+            path, "Expected true, false, or a mapping of change, within, and max_duration."
+        )
+    detection = _mapping(value, path, _WINDOW_DETECTION_KEYS)
+    default = WindowDetection()
+
+    def read(key: str, fallback: float, low: float, high: float) -> float:
+        key_path = _join(path, key)
+        return _within(
+            _number(detection.get(key, fallback), key_path), key_path, low=low, high=high
+        )
+
+    return WindowDetection(
+        change=read(
+            "change", default.change, MIN_WINDOW_DETECTION_CHANGE, MAX_WINDOW_DETECTION_CHANGE
+        ),
+        within=read(
+            "within", default.within, MIN_WINDOW_DETECTION_WITHIN, MAX_WINDOW_DETECTION_WITHIN
+        ),
+        max_duration=read(
+            "max_duration",
+            default.max_duration,
+            MIN_WINDOW_DETECTION_MAX_DURATION,
+            MAX_WINDOW_DETECTION_MAX_DURATION,
+        ),
+    )
+
+
+def _response_check(value: object, path: str) -> ResponseCheck | None:
+    """Read ``true`` for the defaults, ``false`` or ``null``, which turn it off, or its settings."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return DEFAULT_RESPONSE_CHECK
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected true, false, or a mapping of duration and progress.")
+    check = _mapping(value, path, _RESPONSE_CHECK_KEYS)
+    duration_path, progress_path = _join(path, "duration"), _join(path, "progress")
+    duration = _number(check.get("duration", DEFAULT_RESPONSE_CHECK.duration), duration_path)
+    progress = _number(check.get("progress", DEFAULT_RESPONSE_CHECK.progress), progress_path)
+    return ResponseCheck(
+        duration=_within(
+            duration, duration_path, low=MIN_RESPONSE_DURATION, high=MAX_RESPONSE_DURATION
+        ),
+        progress=_within(
+            progress, progress_path, low=MIN_RESPONSE_PROGRESS, high=MAX_RESPONSE_PROGRESS
+        ),
     )
 
 
@@ -1361,6 +1441,12 @@ _KEY_WORDS: Final = {
     "surface_minimum": "surface minimum",
     "window_open_delay": "window open delay",
     "window_close_delay": "window close delay",
+    "window_detection": "window detection",
+    "change": "temperature change",
+    "within": "within",
+    "max_duration": "maximum duration",
+    "response_check": "response check",
+    "progress": "progress",
     "max_humidity": "maximum humidity",
     "max_starts_per_hour": "maximum starts per hour",
     "heat_sink_loops": "heat sink loops",
@@ -1642,6 +1728,18 @@ def _export_zone(zone: Zone) -> dict[str, Any]:
         document["window_open_delay"] = _export_number(zone.window_open_delay)
     if zone.window_close_delay != DEFAULT_WINDOW_CLOSE_DELAY:
         document["window_close_delay"] = _export_number(zone.window_close_delay)
+    if zone.window_detection is not None:
+        document["window_detection"] = (
+            True
+            if zone.window_detection == WindowDetection()
+            else _export_changed(zone.window_detection, WindowDetection(), _WINDOW_DETECTION_KEYS)
+        )
+    if zone.response_check != DEFAULT_RESPONSE_CHECK:
+        document["response_check"] = (
+            False
+            if zone.response_check is None
+            else _export_changed(zone.response_check, DEFAULT_RESPONSE_CHECK, _RESPONSE_CHECK_KEYS)
+        )
     if zone.max_humidity != DEFAULT_MAX_HUMIDITY:
         document["max_humidity"] = _export_setting(zone.max_humidity)
     if zone.loops:
@@ -1682,6 +1780,19 @@ def _export_thermostat(thermostat: Thermostat) -> dict[str, Any]:
         else:
             settings[key] = _export_number(value)
     return {"digital": settings}
+
+
+def _export_changed(
+    value: WindowDetection | ResponseCheck,
+    defaults: WindowDetection | ResponseCheck,
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    """Write the numeric settings that differ from their defaults."""
+    return {
+        key: _export_number(getattr(value, key))
+        for key in keys
+        if getattr(value, key) != getattr(defaults, key)
+    }
 
 
 def _export_configuration(
@@ -1810,7 +1921,9 @@ class _FlowMapping(dict[str, Any]):
 
 
 # Mappings under these keys are written on one line.
-_FLOW_MAPPINGS: Final = frozenset({"mode", "runs", "thermostat", "exercise"})
+_FLOW_MAPPINGS: Final = frozenset(
+    {"mode", "runs", "thermostat", "exercise", "window_detection", "response_check"}
+)
 _MAP_TAG: Final = "tag:yaml.org,2002:map"
 _SEQ_TAG: Final = "tag:yaml.org,2002:seq"
 # Never fold a long line.

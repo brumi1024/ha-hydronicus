@@ -143,6 +143,7 @@ async def test_the_first_evaluation_sees_restored_thermostats_and_persisted_stat
         "reconcile",
         "outputs",
         "unusable_inputs",
+        "responses",
         "flow",
         "compressor",
         "mode",

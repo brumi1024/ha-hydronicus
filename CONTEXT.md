@@ -86,6 +86,12 @@ Heating and cooling never run at the same time, and a change of Mode is sequence
 Demand is a Zone's request in the current Mode: an on or off decision.
 
 A Zone's windows act after its thermostat: while one is open, the Zone's Demand is off in either Mode.
+Window detection may count a sudden move of the Zone's temperature away from its target as an open window too.
+
+## Response check
+
+A Response check reports a Zone whose temperature does not move toward its target while it is served: it calls, a Loop serving it is observed passing flow, and the Source, if any, is observed running.
+It only reports, and never changes Desired state.
 
 ## Min-flow path
 

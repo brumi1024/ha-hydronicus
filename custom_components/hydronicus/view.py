@@ -19,8 +19,10 @@ from .core.reconcile import Reconciled
 from .core.step import GUARD_REFERENCE_MAX_AGE, Observations, OutputState, Reading, SwitchState
 from .previous import Commanding
 
-# A zone whose demand is off for one of these reasons cannot get what it asks for.
-# Frost protection overrides an open window, so a zone it heats has another reason.
+# A zone whose demand is off for one of these reasons cannot get what it asks for,
+# as it cannot while window detection finds a window, whose reason starts with
+# ``window open:``. Frost protection overrides an open window, so a zone it heats
+# has another reason.
 _BLOCKING_REASONS: Final = frozenset(
     {"thermostat unavailable", "thermostat not restored", "no usable temperature", "window open"}
 )
@@ -77,6 +79,8 @@ class PlantView:
     # Post-run is estimated only after this sequence has seen the source run.
     source_winding: bool = False
     live: bool = False
+    # Each zone whose response check failed, with when it did.
+    not_responding: Mapping[str, float] = field(default_factory=dict)
 
     @property
     def running_mode(self) -> Mode:
@@ -158,7 +162,7 @@ class PlantView:
             return "stopping"
         if self.problem is not None:
             return "invalid"
-        if self.reconciled.repairs or self.missing:
+        if self.reconciled.repairs or self.missing or self.not_responding:
             return "degraded"
         if "mode" in desired.reasons:
             return "changing_over"
@@ -226,7 +230,9 @@ class PlantView:
             ]
             if demand.on and dropped:
                 blocked[zone.slug] = dropped[0]
-            elif not demand.on and demand.reason in _BLOCKING_REASONS:
+            elif not demand.on and (
+                demand.reason in _BLOCKING_REASONS or demand.reason.startswith("window open:")
+            ):
                 blocked[zone.slug] = demand.reason
         return blocked
 

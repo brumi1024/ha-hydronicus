@@ -416,6 +416,8 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `windows` | no | | `binary_sensor` entities that are on while a window or door of the zone is open, see [Windows](#windows). |
 | `window_open_delay` | no | `60` | Seconds a window must read open before the zone's demand turns off. |
 | `window_close_delay` | no | `60` | Seconds every window must read closed before the zone's demand comes back. |
+| `window_detection` | no | `false` | Counts a sudden temperature change as an open window, see [Window detection](#window-detection). |
+| `response_check` | no | `true` | Reports a zone whose temperature does not respond while it is served, see [Response check](#response-check). |
 | `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool, from 30 to 100. `null` turns the cutoff off. |
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
@@ -462,6 +464,77 @@ Once any window of `windows` has read open for `window_open_delay`, the zone's d
 It comes back once every window has read closed for `window_close_delay`.
 The thermostat keeps its target and mode meanwhile, and a demand that comes back holds for its `min_on` from then.
 A window sensor that is unavailable or unknown reads as closed, so a lost sensor never stops the heating.
+
+### Window detection
+
+`window_detection` finds an open window from the zone's combined temperature alone, for a room without a window sensor.
+It is `false` by default; `true` turns it on with the defaults below, and a mapping changes them.
+
+| Key | Default | Value |
+| --- | --- | --- |
+| `change` | `0.5` | How far the temperature must move away from the target, in K, from 0.1 to 5. |
+| `within` | `600` | Within how many seconds, from 60 to 3600; also how long the temperature must stop moving away before the window counts as closed. |
+| `max_duration` | `1800` | The longest a detected window keeps the zone from calling, in seconds, from 300 to 14400. |
+
+In heating a fall counts, and in cooling a rise; a change toward the target never does.
+Once the temperature has moved `change` away from its nearest reading of the last `within` seconds, the zone's demand is off with a reason such as `window open: temperature fell 0.6 K`.
+It comes back once the temperature has not moved further away for `within` seconds, or after `max_duration`.
+A zone may use window sensors and window detection together; either one keeps it from calling.
+
+The zone's temperature must change faster than its loops ever make it, and its sensors must report often enough to see it.
+A sensor that reports only every 0.5 K or every 10 minutes cannot see a window within the defaults; lower `change` or raise `within` for it.
+A room whose temperature also jumps for other reasons, such as sun on its sensor in cooling, may need a larger `change`.
+
+This zone detects a fall of 0.3 K within 5 minutes, and stops calling for at most an hour:
+
+```yaml
+hydronicus: 2
+name: Flat
+pumps:
+  pump:
+    switch: switch.flat_pump
+zones:
+  bathroom:
+    temperature: [sensor.bathroom]
+    window_detection: {change: 0.3, within: 300, max_duration: 3600}
+    loops:
+      radiator:
+        pump: pump
+```
+
+### Response check
+
+`response_check` reports a zone whose temperature does not move toward its target while it is served.
+It only reports, with the [zone does not respond](troubleshooting.md#a-zone-does-not-respond) Repair; it never changes what any output does.
+It is on by default; `false` turns it off, and a mapping changes its settings.
+
+| Key | Default | Value |
+| --- | --- | --- |
+| `duration` | `10800` | Seconds of service without a response after which the zone fails, from 1800 to 86400. |
+| `progress` | `0.2` | How far, in K, the temperature must move toward the target to count as a response, from 0.05 to 2. |
+
+A zone is served while it calls, a loop serving it is observed passing flow, and the source, when the Plant has one, is observed running.
+Only that time counts, so a pause for hot water, a defrost, or Dry run neither fails a zone nor starts its count over.
+Progress counts from the reading furthest from the target since the zone last responded, so a slab that keeps cooling for a while after its pump starts is no failure.
+Each response starts the count again, so a source that fails halfway through a long call is found too.
+A Plant without a running sensor on its source counts the source as running while its request is on.
+
+Lengthen `duration` for a zone that takes longer to respond, such as a slab in a well-insulated house; this one allows six hours:
+
+```yaml
+hydronicus: 2
+name: Flat
+pumps:
+  pump:
+    switch: switch.flat_pump
+zones:
+  living:
+    temperature: [sensor.living]
+    response_check: {duration: 21600}
+    loops:
+      floor:
+        pump: pump
+```
 
 ### Thermostats
 

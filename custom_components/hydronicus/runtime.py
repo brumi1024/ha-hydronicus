@@ -86,7 +86,9 @@ from .core.model import (
 )
 from .core.plant_file import entity_paths, export_plant
 from .core.reconcile import Action, Reconciled, ReconcileState, reconcile, step_view
+from .core.response import ZoneResponse, check_response
 from .core.step import (
+    TICK,
     DigitalThermostatState,
     NumericState,
     Observations,
@@ -119,6 +121,7 @@ from .issues import (
     source_no_load,
     source_unhealthy,
     zone_area_issue,
+    zone_not_responding,
     zone_sensor_unusable,
 )
 from .learning import LearningCoordinator, LearningSample
@@ -137,7 +140,7 @@ from .observe import (
 )
 from .previous import PreviousConfiguration
 from .storage import armed_outputs, control
-from .view import PlantView, observed_flow, zone_readings
+from .view import PlantView, ZoneReadings, observed_flow, source_operation, zone_readings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -184,6 +187,8 @@ class PlantRuntime:
         self.requested_mode = Mode.OFF
         self.memory = OutputMemory()
         self.unusable = UnusableInputs()
+        # Each calling zone's response check, by zone slug.
+        self.responses: dict[str, ZoneResponse] = {}
         self.thermostats: dict[str, DigitalThermostatState] = {}
         # The owner's setbacks of each scheduled zone that has changed them, by zone slug.
         self.setbacks: dict[str, Setbacks] = {}
@@ -254,6 +259,10 @@ class PlantRuntime:
             self.reconcile_state = ReconcileState.from_dict(data.get("reconcile", {}))
             self.memory = OutputMemory.from_dict(data.get("outputs", {}))
             self.unusable = UnusableInputs.from_dict(data.get("unusable_inputs", {}))
+            self.responses = {
+                zone: ZoneResponse.from_dict(value)
+                for zone, value in data.get("responses", {}).items()
+            }
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
             self.compressor = CompressorHistory.from_dict(data.get("compressor", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
@@ -271,7 +280,7 @@ class PlantRuntime:
             self.memory, self.requested_mode = OutputMemory(), Mode.OFF
             self.unusable, self.flow = UnusableInputs(), FlowHistory()
             self.compressor = CompressorHistory()
-            self.setbacks = {}
+            self.setbacks, self.responses = {}, {}
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -639,6 +648,11 @@ class PlantRuntime:
             else (frozenset(), frozenset())
         )
         self.flow.update(now, loops, zones)
+        readings = {
+            zone.slug: zone_readings(zone, observations, self.areas, now)
+            for zone in self.plant.zones
+        }
+        response_due = self._check_responses(plant, observations, desired, zones, readings, now)
         if plant.source is not None and plant.source.compressor_sensor is not None:
             frequency = observations.sensors.get(plant.source.compressor_sensor)
             value = None if frequency is None else frequency.value
@@ -656,6 +670,7 @@ class PlantRuntime:
             result.retry_at,
             self.unusable.next_report(now),
             self.learning.next_sample_at,
+            response_due,
         )
         self._schedule_refresh(now)
         missing = self._sync_issues(result, plant, now)
@@ -666,21 +681,65 @@ class PlantRuntime:
             seen=seen,
             desired=desired,
             reconciled=result,
-            zones={
-                zone.slug: zone_readings(zone, observations, self.areas, now)
-                for zone in self.plant.zones
-            },
+            zones=readings,
             missing=missing,
             problem=self.problem,
             stopping=self.previous.stopping,
             source_winding=source_winding,
             live=state.live,
+            not_responding=self.zones_not_responding,
         )
         self._publish()
         if result.proposed:
             # A Dry run proposal counts as observed, so it is a change that evaluates
             # again, as the observed result of a live call would be.
             self.request_evaluation()
+
+    def _check_responses(
+        self,
+        plant: Plant,
+        observations: Observations,
+        desired: Desired,
+        served: frozenset[str],
+        readings: Mapping[str, ZoneReadings],
+        now: float,
+    ) -> float | None:
+        """Advance each zone's response check, and return when the next one may fail.
+
+        A zone is served while a loop serving it is observed passing flow, which
+        only counts while the Plant is live, and the source, if any, is observed running.
+        """
+        running = plant.source is None or source_operation(plant, observations).active is True
+        responses: dict[str, ZoneResponse] = {}
+        due: list[float] = []
+        for zone in self.plant.zones:
+            demand = desired.demands.get(zone.slug)
+            if zone.response_check is None or demand is None:
+                continue
+            response, fails_at = check_response(
+                zone.response_check,
+                self.responses.get(zone.slug),
+                demand.mode,
+                calling=demand.on and demand.mode is desired.mode,
+                served=running and zone.slug in served,
+                temperature=readings[zone.slug].temperature,
+                now=now,
+            )
+            if response is not None:
+                responses[zone.slug] = response
+            if fails_at is not None:
+                due.append(fails_at + TICK)
+        self.responses = responses
+        return min(due, default=None)
+
+    @property
+    def zones_not_responding(self) -> dict[str, float]:
+        """Each zone whose response check failed, with when it did."""
+        return {
+            zone: response.failed_at
+            for zone, response in self.responses.items()
+            if response.failed_at is not None
+        }
 
     def _plants(self) -> tuple[Plant, ...]:
         """The Plants the runtime reads: the configured one and one that is stopping."""
@@ -1173,6 +1232,9 @@ class PlantRuntime:
             "reconcile": self.reconcile_state.to_dict(),
             "outputs": self.memory.to_dict(),
             "unusable_inputs": self.unusable.to_dict(),
+            "responses": {
+                zone: response.to_dict() for zone, response in sorted(self.responses.items())
+            },
             "flow": self.flow.to_dict(),
             "compressor": self.compressor.to_dict(),
             "mode": self.requested_mode.value,
@@ -1269,6 +1331,10 @@ class PlantRuntime:
             source_unhealthy(reconciled, entity)
             for _, entity in self.unusable.reported(IssueKind.SOURCE_UNHEALTHY, now)
             if entity not in missing
+        )
+        issues.extend(
+            zone_not_responding(self.plant, zone, self.responses[zone])
+            for zone in self.zones_not_responding
         )
         if len(trips := self.state.no_load_trips) >= NO_LOAD_REPAIR_TRIPS:
             issues.append(source_no_load(reconciled, len(trips)))

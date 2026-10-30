@@ -5,7 +5,8 @@ over from the v0.1 controller: fail-closed aggregation of fresh readings, the
 Magnus dew point and the worst-case dew point from the warmest and most humid
 readings, digital thermostat hysteresis with minimum durations, and the
 normalization of an external thermostat's ``hvac_action``. Frost protection's
-demand overrides a thermostat's, from the coldest usable reading.
+demand overrides a thermostat's, from the coldest usable reading. Window
+detection finds an open window from a sudden temperature change alone.
 
 Every time-based decision goes through a ``reached`` callback, which answers
 whether a deadline has passed and otherwise records it, so the evaluation can
@@ -27,6 +28,7 @@ from .model import (
     DigitalThermostat,
     Mode,
     Preset,
+    WindowDetection,
     Zone,
 )
 
@@ -306,6 +308,86 @@ def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> D
 
 def _off(mode: Mode, reason: str) -> Demand:
     return Demand(mode, False, reason)
+
+
+# Window detection
+
+
+# At most this many readings are kept for window detection; older ones go first.
+MAX_WINDOW_SAMPLES: Final = 64
+# Readings come in steps such as 0.1 K, whose differences floats do not hit exactly.
+_WINDOW_TOLERANCE: Final = 1e-6
+
+
+@dataclass(frozen=True, slots=True)
+class DetectedWindow:
+    """What window detection carries for one zone between evaluations.
+
+    ``samples`` are the readings of ``mode`` as (when, temperature), oldest first,
+    that the last ``within`` seconds can still compare against: every reading in
+    them and the last one before them, which held at their start. While a window
+    is detected, ``samples`` holds only the reading it moved away from, ``since``
+    is when it was detected, and ``extreme`` is the reading furthest from the
+    target since then, first read at ``extreme_at``.
+    """
+
+    mode: Mode
+    samples: tuple[tuple[float, float], ...] = ()
+    since: float | None = None
+    extreme: float | None = None
+    extreme_at: float | None = None
+
+
+def detect_window(
+    config: WindowDetection,
+    previous: DetectedWindow | None,
+    mode: Mode,
+    temperature: float | None,
+    now: float,
+    reached: Reached,
+) -> tuple[DetectedWindow | None, str | None, float | None]:
+    """Detect an open window from a zone's temperature in ``mode``.
+
+    Returns the next state, the reason while a window is detected, and when the
+    detection ends at the latest while it is. Heating detects a fall, cooling a
+    rise, and the off mode nothing. A zone without a usable temperature keeps
+    what it detected until it ends, and adds no reading.
+    """
+    if mode is Mode.OFF:
+        return None, None, None
+    state = previous if previous is not None and previous.mode is mode else DetectedWindow(mode)
+    # The sign that turns a move away from the target positive.
+    away = -1.0 if mode is Mode.HEAT else 1.0
+    if state.since is not None:
+        extreme, extreme_at = state.extreme, state.extreme_at or state.since
+        if temperature is not None and (extreme is None or (temperature - extreme) * away > 0):
+            extreme, extreme_at = temperature, now
+        settled = extreme_at + config.within
+        end = state.since + config.max_duration
+        if not reached(settled) and not reached(end):
+            state = replace(state, extreme=extreme, extreme_at=extreme_at)
+            moved = 0.0 if extreme is None else abs(extreme - state.samples[0][1])
+            verb = "fell" if mode is Mode.HEAT else "rose"
+            return state, f"window open: temperature {verb} {moved:.1f} K", min(settled, end)
+        # The detection ends, and later readings compare only from here.
+        samples = () if temperature is None else ((now, temperature),)
+        return DetectedWindow(mode, samples), None, None
+    if temperature is None:
+        return state, None, None
+    samples = [*state.samples]
+    if not samples or samples[-1][1] != temperature:
+        samples.append((now, temperature))
+    # Keep the last reading at or before the start of the period, which held then.
+    start = now - config.within
+    while len(samples) > 1 and samples[1][0] <= start:
+        samples.pop(0)
+    samples = samples[-MAX_WINDOW_SAMPLES:]
+    # The reading nearest the target side, from which the temperature moved away.
+    reference = min(samples, key=lambda sample: sample[1] * away)
+    if (temperature - reference[1]) * away >= config.change - _WINDOW_TOLERANCE:
+        detected = DetectedWindow(mode, (reference,), now, temperature, now)
+        return detect_window(config, detected, mode, temperature, now, reached)
+    return DetectedWindow(mode, tuple(samples)), None, None
 
 
 # Frost protection

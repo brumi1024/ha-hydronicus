@@ -3,9 +3,9 @@
 Plants follow contract K9: 1 to 4 pumps of both kinds, 1 to 6 loops with 0 to 3
 valves, switches or valve entities that report their travel, 1 to 4 zones, and
 an optional source. Cooling loops and their pumps may have condensation
-switches and surface minimums, and zones windows and humidity limits. A Plant
-may have a short exercise interval and frost protection that a cool zone
-reaches. They are valid by construction:
+switches and surface minimums, and zones windows, window detection, and
+humidity limits. A Plant may have a short exercise interval and frost
+protection that a cool zone reaches. They are valid by construction:
 the strategy only draws combinations that ``validate_plant`` accepts, and it
 calls ``validate_plant`` to prove it. Plant loops heat only, so a loop that
 cools always belongs to one zone, whose dew point it answers to, and a
@@ -54,6 +54,7 @@ from custom_components.hydronicus.core.model import (
     SupplyControl,
     Thermostat,
     Valve,
+    WindowDetection,
     Zone,
 )
 from custom_components.hydronicus.core.plant_file import validate_plant
@@ -190,6 +191,9 @@ def plants(draw: st.DrawFn) -> Plant:
             ),
             window_open_delay=draw(st.sampled_from([0.0, 60.0, 300.0])),
             window_close_delay=draw(st.sampled_from([0.0, 60.0, 300.0])),
+            window_detection=draw(
+                st.sampled_from([None, WindowDetection(), WindowDetection(0.3, 120.0, 600.0)])
+            ),
             max_humidity=draw(st.sampled_from([70.0, 60.0, None])),
         )
         for slug in zone_slugs
