@@ -26,10 +26,12 @@ from custom_components.hydronicus.core.model import (
     OutputRole,
     Plant,
     Pump,
+    ResponseCheck,
     RunKind,
     Sensor,
     Valve,
     WeatherConfig,
+    WindowDetection,
     ZoneArea,
 )
 from custom_components.hydronicus.core.plant_file import (
@@ -263,6 +265,40 @@ def test_the_exercise_and_frost_protection_are_on_by_default_and_can_be_changed(
     assert (nulls.exercise, nulls.frost_protection) == (None, None), "null turns them off too"
     assert export_plant(off)["exercise"] is False and export_plant(off)["frost_protection"] is False
     assert read_plant_file(write_plant_file(off)) == off
+
+
+def test_window_detection_is_off_and_the_response_check_on_by_default() -> None:
+    document = {
+        "hydronicus": 2,
+        "id": PLANT_ID,
+        "name": "Flat",
+        "zones": {"room": {"areas": ["room"]}},
+    }
+    room = parse_plant(document).zone("room")
+    assert (room.window_detection, room.response_check) == (None, ResponseCheck(10800, 0.2))
+    assert set(export_plant(parse_plant(document))["zones"]["room"]) == {"areas"}
+
+    def zone(**keys: Any) -> Plant:
+        return parse_plant({**document, "zones": {"room": {"areas": ["room"], **keys}}})
+
+    detecting = zone(window_detection=True, response_check=False)
+    assert detecting.zone("room").window_detection == WindowDetection(0.5, 600, 1800)
+    assert detecting.zone("room").response_check is None
+    assert "window_detection: true\n    response_check: false\n" in write_plant_file(detecting)
+    assert read_plant_file(write_plant_file(detecting)) == detecting
+
+    changed = zone(
+        window_detection={"change": 1, "max_duration": 3600}, response_check={"duration": 21600}
+    )
+    assert changed.zone("room").window_detection == WindowDetection(1, 600, 3600)
+    assert changed.zone("room").response_check == ResponseCheck(21600, 0.2)
+    text = write_plant_file(changed)
+    assert "window_detection: {change: 1, max_duration: 3600}" in text
+    assert "response_check: {duration: 21600}" in text
+    assert read_plant_file(text) == changed
+    nulls = zone(window_detection=None, response_check=None)
+    assert nulls.zone("room").window_detection is None and nulls.zone("room").response_check is None
+    assert zone(window_detection={}).zone("room").window_detection == WindowDetection()
 
 
 def test_an_empty_plant_is_valid() -> None:
@@ -720,6 +756,54 @@ REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
         _set("zones.basement.windows", ["binary_sensor.a", "binary_sensor.a"]),
         "zones.basement.windows.1",
         "twice",
+    ),
+    (
+        "window detection as a number",
+        _set("zones.basement.window_detection", 1),
+        "zones.basement.window_detection",
+        "Expected true, false, or a mapping",
+    ),
+    (
+        "unknown window detection key",
+        _set("zones.basement.window_detection", {"drop": 1}),
+        "zones.basement.window_detection.drop",
+        "Unknown key",
+    ),
+    (
+        "tiny window detection change",
+        _set("zones.basement.window_detection", {"change": 0.05}),
+        "zones.basement.window_detection.change",
+        "Must be at least 0.1.",
+    ),
+    (
+        "long window detection period",
+        _set("zones.basement.window_detection", {"within": 7200}),
+        "zones.basement.window_detection.within",
+        "Must be at most 3600.",
+    ),
+    (
+        "short window detection maximum",
+        _set("zones.basement.window_detection", {"max_duration": 60}),
+        "zones.basement.window_detection.max_duration",
+        "Must be at least 300.",
+    ),
+    (
+        "response check as text",
+        _set("zones.basement.response_check", "on"),
+        "zones.basement.response_check",
+        "Expected true, false, or a mapping",
+    ),
+    (
+        "short response check",
+        _set("zones.basement.response_check", {"duration": 600}),
+        "zones.basement.response_check.duration",
+        "Must be at least 1800.",
+    ),
+    (
+        "large response progress",
+        _set("zones.basement.response_check", {"progress": 3}),
+        "zones.basement.response_check.progress",
+        "Must be at most 2.",
     ),
     (
         "negative window delay",

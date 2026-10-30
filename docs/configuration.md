@@ -210,6 +210,9 @@ The delays keep a door you walk through from closing valves that take minutes to
 
 A window sensor that is unavailable counts as closed, so a flat battery never leaves a room unheated.
 
+A room without a window sensor can detect an open window from a sudden change of its temperature instead.
+Turn it on with `window_detection` in the [plant file](plant-file.md#window-detection); the forms do not show it.
+
 ## Cooling limits
 
 The [condensation guard](how-it-works.md#cooling-and-condensation) keeps every cooling loop above the dew point.

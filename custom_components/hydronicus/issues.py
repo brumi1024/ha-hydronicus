@@ -2,7 +2,8 @@
 
 A failed evaluation, output faults, missing bindings, unconfirmed outputs, zone
 area problems, required sensors that block their zone, condensation inputs
-that block cooling, and a source health sensor that keeps the source off are
+that block cooling, a source health sensor that keeps the source off, and a
+zone whose temperature does not respond while it is served are
 Repairs, not entities (contract K7). The runtime computes the current set after
 every evaluation and ``async_sync_issues`` creates the new ones and deletes the
 resolved ones.
@@ -25,8 +26,9 @@ from homeassistant.helpers import issue_registry as ir
 
 from .areas import AreaResolution, ZoneAreaProblem, listed
 from .const import DOMAIN
-from .core.model import Loop, OutputRole, Plant
+from .core.model import Loop, Mode, OutputRole, Plant
 from .core.plant_file import describe_path
+from .core.response import ZoneResponse
 from .core.step import TICK
 
 
@@ -47,6 +49,7 @@ class IssueKind(StrEnum):
     INVALID_SCHEDULE_BLOCK = "invalid_schedule_block"
     SOURCE_UNHEALTHY = "source_unhealthy"
     SOURCE_NO_LOAD = "source_no_load"
+    ZONE_NOT_RESPONDING = "zone_not_responding"
 
 
 # Kinds with a fix flow; hassfest wants their translations to carry the fix flow
@@ -231,6 +234,22 @@ def source_no_load(plant: Plant, trips: int) -> Issue:
             "plant": plant.name,
             "source": plant.source.title if plant.source else "",
             "trips": str(trips),
+        },
+    )
+
+
+def zone_not_responding(plant: Plant, zone: str, response: ZoneResponse) -> Issue:
+    check = plant.zone(zone).response_check
+    assert check is not None
+    return Issue(
+        IssueKind.ZONE_NOT_RESPONDING,
+        zone,
+        {
+            "plant": plant.name,
+            "zone": plant.zone(zone).title,
+            "mode": "heating" if response.mode is Mode.HEAT else "cooling",
+            "hours": f"{check.duration / 3600:g}",
+            "progress": f"{check.progress:g}",
         },
     )
 

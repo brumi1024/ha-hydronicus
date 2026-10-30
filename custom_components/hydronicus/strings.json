@@ -992,6 +992,10 @@
     "source_no_load": {
       "title": "{plant}: {source} keeps running without a load",
       "description": "In Plant {plant}, {source} tripped its no-load guard {trips} times within a day: its compressor ran while its leaving and returning water stayed within the guard's temperature difference, so its heat had nowhere to go. Each time Hydronicus released the source's request and held it off. Check whether another source supplies the zones, such as a fireplace's buffer selected by its own valve, a closed valve or a stopped pump on the heat pump's side, and air in the circuit. The repair clears once a day has passed without two trips."
+    },
+    "zone_not_responding": {
+      "title": "{plant}, zone {zone}: {mode} has no effect",
+      "description": "In Plant {plant}, zone {zone} has called for {mode} for {hours} hours of observed flow, with the source running when the Plant has one, and its temperature has not moved {progress} K toward the target. Check whether the zone's valves really open and its pump really runs, whether the source delivers water at the right temperature, whether the loop is air-locked or its flow is balanced too low, and whether the room sensor sits where the loop can warm or cool it. A loop too small for very cold or very hot weather can also hold a room steady short of its target; then raise the supply temperature, or lengthen the zone's response_check duration in the plant file. Hydronicus keeps controlling the zone as before. The repair clears once the temperature moves toward the target, or the zone stops calling."
     }
   },
   "exceptions": {

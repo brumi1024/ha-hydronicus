@@ -9,10 +9,12 @@ import pytest
 from custom_components.hydronicus.core.demand import (
     AreaSensors,
     DemandState,
+    DetectedWindow,
     DigitalThermostatState,
     ExternalThermostatState,
     Reading,
     aggregate,
+    detect_window,
     dew_point,
     external_action,
     fresh,
@@ -28,6 +30,7 @@ from custom_components.hydronicus.core.model import (
     Mode,
     Preset,
     Sensor,
+    WindowDetection,
     Zone,
     ZoneArea,
 )
@@ -270,3 +273,35 @@ def test_an_external_thermostat_demands_from_its_action_only() -> None:
         state, demand = zone_demand(zone, ExternalThermostatState(action), 30.0, None, NOW, Clock())
         assert demand.on is on
         assert state.mode is (action or Mode.OFF)
+
+
+# Window detection
+
+
+def _detect(
+    previous: DetectedWindow | None,
+    offset: float,
+    temperature: float | None,
+    mode: Mode = Mode.HEAT,
+) -> tuple[DetectedWindow | None, str | None, float | None]:
+    return detect_window(
+        WindowDetection(), previous, mode, temperature, NOW + offset, Clock(NOW + offset)
+    )
+
+
+def test_window_detection_keeps_only_changed_readings_and_resets_with_the_mode() -> None:
+    state, _, _ = _detect(None, 0, 20.0)
+    state, _, _ = _detect(state, 60, 20.0)
+    assert state == DetectedWindow(Mode.HEAT, ((NOW, 20.0),)), "a repeated reading adds nothing"
+    assert _detect(state, 120, None) == (state, None, None), "a missing reading adds nothing"
+    assert _detect(state, 120, 19.0, Mode.OFF) == (None, None, None)
+    cooling, reason, _ = _detect(state, 120, 19.0, Mode.COOL)
+    assert cooling == DetectedWindow(Mode.COOL, ((NOW + 120, 19.0),)) and reason is None
+
+
+def test_a_detected_window_without_readings_lasts_until_its_end() -> None:
+    state, reason, until = _detect(DetectedWindow(Mode.HEAT, ((NOW, 20.0),)), 60, 19.4)
+    assert reason == "window open: temperature fell 0.6 K" and until == NOW + 660
+    state, reason, _ = _detect(state, 600, None)
+    assert reason is not None and state is not None and state.extreme_at == NOW + 60
+    assert _detect(state, 660, None) == (DetectedWindow(Mode.HEAT), None, None)

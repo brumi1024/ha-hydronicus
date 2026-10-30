@@ -130,6 +130,18 @@ DEFAULT_MAX_HUMIDITY: Final = 70.0
 # every window of the zone has read closed this long, in seconds.
 DEFAULT_WINDOW_OPEN_DELAY: Final = 60.0
 DEFAULT_WINDOW_CLOSE_DELAY: Final = 60.0
+# A zone whose temperature moves this far away from its target, in kelvin,
+# within this many seconds, counts as having an open window, until its
+# temperature has stopped moving away for that long again, or at most for the
+# maximum duration, in seconds.
+DEFAULT_WINDOW_DETECTION_CHANGE: Final = 0.5
+DEFAULT_WINDOW_DETECTION_WITHIN: Final = 600.0
+DEFAULT_WINDOW_DETECTION_MAX_DURATION: Final = 1800.0
+# A zone whose loops have passed flow for its demand this long, in seconds,
+# without its temperature moving this far toward its target, in kelvin, does
+# not respond.
+DEFAULT_RESPONSE_DURATION: Final = 10800.0
+DEFAULT_RESPONSE_PROGRESS: Final = 0.2
 # An idle switched pump or valve is exercised once it has not been seen on for a
 # week, and an exercised pump runs for a minute, so neither seizes.
 DEFAULT_EXERCISE_INTERVAL: Final = 604800.0
@@ -148,6 +160,17 @@ MIN_MAX_HUMIDITY: Final = 30.0
 MIN_EXERCISE_INTERVAL: Final = 3600.0
 MIN_EXERCISE_RUN: Final = 10.0
 MAX_EXERCISE_RUN: Final = 600.0
+# The plant file's limits of window detection and the response check.
+MIN_WINDOW_DETECTION_CHANGE: Final = 0.1
+MAX_WINDOW_DETECTION_CHANGE: Final = 5.0
+MIN_WINDOW_DETECTION_WITHIN: Final = 60.0
+MAX_WINDOW_DETECTION_WITHIN: Final = 3600.0
+MIN_WINDOW_DETECTION_MAX_DURATION: Final = 300.0
+MAX_WINDOW_DETECTION_MAX_DURATION: Final = 14400.0
+MIN_RESPONSE_DURATION: Final = 1800.0
+MAX_RESPONSE_DURATION: Final = 86400.0
+MIN_RESPONSE_PROGRESS: Final = 0.05
+MAX_RESPONSE_PROGRESS: Final = 2.0
 
 
 def title_from_slug(slug: str) -> str:
@@ -524,6 +547,37 @@ type Thermostat = DigitalThermostat | ExternalThermostat
 
 
 @dataclass(frozen=True, slots=True)
+class WindowDetection:
+    """Count a sudden move of a zone's temperature away from its target as an open window.
+
+    Heating counts a fall and cooling a rise of ``change`` within ``within``
+    seconds. The window counts as closed once the temperature has not moved
+    further away for ``within`` seconds, or after ``max_duration`` seconds.
+    """
+
+    change: float = DEFAULT_WINDOW_DETECTION_CHANGE
+    within: float = DEFAULT_WINDOW_DETECTION_WITHIN
+    max_duration: float = DEFAULT_WINDOW_DETECTION_MAX_DURATION
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseCheck:
+    """Report a zone whose temperature does not move toward its target while it is served.
+
+    It counts only the time in which the zone calls and a loop serving it is
+    observed passing flow, and, with a source, the source is observed running.
+    The zone responds each time its temperature moves ``progress`` toward the
+    target; ``duration`` seconds of such time without that is a failure.
+    """
+
+    duration: float = DEFAULT_RESPONSE_DURATION
+    progress: float = DEFAULT_RESPONSE_PROGRESS
+
+
+DEFAULT_RESPONSE_CHECK: Final = ResponseCheck()
+
+
+@dataclass(frozen=True, slots=True)
 class Zone:
     """The space one thermostat controls, with its areas, sensors, and loops."""
 
@@ -540,6 +594,10 @@ class Zone:
     windows: tuple[str, ...] = ()
     window_open_delay: float = DEFAULT_WINDOW_OPEN_DELAY
     window_close_delay: float = DEFAULT_WINDOW_CLOSE_DELAY
+    # Counts a sudden temperature change as an open window too; None turns it off.
+    window_detection: WindowDetection | None = None
+    # Reports the zone when its temperature does not respond; None turns it off.
+    response_check: ResponseCheck | None = DEFAULT_RESPONSE_CHECK
     # The highest humidity at which the loops that read the zone's dew point may
     # cool, in percent; None turns the cutoff off.
     max_humidity: float | None = DEFAULT_MAX_HUMIDITY
@@ -720,6 +778,7 @@ class HoldKind(StrEnum):
     MODE_DWELL = "mode_dwell"
     WINDOW_OPEN_DELAY = "window_open_delay"
     WINDOW_CLOSE_DELAY = "window_close_delay"
+    WINDOW_DETECTED = "window_detected"
     DEMAND_MIN_ON = "demand_min_on"
     DEMAND_MIN_OFF = "demand_min_off"
     GUARD_MIN_BLOCKED = "guard_min_blocked"

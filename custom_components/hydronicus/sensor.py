@@ -122,6 +122,10 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "stopping_outputs": view.stopping_outputs(),
             "configuration_problem": runtime.problem,
             "frost_protection": list(view.desired.frost_protection),
+            "zones_not_responding": {
+                zone: dt_util.utc_from_timestamp(at).isoformat()
+                for zone, at in sorted(view.not_responding.items())
+            },
             "exercising": view.desired.exercise,
             "sensor_health": view.sensor_health(now),
             "pump_operation": {

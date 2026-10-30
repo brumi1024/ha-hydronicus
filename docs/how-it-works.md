@@ -44,6 +44,7 @@ A zone's call counts only when its thermostat's mode matches the Plant's **Mode*
 Then two things can override it:
 
 - An open window: once any window of the zone has been open for its delay, a minute by default, the zone stops calling, until every window has been closed for its delay.
+  A zone without a window sensor can detect one from a sudden change of its temperature with [window detection](plant-file.md#window-detection).
 - [Frost protection](#frost-protection): a zone that is about to freeze is heated regardless, even with a window open.
 
 ## The safe order
@@ -152,6 +153,14 @@ Its reason then reads `frost protection: heat to 6.0 °C from 4.0 °C`.
 - It obeys arming and **Control equipment** like any other demand, so in Dry run it is only proposed.
 
 The **Status** sensor's `frost_protection` attribute lists the zones it heats.
+
+## Response check
+
+A zone that calls while its loops pass flow and its source runs should move toward its target.
+When it has not moved 0.2 K toward it in 3 hours of such service, Hydronicus raises the [zone does not respond](troubleshooting.md#a-zone-does-not-respond) Repair, and the **Status** reads `degraded`.
+Only time in which the zone is really served counts, and progress counts from its furthest reading, so a pause for hot water or a slow slab is no failure.
+The check never changes control: the zone keeps calling, and its equipment keeps running.
+The [plant file](plant-file.md#response-check) changes its duration and progress, or turns it off for a zone.
 
 ## Exercise
 

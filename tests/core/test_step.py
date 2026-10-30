@@ -30,6 +30,7 @@ from custom_components.hydronicus.core.step import (
     HUMIDITY_RELEASE,
     TICK,
     DemandState,
+    DetectedWindow,
     DigitalThermostatState,
     ExerciseState,
     ExternalThermostatState,
@@ -192,6 +193,10 @@ def test_state_round_trips_through_json_and_defaults_every_field() -> None:
         ready={"switch.valve": LONG_AGO},
         winding=frozenset({"switch.valve", "switch.boiler"}),
         windows_open=frozenset({"room"}),
+        detected_windows={
+            "room": DetectedWindow(Mode.HEAT, ((NOW - 60, 21.0),), NOW, 20.2, NOW),
+            "hall": DetectedWindow(Mode.COOL, ((NOW - 60, 24.0), (NOW, 24.1))),
+        },
         frost=frozenset({"room"}),
         idle_since={"switch.valve": LONG_AGO, "switch.pump": None},
         exercise=ExerciseState("pump", NOW - 200, NOW - 5, done=True),
@@ -1020,6 +1025,88 @@ def test_a_window_turns_cooling_off_too_and_an_external_thermostat_is_inhibited_
         thermostats={"room": ExternalThermostatState(Mode.HEAT)},
     )
     assert run(external, heating)[1].demands["room"].reason == "window open"
+
+
+DETECTING = RADIATOR.replace(
+    "    thermostat: {digital: {min_on: 0, min_off: 0}}",
+    "    thermostat: {digital: {min_on: 0, min_off: 0}}\n    window_detection: true",
+)
+
+
+def _readings(plant: Plant, state: State, *steps: tuple[float, float]) -> State:
+    """Run the room through (seconds after NOW, temperature) readings, one evaluation each."""
+    for offset, temperature in steps:
+        state = run(plant, observe(plant, temperatures={"room": temperature}), state, NOW + offset)[
+            0
+        ]
+    return state
+
+
+def test_a_sudden_fall_counts_as_an_open_window_until_the_temperature_settles() -> None:
+    plant = _plant(DETECTING)
+    state = _readings(plant, State(live=True, mode=Mode.HEAT), (0, 20.0), (120, 19.6))
+    assert "room" not in state.windows_open, "0.4 K is not yet a window"
+
+    cold = observe(plant, temperatures={"room": 19.4})
+    state, desired, due = run(plant, cold, state, NOW + 300)
+    assert desired.demands["room"] == Demand(
+        Mode.HEAT, False, "window open: temperature fell 0.6 K"
+    )
+    assert desired.outputs["switch.valve"] == OFF
+    assert state.windows_open == {"room"} and state.demands["room"].on
+    assert [(hold.kind.value, hold.until) for hold in desired.holds if hold.target == "room"] == [
+        ("window_detected", NOW + 900)
+    ]
+    assert due == pytest.approx(600 + TICK)
+
+    # Each new low starts the wait for the temperature to settle again.
+    colder = observe(plant, temperatures={"room": 19.1})
+    state, desired, _ = run(plant, colder, state, NOW + 600)
+    assert desired.demands["room"].reason == "window open: temperature fell 0.9 K"
+    restored = State.from_dict(json.loads(json.dumps(state.to_dict())))
+    assert restored == state, "a restart keeps the detection"
+    state, desired, _ = run(plant, colder, restored, NOW + 1199)
+    assert not desired.demands["room"].on
+    state, desired, _ = run(plant, colder, state, NOW + 1200)
+    assert desired.demands["room"].on and state.windows_open == frozenset()
+    assert state.detected_windows["room"] == DetectedWindow(Mode.HEAT, ((NOW + 1200, 19.1),))
+
+
+def test_a_detected_window_ends_after_its_maximum_duration() -> None:
+    plant = _plant(DETECTING)
+    state = _readings(plant, State(live=True, mode=Mode.HEAT), (0, 20.0), (60, 19.5))
+    assert state.windows_open == {"room"}
+    # The temperature keeps falling, so it never settles.
+    state = _readings(plant, state, *((60 + 500 * n, 19.5 - 0.1 * n) for n in (1, 2, 3)))
+    assert state.windows_open == {"room"}
+    _, desired, _ = run(plant, observe(plant, temperatures={"room": 19.1}), state, NOW + 1860)
+    assert desired.demands["room"].on
+
+
+def test_a_slow_fall_or_a_fall_in_cooling_is_no_window() -> None:
+    plant = _plant(DETECTING)
+    state = _readings(
+        plant, State(live=True, mode=Mode.HEAT), (0, 20.0), (400, 19.8), (800, 19.6), (1200, 19.4)
+    )
+    assert state.windows_open == frozenset(), "0.4 K within any 10 minutes"
+
+    cooling = _plant(
+        DETECTING.replace("pump: pump}", "pump: pump, modes: [heat, cool]}").replace(
+            "overrun: 120}", "overrun: 120, supply_temperature: sensor.supply}"
+        )
+    )
+
+    def cool(temperature: float) -> Observations:
+        return replace(
+            observe(cooling, mode=Mode.COOL, temperatures={"room": temperature}),
+            thermostats={"room": DigitalThermostatState(Mode.COOL, 24.0)},
+        )
+
+    state, _, _ = run(cooling, cool(26.0), State(live=True, mode=Mode.COOL))
+    state, _, _ = run(cooling, cool(25.0), state, NOW + 60)
+    assert state.windows_open == frozenset(), "a fall helps cooling"
+    state, desired, _ = run(cooling, cool(25.6), state, NOW + 120)
+    assert desired.demands["room"].reason == "window open: temperature rose 0.6 K"
 
 
 def test_an_unavailable_window_counts_as_closed() -> None:
