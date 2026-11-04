@@ -226,3 +226,32 @@ def test_removing_a_heat_sink_loop_removes_it_from_the_source() -> None:
     assert "heat_sink_loops" not in edited["source"]
     kept = documents.without_loop(document, "living_area", "ceiling")
     assert kept["source"]["heat_sink_loops"] == ["living_area.floor"]
+
+
+def test_the_plant_form_keeps_the_supply_keys_it_does_not_show() -> None:
+    from custom_components.hydronicus.flows.documents import (
+        SUPPLY_FORM_KEYS,
+        plant_values,
+        with_plant,
+    )
+
+    supply = {
+        "entity": "number.supply",
+        "outdoor_sensor": "sensor.outdoor",
+        "modes": ["cool"],
+        "step": 1,
+        "heating_limit": 16,
+        "offset": 1.5,
+    }
+    document = {
+        "hydronicus": 2,
+        "name": "Home",
+        "source": {"request": "switch.hp", "supply": supply},
+    }
+    shown = {key: value for key, value in supply.items() if key in SUPPLY_FORM_KEYS}
+    values = {**plant_values(document), "supply": {**shown, "heat_cold": 40}}
+    written = with_plant(document, values)["source"]["supply"]
+    assert written == {**supply, "heat_cold": 40}
+    cleared = with_plant(document, {**values, "supply": {"entity": "number.supply"}})
+    assert "outdoor_sensor" not in cleared["source"]["supply"]
+    assert cleared["source"]["supply"]["heating_limit"] == 16

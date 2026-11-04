@@ -67,3 +67,10 @@ async def test_the_plant_file_in_plant_settings_round_trips(hass: HomeAssistant)
     assert text == write_plant_file(entry.runtime_data.plant)
     assert read_plant_file(text) == entry.runtime_data.plant
     assert entry.options == {"armed_outputs": [], "control": False}
+
+
+def test_the_supply_form_shows_exactly_its_form_keys(hass: HomeAssistant) -> None:
+    from custom_components.hydronicus.flows.documents import SUPPLY_FORM_KEYS
+    from custom_components.hydronicus.flows.forms import supply_schema
+
+    assert {str(key) for key in supply_schema(hass, {}).schema} == set(SUPPLY_FORM_KEYS)
