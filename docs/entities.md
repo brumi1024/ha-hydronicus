@@ -23,6 +23,7 @@ A device goes with its object: removing a zone removes its device.
 | **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`, where `cool` exists only when a loop cools. An automation can set it, and it survives restarts. |
 | **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. Its `live` attribute stays true after you turn it off until the equipment has stopped. |
 | **Status** sensor | `sensor.<plant>_status` | What the Plant does now, in the table below. It is unavailable until the Plant's first evaluation. |
+| **Heartbeat** sensor | `sensor.<plant>_heartbeat` | While **Control equipment** is on and the latest evaluation succeeded: a timestamp that advances at least every `interval`, 60 seconds; unknown otherwise. Its `on_outputs` attribute lists the armed switch outputs Hydronicus wants on. Diagnostic; see [a relay watchdog](#keep-relays-on-only-while-hydronicus-watches). |
 
 | Status | Meaning |
 | --- | --- |
@@ -228,9 +229,9 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 
 ## An example
 
-The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 32 entities:
+The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 33 entities:
 
-- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
+- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `sensor.home_heartbeat`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
 - `binary_sensor.heat_pump_requested` for the source.
 - For each zone, such as `living_area`: `climate.living_area`, `binary_sensor.living_area_heating_demand`, `binary_sensor.living_area_cooling_demand`, `sensor.living_area_combined_temperature`, `sensor.living_area_dew_point`, `sensor.living_area_duty_cycle`, `binary_sensor.living_area_ceiling_flowing`, and `sensor.living_area_ceiling_runtime`.
 - `binary_sensor.living_area_floor_flowing` and `sensor.living_area_floor_runtime` for the living area's underfloor loop.
@@ -292,6 +293,30 @@ script:
         data:
           title: Plant file
           message: "{{ plant.yaml }}"
+```
+
+### Keep relays on only while Hydronicus watches
+
+A relay with its own timer, such as a Shelly Gen2 switch with `auto_off`, turns off by itself unless something refreshes it, also while Home Assistant does not run.
+This automation refreshes each relay that the **Heartbeat** sensor's `on_outputs` lists and that is already on, every time the heartbeat advances; once Hydronicus stops watching, the refreshes stop, and each relay turns off after its own timer.
+It never turns a relay on that is off, and it is only for outputs that may safely stop by themselves, such as the cooling valves or the source request in cooling; a heating relay that turns off in a frost is a risk of its own.
+
+```yaml
+automation:
+  - alias: Refresh the relays Hydronicus watches
+    triggers:
+      - trigger: state
+        entity_id: sensor.home_heartbeat
+    actions:
+      - repeat:
+          for_each: >-
+            {{ state_attr('sensor.home_heartbeat', 'on_outputs')
+               | select('in', ['switch.ceiling_valve', 'switch.heat_pump_request'])
+               | select('is_state', 'on') | list }}
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: "{{ repeat.item }}"
 ```
 
 ### Automatic heat and cool changeover

@@ -52,6 +52,7 @@ ENTITY_KEYS = {
     "select": {"mode"},
     "sensor": {
         "status",
+        "heartbeat",
         "combined_temperature",
         "dew_point",
         "duty_cycle",

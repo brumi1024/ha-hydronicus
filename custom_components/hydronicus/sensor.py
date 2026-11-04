@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -30,7 +31,7 @@ from .entity import (
     source_device,
 )
 from .flow_history import HOUR
-from .runtime import PlantRuntime
+from .runtime import HEARTBEAT_INTERVAL, PlantRuntime
 from .view import pump_operation, source_operation
 
 PARALLEL_UPDATES = 0
@@ -281,6 +282,33 @@ class LoopRuntimeSensor(HydronicusEntity, SensorEntity):
         return {"basis": "Loop flow inferred from equipment feedback while control is live"}
 
 
+class HeartbeatSensor(HydronicusEntity, SensorEntity):
+    """When the Plant last evaluated successfully while live, at least once a minute.
+
+    A relay-level watchdog follows it: while it advances, the outputs it lists
+    may stay on; once it stops, Hydronicus is not watching them.
+    """
+
+    _attr_translation_key = "heartbeat"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unrecorded_attributes = frozenset({"on_outputs", "interval"})
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "heartbeat"), plant_device(runtime.plant)
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        at = self.runtime.heartbeat()
+        return None if at is None else dt_util.utc_from_timestamp(at)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"on_outputs": self.runtime.heartbeat_outputs(), "interval": HEARTBEAT_INTERVAL}
+
+
 class CompressorStartsSensor(HydronicusEntity, SensorEntity):
     """How often the source's compressor started within the last hour."""
 
@@ -329,7 +357,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     runtime = entry.runtime_data
-    entities: list[tuple[str | None, Entity]] = [(None, PlantStatusSensor(runtime))]
+    entities: list[tuple[str | None, Entity]] = [
+        (None, PlantStatusSensor(runtime)),
+        (None, HeartbeatSensor(runtime)),
+    ]
     for zone in runtime.plant.zones:
         if zone.temperature or zone.areas:
             entities.append((zone.slug, ZoneTemperatureSensor(runtime, zone)))

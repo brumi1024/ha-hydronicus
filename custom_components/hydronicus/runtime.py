@@ -34,7 +34,7 @@ import logging
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry
@@ -56,6 +56,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
     async_track_state_change_event,
     async_track_state_report_event,
+    async_track_time_interval,
 )
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
@@ -83,6 +84,7 @@ from .core.model import (
     OutputRole,
     OutputTarget,
     Plant,
+    SwitchTarget,
     Zone,
 )
 from .core.plant_file import entity_paths, export_plant
@@ -153,6 +155,9 @@ SCHEDULE_GET: Final = "get_schedule"
 _PROPOSALS_KEPT: Final = 50
 # How long after a failed evaluation the Plant evaluates again, in seconds.
 EVALUATION_RETRY: Final = 60.0
+# While live and evaluating without error, the Plant's heartbeat advances at
+# least this often, for a relay-level watchdog, even while nothing changes.
+HEARTBEAT_INTERVAL: Final = 60.0
 # How often the flow counters are saved while nothing else changes, in seconds.
 FLOW_SAVE_INTERVAL: Final = 900.0
 
@@ -236,6 +241,7 @@ class PlantRuntime:
         self._refresh: CALLBACK_TYPE | None = None
         self._hass_stop: CALLBACK_TYPE | None = None
         self._flow_saved_at = 0.0
+        self._heartbeat_at = 0.0
         self.next_evaluation_at: float | None = None
         self.evaluation_error: str | None = None
         self._dispatcher = Dispatcher(hass, entry, plant.name, self._authorized)
@@ -347,7 +353,20 @@ class PlantRuntime:
         self._began = True
         if self.forecast is not None:
             self.forecast.async_start()
+        self._unsubscribe.append(
+            async_track_time_interval(
+                self.hass, self._on_heartbeat, timedelta(seconds=HEARTBEAT_INTERVAL)
+            )
+        )
         self.request_evaluation()
+
+    @callback
+    def _on_heartbeat(self, now: datetime) -> None:
+        """Advance the heartbeat while live; it publishes the entities and never evaluates."""
+        if self._stopped or not self.state.live or self.evaluation_error is not None:
+            return
+        self._heartbeat_at = now.timestamp()
+        self._publish()
 
     async def async_stop(self) -> None:
         """Stop without sending a command, and save the persisted state now."""
@@ -453,6 +472,28 @@ class PlantRuntime:
         if source is None or source.supply is None or Mode.HEAT not in source.supply.modes:
             return None
         return source.supply.offset if self.curve_offset is None else self.curve_offset
+
+    def heartbeat(self) -> float | None:
+        """When the Plant last showed it watches its live outputs, or None while it does not.
+
+        A successful evaluation and each tick of the heartbeat advance it; a
+        failed evaluation, Dry run, and stopping stop it.
+        """
+        view = self.view
+        if view is None or not self.state.live or self.evaluation_error is not None:
+            return None
+        return max(view.at, self._heartbeat_at)
+
+    def heartbeat_outputs(self) -> list[str]:
+        """The switch outputs the last evaluation wants on, which a watchdog may keep on."""
+        view = self.view
+        if view is None or not self.state.live:
+            return []
+        return sorted(
+            entity
+            for entity, target in view.desired.outputs.items()
+            if isinstance(target, SwitchTarget) and target.on and entity in self.armed
+        )
 
     @callback
     def set_curve_offset(self, value: float) -> None:

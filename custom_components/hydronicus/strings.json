@@ -766,6 +766,17 @@
       },
       "compressor_cycle": {
         "name": "Compressor cycle"
+      },
+      "heartbeat": {
+        "name": "Heartbeat",
+        "state_attributes": {
+          "on_outputs": {
+            "name": "Outputs on"
+          },
+          "interval": {
+            "name": "Interval"
+          }
+        }
       }
     },
     "switch": {

@@ -91,6 +91,9 @@
       },
       "compressor_cycle": {
         "default": "mdi:timer-sync-outline"
+      },
+      "heartbeat": {
+        "default": "mdi:heart-pulse"
       }
     },
     "switch": {
