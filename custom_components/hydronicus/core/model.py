@@ -317,6 +317,27 @@ class ModeSwitch:
         return None if mode is Mode.OFF else mode in self.modes
 
 
+# How far the owner may shift the heating curve, in K either way.
+MAX_CURVE_OFFSET: Final = 5.0
+# How far below the heating limit the outdoor temperature must fall before the
+# source may heat again, in K.
+HEATING_LIMIT_RELEASE: Final = 1.0
+# The outdoor temperature the heating curve assumes while frost protection heats
+# and no usable outdoor reading or fallback says otherwise, in °C.
+FROST_CURVE_OUTDOOR: Final = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class RoomInfluence:
+    """A lead zone whose distance from its heating target shifts the heating curve."""
+
+    zone: str
+    # The shift per kelvin the zone is below its target.
+    factor: float = 1.0
+    # The largest shift either way, in K.
+    limit: float = 3.0
+
+
 @dataclass(frozen=True, slots=True)
 class SupplyControl:
     """A bounded source supply setpoint, optionally compensated for outdoor temperature."""
@@ -339,6 +360,16 @@ class SupplyControl:
     # The setpoint's resolution, such as 1 for whole degrees: a cooling target is
     # rounded up, so it stays above the dew point, and a heating target to nearest.
     step: float | None = None
+    # The heating curve's parallel shift in K, the starting value of the owner's offset.
+    offset: float = 0.0
+    # The time constant of the outdoor reading's first-order filter in seconds; 0 is none.
+    outdoor_damping: float = 0.0
+    # The outdoor temperature the curve uses while the reading is not usable, or
+    # None to block the heating request instead.
+    outdoor_fallback: float | None = None
+    # The damped outdoor temperature at or above which the source does not heat.
+    heating_limit: float | None = None
+    room_influence: RoomInfluence | None = None
 
 
 DEFAULT_DHW_MINIMUM: Final = 40.0
@@ -799,6 +830,21 @@ class Hold:
 
 
 @dataclass(frozen=True, slots=True)
+class HeatingCurve:
+    """What shaped the heating curve this evaluation, for the entities and diagnostics."""
+
+    # The outdoor temperature the curve and the heating limit use, damped, or the
+    # fallback while ``fallback``; None while neither exists.
+    outdoor: float | None
+    fallback: bool
+    # The heating limit keeps the source from heating.
+    warm_weather: bool
+    # The owner's offset and the lead zone's shift, in K.
+    offset: float
+    room_shift: float
+
+
+@dataclass(frozen=True, slots=True)
 class Desired:
     """What every output should be now, computed by each evaluation."""
 
@@ -846,3 +892,5 @@ class Desired:
     source_no_load: str | None = None
     # When the no-load guard tripped within the last day, oldest first.
     no_load_trips: tuple[float, ...] = ()
+    # The heating curve's inputs, while the supply control reads an outdoor sensor.
+    heating_curve: HeatingCurve | None = None

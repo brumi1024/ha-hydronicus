@@ -73,7 +73,8 @@ A manual target change leaves Schedule control until the owner selects it again.
 
 Supply control proposes a bounded Source water temperature, fixed by Mode or calculated from an outdoor heating curve.
 It never commands equipment directly: arming, observation, condensation guards, and hydraulic sequencing remain authoritative.
-A missing or stale outdoor reading blocks an outdoor-compensated heating request.
+A missing or stale outdoor reading blocks an outdoor-compensated heating request, unless the curve names an outdoor fallback; frost protection heats regardless, assuming 0 °C outdoors.
+The owner's offset shifts the heating target, a lead zone may shift it within a limit, and above the heating limit the source does not heat while the zones still circulate.
 
 ## Mode
 

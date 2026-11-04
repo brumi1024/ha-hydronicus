@@ -863,6 +863,9 @@
             "name": "Boost until"
           }
         }
+      },
+      "heating_curve_offset": {
+        "name": "Heating curve offset"
       }
     },
     "button": {
@@ -996,6 +999,10 @@
     "zone_not_responding": {
       "title": "{plant}, zone {zone}: {mode} has no effect",
       "description": "In Plant {plant}, zone {zone} has called for {mode} for {hours} hours of observed flow, with the source running when the Plant has one, and its temperature has not moved {progress} K toward the target. Check whether the zone's valves really open and its pump really runs, whether the source delivers water at the right temperature, whether the loop is air-locked or its flow is balanced too low, and whether the room sensor sits where the loop can warm or cool it. A loop too small for very cold or very hot weather can also hold a room steady short of its target; then raise the supply temperature, or lengthen the zone's response_check duration in the plant file. Hydronicus keeps controlling the zone as before. The repair clears once the temperature moves toward the target, or the zone stops calling."
+    },
+    "outdoor_sensor_unusable": {
+      "title": "{plant}: the outdoor sensor {entity_id} is not usable",
+      "description": "In Plant {plant}, the outdoor sensor {entity_id} of the heating curve has not been usable for at least 10 minutes, so {effect}. Check the sensor, its battery, and its link. The repair clears automatically once the sensor reports again."
     }
   },
   "exceptions": {

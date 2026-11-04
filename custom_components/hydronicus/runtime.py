@@ -73,6 +73,7 @@ from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.comfort import Setbacks, next_period_target
 from .core.dhw import DhwCommand, DhwState
 from .core.model import (
+    MAX_CURVE_OFFSET,
     NUMERIC_ROLES,
     Desired,
     DigitalThermostat,
@@ -116,6 +117,7 @@ from .issues import (
     invalid_schedule_blocks,
     missing_area_sensor,
     missing_binding,
+    outdoor_sensor_unusable,
     output_not_responding,
     outputs_awaiting_confirmation,
     source_no_load,
@@ -192,6 +194,8 @@ class PlantRuntime:
         self.thermostats: dict[str, DigitalThermostatState] = {}
         # The owner's setbacks of each scheduled zone that has changed them, by zone slug.
         self.setbacks: dict[str, Setbacks] = {}
+        # The owner's heating curve offset, or None for the configured one.
+        self.curve_offset: float | None = None
         # The owner's last DHW command, until an evaluation has applied it.
         self.dhw_command: DhwCommand | None = None
         # Each followed schedule helper's week from ``schedule.get_schedule``, or None
@@ -270,6 +274,8 @@ class PlantRuntime:
                 zone: Setbacks(float(values["heat"]), float(values["cool"]))
                 for zone, values in data.get("setbacks", {}).items()
             }
+            offset = data.get("curve_offset")
+            self.curve_offset = None if offset is None else float(offset)
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
                 "The persisted state of Plant %s could not be read and starts over: %s",
@@ -281,6 +287,7 @@ class PlantRuntime:
             self.unusable, self.flow = UnusableInputs(), FlowHistory()
             self.compressor = CompressorHistory()
             self.setbacks, self.responses = {}, {}
+            self.curve_offset = None
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -436,6 +443,23 @@ class PlantRuntime:
         self.setbacks[zone] = (
             replace(current, heat=value) if mode is Mode.HEAT else replace(current, cool=value)
         )
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
+    def heating_curve_offset(self) -> float | None:
+        """The heating curve's offset, the owner's or the configured one; None without one."""
+        source = self.plant.source
+        if source is None or source.supply is None or Mode.HEAT not in source.supply.modes:
+            return None
+        return source.supply.offset if self.curve_offset is None else self.curve_offset
+
+    @callback
+    def set_curve_offset(self, value: float) -> None:
+        """Take the owner's new heating curve offset and evaluate."""
+        if self.heating_curve_offset() is None:
+            return
+        self.curve_offset = min(MAX_CURVE_OFFSET, max(-MAX_CURVE_OFFSET, value))
         self._save()
         self._publish()
         self.request_evaluation()
@@ -632,6 +656,13 @@ class PlantRuntime:
             {
                 IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
                 IssueKind.CONDENSATION_INPUT_UNUSABLE: desired.blocking_condensation_inputs,
+                IssueKind.OUTDOOR_SENSOR_UNUSABLE: {"source": (plant.source.supply.outdoor_sensor,)}
+                if plant.source is not None
+                and plant.source.supply is not None
+                and plant.source.supply.outdoor_sensor is not None
+                and (curve := desired.heating_curve) is not None
+                and (curve.fallback or curve.outdoor is None)
+                else {},
                 IssueKind.SOURCE_UNHEALTHY: {"source": (plant.source.health_sensor,)}
                 if desired.source_fault is not None
                 and plant.source is not None
@@ -1023,6 +1054,7 @@ class PlantRuntime:
                 if (setbacks := self.zone_setbacks(slug)) is not None
             },
             dhw_command=self.dhw_command,
+            curve_offset=self.curve_offset,
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1242,6 +1274,7 @@ class PlantRuntime:
                 zone: {"heat": values.heat, "cool": values.cool}
                 for zone, values in sorted(self.setbacks.items())
             },
+            "curve_offset": self.curve_offset,
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
         }
 
@@ -1326,6 +1359,11 @@ class PlantRuntime:
                     if entity not in missing
                 ),
             )
+        )
+        issues.extend(
+            outdoor_sensor_unusable(reconciled, entity)
+            for _, entity in self.unusable.reported(IssueKind.OUTDOOR_SENSOR_UNUSABLE, now)
+            if entity not in missing
         )
         issues.extend(
             source_unhealthy(reconciled, entity)

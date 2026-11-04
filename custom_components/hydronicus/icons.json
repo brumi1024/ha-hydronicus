@@ -123,6 +123,9 @@
       },
       "dhw_target": {
         "default": "mdi:thermometer-water"
+      },
+      "heating_curve_offset": {
+        "default": "mdi:chart-line-variant"
       }
     }
   },

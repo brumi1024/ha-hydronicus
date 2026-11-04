@@ -233,12 +233,21 @@ Configure this only when Hydronicus owns the supply setpoint; do not let another
 | `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
 | `modes` | no | `[heat, cool]` | The modes in which Hydronicus owns the setpoint, such as `[cool]` for a heat pump whose own weather curve keeps the heating setpoint. In another mode Hydronicus sends the number nothing and does not wait for it. |
 | `step` | no | | The setpoint's resolution, such as `1` for a heat pump that takes whole degrees. A cooling target is rounded up to it, so it stays above the dew point margin, and a heating target to the nearest step within `minimum` and `maximum`. |
+| `offset` | no | `0` | A parallel shift of the heating target in K, from -5 to 5, added to the fixed target or the curve; the starting value of the source's **Heating curve offset**. |
+| `outdoor_damping` | no | `0` | Only with `outdoor_sensor`: the time constant in seconds of a first-order filter of the outdoor reading, such as `10800`, so a building that reacts over hours does not follow every gust; `0` turns it off. |
+| `outdoor_fallback` | no | none | Only with `outdoor_sensor`: the outdoor temperature from -50 to 50 °C that the curve uses while the reading is missing, invalid, or stale, such as `0`. Without it, a lost reading blocks the heating request, except for frost protection. |
+| `heating_limit` | no | none | Only with `outdoor_sensor`: the damped outdoor temperature at or above which the source does not heat, such as `16`; it heats again once the outdoor temperature is 1 K below it. Frost protection heats whatever the weather. |
+| `room_influence` | no | none | A lead zone that shifts the heating curve, as a mapping of `zone`, its slug, `factor`, the shift per kelvin the zone is below its heating target, `1` by default, and `limit`, the largest shift either way in K, `3` by default. The zone needs a digital thermostat and a loop that heats it. |
 
 With a mode select, a target is proposed only once the select shows the mode, since a heat pump's setpoint range often follows its mode.
 
 The curve is linear between its two endpoints and stays at an endpoint outside their outdoor range.
 Every configured fixed or curve supply temperature of the setpoint's `modes` must lie within `minimum` and `maximum`.
-A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
+A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target, unless `outdoor_fallback` names the temperature to use.
+While frost protection heats a zone and neither a reading nor a fallback is usable, the curve assumes 0 °C outdoors, so frost protection never waits for an outdoor sensor.
+After 10 minutes without a usable reading, the [outdoor sensor Repair](troubleshooting.md#the-outdoor-sensor-is-not-usable) says which of the two applies.
+The heating limit uses the damped reading, and a fallback never starts or keeps it, so a lost sensor heats.
+Room influence raises the curve while the lead zone is colder than its effective heating target and lowers it while the zone is warmer, within `limit`; a lead zone without a usable reading shifts nothing.
 A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
 See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).
 

@@ -222,7 +222,8 @@ For example, the default curve asks for 45 °C at -10 °C outdoors, 35 °C at 5 
 This responds to a current outdoor measurement; it does not predict the weather.
 
 The policy stays inside its configured bounds and the number entity's usable temperature range.
-A configured outdoor sensor that is missing, stale, or invalid blocks the heating request.
+The curve can be shifted by the source's **Heating curve offset**, damped against fast outdoor changes, led by a zone's distance from its target, and stopped above a heating limit, as the [plant file](plant-file.md#supply-temperature-control) describes.
+A configured outdoor sensor that is missing, stale, or invalid blocks the heating request, unless the curve has an outdoor fallback; frost protection heats regardless, assuming 0 °C outdoors.
 Cooling remains independent of the outdoor sensor, and raises its proposed target when needed to preserve the worst measured dew point plus the guard's 2 K margin and 1 K release allowance.
 If that would exceed the configured maximum, the source stays off with a reason.
 The existing condensation guard still checks actual measured water or surface temperatures.

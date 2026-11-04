@@ -133,6 +133,7 @@ Diagnostics list them by the key in the second column.
 | [A condensation input blocks cooling](#a-condensation-input-blocks-cooling) | `condensation_input_unusable` | Error |
 | [A schedule has blocks it cannot use](#a-schedule-has-blocks-it-cannot-use) | `invalid_schedule_block` | Error |
 | [A source is kept off by its health sensor](#a-source-is-kept-off-by-its-health-sensor) | `source_unhealthy` | Error |
+| [The outdoor sensor is not usable](#the-outdoor-sensor-is-not-usable) | `outdoor_sensor_unusable` | Error |
 | [A source keeps running without a load](#a-source-keeps-running-without-a-load) | `source_no_load` | Error |
 | [A zone does not respond](#a-zone-does-not-respond) | `zone_not_responding` | Error |
 
@@ -213,6 +214,12 @@ The source's `health_sensor` has not read healthy for 10 minutes, so Hydronicus 
 Zones that call still open their loops and run their switched pumps.
 Check the source and the link that reports its health, such as a Modbus bridge, its wiring, and its broker.
 The source's **Fault** binary sensor shows the same at once, for a notification that should not wait.
+
+### The outdoor sensor is not usable
+
+The heating curve's `outdoor_sensor` has been missing, invalid, or stale for 10 minutes.
+With an `outdoor_fallback`, the curve uses that temperature meanwhile; without one, the source is not asked for heat, except for frost protection, which assumes 0 °C outdoors.
+Check the sensor, its battery, and its link; the Status sensor's `heating_curve` attribute shows what the curve uses now.
 
 ### A source keeps running without a load
 

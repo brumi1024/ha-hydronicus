@@ -122,6 +122,15 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "stopping_outputs": view.stopping_outputs(),
             "configuration_problem": runtime.problem,
             "frost_protection": list(view.desired.frost_protection),
+            "heating_curve": None
+            if (curve := view.desired.heating_curve) is None
+            else {
+                "outdoor": None if curve.outdoor is None else round(curve.outdoor, 2),
+                "fallback": curve.fallback,
+                "warm_weather": curve.warm_weather,
+                "offset": curve.offset,
+                "room_shift": round(curve.room_shift, 2),
+            },
             "zones_not_responding": {
                 zone: dt_util.utc_from_timestamp(at).isoformat()
                 for zone, at in sorted(view.not_responding.items())

@@ -46,6 +46,7 @@ from .model import (
     DEFAULT_SURFACE_MINIMUM,
     DEFAULT_WINDOW_CLOSE_DELAY,
     DEFAULT_WINDOW_OPEN_DELAY,
+    MAX_CURVE_OFFSET,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
     MAX_RESPONSE_DURATION,
@@ -81,6 +82,7 @@ from .model import (
     Preset,
     Pump,
     ResponseCheck,
+    RoomInfluence,
     RunKind,
     Schedule,
     Sensor,
@@ -161,6 +163,28 @@ _SUPPLY_KEYS: Final = (
     "max_age",
     "modes",
     "step",
+    "offset",
+    "outdoor_damping",
+    "outdoor_fallback",
+    "heating_limit",
+    "room_influence",
+)
+_ROOM_INFLUENCE_KEYS: Final = ("zone", "factor", "limit")
+# The supply keys that are not plain numbers with a default.
+_SUPPLY_SPECIAL_KEYS: Final = (
+    "entity",
+    "outdoor_sensor",
+    "modes",
+    "step",
+    "outdoor_fallback",
+    "heating_limit",
+    "room_influence",
+)
+# The supply keys that only work with an outdoor sensor.
+_SUPPLY_OUTDOOR_KEYS: Final = (
+    "outdoor_damping",
+    "outdoor_fallback",
+    "heating_limit",
 )
 _SCHEDULE_KEYS: Final = (
     "entity",
@@ -539,11 +563,19 @@ def _supply(value: object, path: str) -> SupplyControl:
         key: _number(
             document.get(key, getattr(defaults, key)),
             _join(path, key),
-            signed=key not in ("tolerance", "max_age"),
+            signed=key not in ("tolerance", "max_age", "outdoor_damping"),
             positive=key in ("tolerance", "max_age"),
         )
         for key in _SUPPLY_KEYS
-        if key not in ("entity", "outdoor_sensor", "modes", "step")
+        if key not in _SUPPLY_SPECIAL_KEYS
+    }
+    _within(settings["offset"], _join(path, "offset"), low=-MAX_CURVE_OFFSET, high=MAX_CURVE_OFFSET)
+    optional = {
+        key: (
+            None if document[key] is None else _number(document[key], _join(path, key), signed=True)
+        )
+        for key in ("outdoor_fallback", "heating_limit")
+        if key in document
     }
     modes = (
         _modes(document["modes"], _join(path, "modes")) if "modes" in document else defaults.modes
@@ -581,7 +613,41 @@ def _supply(value: object, path: str) -> SupplyControl:
         if "outdoor_sensor" in document
         else None
     )
-    return SupplyControl(entity=entity, outdoor_sensor=outdoor, modes=modes, step=step, **settings)
+    if outdoor is None:
+        for key in _SUPPLY_OUTDOOR_KEYS:
+            if document.get(key) not in (None, 0):
+                raise PlantFileError(_join(path, key), "This needs an outdoor_sensor.")
+    fallback = optional.get("outdoor_fallback")
+    if fallback is not None:
+        _within(fallback, _join(path, "outdoor_fallback"), low=-50, high=50)
+    influence = (
+        _room_influence(document["room_influence"], _join(path, "room_influence"))
+        if document.get("room_influence") is not None
+        else None
+    )
+    return SupplyControl(
+        entity=entity,
+        outdoor_sensor=outdoor,
+        modes=modes,
+        step=step,
+        outdoor_fallback=fallback,
+        heating_limit=optional.get("heating_limit"),
+        room_influence=influence,
+        **settings,
+    )
+
+
+def _room_influence(value: object, path: str) -> RoomInfluence:
+    document = _mapping(value, path, _ROOM_INFLUENCE_KEYS)
+    zone = _required(document, "zone", path)
+    if not isinstance(zone, str):
+        raise PlantFileError(_join(path, "zone"), "Expected a zone slug.")
+    defaults = RoomInfluence(zone)
+    factor = _number(document.get("factor", defaults.factor), _join(path, "factor"), positive=True)
+    _within(factor, _join(path, "factor"), high=10)
+    limit = _number(document.get("limit", defaults.limit), _join(path, "limit"), positive=True)
+    _within(limit, _join(path, "limit"), high=MAX_CURVE_OFFSET * 2)
+    return RoomInfluence(zone, factor, limit)
 
 
 def _schedule(value: object, path: str) -> Schedule:
@@ -1095,6 +1161,7 @@ def validate_plant(plant: Plant) -> None:
         _check_pump(plant, pump)
     if plant.source is not None:
         _check_heat_sink(plant, plant.source)
+        _check_room_influence(plant, plant.source)
     for loop in plant.all_loops:
         _check_loop(plant, loop)
     for zone in plant.zones:
@@ -1184,6 +1251,20 @@ def _check_heat_sink(plant: Plant, source: Source) -> None:
             raise PlantFileError(
                 item_path, f"Loop {ref} already runs with the source; it needs no heat sink role."
             )
+
+
+def _check_room_influence(plant: Plant, source: Source) -> None:
+    if source.supply is None or source.supply.room_influence is None:
+        return
+    path = "source.supply.room_influence.zone"
+    slug = source.supply.room_influence.zone
+    zone = next((zone for zone in plant.zones if zone.slug == slug), None)
+    if zone is None:
+        raise PlantFileError(path, f"There is no zone {slug}.")
+    if not isinstance(zone.thermostat, DigitalThermostat):
+        raise PlantFileError(path, f"Zone {slug} needs a digital thermostat to lead the curve.")
+    if Mode.HEAT not in plant.zone_modes(slug):
+        raise PlantFileError(path, f"No loop heats zone {slug}, so it cannot lead the curve.")
 
 
 def _check_loop(plant: Plant, loop: Loop) -> None:
@@ -1644,8 +1725,18 @@ def _export_source(source: Source) -> dict[str, Any]:
         document["heat_sink_overshoot"] = _export_number(source.heat_sink_overshoot)
     if source.supply is not None:
         document["supply"] = _export_configuration(
-            source.supply, SupplyControl(source.supply.entity), _SUPPLY_KEYS
+            source.supply,
+            SupplyControl(source.supply.entity),
+            [key for key in _SUPPLY_KEYS if key != "room_influence"],
         )
+        if (influence := source.supply.room_influence) is not None:
+            room: dict[str, Any] = {"zone": influence.zone}
+            defaults = RoomInfluence(influence.zone)
+            if influence.factor != defaults.factor:
+                room["factor"] = _export_number(influence.factor)
+            if influence.limit != defaults.limit:
+                room["limit"] = _export_number(influence.limit)
+            document["supply"]["room_influence"] = room
     return document
 
 

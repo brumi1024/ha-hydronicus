@@ -52,6 +52,7 @@ The **Status** sensor's attributes explain the state:
 | `stopping_outputs` | While `stopping`, the outputs of the old configuration not yet seen off. |
 | `configuration_problem` | Why the configuration is not valid, or none. |
 | `frost_protection` | The zones that [frost protection](how-it-works.md#frost-protection) heats. |
+| `heating_curve` | Only with a supply `outdoor_sensor`: the `outdoor` temperature the curve uses, whether it is the `fallback`, whether `warm_weather` above the heating limit keeps the source off, and the `offset` and `room_shift` in K. |
 | `zones_not_responding` | Each zone whose [response check](plant-file.md#response-check) failed, with when it did. |
 | `exercising` | The slug of the pump being exercised, or none. |
 | `idle_since` | Each switched pump and valve with the time since which it has been off. |
@@ -186,6 +187,7 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | **Requested** binary sensor | `binary_sensor.<source>_requested` | On while Hydronicus wants the source's request on. |
 | **Fault** binary sensor | `binary_sensor.<source>_fault` | Only with a `health_sensor`: on while that sensor does not read healthy, so the source is kept off. |
 | **DHW** switch | `switch.<source>_dhw` | Only with a `dhw` switch: the DHW on or off that Hydronicus owns. Turning it on or off sends the source's DHW switch; a change on the source's own controller is adopted and shows here. |
+| **Heating curve offset** number | `number.<source>_heating_curve_offset` | Only when the source's `supply` owns heating: a parallel shift of the heating target from -5 to 5 K, which any user may set. It starts at the configured `offset` and survives restarts. |
 | **DHW target** number | `number.<source>_dhw_target` | Only with a `dhw` setpoint: the owned DHW target within its limits. Its `boost` and `boost_until` attributes show a boost from the `hydronicus.boost_dhw` action, which `hydronicus.end_dhw_boost` ends early. |
 | **Compressor starts** sensor | `sensor.<source>_compressor_starts` | Only with a `compressor_sensor`: how often the compressor started within the last hour. Diagnostic. |
 | **Compressor cycle** sensor | `sensor.<source>_compressor_cycle` | Only with a `compressor_sensor`: the mean length, in minutes, of the compressor's runs that ended within the last day. Diagnostic. |
