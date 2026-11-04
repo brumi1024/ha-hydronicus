@@ -548,6 +548,12 @@ class _Evaluation:
 
     def __init__(self, plant: Plant, obs: Observations, state: State, now: float) -> None:
         physical_flow_seen = state.physical_flow_seen or _physical_flow_possible(plant, obs)
+        # A State that has never observed the source, such as one that a lost
+        # store replaced, finds a running source as it is: its minimum on time
+        # counts from the observed start. Going live from Dry run starts from rest.
+        self.source_unknown = state.source_observed is None and not (
+            obs.control and state.dry_run
+        )
         if obs.control and state.dry_run:
             # An output observed off since before the dwell is already safe.
             # Otherwise its real flow must stop before a new dwell can begin.
@@ -2168,6 +2174,16 @@ class _Plan:
                 return True
             reasons["source"] = "released"
             return False
+        if (
+            not demanded
+            and qualifying
+            and ev.source_unknown
+            and ev.source_observed is True
+            and ev.source_observed_changed is not None
+            and ev.held("source", HoldKind.MIN_ON, ev.source_observed_changed + source.min_on)
+        ):
+            reasons["source"] = "found running, held for its minimum on time"
+            return True
         if not demanded:
             reasons["source"] = "no ready loop calls"
             return False

@@ -207,6 +207,7 @@ Reload, unload, removal, and Home Assistant stop never send a command; the equip
 Stopping cancels dispatch and drops queued commands, so no unsent command starts after shutdown begins.
 It does not claim that a previously sent command or physical equipment has stopped.
 Hydronicus saves its timers, the Plant mode, and when each output last changed, and restores them first, so a valve that has been open for an hour still counts as ready, and an unchanged plant gets no command after a restart.
+When those saved timers are lost, a source found running with a ready loop is held for its minimum on time from the start Home Assistant shows, instead of being released inside it.
 
 Changing the Plant's configuration reloads it; changing an area's sensors or the armed outputs does not.
 When a change removes an output that is on, Hydronicus first stops the equipment of the old configuration in order, with the **Status** reading `stopping`, and only then runs the new one.
