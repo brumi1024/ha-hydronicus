@@ -37,6 +37,25 @@ The next tier is floor surface limits in heating, an actuation budget for valves
 
 [Questions for the owner](#questions-for-the-owner) lists the assumptions this ranking depends on; the answers can move items up or down.
 
+## Implementation status
+
+The owner chose to implement the top 5 and F1 to F6, with item 4 limited to the data a card needs and no bundled card.
+Each landed as its own commit on this branch:
+
+- F1 and F2, the xfail bugs: frost protection keeps its latch through a dropout, and hysteresis boundaries compare with a float tolerance.
+- F5: a source found running after a lost store is held for its minimum on time.
+- Item 1 with F3: the heating curve's `offset` and **Heating curve offset** number, `outdoor_damping`, `outdoor_fallback`, `room_influence`, `heating_limit`, a frost path that never waits for an outdoor sensor, and the `outdoor_sensor_unusable` Repair.
+  The Plant form now keeps the supply keys it does not show, which it dropped before, `modes` and `step` included.
+- F4: an opt-in, heating-only `sensor_fallback` per zone.
+- F6: the **Heartbeat** sensor and a relay watchdog automation example.
+- Item 2: the **Away** switch, the `set_away` and `end_away` actions, the Plant's `away` targets, and an early return before the return time.
+- Item 3: the **Mode** select's `auto` option from a Plant `changeover`.
+- Item 5: a DHW `schedule` with block targets, and a `legionella` cycle with the **Last disinfection** sensor and the `legionella_failed` Repair.
+- Item 4: the versioned `hydronicus/plant_view` and `hydronicus/plant_view/subscribe` websocket commands.
+
+These answers to the [questions](#questions-for-the-owner) are settled: the outdoor fallback is opt-in, and frost protection heats regardless.
+The design sketches below are kept as written; the plant file reference and how it works describe what shipped.
+
 ## Hydronicus today
 
 ### What it does
