@@ -51,6 +51,9 @@ from .model import (
     MAX_FROST_PROTECTION,
     MAX_RESPONSE_DURATION,
     MAX_RESPONSE_PROGRESS,
+    MAX_SENSOR_FALLBACK_AFTER,
+    MAX_SENSOR_FALLBACK_DUTY,
+    MAX_SENSOR_FALLBACK_PERIOD,
     MAX_SETBACK,
     MAX_WINDOW_DETECTION_CHANGE,
     MAX_WINDOW_DETECTION_MAX_DURATION,
@@ -60,6 +63,9 @@ from .model import (
     MIN_MAX_HUMIDITY,
     MIN_RESPONSE_DURATION,
     MIN_RESPONSE_PROGRESS,
+    MIN_SENSOR_FALLBACK_AFTER,
+    MIN_SENSOR_FALLBACK_PERIOD,
+    MIN_SENSOR_FALLBACK_SPELL,
     MIN_WINDOW_DETECTION_CHANGE,
     MIN_WINDOW_DETECTION_MAX_DURATION,
     MIN_WINDOW_DETECTION_WITHIN,
@@ -86,6 +92,7 @@ from .model import (
     RunKind,
     Schedule,
     Sensor,
+    SensorFallback,
     Source,
     SourceModeSelect,
     SupplyControl,
@@ -242,6 +249,7 @@ _ZONE_KEYS: Final = (
     "window_close_delay",
     "window_detection",
     "response_check",
+    "sensor_fallback",
     "max_humidity",
     "loops",
 )
@@ -268,6 +276,7 @@ _RUNS_KEYS: Final = ("with_zones",)
 _EXERCISE_KEYS: Final = ("interval", "run")
 _WINDOW_DETECTION_KEYS: Final = ("change", "within", "max_duration")
 _RESPONSE_CHECK_KEYS: Final = ("duration", "progress")
+_SENSOR_FALLBACK_KEYS: Final = ("after", "duty", "period")
 _LOOP_MODES: Final = (Mode.HEAT, Mode.COOL)
 _DEFAULT_MODES: Final = frozenset({Mode.HEAT})
 _DEFAULT_THERMOSTAT: Final = DigitalThermostat()
@@ -857,6 +866,9 @@ def _zone(slug: str, value: object, path: str) -> Zone:
         response_check=_response_check(
             zone.get("response_check", True), _join(path, "response_check")
         ),
+        sensor_fallback=_sensor_fallback(
+            zone.get("sensor_fallback"), _join(path, "sensor_fallback")
+        ),
         max_humidity=_max_humidity(zone, path),
     )
 
@@ -894,6 +906,41 @@ def _window_detection(value: object, path: str) -> WindowDetection | None:
             MAX_WINDOW_DETECTION_MAX_DURATION,
         ),
     )
+
+
+def _sensor_fallback(value: object, path: str) -> SensorFallback | None:
+    """Read ``true`` for the defaults, ``false`` or ``null``, which turn it off, or its settings."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return SensorFallback()
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected true, false, or a mapping of after, duty, and period.")
+    document = _mapping(value, path, _SENSOR_FALLBACK_KEYS)
+    default = SensorFallback()
+
+    def read(key: str, fallback: float, low: float, high: float) -> float:
+        key_path = _join(path, key)
+        return _within(
+            _number(document.get(key, fallback), key_path, positive=True),
+            key_path,
+            low=low,
+            high=high,
+        )
+
+    fallback = SensorFallback(
+        after=read("after", default.after, MIN_SENSOR_FALLBACK_AFTER, MAX_SENSOR_FALLBACK_AFTER),
+        duty=read("duty", default.duty, 0.0, MAX_SENSOR_FALLBACK_DUTY),
+        period=read(
+            "period", default.period, MIN_SENSOR_FALLBACK_PERIOD, MAX_SENSOR_FALLBACK_PERIOD
+        ),
+    )
+    if fallback.duty * fallback.period < MIN_SENSOR_FALLBACK_SPELL:
+        raise PlantFileError(
+            _join(path, "duty"),
+            f"Must heat for at least {MIN_SENSOR_FALLBACK_SPELL:g} seconds of each period.",
+        )
+    return fallback
 
 
 def _response_check(value: object, path: str) -> ResponseCheck | None:
@@ -1167,6 +1214,7 @@ def validate_plant(plant: Plant) -> None:
     for zone in plant.zones:
         _check_zone(zone)
         _check_learning(plant, zone)
+        _check_sensor_fallback(plant, zone)
     for loop in plant.loops:
         if loop.cools:
             for zone in plant.dew_point_zones(loop):
@@ -1314,6 +1362,16 @@ def _check_runs(plant: Plant, loop: Loop, path: str) -> None:
         seen.add(slug)
         if slug not in slugs:
             raise PlantFileError(item_path, f"There is no zone {slug}.")
+
+
+def _check_sensor_fallback(plant: Plant, zone: Zone) -> None:
+    if zone.sensor_fallback is None:
+        return
+    path = f"zones.{zone.slug}.sensor_fallback"
+    if not isinstance(zone.thermostat, DigitalThermostat):
+        raise PlantFileError(path, "A sensor fallback needs a digital thermostat.")
+    if Mode.HEAT not in plant.zone_modes(zone.slug):
+        raise PlantFileError(path, "A sensor fallback needs a loop that heats the zone.")
 
 
 def _check_zone(zone: Zone) -> None:
@@ -1527,6 +1585,10 @@ _KEY_WORDS: Final = {
     "within": "within",
     "max_duration": "maximum duration",
     "response_check": "response check",
+    "sensor_fallback": "sensor fallback",
+    "after": "after",
+    "duty": "duty",
+    "period": "period",
     "progress": "progress",
     "max_humidity": "maximum humidity",
     "max_starts_per_hour": "maximum starts per hour",
@@ -1831,6 +1893,12 @@ def _export_zone(zone: Zone) -> dict[str, Any]:
             if zone.response_check is None
             else _export_changed(zone.response_check, DEFAULT_RESPONSE_CHECK, _RESPONSE_CHECK_KEYS)
         )
+    if zone.sensor_fallback is not None:
+        document["sensor_fallback"] = (
+            True
+            if zone.sensor_fallback == SensorFallback()
+            else _export_changed(zone.sensor_fallback, SensorFallback(), _SENSOR_FALLBACK_KEYS)
+        )
     if zone.max_humidity != DEFAULT_MAX_HUMIDITY:
         document["max_humidity"] = _export_setting(zone.max_humidity)
     if zone.loops:
@@ -1874,8 +1942,8 @@ def _export_thermostat(thermostat: Thermostat) -> dict[str, Any]:
 
 
 def _export_changed(
-    value: WindowDetection | ResponseCheck,
-    defaults: WindowDetection | ResponseCheck,
+    value: WindowDetection | ResponseCheck | SensorFallback,
+    defaults: WindowDetection | ResponseCheck | SensorFallback,
     keys: Sequence[str],
 ) -> dict[str, Any]:
     """Write the numeric settings that differ from their defaults."""
@@ -2013,7 +2081,15 @@ class _FlowMapping(dict[str, Any]):
 
 # Mappings under these keys are written on one line.
 _FLOW_MAPPINGS: Final = frozenset(
-    {"mode", "runs", "thermostat", "exercise", "window_detection", "response_check"}
+    {
+        "mode",
+        "runs",
+        "thermostat",
+        "exercise",
+        "window_detection",
+        "response_check",
+        "sensor_fallback",
+    }
 )
 _MAP_TAG: Final = "tag:yaml.org,2002:map"
 _SEQ_TAG: Final = "tag:yaml.org,2002:seq"

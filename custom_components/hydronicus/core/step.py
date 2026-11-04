@@ -357,6 +357,8 @@ class State:
     # heating limit keeps the source from heating.
     outdoor_damped: DampedOutdoor | None = None
     warm_weather: bool = False
+    # Since when each zone has had no usable temperature, by zone slug.
+    sensorless: Mapping[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -423,6 +425,7 @@ class State:
             if self.outdoor_damped is None
             else {"value": self.outdoor_damped.value, "at": self.outdoor_damped.at},
             "warm_weather": self.warm_weather,
+            "sensorless": dict(self.sensorless),
         }
 
     @classmethod
@@ -487,6 +490,7 @@ class State:
             no_load_trips=tuple(float(value) for value in data.get("no_load_trips", ())),
             outdoor_damped=_damped_outdoor(data.get("outdoor_damped")),
             warm_weather=bool(data.get("warm_weather", False)),
+            sensorless={slug: float(at) for slug, at in data.get("sensorless", {}).items()},
         )
 
 
@@ -692,6 +696,10 @@ class _Evaluation:
         # now: they keep their latch, so a returning reading below the release
         # heats again, but nothing heats them while no reading says how cold they are.
         self.frost_latched: list[str] = []
+        # Since when each zone without a usable temperature has had none, and the
+        # zones a sensor fallback serves now.
+        self.sensorless: dict[str, float] = {}
+        self.sensor_fallbacks: list[str] = []
         # This evaluation's condensation guards, and since when each output is idle.
         self.guard_states: dict[str, GuardState] = {}
         self.idle_times: dict[str, float | None] = {}
@@ -1036,6 +1044,7 @@ class _Evaluation:
             no_load_trips=self.no_load_state[3],
             outdoor_damped=state.outdoor_damped if self.outdoor is None else self.outdoor.damped,
             warm_weather=self.warm,
+            sensorless=self.sensorless,
         )
         desired = Desired(
             outputs=outputs,
@@ -1059,6 +1068,7 @@ class _Evaluation:
             source_no_load=self.no_load_reason(),
             no_load_trips=self.no_load_state[3],
             heating_curve=self.heating_curve(),
+            sensor_fallback=tuple(self.sensor_fallbacks),
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
@@ -1232,6 +1242,8 @@ class _Evaluation:
                     HoldKind.DEMAND_MIN_ON if demand.on else HoldKind.DEMAND_MIN_OFF,
                     demand.held_until,
                 )
+            if (fallback := self.sensor_fallback(zone, thermostat, temperature)) is not None:
+                demand = fallback
             state, demand = self.window_inhibit(zone, state, demand)
             # Frost protection overrides the thermostat and an open window alike,
             # and leaves the thermostat's decision underneath as it is.
@@ -1242,6 +1254,45 @@ class _Evaluation:
             states[zone.slug], demands[zone.slug] = state, demand
             self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
         return demands, states
+
+    def sensor_fallback(
+        self, zone: Zone, thermostat: ThermostatState | None, temperature: float | None
+    ) -> Demand | None:
+        """A sensor fallback's demand, which replaces the thermostat's, or None.
+
+        It acts only once the zone has had no usable temperature for its ``after``,
+        only while the zone's digital thermostat and the Plant heat, and heats
+        for its ``duty`` of every ``period`` counted from then. The thermostat's
+        own decision stays off underneath, so a returning reading starts afresh.
+        """
+        if temperature is not None:
+            return None
+        since = self.state.sensorless.get(zone.slug, self.now)
+        if since > self.now:
+            since = self.now
+        self.sensorless[zone.slug] = since
+        config = zone.sensor_fallback
+        if (
+            config is None
+            or not isinstance(thermostat, DigitalThermostatState)
+            or thermostat.hvac_mode is not Mode.HEAT
+            or self.obs.mode is not Mode.HEAT
+        ):
+            return None
+        start = since + config.after
+        if not self.reached(start):
+            return None
+        self.sensor_fallbacks.append(zone.slug)
+        phase = (self.now - start) % config.period
+        on_for = config.duty * config.period
+        on = phase < on_for
+        self.reached(self.now - phase + (on_for if on else config.period))
+        return Demand(
+            Mode.HEAT,
+            on,
+            f"sensor fallback: heat {config.duty:.0%} of every "
+            f"{config.period / 60:g} min without a usable temperature",
+        )
 
     def window_inhibit(
         self, zone: Zone, state: DemandState, demand: Demand

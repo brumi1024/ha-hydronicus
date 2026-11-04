@@ -577,6 +577,30 @@ class ExternalThermostat:
 type Thermostat = DigitalThermostat | ExternalThermostat
 
 
+# The bounds of a sensor fallback, in seconds and as a share of its period.
+MIN_SENSOR_FALLBACK_AFTER: Final = 600.0
+MAX_SENSOR_FALLBACK_AFTER: Final = 86400.0
+MIN_SENSOR_FALLBACK_PERIOD: Final = 1800.0
+MAX_SENSOR_FALLBACK_PERIOD: Final = 21600.0
+MAX_SENSOR_FALLBACK_DUTY: Final = 0.5
+# The shortest on and off spell of a sensor fallback, so slow valves open and close.
+MIN_SENSOR_FALLBACK_SPELL: Final = 600.0
+
+
+@dataclass(frozen=True, slots=True)
+class SensorFallback:
+    """Heat a zone for a share of time while none of its temperatures is usable.
+
+    It starts ``after`` seconds without a usable reading, heats for ``duty`` of
+    every ``period``, and only in heating, so a lost sensor never leaves a room
+    unheated for days, nor heats it without bound.
+    """
+
+    after: float = 3600.0
+    duty: float = 0.15
+    period: float = 7200.0
+
+
 @dataclass(frozen=True, slots=True)
 class WindowDetection:
     """Count a sudden move of a zone's temperature away from its target as an open window.
@@ -629,6 +653,9 @@ class Zone:
     window_detection: WindowDetection | None = None
     # Reports the zone when its temperature does not respond; None turns it off.
     response_check: ResponseCheck | None = DEFAULT_RESPONSE_CHECK
+    # Heats the zone for a bounded share of time while it has no usable
+    # temperature, in heating only; None, the default, leaves it unheated.
+    sensor_fallback: SensorFallback | None = None
     # The highest humidity at which the loops that read the zone's dew point may
     # cool, in percent; None turns the cutoff off.
     max_humidity: float | None = DEFAULT_MAX_HUMIDITY
@@ -892,5 +919,7 @@ class Desired:
     source_no_load: str | None = None
     # When the no-load guard tripped within the last day, oldest first.
     no_load_trips: tuple[float, ...] = ()
+    # The zones that a sensor fallback serves now, whether it heats them or not.
+    sensor_fallback: tuple[str, ...] = ()
     # The heating curve's inputs, while the supply control reads an outdoor sensor.
     heating_curve: HeatingCurve | None = None

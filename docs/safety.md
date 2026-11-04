@@ -32,7 +32,7 @@ Dry run sends nothing and only checks the configuration and the sequence; see [w
 ## What fails safe
 
 - A command counts as done only once Home Assistant shows its result; until then Hydronicus assumes the worst, and after three attempts a Repair names the output.
-- A required sensor that is unavailable, stale, or implausible stops its zone from calling.
+- A required sensor that is unavailable, stale, or implausible stops its zone from calling, unless the zone has a [sensor fallback](plant-file.md#sensor-fallback), which heats it for a bounded share of time, in heating only.
 - A missing or stale condensation reference, or a condensation switch that is unavailable, blocks cooling.
 - A window sensor is the one exception: an unavailable one reads as closed, so a lost sensor never leaves a home unheated.
 

@@ -122,6 +122,7 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "stopping_outputs": view.stopping_outputs(),
             "configuration_problem": runtime.problem,
             "frost_protection": list(view.desired.frost_protection),
+            "sensor_fallback": list(view.desired.sensor_fallback),
             "heating_curve": None
             if (curve := view.desired.heating_curve) is None
             else {

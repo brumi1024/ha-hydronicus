@@ -52,6 +52,7 @@ The **Status** sensor's attributes explain the state:
 | `stopping_outputs` | While `stopping`, the outputs of the old configuration not yet seen off. |
 | `configuration_problem` | Why the configuration is not valid, or none. |
 | `frost_protection` | The zones that [frost protection](how-it-works.md#frost-protection) heats. |
+| `sensor_fallback` | The zones without a usable temperature that a [sensor fallback](plant-file.md#sensor-fallback) serves now. |
 | `heating_curve` | Only with a supply `outdoor_sensor`: the `outdoor` temperature the curve uses, whether it is the `fallback`, whether `warm_weather` above the heating limit keeps the source off, and the `offset` and `room_shift` in K. |
 | `zones_not_responding` | Each zone whose [response check](plant-file.md#response-check) failed, with when it did. |
 | `exercising` | The slug of the pump being exercised, or none. |

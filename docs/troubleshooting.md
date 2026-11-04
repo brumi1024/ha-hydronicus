@@ -191,6 +191,7 @@ Choose a sensor that measures the room in the area settings.
 ### A sensor blocks its zone
 
 A sensor the zone requires has had no usable reading for 10 minutes, so the zone does not call, and its loops do not cool.
+A zone with a [sensor fallback](plant-file.md#sensor-fallback) heats for its share of time meanwhile, once its `after` has passed.
 Check the sensor, its battery, and its connection.
 If it reports only on change, and less often than its `max_age`, raise `max_age` in the [plant file](plant-file.md#sensors).
 Area sensors are optional unless the plant file makes them `required`.

@@ -33,6 +33,7 @@ Stopping is the same evaluation with the mode forced to off, so every stop follo
 
 A zone combines its usable temperatures into one, by mean, minimum, or maximum.
 A required sensor that is missing, stale, or implausible stops the zone from calling; an optional one is left out.
+An opt-in [sensor fallback](plant-file.md#sensor-fallback) heats a zone that has had no usable temperature for an hour for a bounded share of time, in heating only.
 
 A digital thermostat calls for heat once the temperature is 0.3 K below its target, and stops once it is 0.1 K above; cooling mirrors that.
 It keeps each decision for at least 10 minutes, because a thermoelectric valve takes minutes to open.

@@ -427,6 +427,7 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `window_close_delay` | no | `60` | Seconds every window must read closed before the zone's demand comes back. |
 | `window_detection` | no | `false` | Counts a sudden temperature change as an open window, see [Window detection](#window-detection). |
 | `response_check` | no | `true` | Reports a zone whose temperature does not respond while it is served, see [Response check](#response-check). |
+| `sensor_fallback` | no | `false` | Heats the zone for a share of time while it has no usable temperature, see [Sensor fallback](#sensor-fallback). |
 | `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool, from 30 to 100. `null` turns the cutoff off. |
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
@@ -508,6 +509,39 @@ zones:
     window_detection: {change: 0.3, within: 300, max_duration: 3600}
     loops:
       radiator:
+        pump: pump
+```
+
+### Sensor fallback
+
+A zone whose temperatures are all missing, stale, or implausible does not call, so a dead sensor leaves its room unheated until it reports again.
+`sensor_fallback` heats such a zone for a bounded share of time instead, in heating only: `true` uses the defaults, and a mapping changes them.
+
+| Key | Default | Value |
+| --- | --- | --- |
+| `after` | `3600` | Seconds without a usable temperature before the fallback starts, from 600 to 86400. |
+| `duty` | `0.15` | The share of each period it heats, at most `0.5`, and at least 600 seconds of each period. |
+| `period` | `7200` | The length of each period in seconds, from 1800 to 21600. |
+
+It acts only while the Plant's **Mode** and the zone's thermostat heat, never in cooling, because cooling without a dew point is where floors condense.
+It needs a digital thermostat and a loop that heats the zone.
+Its demand goes through windows, arming, and the source's minimum times and starts per hour like any other.
+Its reason reads `sensor fallback: heat 15% of every 120 min without a usable temperature`, the Status sensor's `sensor_fallback` attribute lists the zones it serves, and the [sensor Repair](troubleshooting.md#a-sensor-blocks-its-zone) still names the sensor.
+Once a reading returns, the thermostat decides again, and the fallback's clock starts over at the next loss.
+
+```yaml
+hydronicus: 2
+name: Flat
+pumps:
+  pump:
+    switch: switch.flat_pump
+zones:
+  bedroom:
+    temperature: [sensor.bedroom]
+    sensor_fallback: {after: 1800, duty: 0.2}
+    loops:
+      radiator:
+        valves: [switch.bedroom_valve]
         pump: pump
 ```
 
