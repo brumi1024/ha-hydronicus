@@ -50,6 +50,8 @@ from .model import (
     MAX_CURVE_OFFSET,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
+    MAX_LEGIONELLA_INTERVAL,
+    MAX_LEGIONELLA_TEMPERATURE,
     MAX_RESPONSE_DURATION,
     MAX_RESPONSE_PROGRESS,
     MAX_SENSOR_FALLBACK_AFTER,
@@ -61,6 +63,8 @@ from .model import (
     MAX_WINDOW_DETECTION_WITHIN,
     MIN_EXERCISE_INTERVAL,
     MIN_EXERCISE_RUN,
+    MIN_LEGIONELLA_INTERVAL,
+    MIN_LEGIONELLA_TEMPERATURE,
     MIN_MAX_HUMIDITY,
     MIN_RESPONSE_DURATION,
     MIN_RESPONSE_PROGRESS,
@@ -80,6 +84,7 @@ from .model import (
     Exercise,
     ExternalThermostat,
     LearningMode,
+    Legionella,
     Loop,
     LoopRef,
     LoopRun,
@@ -159,7 +164,25 @@ _NO_LOAD_KEYS: Final = (
     "hold_off",
 )
 _INHIBIT_DOMAINS: Final = ("binary_sensor", "input_boolean")
-_DHW_KEYS: Final = ("switch", "setpoint", "minimum", "maximum", "tolerance", "step", "max_boost")
+_DHW_KEYS: Final = (
+    "switch",
+    "setpoint",
+    "minimum",
+    "maximum",
+    "tolerance",
+    "step",
+    "max_boost",
+    "schedule",
+    "legionella",
+)
+_LEGIONELLA_KEYS: Final = (
+    "tank_temperature",
+    "temperature",
+    "interval",
+    "hold",
+    "timeout",
+    "window",
+)
 _SUPPLY_KEYS: Final = (
     "entity",
     "outdoor_sensor",
@@ -595,6 +618,55 @@ def _dhw(value: object, path: str) -> Dhw:
         ),
         max_boost=_number(
             document.get("max_boost", defaults.max_boost), _join(path, "max_boost"), positive=True
+        ),
+        schedule=(
+            _entity(document["schedule"], _join(path, "schedule"), ("schedule",))
+            if "schedule" in document
+            else None
+        ),
+        legionella=_legionella(document, path, setpoint),
+    )
+
+
+def _legionella(document: Mapping[str, Any], path: str, setpoint: str | None) -> Legionella | None:
+    if document.get("legionella") is None:
+        return None
+    path = _join(path, "legionella")
+    if setpoint is None:
+        raise PlantFileError(path, "A legionella cycle needs a DHW setpoint.")
+    value = _mapping(document["legionella"], path, _LEGIONELLA_KEYS)
+    tank = _entity(
+        _required(value, "tank_temperature", path),
+        _join(path, "tank_temperature"),
+        _SENSOR_DOMAINS,
+    )
+    default = Legionella(tank)
+
+    def read(key: str, low: float, high: float) -> float:
+        key_path = _join(path, key)
+        return _within(
+            _number(value.get(key, getattr(default, key)), key_path, positive=True),
+            key_path,
+            low=low,
+            high=high,
+        )
+
+    hold = read("hold", 60, 7200)
+    timeout = read("timeout", 1800, 43200)
+    if timeout < hold + 600:
+        raise PlantFileError(
+            _join(path, "timeout"), "Must leave at least 10 minutes to heat before the hold."
+        )
+    return Legionella(
+        tank_temperature=tank,
+        temperature=read("temperature", MIN_LEGIONELLA_TEMPERATURE, MAX_LEGIONELLA_TEMPERATURE),
+        interval=read("interval", MIN_LEGIONELLA_INTERVAL, MAX_LEGIONELLA_INTERVAL),
+        hold=hold,
+        timeout=timeout,
+        window=(
+            _entity(value["window"], _join(path, "window"), ("schedule",))
+            if "window" in value
+            else None
         ),
     )
 
@@ -1568,6 +1640,10 @@ def entity_paths(plant: Plant) -> dict[str, str]:
         if plant.source.dhw is not None:
             bind(plant.source.dhw.switch, "source.dhw.switch")
             bind(plant.source.dhw.setpoint, "source.dhw.setpoint")
+            bind(plant.source.dhw.schedule, "source.dhw.schedule")
+            if (legionella := plant.source.dhw.legionella) is not None:
+                bind(legionella.tank_temperature, "source.dhw.legionella.tank_temperature")
+                bind(legionella.window, "source.dhw.legionella.window")
     for pump in plant.pumps:
         bind(pump.switch, f"pumps.{pump.slug}.switch")
         bind(pump.running_sensor, f"pumps.{pump.slug}.running_sensor")
@@ -1850,6 +1926,17 @@ def _export_source(source: Source) -> dict[str, Any]:
         for key in ("minimum", "maximum", "tolerance", "step", "max_boost"):
             if (setting := getattr(dhw, key)) != getattr(defaults, key):
                 exported[key] = _export_number(setting)
+        if dhw.schedule is not None:
+            exported["schedule"] = dhw.schedule
+        if (legionella := dhw.legionella) is not None:
+            cycle: dict[str, Any] = {"tank_temperature": legionella.tank_temperature}
+            cycle_defaults = Legionella(legionella.tank_temperature)
+            for key in ("temperature", "interval", "hold", "timeout"):
+                if (setting := getattr(legionella, key)) != getattr(cycle_defaults, key):
+                    cycle[key] = _export_number(setting)
+            if legionella.window is not None:
+                cycle["window"] = legionella.window
+            exported["legionella"] = cycle
         document["dhw"] = exported
     if source.max_starts_per_hour is not None:
         document["max_starts_per_hour"] = source.max_starts_per_hour

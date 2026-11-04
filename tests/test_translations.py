@@ -53,6 +53,7 @@ ENTITY_KEYS = {
     "sensor": {
         "status",
         "heartbeat",
+        "last_disinfection",
         "combined_temperature",
         "dew_point",
         "duty_cycle",

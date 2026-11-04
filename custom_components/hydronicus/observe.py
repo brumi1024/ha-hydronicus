@@ -24,12 +24,14 @@ from homeassistant.const import (
     STATE_UNKNOWN,
     UnitOfTemperature,
 )
-from homeassistant.core import State
+from homeassistant.core import State, StateMachine
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .core.comfort import LEVEL_KEYS, BlockLevel, ScheduleState, block_level
 from .core.demand import external_action
+from .core.dhw import DhwSchedule
+from .core.model import Plant
 from .core.step import ExternalThermostatState, Reading
 
 # A switch or valve is on while it shows one of these, and off while it shows one
@@ -302,3 +304,26 @@ def week_problems(week: Mapping[str, Any]) -> list[str]:
                 at = "" if start is None else f" {start.strftime('%H:%M')}"
                 problems.append(f"{day.capitalize()}{at}: {error}")
     return problems
+
+
+def dhw_schedule(plant: Plant, states: StateMachine) -> DhwSchedule | None:
+    """The DHW schedule helper's active block and the target its data names, if any."""
+    dhw = None if plant.source is None else plant.source.dhw
+    if dhw is None or dhw.schedule is None:
+        return None
+    state = states.get(dhw.schedule)
+    active = switch_value(state)
+    if state is None or not active:
+        return DhwSchedule(active)
+    value = state.attributes.get("target")
+    if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
+        return DhwSchedule(active)
+    return DhwSchedule(active, float(value))
+
+
+def legionella_window(plant: Plant, states: StateMachine) -> bool | None:
+    """Whether the legionella cycle's window helper is on, or None without one."""
+    dhw = None if plant.source is None else plant.source.dhw
+    if dhw is None or dhw.legionella is None or dhw.legionella.window is None:
+        return None
+    return switch_value(states.get(dhw.legionella.window))

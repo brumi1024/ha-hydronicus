@@ -52,7 +52,7 @@ from .demand import (
     zone_demand,
     zone_values,
 )
-from .dhw import DhwCommand, DhwResult, DhwState, dhw_step
+from .dhw import DhwCommand, DhwResult, DhwSchedule, DhwState, dhw_step
 from .model import (
     FROST_CURVE_OUTDOOR,
     SETTING_ROLES,
@@ -226,6 +226,10 @@ class Observations:
     curve_offset: float | None = None
     # The Plant is away, or None while it is not.
     away: Away | None = None
+    # The DHW schedule helper now, and whether the legionella cycle's window is
+    # open; None while it has none or it is not known.
+    dhw_schedule: DhwSchedule | None = None
+    legionella_window: bool | None = None
     # The Mode select asks for auto: the changeover chooses heat or cool, and
     # ``mode`` is only what applies when the Plant has no changeover.
     auto: bool = False
@@ -1182,7 +1186,19 @@ class _Evaluation:
             self.now,
             self.reached,
             commands=not self.forced_off and not self.handover,
+            schedule=self.obs.dhw_schedule,
+            tank=None
+            if config.legionella is None
+            else self.tank_temperature(config.legionella.tank_temperature),
+            window=self.obs.legionella_window,
         )
+
+    def tank_temperature(self, entity: str) -> float | None:
+        """The DHW tank's temperature while it reports, stale like a guard reference."""
+        reading = self.obs.sensors.get(entity)
+        if reading is None or reading.value is None or not isfinite(reading.value):
+            return None
+        return None if self.reached(reading.updated + GUARD_REFERENCE_MAX_AGE) else reading.value
 
     def current_holds(self, mode: Mode) -> tuple[Hold, ...]:
         """The holds in force, ordered by when they end; a guard holds only in cool."""

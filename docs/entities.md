@@ -193,6 +193,7 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | **DHW** switch | `switch.<source>_dhw` | Only with a `dhw` switch: the DHW on or off that Hydronicus owns. Turning it on or off sends the source's DHW switch; a change on the source's own controller is adopted and shows here. |
 | **Heating curve offset** number | `number.<source>_heating_curve_offset` | Only when the source's `supply` owns heating: a parallel shift of the heating target from -5 to 5 K, which any user may set. It starts at the configured `offset` and survives restarts. |
 | **DHW target** number | `number.<source>_dhw_target` | Only with a `dhw` setpoint: the owned DHW target within its limits. Its `boost` and `boost_until` attributes show a boost from the `hydronicus.boost_dhw` action, which `hydronicus.end_dhw_boost` ends early. |
+| **Last disinfection** sensor | `sensor.<source>_last_disinfection` | Only with a `dhw` `legionella` cycle: when the tank last held its temperature, unknown before the first. Its `running` attribute is true during a cycle, and `next_due` says when the next one is due. |
 | **Compressor starts** sensor | `sensor.<source>_compressor_starts` | Only with a `compressor_sensor`: how often the compressor started within the last hour. Diagnostic. |
 | **Compressor cycle** sensor | `sensor.<source>_compressor_cycle` | Only with a `compressor_sensor`: the mean length, in minutes, of the compressor's runs that ended within the last day. Diagnostic. |
 

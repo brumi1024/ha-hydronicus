@@ -117,6 +117,7 @@ from .issues import (
     evaluation_failed,
     invalid_plant,
     invalid_schedule_blocks,
+    legionella_failed,
     missing_area_sensor,
     missing_binding,
     outdoor_sensor_unusable,
@@ -132,7 +133,9 @@ from .learning import LearningCoordinator, LearningSample
 from .observe import (
     OutputMemory,
     SensorKind,
+    dhw_schedule,
     external_thermostat,
+    legionella_window,
     numeric_value,
     option_value,
     reading,
@@ -1141,6 +1144,8 @@ class PlantRuntime:
             curve_offset=self.curve_offset,
             away=self.away,
             auto=self.auto_mode,
+            dhw_schedule=dhw_schedule(plant, states),
+            legionella_window=legionella_window(plant, states),
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1151,6 +1156,9 @@ class PlantRuntime:
         return kinds
 
     def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
+        dhw = None if plant.source is None else plant.source.dhw
+        if dhw is not None and (legionella := dhw.legionella) is not None:
+            kinds[legionella.tank_temperature] = SensorKind.WATER
         if plant.changeover is not None:
             kinds[plant.changeover.outdoor_sensor] = SensorKind.AIR
         if plant.weather is not None and plant.weather.outdoor_sensor is not None:
@@ -1234,6 +1242,11 @@ class PlantRuntime:
                     tracked.add(zone.thermostat.entity)
                 elif zone.thermostat.schedule is not None:
                     tracked.add(zone.thermostat.schedule.entity)
+            dhw = None if plant.source is None else plant.source.dhw
+            if dhw is not None and dhw.schedule is not None:
+                tracked.add(dhw.schedule)
+            if dhw is not None and dhw.legionella is not None and dhw.legionella.window:
+                tracked.add(dhw.legionella.window)
         return frozenset(tracked)
 
     def _schedule_entities(self) -> frozenset[str]:
@@ -1464,6 +1477,11 @@ class PlantRuntime:
             zone_not_responding(self.plant, zone, self.responses[zone])
             for zone in self.zones_not_responding
         )
+        dhw = self.state.dhw
+        if dhw.legionella_failed is not None and (
+            dhw.legionella_done is None or dhw.legionella_failed > dhw.legionella_done
+        ):
+            issues.append(legionella_failed(reconciled))
         if len(trips := self.state.no_load_trips) >= NO_LOAD_REPAIR_TRIPS:
             issues.append(source_no_load(reconciled, len(trips)))
         current = tuple(issues)

@@ -320,6 +320,37 @@ class HeartbeatSensor(HydronicusEntity, SensorEntity):
         return {"on_outputs": self.runtime.heartbeat_outputs(), "interval": HEARTBEAT_INTERVAL}
 
 
+class LastDisinfectionSensor(HydronicusEntity, SensorEntity):
+    """When the DHW tank last held its legionella cycle's temperature, or unknown."""
+
+    _attr_translation_key = "last_disinfection"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "last_disinfection"),
+            source_device(runtime),
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        done = self.runtime.state.dhw.legionella_done
+        return None if done is None else dt_util.utc_from_timestamp(done)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        dhw = self.runtime.state.dhw
+        source = self.runtime.plant.source
+        cycle = None if source is None or source.dhw is None else source.dhw.legionella
+        due = (
+            None
+            if cycle is None or dhw.legionella_last is None
+            else dt_util.utc_from_timestamp(dhw.legionella_last + cycle.interval).isoformat()
+        )
+        return {"running": dhw.legionella_started is not None, "next_due": due}
+
+
 class CompressorStartsSensor(HydronicusEntity, SensorEntity):
     """How often the source's compressor started within the last hour."""
 
@@ -383,6 +414,8 @@ async def async_setup_entry(
         (loop.zone, LoopRuntimeSensor(runtime, loop)) for loop in runtime.plant.all_loops
     )
     source = runtime.plant.source
+    if source is not None and source.dhw is not None and source.dhw.legionella is not None:
+        entities.append((None, LastDisinfectionSensor(runtime)))
     if source is not None and source.compressor_sensor is not None:
         entities.extend(
             [(None, CompressorStartsSensor(runtime)), (None, CompressorCycleSensor(runtime))]

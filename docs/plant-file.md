@@ -323,6 +323,29 @@ While the source's handover sensor reads on, or Control equipment is off, Hydron
 | `tolerance` | no | `0.5` | The difference in K accepted as confirmation of the setpoint. |
 | `step` | no | | The setpoint's resolution, such as `1` for whole degrees. |
 | `max_boost` | no | `7200` | The longest a boost may last, in seconds. |
+| `schedule` | no | | A `schedule` helper whose blocks may name a DHW target in their data, such as `{target: 52}`, held while the block runs; outside blocks, and in a block without one, the owned target applies. A boost still wins. |
+| `legionella` | no | | A periodic [legionella cycle](#legionella-cycle), which needs a `setpoint`. |
+
+### Legionella cycle
+
+The `dhw` mapping's `legionella` runs a periodic pasteurisation of the DHW tank, as heat pump controllers do, for a tank whose owned target stays below the temperature that keeps legionella at bay.
+Every `interval` it raises the DHW setpoint to its `temperature`, beyond the DHW `maximum`, until the tank's sensor has held that temperature, less the DHW `tolerance`, for `hold` seconds.
+It then restores the owned target and records the time on the source's **Last disinfection** sensor.
+If the tank does not hold it within `timeout`, it restores the target, raises the [legionella Repair](troubleshooting.md#the-legionella-cycle-did-not-finish), and tries again a day later.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `tank_temperature` | yes | | The DHW tank's temperature `sensor`, which proves the cycle. |
+| `temperature` | no | `60` | The cycle's temperature in °C, from 55 to 70. |
+| `interval` | no | `604800` | Seconds between cycles, from a day to 30 days, a week by default. Its clock starts when Hydronicus first sees the tank, so a new tank is not heated at once. |
+| `hold` | no | `1800` | Seconds the tank must hold the temperature, from 60 to 7200. |
+| `timeout` | no | `10800` | Seconds after its start that a cycle gives up, from 1800 to 43200, and at least 10 minutes longer than `hold`. |
+| `window` | no | | A `schedule` helper whose on periods the cycle may start in, such as the night; without it, a cycle starts as soon as it is due. |
+
+The cycle runs only while the DHW is on, **Control equipment** is on, and the source is not handed over; it stops if any of these ends.
+A missing or stale tank reading neither proves nor resets the hold.
+Water that hot scalds at the taps, so keep a thermostatic mixing valve after the tank, as legionella guidance such as the UK HSE's expects anyway.
+Hydronicus controls only the setpoint: the source must be able to reach the temperature, for example with its immersion heater, which its own settings may need to allow.
 
 ## Pumps
 

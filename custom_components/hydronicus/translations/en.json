@@ -778,6 +778,17 @@
             "name": "Interval"
           }
         }
+      },
+      "last_disinfection": {
+        "name": "Last disinfection",
+        "state_attributes": {
+          "running": {
+            "name": "Running"
+          },
+          "next_due": {
+            "name": "Next due"
+          }
+        }
       }
     },
     "switch": {
@@ -1023,6 +1034,10 @@
     "outdoor_sensor_unusable": {
       "title": "{plant}: the outdoor sensor {entity_id} is not usable",
       "description": "In Plant {plant}, the outdoor sensor {entity_id} of the heating curve has not been usable for at least 10 minutes, so {effect}. Check the sensor, its battery, and its link. The repair clears automatically once the sensor reports again."
+    },
+    "legionella_failed": {
+      "title": "{plant}: the DHW legionella cycle did not finish",
+      "description": "In Plant {plant}, the DHW tank did not hold {temperature} °C, as {entity_id} reads it, for the legionella cycle's hold time within its timeout. Hydronicus restored the DHW target and tries again in a day. Check that the source can heat the tank that far, for example with its immersion heater, and that the tank sensor sits where it reads the tank. The repair clears once a cycle succeeds."
     }
   },
   "exceptions": {

@@ -134,6 +134,7 @@ Diagnostics list them by the key in the second column.
 | [A schedule has blocks it cannot use](#a-schedule-has-blocks-it-cannot-use) | `invalid_schedule_block` | Error |
 | [A source is kept off by its health sensor](#a-source-is-kept-off-by-its-health-sensor) | `source_unhealthy` | Error |
 | [The outdoor sensor is not usable](#the-outdoor-sensor-is-not-usable) | `outdoor_sensor_unusable` | Error |
+| [The legionella cycle did not finish](#the-legionella-cycle-did-not-finish) | `legionella_failed` | Error |
 | [A source keeps running without a load](#a-source-keeps-running-without-a-load) | `source_no_load` | Error |
 | [A zone does not respond](#a-zone-does-not-respond) | `zone_not_responding` | Error |
 
@@ -221,6 +222,12 @@ The source's **Fault** binary sensor shows the same at once, for a notification 
 The heating curve's `outdoor_sensor` has been missing, invalid, or stale for 10 minutes.
 With an `outdoor_fallback`, the curve uses that temperature meanwhile; without one, the source is not asked for heat, except for frost protection, which assumes 0 °C outdoors.
 Check the sensor, its battery, and its link; the Status sensor's `heating_curve` attribute shows what the curve uses now.
+
+### The legionella cycle did not finish
+
+The DHW tank did not hold the [legionella cycle](plant-file.md#legionella-cycle)'s temperature for its hold time within its timeout, so Hydronicus restored the DHW target and tries again in a day.
+Check that the source can heat the tank that far, for example with its immersion heater, and that the tank sensor reads the tank where it is hottest.
+The Repair clears once a cycle succeeds.
 
 ### A source keeps running without a load
 
