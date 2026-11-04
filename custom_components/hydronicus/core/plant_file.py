@@ -30,6 +30,7 @@ from uuid import UUID, uuid4
 
 import yaml
 
+from .comfort import MAX_TARGET, MIN_TARGET
 from .model import (
     DEFAULT_EXERCISE,
     DEFAULT_FROST_PROTECTION,
@@ -72,6 +73,7 @@ from .model import (
     RUNS_WITH_SOURCE,
     RUNS_WITH_ZONE,
     Aggregation,
+    AwayConfig,
     Dhw,
     DigitalThermostat,
     Exercise,
@@ -115,6 +117,7 @@ _TOP_KEYS: Final = (
     "mode_dwell",
     "exercise",
     "frost_protection",
+    "away",
     "weather",
     "source",
     "pumps",
@@ -349,9 +352,25 @@ def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Pla
         frost_protection=_frost_protection(
             top.get("frost_protection", DEFAULT_FROST_PROTECTION), "frost_protection"
         ),
+        away=_away(top["away"], "away") if "away" in top else AwayConfig(),
     )
     validate_plant(plant)
     return plant
+
+
+def _away(value: object, path: str) -> AwayConfig:
+    document = _mapping(value, path, ("heat_target", "cool_target"))
+    default = AwayConfig()
+    targets = {
+        key: _within(
+            _number(document.get(key, getattr(default, key)), _join(path, key)),
+            _join(path, key),
+            low=MIN_TARGET,
+            high=MAX_TARGET,
+        )
+        for key in ("heat_target", "cool_target")
+    }
+    return AwayConfig(**targets)
 
 
 def _check_format(top: Mapping[str, Any]) -> None:
@@ -1551,6 +1570,7 @@ _TOP_WORDS: Final = {
     "mode_dwell": "Mode dwell",
     "exercise": "Exercise",
     "frost_protection": "Frost protection",
+    "away": "Away",
     "source": "Source",
     "pumps": "Pumps",
     "loops": "Plant loops",
@@ -1701,6 +1721,12 @@ def export_plant(plant: Plant) -> dict[str, Any]:
         document["frost_protection"] = (
             False if plant.frost_protection is None else _export_number(plant.frost_protection)
         )
+    if plant.away != AwayConfig():
+        document["away"] = {
+            key: _export_number(getattr(plant.away, key))
+            for key in ("heat_target", "cool_target")
+            if getattr(plant.away, key) != getattr(AwayConfig(), key)
+        }
     if plant.source is not None:
         document["source"] = _export_source(plant.source)
     if plant.weather is not None:

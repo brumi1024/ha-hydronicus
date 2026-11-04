@@ -68,6 +68,7 @@ External thermostat Demand is accepted from normalized `hvac_action` only, and a
 A digital thermostat keeps separate heating and cooling comfort targets and presets.
 An optional Schedule selects comfort or setback and may start recovery early within an explicit bound.
 A manual target change leaves Schedule control until the owner selects it again.
+While the Plant is away, every digital thermostat holds its away level without changing its manual target, preset, or schedule control.
 
 ## Supply control
 

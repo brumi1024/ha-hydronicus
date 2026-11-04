@@ -107,6 +107,7 @@ Read it from the top:
 | `name` | yes | | The Plant name, which also names the Plant's device and its Plant-wide entities. |
 | `mode_dwell` | no | `3600` | Seconds between the end of the old mode's flow and the start of the new mode, after a change between heating and cooling. |
 | `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` or `null` to turn it off. |
+| `away` | no | `{heat_target: 16, cool_target: 30}` | The targets in °C, from 5 to 35, that a digital thermostat without its own `away` preset holds while the Plant is [away](how-it-works.md#away). |
 | `frost_protection` | no | `5` | The frost protection temperature in °C, at most 10, or `false` or `null` to turn frost protection off. A zone that a loop heats is heated whatever its thermostat says once its coldest reading falls below it, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
 | `weather` | no | none | Optional [weather forecast](#weather-forecast) inputs for recovery learning. |

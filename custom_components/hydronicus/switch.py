@@ -1,4 +1,4 @@
-"""The Control equipment switch (decision 15), and the source's DHW switch.
+"""The Control equipment switch (decision 15), the Away switch, and the source's DHW switch.
 
 Turning Control equipment on lets the Plant command its armed outputs. Turning
 it off runs the off-mode sequence and then only observes, which is Dry run.
@@ -12,6 +12,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import HydronicusConfigEntry
 from .entity import (
@@ -53,6 +54,33 @@ class ControlEquipmentSwitch(HydronicusEntity, SwitchEntity):
         self.runtime.set_control(False)
 
 
+class AwaySwitch(HydronicusEntity, SwitchEntity):
+    """Whether the Plant is away: every digital thermostat holds its away level."""
+
+    _attr_translation_key = "away"
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "away"), plant_device(runtime.plant)
+        )
+
+    @property
+    def is_on(self) -> bool:
+        return self.runtime.away is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        away = self.runtime.away
+        until = None if away is None else away.until
+        return {"until": None if until is None else dt_util.utc_from_timestamp(until).isoformat()}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self.runtime.set_away(None)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self.runtime.end_away()
+
+
 class DhwSwitch(HydronicusEntity, SwitchEntity):
     """Whether the source heats its DHW: the owned value, which a change elsewhere sets too."""
 
@@ -84,7 +112,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     runtime = entry.runtime_data
-    entities: list[tuple[str | None, Entity]] = [(None, ControlEquipmentSwitch(entry))]
+    entities: list[tuple[str | None, Entity]] = [
+        (None, ControlEquipmentSwitch(entry)),
+        (None, AwaySwitch(runtime)),
+    ]
     source = runtime.plant.source
     if source is not None and source.dhw is not None and source.dhw.switch is not None:
         entities.append((None, DhwSwitch(runtime)))

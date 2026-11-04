@@ -23,6 +23,7 @@ A device goes with its object: removing a zone removes its device.
 | **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`, where `cool` exists only when a loop cools. An automation can set it, and it survives restarts. |
 | **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. Its `live` attribute stays true after you turn it off until the equipment has stopped. |
 | **Status** sensor | `sensor.<plant>_status` | What the Plant does now, in the table below. It is unavailable until the Plant's first evaluation. |
+| **Away** switch | `switch.<plant>_away` | On while the Plant is [away](how-it-works.md#away): every digital thermostat holds its away level. Its `until` attribute is the return time, or none while the away lasts until it is turned off. It survives restarts. |
 | **Heartbeat** sensor | `sensor.<plant>_heartbeat` | While **Control equipment** is on and the latest evaluation succeeded: a timestamp that advances at least every `interval`, 60 seconds; unknown otherwise. Its `on_outputs` attribute lists the armed switch outputs Hydronicus wants on. Diagnostic; see [a relay watchdog](#keep-relays-on-only-while-hydronicus-watches). |
 
 | Status | Meaning |
@@ -229,9 +230,9 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 
 ## An example
 
-The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 33 entities:
+The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 34 entities:
 
-- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `sensor.home_heartbeat`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
+- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `sensor.home_heartbeat`, `switch.home_away`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
 - `binary_sensor.heat_pump_requested` for the source.
 - For each zone, such as `living_area`: `climate.living_area`, `binary_sensor.living_area_heating_demand`, `binary_sensor.living_area_cooling_demand`, `sensor.living_area_combined_temperature`, `sensor.living_area_dew_point`, `sensor.living_area_duty_cycle`, `binary_sensor.living_area_ceiling_flowing`, and `sensor.living_area_ceiling_runtime`.
 - `binary_sensor.living_area_floor_flowing` and `sensor.living_area_floor_runtime` for the living area's underfloor loop.
@@ -252,6 +253,15 @@ Only administrators can run it, and it only returns a response, so call it with 
 
 The response has two keys: `document`, the plant file as data, and `yaml`, the same file as text.
 The action fails with a message when the entry is not a Hydronicus Plant, or when its stored configuration is not a valid Plant.
+
+### Set away and end away
+
+`hydronicus.set_away` makes a Plant [away](how-it-works.md#away), and `hydronicus.end_away` ends it; the **Away** switch does the same without a return time.
+
+| Field | Required | Value |
+| --- | --- | --- |
+| `config_entry_id` | yes | The Plant. The action form lets you pick it. |
+| `until` | no | `set_away` only: the return time, at which the away ends by itself. It must lie in the future. |
 
 ## Automation examples
 

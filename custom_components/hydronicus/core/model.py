@@ -683,6 +683,14 @@ DEFAULT_EXERCISE: Final = Exercise()
 
 
 @dataclass(frozen=True, slots=True)
+class AwayConfig:
+    """The targets a digital thermostat without its own away preset holds while away."""
+
+    heat_target: float = 16.0
+    cool_target: float = 30.0
+
+
+@dataclass(frozen=True, slots=True)
 class Plant:
     """One config entry: an optional source, its pumps, its zones, and its plant loops."""
 
@@ -699,6 +707,7 @@ class Plant:
     # The frost protection temperature in °C, or None to turn frost protection off.
     frost_protection: float | None = DEFAULT_FROST_PROTECTION
     weather: WeatherConfig | None = None
+    away: AwayConfig = AwayConfig()
 
     @property
     def all_loops(self) -> tuple[Loop, ...]:

@@ -60,7 +60,7 @@ ENTITY_KEYS = {
         "compressor_starts",
         "compressor_cycle",
     },
-    "switch": {"control", "dhw"},
+    "switch": {"control", "away", "dhw"},
 }
 
 
@@ -168,8 +168,15 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
         "plant_not_found",
         "no_dhw_setpoint",
         "unsupported_hvac_mode",
+        "away_until_past",
     }
-    assert set(STRINGS["services"]) == {"export_plant", "boost_dhw", "end_dhw_boost"}
+    assert set(STRINGS["services"]) == {
+        "export_plant",
+        "boost_dhw",
+        "end_dhw_boost",
+        "set_away",
+        "end_away",
+    }
 
 
 def test_every_form_field_has_a_label() -> None:

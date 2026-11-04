@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from math import ceil, isfinite
 from typing import Any, Final
 
-from .comfort import ComfortTarget, ScheduleState, Setbacks, comfort_target
+from .comfort import Away, ComfortTarget, ScheduleState, Setbacks, away_target, comfort_target
 from .demand import (
     AreaSensors,
     DemandState,
@@ -223,6 +223,8 @@ class Observations:
     dhw_command: DhwCommand | None = None
     # The owner's heating curve offset in K, or None for the configured one.
     curve_offset: float | None = None
+    # The Plant is away, or None while it is not.
+    away: Away | None = None
 
 
 def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
@@ -1211,7 +1213,7 @@ class _Evaluation:
                         default=0.0,
                     )
                     recovery = replace(recovery, seconds=recovery.seconds + preparation)
-                self.comfort[zone.slug] = comfort_target(
+                comfort = comfort_target(
                     config,
                     thermostat.hvac_mode,
                     thermostat.target,
@@ -1226,6 +1228,24 @@ class _Evaluation:
                     recovery,
                     obs.setbacks.get(zone.slug),
                 )
+                if obs.away is not None:
+                    comfort = (
+                        away_target(
+                            config,
+                            thermostat.hvac_mode,
+                            thermostat.target,
+                            temperature,
+                            obs.away,
+                            self.plant.away,
+                            self.now,
+                            self.reached,
+                            None
+                            if previous is None or previous.mode is not thermostat.hvac_mode
+                            else previous.early_start_event,
+                        )
+                        or comfort
+                    )
+                self.comfort[zone.slug] = comfort
             state, demand = zone_demand(
                 zone,
                 thermostat,

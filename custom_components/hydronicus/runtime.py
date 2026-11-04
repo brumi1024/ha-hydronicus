@@ -71,7 +71,7 @@ from .areas import (
 )
 from .compressor import CompressorHistory
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
-from .core.comfort import Setbacks, next_period_target
+from .core.comfort import Away, Setbacks, next_period_target
 from .core.dhw import DhwCommand, DhwState
 from .core.model import (
     MAX_CURVE_OFFSET,
@@ -201,6 +201,8 @@ class PlantRuntime:
         self.setbacks: dict[str, Setbacks] = {}
         # The owner's heating curve offset, or None for the configured one.
         self.curve_offset: float | None = None
+        # The Plant is away, until a return time or until the owner ends it.
+        self.away: Away | None = None
         # The owner's last DHW command, until an evaluation has applied it.
         self.dhw_command: DhwCommand | None = None
         # Each followed schedule helper's week from ``schedule.get_schedule``, or None
@@ -282,6 +284,12 @@ class PlantRuntime:
             }
             offset = data.get("curve_offset")
             self.curve_offset = None if offset is None else float(offset)
+            away = data.get("away")
+            self.away = (
+                None
+                if away is None
+                else Away(None if away.get("until") is None else float(away["until"]))
+            )
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
                 "The persisted state of Plant %s could not be read and starts over: %s",
@@ -294,6 +302,7 @@ class PlantRuntime:
             self.compressor = CompressorHistory()
             self.setbacks, self.responses = {}, {}
             self.curve_offset = None
+            self.away = None
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -496,6 +505,29 @@ class PlantRuntime:
         )
 
     @callback
+    def set_away(self, until: float | None) -> None:
+        """Be away until ``until``, or until ``end_away``, and evaluate."""
+        self.away = Away(until)
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
+    @callback
+    def end_away(self) -> None:
+        """Be home again now, and evaluate."""
+        if self.away is None:
+            return
+        self.away = None
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
+    def _expire_away(self, now: float) -> None:
+        """End an away whose return time has come."""
+        if self.away is not None and self.away.until is not None and now >= self.away.until:
+            self.away = None
+
+    @callback
     def set_curve_offset(self, value: float) -> None:
         """Take the owner's new heating curve offset and evaluate."""
         if self.heating_curve_offset() is None:
@@ -658,6 +690,7 @@ class PlantRuntime:
     def evaluate(self) -> None:
         """Run one evaluation now."""
         now = dt_util.utcnow().timestamp()
+        self._expire_away(now)
         if not self.previous.decided and self.previous.decide(
             self.hass.states, self.reconcile_state.attempts, self._outputs, self.problem is None
         ):
@@ -743,6 +776,7 @@ class PlantRuntime:
             self.unusable.next_report(now),
             self.learning.next_sample_at,
             response_due,
+            None if self.away is None else self.away.until,
         )
         self._schedule_refresh(now)
         missing = self._sync_issues(result, plant, now)
@@ -1096,6 +1130,7 @@ class PlantRuntime:
             },
             dhw_command=self.dhw_command,
             curve_offset=self.curve_offset,
+            away=self.away,
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1316,6 +1351,7 @@ class PlantRuntime:
                 for zone, values in sorted(self.setbacks.items())
             },
             "curve_offset": self.curve_offset,
+            "away": None if self.away is None else {"until": self.away.until},
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
         }
 

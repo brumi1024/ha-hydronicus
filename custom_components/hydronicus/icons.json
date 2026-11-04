@@ -110,6 +110,13 @@
           "on": "mdi:water-boiler",
           "off": "mdi:water-boiler-off"
         }
+      },
+      "away": {
+        "default": "mdi:home-export-outline",
+        "state": {
+          "on": "mdi:home-export-outline",
+          "off": "mdi:home"
+        }
       }
     },
     "button": {
@@ -141,6 +148,12 @@
     },
     "end_dhw_boost": {
       "service": "mdi:water-boiler"
+    },
+    "set_away": {
+      "service": "mdi:home-export-outline"
+    },
+    "end_away": {
+      "service": "mdi:home-import-outline"
     }
   }
 }

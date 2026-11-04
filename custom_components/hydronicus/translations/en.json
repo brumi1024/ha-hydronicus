@@ -785,6 +785,14 @@
       },
       "dhw": {
         "name": "DHW"
+      },
+      "away": {
+        "name": "Away",
+        "state_attributes": {
+          "until": {
+            "name": "Until"
+          }
+        }
       }
     },
     "climate": {
@@ -1028,6 +1036,9 @@
     },
     "no_dhw_setpoint": {
       "message": "Plant {plant} has no DHW setpoint to boost."
+    },
+    "away_until_past": {
+      "message": "The return time of an away must lie in the future."
     }
   },
   "services": {
@@ -1066,6 +1077,30 @@
         "config_entry_id": {
           "name": "Plant",
           "description": "The Hydronicus Plant whose DHW boost ends."
+        }
+      }
+    },
+    "set_away": {
+      "name": "Set away",
+      "description": "Holds every digital thermostat of a Plant at its away level, until a return time or until the away ends, and recovers in time for the return where a comfort schedule allows early start.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant that is away."
+        },
+        "until": {
+          "name": "Until",
+          "description": "When the away ends by itself; without it, the away lasts until it is ended."
+        }
+      }
+    },
+    "end_away": {
+      "name": "End away",
+      "description": "Ends the away of a Plant now.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant that is home again."
         }
       }
     }

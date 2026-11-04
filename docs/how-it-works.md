@@ -298,6 +298,16 @@ Write it with the `schedule/update` command that Home Assistant's own helper edi
 That command is for administrators only; Home Assistant has no action that changes a schedule.
 Change the setbacks through the **Heating setback** and **Cooling setback** numbers, which any user may set.
 
+## Away
+
+The **Away** switch, or the `hydronicus.set_away` action with an optional return time, makes the whole Plant away.
+While away, each digital thermostat holds its `away` preset for the current mode, or, without one, the Plant's `away` targets, 16 °C for heating and 30 °C for cooling by default.
+It does not change any manual target or preset, nor leave schedule control, so everything is as before once the away ends.
+An away ends when the switch is turned off, `hydronicus.end_away` runs, or its return time comes.
+With a return time, a zone whose comfort schedule allows early start recovers towards its manual comfort target in time for the return, at its schedule's configured rate and within its `max_early_start`, and stays recovering once it began.
+The thermostat's `schedule_status` reads `away`, then `away_return` while it recovers.
+Frost protection, windows, and existing thermostats, which Hydronicus only reads, are not affected.
+
 ## Recovery learning
 
 Each digital thermostat can learn empirical room recovery times from observed circuit operation and temperature reports.
