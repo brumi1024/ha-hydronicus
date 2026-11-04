@@ -88,37 +88,36 @@ def test_inside_the_band_the_previous_decision_is_kept() -> None:
 
 # Boundaries at a configured delta of 0.2 K
 #
-# Sensors report decimal steps such as 0.1 K, and ``zone_demand`` compares the
-# float difference to the delta without a tolerance. 21.0 - 20.8 is
-# 0.19999999999999929 in floats, so a reading exactly at the boundary misses it
-# and a configured 0.2 K delta behaves as 0.3 K.
-
-FLOAT_BOUNDARY = "the delta is compared without a tolerance, so float rounding moves the boundary"
+# Sensors report decimal steps such as 0.1 K, and 21.0 - 20.8 is
+# 0.19999999999999929 in floats, so ``zone_demand`` compares with a tolerance
+# and a reading exactly at the boundary acts.
 
 
-@pytest.mark.xfail(reason=FLOAT_BOUNDARY, strict=True)
 def test_heating_starts_exactly_at_a_configured_delta_of_two_tenths() -> None:
     zone = thermostat_zone(heat_start_delta=0.2, **NO_HOLD)
     assert evaluate(zone, 20.8).on is True
 
 
-@pytest.mark.xfail(reason=FLOAT_BOUNDARY, strict=True)
 def test_heating_stops_exactly_at_a_configured_delta_of_two_tenths() -> None:
     zone = thermostat_zone(heat_stop_delta=0.2, **NO_HOLD)
     assert evaluate(zone, 21.2, DemandState(Mode.HEAT, True, NOW - 60)).on is False
 
 
-@pytest.mark.xfail(reason=FLOAT_BOUNDARY, strict=True)
 def test_cooling_starts_exactly_at_a_configured_delta_of_two_tenths() -> None:
     zone = thermostat_zone(cool_start_delta=0.2, **NO_HOLD)
     assert evaluate(zone, 24.2, mode=Mode.COOL, target=24.0).on is True
 
 
-def test_a_configured_delta_of_two_tenths_starts_one_sensor_step_later_today() -> None:
-    """What the xfails above describe, pinned as it behaves now."""
-    zone = thermostat_zone(heat_start_delta=0.2, **NO_HOLD)
-    assert evaluate(zone, 20.8).on is False
-    assert evaluate(zone, 20.7).on is True
+@pytest.mark.parametrize("tenths", range(160, 301))
+def test_every_reading_exactly_at_a_two_tenths_boundary_acts(tenths: int) -> None:
+    target = tenths / 10
+    start = thermostat_zone(heat_start_delta=0.2, **NO_HOLD)
+    assert evaluate(start, round(target - 0.2, 1), target=target).on is True
+    assert evaluate(start, round(target - 0.1, 1), target=target).on is False
+    stop = thermostat_zone(heat_stop_delta=0.2, **NO_HOLD)
+    calling = DemandState(Mode.HEAT, True, NOW - 60)
+    assert evaluate(stop, round(target + 0.2, 1), calling, target=target).on is False
+    assert evaluate(stop, round(target + 0.1, 1), calling, target=target).on is True
 
 
 # A reading that toggles across a boundary

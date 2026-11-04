@@ -34,6 +34,8 @@ from .model import (
 
 type Reached = Callable[[float], bool]
 
+# How far below a sensor's 0.1 K step a boundary comparison tolerates float error.
+_BOUNDARY_TOLERANCE: Final = 1e-6
 _DEW_POINT_A: Final = 17.62
 _DEW_POINT_B: Final = 243.12
 
@@ -266,7 +268,11 @@ def zone_demand(
         else (config.cool_start_delta, config.cool_stop_delta)
     )
     was_on = previous is not None and previous.mode is mode and previous.on
-    requested = below >= start or (was_on and below > -stop)
+    # Sensors report decimal steps that floats cannot hold exactly, so a reading
+    # exactly at a boundary is compared with a tolerance far below any step.
+    requested = below >= start - _BOUNDARY_TOLERANCE or (
+        was_on and below > -stop + _BOUNDARY_TOLERANCE
+    )
     state = _apply_timing(previous, mode, requested, config, now, reached)
     if state.early_start_event != comfort.early_start_event:
         state = replace(state, early_start_event=comfort.early_start_event)
@@ -316,7 +322,7 @@ def _off(mode: Mode, reason: str) -> Demand:
 # At most this many readings are kept for window detection; older ones go first.
 MAX_WINDOW_SAMPLES: Final = 64
 # Readings come in steps such as 0.1 K, whose differences floats do not hit exactly.
-_WINDOW_TOLERANCE: Final = 1e-6
+_WINDOW_TOLERANCE: Final = _BOUNDARY_TOLERANCE
 
 
 @dataclass(frozen=True, slots=True)
