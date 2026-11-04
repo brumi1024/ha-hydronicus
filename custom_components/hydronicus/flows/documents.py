@@ -208,6 +208,21 @@ def _protection_values(document: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# The supply keys the Plant form's supply section shows; it keeps every other one.
+SUPPLY_FORM_KEYS: Final = (
+    "entity",
+    "outdoor_sensor",
+    "heat_temperature",
+    "cool_temperature",
+    "minimum",
+    "maximum",
+    "outdoor_cold",
+    "outdoor_warm",
+    "heat_cold",
+    "heat_warm",
+    "tolerance",
+    "max_age",
+)
 # The source's cycling protection, which the Plant form's cycling section edits
 # and every other form keeps as it is.
 _SOURCE_FILE_KEYS: Final = (
@@ -281,7 +296,13 @@ def with_plant(document: Mapping[str, Any], values: Mapping[str, Any]) -> Docume
     if timing["feedback_timeout"] != 300.0:
         source["feedback_timeout"] = timing["feedback_timeout"]
     _put(source, "running_sensor", values.get("running_sensor", old.get("running_sensor")))
-    supply = dict(values.get("supply", _mapping(old, "supply")) or {})
+    supply = dict(_mapping(old, "supply"))
+    if "supply" in values:
+        # The form shows only some keys; the others, such as modes, step, and the
+        # heating curve's offset, damping, fallback, and limit, stay as they were.
+        shown = values.get("supply") or {}
+        supply = {key: value for key, value in supply.items() if key not in SUPPLY_FORM_KEYS}
+        supply.update(shown)
     if supply.get("entity"):
         source["supply"] = {key: value for key, value in supply.items() if value is not None}
     # Without the cycling section the stored cycling protection stays.

@@ -49,6 +49,7 @@ from custom_components.hydronicus.core.model import (
     Pump,
     RunKind,
     Sensor,
+    SensorFallback,
     Source,
     SourceModeSelect,
     SupplyControl,
@@ -218,6 +219,20 @@ def plants(draw: st.DrawFn) -> Plant:
         ),
         # 10 °C, the highest a plant file allows, is within reach of the traces.
         frost_protection=draw(st.sampled_from([None, 5.0, 10.0])),
+    )
+    # A sensor fallback needs a digital thermostat and a loop that heats the zone.
+    plant = replace(
+        plant,
+        zones=tuple(
+            replace(
+                zone,
+                sensor_fallback=draw(st.sampled_from([None, SensorFallback(600.0, 0.5, 1800.0)])),
+            )
+            if isinstance(zone.thermostat, DigitalThermostat)
+            and Mode.HEAT in plant.zone_modes(zone.slug)
+            else zone
+            for zone in plant.zones
+        ),
     )
     validate_plant(plant)
     return plant

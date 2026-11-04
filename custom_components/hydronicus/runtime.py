@@ -34,7 +34,7 @@ import logging
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry
@@ -56,6 +56,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
     async_track_state_change_event,
     async_track_state_report_event,
+    async_track_time_interval,
 )
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
@@ -70,9 +71,10 @@ from .areas import (
 )
 from .compressor import CompressorHistory
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
-from .core.comfort import Setbacks, next_period_target
+from .core.comfort import Away, Setbacks, next_period_target
 from .core.dhw import DhwCommand, DhwState
 from .core.model import (
+    MAX_CURVE_OFFSET,
     NUMERIC_ROLES,
     Desired,
     DigitalThermostat,
@@ -82,6 +84,7 @@ from .core.model import (
     OutputRole,
     OutputTarget,
     Plant,
+    SwitchTarget,
     Zone,
 )
 from .core.plant_file import entity_paths, export_plant
@@ -111,11 +114,13 @@ from .issues import (
     UnusableInputs,
     async_sync_issues,
     condensation_inputs_unusable,
+    disinfect_failed,
     evaluation_failed,
     invalid_plant,
     invalid_schedule_blocks,
     missing_area_sensor,
     missing_binding,
+    outdoor_sensor_unusable,
     output_not_responding,
     outputs_awaiting_confirmation,
     source_no_load,
@@ -128,6 +133,8 @@ from .learning import LearningCoordinator, LearningSample
 from .observe import (
     OutputMemory,
     SensorKind,
+    dhw_schedule,
+    disinfect_window,
     external_thermostat,
     numeric_value,
     option_value,
@@ -151,6 +158,9 @@ SCHEDULE_GET: Final = "get_schedule"
 _PROPOSALS_KEPT: Final = 50
 # How long after a failed evaluation the Plant evaluates again, in seconds.
 EVALUATION_RETRY: Final = 60.0
+# While live and evaluating without error, the Plant's heartbeat advances at
+# least this often, for a relay-level watchdog, even while nothing changes.
+HEARTBEAT_INTERVAL: Final = 60.0
 # How often the flow counters are saved while nothing else changes, in seconds.
 FLOW_SAVE_INTERVAL: Final = 900.0
 
@@ -185,6 +195,8 @@ class PlantRuntime:
         self.state = State()
         self.reconcile_state = ReconcileState()
         self.requested_mode = Mode.OFF
+        # The Mode select asks for auto, which the Plant's changeover decides.
+        self.auto_mode = False
         self.memory = OutputMemory()
         self.unusable = UnusableInputs()
         # Each calling zone's response check, by zone slug.
@@ -192,6 +204,10 @@ class PlantRuntime:
         self.thermostats: dict[str, DigitalThermostatState] = {}
         # The owner's setbacks of each scheduled zone that has changed them, by zone slug.
         self.setbacks: dict[str, Setbacks] = {}
+        # The owner's heating curve offset, or None for the configured one.
+        self.curve_offset: float | None = None
+        # The Plant is away, until a return time or until the owner ends it.
+        self.away: Away | None = None
         # The owner's last DHW command, until an evaluation has applied it.
         self.dhw_command: DhwCommand | None = None
         # Each followed schedule helper's week from ``schedule.get_schedule``, or None
@@ -232,6 +248,7 @@ class PlantRuntime:
         self._refresh: CALLBACK_TYPE | None = None
         self._hass_stop: CALLBACK_TYPE | None = None
         self._flow_saved_at = 0.0
+        self._heartbeat_at = 0.0
         self.next_evaluation_at: float | None = None
         self.evaluation_error: str | None = None
         self._dispatcher = Dispatcher(hass, entry, plant.name, self._authorized)
@@ -266,10 +283,19 @@ class PlantRuntime:
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
             self.compressor = CompressorHistory.from_dict(data.get("compressor", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
+            self.auto_mode = bool(data.get("auto", False)) and self.plant.changeover is not None
             self.setbacks = {
                 zone: Setbacks(float(values["heat"]), float(values["cool"]))
                 for zone, values in data.get("setbacks", {}).items()
             }
+            offset = data.get("curve_offset")
+            self.curve_offset = None if offset is None else float(offset)
+            away = data.get("away")
+            self.away = (
+                None
+                if away is None
+                else Away(None if away.get("until") is None else float(away["until"]))
+            )
         except Exception as error:  # Whatever is wrong with it, the Plant starts over.
             _LOGGER.warning(
                 "The persisted state of Plant %s could not be read and starts over: %s",
@@ -281,6 +307,8 @@ class PlantRuntime:
             self.unusable, self.flow = UnusableInputs(), FlowHistory()
             self.compressor = CompressorHistory()
             self.setbacks, self.responses = {}, {}
+            self.curve_offset = None
+            self.away = None
         self.previous.load(data.get("commanding"))
         kept = set(self._outputs)
         if self.previous.persisted is not None:
@@ -340,7 +368,20 @@ class PlantRuntime:
         self._began = True
         if self.forecast is not None:
             self.forecast.async_start()
+        self._unsubscribe.append(
+            async_track_time_interval(
+                self.hass, self._on_heartbeat, timedelta(seconds=HEARTBEAT_INTERVAL)
+            )
+        )
         self.request_evaluation()
+
+    @callback
+    def _on_heartbeat(self, now: datetime) -> None:
+        """Advance the heartbeat while live; it publishes the entities and never evaluates."""
+        if self._stopped or not self.state.live or self.evaluation_error is not None:
+            return
+        self._heartbeat_at = now.timestamp()
+        self._publish()
 
     async def async_stop(self) -> None:
         """Stop without sending a command, and save the persisted state now."""
@@ -440,6 +481,68 @@ class PlantRuntime:
         self._publish()
         self.request_evaluation()
 
+    def heating_curve_offset(self) -> float | None:
+        """The heating curve's offset, the owner's or the configured one; None without one."""
+        source = self.plant.source
+        if source is None or source.supply is None or Mode.HEAT not in source.supply.modes:
+            return None
+        return source.supply.offset if self.curve_offset is None else self.curve_offset
+
+    def heartbeat(self) -> float | None:
+        """When the Plant last showed it watches its live outputs, or None while it does not.
+
+        A successful evaluation and each tick of the heartbeat advance it; a
+        failed evaluation, Dry run, and stopping stop it.
+        """
+        view = self.view
+        if view is None or not self.state.live or self.evaluation_error is not None:
+            return None
+        return max(view.at, self._heartbeat_at)
+
+    def heartbeat_outputs(self) -> list[str]:
+        """The switch outputs the last evaluation wants on, which a watchdog may keep on."""
+        view = self.view
+        if view is None or not self.state.live:
+            return []
+        return sorted(
+            entity
+            for entity, target in view.desired.outputs.items()
+            if isinstance(target, SwitchTarget) and target.on and entity in self.armed
+        )
+
+    @callback
+    def set_away(self, until: float | None) -> None:
+        """Be away until ``until``, or until ``end_away``, and evaluate."""
+        self.away = Away(until)
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
+    @callback
+    def end_away(self) -> None:
+        """Be home again now, and evaluate."""
+        if self.away is None:
+            return
+        self.away = None
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
+    def _expire_away(self, now: float) -> None:
+        """End an away whose return time has come."""
+        if self.away is not None and self.away.until is not None and now >= self.away.until:
+            self.away = None
+
+    @callback
+    def set_curve_offset(self, value: float) -> None:
+        """Take the owner's new heating curve offset and evaluate."""
+        if self.heating_curve_offset() is None:
+            return
+        self.curve_offset = min(MAX_CURVE_OFFSET, max(-MAX_CURVE_OFFSET, value))
+        self._save()
+        self._publish()
+        self.request_evaluation()
+
     @callback
     def command_dhw(
         self,
@@ -481,9 +584,15 @@ class PlantRuntime:
         return None if view is None else view.desired.dhw
 
     @callback
-    def set_mode(self, mode: Mode) -> None:
-        """Take the Plant mode the mode select requests."""
-        self.requested_mode = mode
+    def set_mode(self, mode: Mode | None) -> None:
+        """Take the Plant mode the mode select requests; None is auto."""
+        if mode is None:
+            if self.plant.changeover is None:
+                return
+            self.auto_mode = True
+        else:
+            self.auto_mode = False
+            self.requested_mode = mode
         self._save()
         self._publish()
         self.request_evaluation()
@@ -593,6 +702,7 @@ class PlantRuntime:
     def evaluate(self) -> None:
         """Run one evaluation now."""
         now = dt_util.utcnow().timestamp()
+        self._expire_away(now)
         if not self.previous.decided and self.previous.decide(
             self.hass.states, self.reconcile_state.attempts, self._outputs, self.problem is None
         ):
@@ -632,6 +742,13 @@ class PlantRuntime:
             {
                 IssueKind.ZONE_SENSOR_UNUSABLE: desired.blocking_sensors,
                 IssueKind.CONDENSATION_INPUT_UNUSABLE: desired.blocking_condensation_inputs,
+                IssueKind.OUTDOOR_SENSOR_UNUSABLE: {"source": (plant.source.supply.outdoor_sensor,)}
+                if plant.source is not None
+                and plant.source.supply is not None
+                and plant.source.supply.outdoor_sensor is not None
+                and (curve := desired.heating_curve) is not None
+                and (curve.fallback or curve.outdoor is None)
+                else {},
                 IssueKind.SOURCE_UNHEALTHY: {"source": (plant.source.health_sensor,)}
                 if desired.source_fault is not None
                 and plant.source is not None
@@ -671,6 +788,7 @@ class PlantRuntime:
             self.unusable.next_report(now),
             self.learning.next_sample_at,
             response_due,
+            None if self.away is None else self.away.until,
         )
         self._schedule_refresh(now)
         missing = self._sync_issues(result, plant, now)
@@ -1023,6 +1141,11 @@ class PlantRuntime:
                 if (setbacks := self.zone_setbacks(slug)) is not None
             },
             dhw_command=self.dhw_command,
+            curve_offset=self.curve_offset,
+            away=self.away,
+            auto=self.auto_mode,
+            dhw_schedule=dhw_schedule(plant, states),
+            disinfect_window=disinfect_window(plant, states),
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1033,6 +1156,11 @@ class PlantRuntime:
         return kinds
 
     def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
+        dhw = None if plant.source is None else plant.source.dhw
+        if dhw is not None and (disinfect := dhw.disinfect) is not None:
+            kinds[disinfect.tank_temperature] = SensorKind.WATER
+        if plant.changeover is not None:
+            kinds[plant.changeover.outdoor_sensor] = SensorKind.AIR
         if plant.weather is not None and plant.weather.outdoor_sensor is not None:
             kinds[plant.weather.outdoor_sensor] = SensorKind.AIR
         if (
@@ -1114,6 +1242,11 @@ class PlantRuntime:
                     tracked.add(zone.thermostat.entity)
                 elif zone.thermostat.schedule is not None:
                     tracked.add(zone.thermostat.schedule.entity)
+            dhw = None if plant.source is None else plant.source.dhw
+            if dhw is not None and dhw.schedule is not None:
+                tracked.add(dhw.schedule)
+            if dhw is not None and dhw.disinfect is not None and dhw.disinfect.window:
+                tracked.add(dhw.disinfect.window)
         return frozenset(tracked)
 
     def _schedule_entities(self) -> frozenset[str]:
@@ -1238,10 +1371,13 @@ class PlantRuntime:
             "flow": self.flow.to_dict(),
             "compressor": self.compressor.to_dict(),
             "mode": self.requested_mode.value,
+            "auto": self.auto_mode,
             "setbacks": {
                 zone: {"heat": values.heat, "cool": values.cool}
                 for zone, values in sorted(self.setbacks.items())
             },
+            "curve_offset": self.curve_offset,
+            "away": None if self.away is None else {"until": self.away.until},
             "commanding": self.previous.to_persist(self.armed if self.state.live else frozenset()),
         }
 
@@ -1328,6 +1464,11 @@ class PlantRuntime:
             )
         )
         issues.extend(
+            outdoor_sensor_unusable(reconciled, entity)
+            for _, entity in self.unusable.reported(IssueKind.OUTDOOR_SENSOR_UNUSABLE, now)
+            if entity not in missing
+        )
+        issues.extend(
             source_unhealthy(reconciled, entity)
             for _, entity in self.unusable.reported(IssueKind.SOURCE_UNHEALTHY, now)
             if entity not in missing
@@ -1336,6 +1477,11 @@ class PlantRuntime:
             zone_not_responding(self.plant, zone, self.responses[zone])
             for zone in self.zones_not_responding
         )
+        dhw = self.state.dhw
+        if dhw.disinfect_failed is not None and (
+            dhw.disinfect_done is None or dhw.disinfect_failed > dhw.disinfect_done
+        ):
+            issues.append(disinfect_failed(reconciled))
         if len(trips := self.state.no_load_trips) >= NO_LOAD_REPAIR_TRIPS:
             issues.append(source_no_load(reconciled, len(trips)))
         current = tuple(issues)

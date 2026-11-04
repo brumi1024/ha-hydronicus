@@ -20,9 +20,11 @@ A device goes with its object: removing a zone removes its device.
 
 | Entity | Entity ID | State |
 | --- | --- | --- |
-| **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`, where `cool` exists only when a loop cools. An automation can set it, and it survives restarts. |
+| **Mode** select | `select.<plant>_mode` | `off`, `heat`, `cool`, or `auto`, where `cool` exists only when a loop cools and `auto` only with a [`changeover`](plant-file.md#automatic-changeover). An automation can set it, and it survives restarts. |
 | **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. Its `live` attribute stays true after you turn it off until the equipment has stopped. |
 | **Status** sensor | `sensor.<plant>_status` | What the Plant does now, in the table below. It is unavailable until the Plant's first evaluation. |
+| **Away** switch | `switch.<plant>_away` | On while the Plant is [away](how-it-works.md#away): every digital thermostat holds its away level. Its `until` attribute is the return time, or none while the away lasts until it is turned off. It survives restarts. |
+| **Heartbeat** sensor | `sensor.<plant>_heartbeat` | While **Control equipment** is on and the latest evaluation succeeded: a timestamp that advances at least every `interval`, 60 seconds; unknown otherwise. Its `on_outputs` attribute lists the armed switch outputs Hydronicus wants on. Diagnostic; see [a relay watchdog](#keep-relays-on-only-while-hydronicus-watches). |
 
 | Status | Meaning |
 | --- | --- |
@@ -40,7 +42,8 @@ The **Status** sensor's attributes explain the state:
 
 | Attribute | Value |
 | --- | --- |
-| `requested_mode` | The mode the **Mode** select asks for. |
+| `requested_mode` | The mode the **Mode** select asks for, `auto` included. |
+| `changeover` | Only with a `changeover`: the `mode` it chose, the outdoor `average` it chose it from, and `since` when. Its reason is under `changeover` in `reasons`. |
 | `running_mode` | The mode the outputs run in now; during a changeover, the old mode, then `off` during the dwell. |
 | `live` | Whether outputs are commanded, as on **Control equipment**. |
 | `active_loops` | The loops that pass flow now, such as `living_area.floor` or `towel_dryer`. |
@@ -52,6 +55,8 @@ The **Status** sensor's attributes explain the state:
 | `stopping_outputs` | While `stopping`, the outputs of the old configuration not yet seen off. |
 | `configuration_problem` | Why the configuration is not valid, or none. |
 | `frost_protection` | The zones that [frost protection](how-it-works.md#frost-protection) heats. |
+| `sensor_fallback` | The zones without a usable temperature that a [sensor fallback](plant-file.md#sensor-fallback) serves now. |
+| `heating_curve` | Only with a supply `outdoor_sensor`: the `outdoor` temperature the curve uses, whether it is the `fallback`, whether `warm_weather` above the heating limit keeps the source off, and the `offset` and `room_shift` in K. |
 | `zones_not_responding` | Each zone whose [response check](plant-file.md#response-check) failed, with when it did. |
 | `exercising` | The slug of the pump being exercised, or none. |
 | `idle_since` | Each switched pump and valve with the time since which it has been off. |
@@ -186,7 +191,9 @@ While a loop flows, the runtime and duty cycle sensors update once a minute.
 | **Requested** binary sensor | `binary_sensor.<source>_requested` | On while Hydronicus wants the source's request on. |
 | **Fault** binary sensor | `binary_sensor.<source>_fault` | Only with a `health_sensor`: on while that sensor does not read healthy, so the source is kept off. |
 | **DHW** switch | `switch.<source>_dhw` | Only with a `dhw` switch: the DHW on or off that Hydronicus owns. Turning it on or off sends the source's DHW switch; a change on the source's own controller is adopted and shows here. |
+| **Heating curve offset** number | `number.<source>_heating_curve_offset` | Only when the source's `supply` owns heating: a parallel shift of the heating target from -5 to 5 K, which any user may set. It starts at the configured `offset` and survives restarts. |
 | **DHW target** number | `number.<source>_dhw_target` | Only with a `dhw` setpoint: the owned DHW target within its limits. Its `boost` and `boost_until` attributes show a boost from the `hydronicus.boost_dhw` action, which `hydronicus.end_dhw_boost` ends early. |
+| **Last disinfection** sensor | `sensor.<source>_last_disinfection` | Only with a `dhw` `disinfect` cycle: when the tank last held its temperature, unknown before the first. Its `running` attribute is true during a cycle, and `next_due` says when the next one is due. |
 | **Compressor starts** sensor | `sensor.<source>_compressor_starts` | Only with a `compressor_sensor`: how often the compressor started within the last hour. Diagnostic. |
 | **Compressor cycle** sensor | `sensor.<source>_compressor_cycle` | Only with a `compressor_sensor`: the mean length, in minutes, of the compressor's runs that ended within the last day. Diagnostic. |
 
@@ -225,15 +232,39 @@ A hold says when the timer ends, not that the equipment will change then: a new 
 
 ## An example
 
-The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 32 entities:
+The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the source `Heat pump`, and the zones `Basement`, `Bedroom area`, and `Living area`, gets 34 entities:
 
-- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
+- `select.home_mode`, `switch.home_control_equipment`, `sensor.home_status`, `sensor.home_heartbeat`, `switch.home_away`, `binary_sensor.home_towel_dryer_flowing`, and `sensor.home_towel_dryer_runtime` for the Plant.
 - `binary_sensor.heat_pump_requested` for the source.
 - For each zone, such as `living_area`: `climate.living_area`, `binary_sensor.living_area_heating_demand`, `binary_sensor.living_area_cooling_demand`, `sensor.living_area_combined_temperature`, `sensor.living_area_dew_point`, `sensor.living_area_duty_cycle`, `binary_sensor.living_area_ceiling_flowing`, and `sensor.living_area_ceiling_runtime`.
 - `binary_sensor.living_area_floor_flowing` and `sensor.living_area_floor_runtime` for the living area's underfloor loop.
 
 Hydronicus creates no entity for a valve or a pump; they keep the entities their own integration provides.
 Problems that need you, such as an output that does not respond, are [Repairs](troubleshooting.md#repairs), not entities.
+
+## The Plant view for dashboards
+
+A dashboard card can read a whole Plant without naming any entity, over two websocket commands that only read.
+`hydronicus/plant_view` with an `entry_id` returns the view once, and `hydronicus/plant_view/subscribe` sends it at once and again after every evaluation, until the client unsubscribes or the Plant unloads, which sends a last event `{"unloaded": true}`; subscribe again after a reload.
+An `entry_id` that is not a loaded Plant returns the error `not_found`.
+
+The view's `version`, now `1`, changes only when a key changes meaning or disappears; new keys keep it.
+Its keys:
+
+| Key | Value |
+| --- | --- |
+| `plant`, `entry_id` | The Plant's ID and name, and its config entry. |
+| `evaluated`, `evaluated_at`, `evaluation_error` | Whether the Plant has evaluated, when, and the latest error. Before the first evaluation the view has only these and the keys above and below. |
+| `control`, `live`, `requested_mode`, `away`, `repairs` | **Control equipment**, whether outputs are commanded, the **Mode** select's option, the away with its return time, and each Repair as `kind:key`. |
+| `status`, `running_mode`, `blocking_reason` | As the **Status** sensor shows them. |
+| `zones` | Each zone's temperature, humidity, dew point, effective `target`, `schedule_status`, `demand` with its reason, `action`, why it is `blocked`, since when it is `not_responding`, and its loops. |
+| `loops` | Each loop's zone, pump, modes, `flowing` and `observed_flow` with their basis, reason, valves with their armed, observed, and target states, and holds. |
+| `pumps` | Each pump's switch, whether the source drives it, armed, observed, and target states, operation, reason, and holds. |
+| `source` | The request's armed, requested, and observed states, reason, operation, fault, handover, inhibit, supply target, heating curve, DHW, and holds, or none. |
+| `paths` | For each zone loop, the delivery sequence in order: the zone's call, the valves, the pump, and the source, each with `ok` once it is done, so a card can show where a path waits. |
+| `holds`, `proposed`, `frost_protection`, `sensor_fallback`, `exercising` | Every timer, the Dry run proposals, and the zones and pump these serve. |
+
+Names and reasons are the Plant's own text in English, as the **Status** sensor's are.
 
 ## Actions
 
@@ -248,6 +279,15 @@ Only administrators can run it, and it only returns a response, so call it with 
 
 The response has two keys: `document`, the plant file as data, and `yaml`, the same file as text.
 The action fails with a message when the entry is not a Hydronicus Plant, or when its stored configuration is not a valid Plant.
+
+### Set away and end away
+
+`hydronicus.set_away` makes a Plant [away](how-it-works.md#away), and `hydronicus.end_away` ends it; the **Away** switch does the same without a return time.
+
+| Field | Required | Value |
+| --- | --- | --- |
+| `config_entry_id` | yes | The Plant. The action form lets you pick it. |
+| `until` | no | `set_away` only: the return time, at which the away ends by itself. It must lie in the future. |
 
 ## Automation examples
 
@@ -291,9 +331,33 @@ script:
           message: "{{ plant.yaml }}"
 ```
 
+### Keep relays on only while Hydronicus watches
+
+A relay with its own timer, such as a Shelly Gen2 switch with `auto_off`, turns off by itself unless something refreshes it, also while Home Assistant does not run.
+This automation refreshes each relay that the **Heartbeat** sensor's `on_outputs` lists and that is already on, every time the heartbeat advances; once Hydronicus stops watching, the refreshes stop, and each relay turns off after its own timer.
+It never turns a relay on that is off, and it is only for outputs that may safely stop by themselves, such as the cooling valves or the source request in cooling; a heating relay that turns off in a frost is a risk of its own.
+
+```yaml
+automation:
+  - alias: Refresh the relays Hydronicus watches
+    triggers:
+      - trigger: state
+        entity_id: sensor.home_heartbeat
+    actions:
+      - repeat:
+          for_each: >-
+            {{ state_attr('sensor.home_heartbeat', 'on_outputs')
+               | select('in', ['switch.ceiling_valve', 'switch.heat_pump_request'])
+               | select('is_state', 'on') | list }}
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: "{{ repeat.item }}"
+```
+
 ### Automatic heat and cool changeover
 
-The **Mode** select has no automatic option by design, so you choose heat or cool, or let an automation do it.
+With a [`changeover`](plant-file.md#automatic-changeover), the **Mode** select's `auto` option does this for you; without one, you choose heat or cool, or let an automation do it.
 Base the automation on a slow outdoor temperature, so a cold night or a sunny afternoon does not switch modes.
 The [`statistics`](https://www.home-assistant.io/integrations/statistics/) integration's 24 hour mean works well:
 

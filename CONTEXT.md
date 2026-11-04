@@ -68,18 +68,21 @@ External thermostat Demand is accepted from normalized `hvac_action` only, and a
 A digital thermostat keeps separate heating and cooling comfort targets and presets.
 An optional Schedule selects comfort or setback and may start recovery early within an explicit bound.
 A manual target change leaves Schedule control until the owner selects it again.
+While the Plant is away, every digital thermostat holds its away level without changing its manual target, preset, or schedule control.
 
 ## Supply control
 
 Supply control proposes a bounded Source water temperature, fixed by Mode or calculated from an outdoor heating curve.
 It never commands equipment directly: arming, observation, condensation guards, and hydraulic sequencing remain authoritative.
-A missing or stale outdoor reading blocks an outdoor-compensated heating request.
+A missing or stale outdoor reading blocks an outdoor-compensated heating request, unless the curve names an outdoor fallback; frost protection heats regardless, assuming 0 °C outdoors.
+The owner's offset shifts the heating target, a lead zone may shift it within a limit, and above the heating limit the source does not heat while the zones still circulate.
 
 ## Mode
 
 The Mode is Plant-wide: off, heat, or cool.
 
 Heating and cooling never run at the same time, and a change of Mode is sequenced through the old Mode's shutdown and a minimum dwell.
+With a changeover, the Mode select's auto option chooses heat or cool from an averaged outdoor temperature, with a neutral band and a minimum time between changes.
 
 ## Demand
 

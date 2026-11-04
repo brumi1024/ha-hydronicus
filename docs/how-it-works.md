@@ -33,6 +33,7 @@ Stopping is the same evaluation with the mode forced to off, so every stop follo
 
 A zone combines its usable temperatures into one, by mean, minimum, or maximum.
 A required sensor that is missing, stale, or implausible stops the zone from calling; an optional one is left out.
+An opt-in [sensor fallback](plant-file.md#sensor-fallback) heats a zone that has had no usable temperature for an hour for a bounded share of time, in heating only.
 
 A digital thermostat calls for heat once the temperature is 0.3 K below its target, and stops once it is 0.1 K above; cooling mirrors that.
 It keeps each decision for at least 10 minutes, because a thermoelectric valve takes minutes to open.
@@ -107,7 +108,7 @@ In the reference plant, the heat pump's circulator keeps the living area's ceili
 
 The **Mode** select chooses off, heat, or cool, and heating and cooling never run at the same time.
 Cool is offered only when a loop of the Plant cools.
-There is no automatic mode, but [an automation can switch it](entities.md#automatic-heat-and-cool-changeover).
+With a [`changeover`](plant-file.md#automatic-changeover) in the plant file, its `auto` option chooses heat or cool from a day's average outdoor temperature, with a neutral band and at most one change in 12 hours by default; without one, [an automation can switch it](entities.md#automatic-heat-and-cool-changeover).
 
 A change between heating and cooling runs in order:
 
@@ -141,6 +142,12 @@ Three optional inputs add to the dew point check, and none of them relaxes it:
 A blocked guard drops its loop, and the source is not asked for cooling while a pump it runs would pass water through a blocked loop.
 A new guard, such as that of a loop just added, starts blocked unless every check already passes.
 
+## Hot water
+
+A source with a `dhw` binding has its DHW switch and target owned by Hydronicus, as the [plant file](plant-file.md#domestic-hot-water) describes.
+A DHW `schedule` helper can hold another target during its blocks, such as a higher one in cheap or sunny hours, and a `disinfect` cycle raises the tank to a pasteurisation temperature at an interval and proves it with the tank's sensor.
+A boost wins over the schedule, and a disinfection cycle wins over both.
+
 ## Frost protection
 
 Frost protection keeps a zone from freezing while its thermostat, or the whole Plant, is off.
@@ -148,6 +155,7 @@ Once the coldest reading of a zone is below the frost protection temperature, 5 
 Its reason then reads `frost protection: heat to 6.0 °C from 4.0 °C`.
 
 - Only a zone that a loop heats is protected, and the coldest usable reading counts, so one warm sensor cannot hide a cold room.
+- A zone whose readings drop out while it is protected is not heated meanwhile, but it stays protected, so a reading that returns below the release heats it again.
 - While the **Mode** select is off, frost protection runs the Plant in heat, only for the zones it protects.
 - It never acts while the Plant cools or is asked to cool.
 - It obeys arming and **Control equipment** like any other demand, so in Dry run it is only proposed.
@@ -206,6 +214,7 @@ Reload, unload, removal, and Home Assistant stop never send a command; the equip
 Stopping cancels dispatch and drops queued commands, so no unsent command starts after shutdown begins.
 It does not claim that a previously sent command or physical equipment has stopped.
 Hydronicus saves its timers, the Plant mode, and when each output last changed, and restores them first, so a valve that has been open for an hour still counts as ready, and an unchanged plant gets no command after a restart.
+When those saved timers are lost, a source found running with a ready loop is held for its minimum on time from the start Home Assistant shows, instead of being released inside it.
 
 Changing the Plant's configuration reloads it; changing an area's sensors or the armed outputs does not.
 When a change removes an output that is on, Hydronicus first stops the equipment of the old configuration in order, with the **Status** reading `stopping`, and only then runs the new one.
@@ -220,7 +229,8 @@ For example, the default curve asks for 45 °C at -10 °C outdoors, 35 °C at 5 
 This responds to a current outdoor measurement; it does not predict the weather.
 
 The policy stays inside its configured bounds and the number entity's usable temperature range.
-A configured outdoor sensor that is missing, stale, or invalid blocks the heating request.
+The curve can be shifted by the source's **Heating curve offset**, damped against fast outdoor changes, led by a zone's distance from its target, and stopped above a heating limit, as the [plant file](plant-file.md#supply-temperature-control) describes.
+A configured outdoor sensor that is missing, stale, or invalid blocks the heating request, unless the curve has an outdoor fallback; frost protection heats regardless, assuming 0 °C outdoors.
 Cooling remains independent of the outdoor sensor, and raises its proposed target when needed to preserve the worst measured dew point plus the guard's 2 K margin and 1 K release allowance.
 If that would exceed the configured maximum, the source stays off with a reason.
 The existing condensation guard still checks actual measured water or surface temperatures.
@@ -294,6 +304,16 @@ Write it with the `schedule/update` command that Home Assistant's own helper edi
 That command is for administrators only; Home Assistant has no action that changes a schedule.
 Change the setbacks through the **Heating setback** and **Cooling setback** numbers, which any user may set.
 
+## Away
+
+The **Away** switch, or the `hydronicus.set_away` action with an optional return time, makes the whole Plant away.
+While away, each digital thermostat holds its `away` preset for the current mode, or, without one, the Plant's `away` targets, 16 °C for heating and 30 °C for cooling by default.
+It does not change any manual target or preset, nor leave schedule control, so everything is as before once the away ends.
+An away ends when the switch is turned off, `hydronicus.end_away` runs, or its return time comes.
+With a return time, a zone whose comfort schedule allows early start recovers towards its manual comfort target in time for the return, at its schedule's configured rate and within its `max_early_start`, and stays recovering once it began.
+The thermostat's `schedule_status` reads `away`, then `away_return` while it recovers.
+Frost protection, windows, and existing thermostats, which Hydronicus only reads, are not affected.
+
 ## Recovery learning
 
 Each digital thermostat can learn empirical room recovery times from observed circuit operation and temperature reports.
@@ -343,7 +363,6 @@ Keep hardware flow proving and other source protections independent of Home Assi
 ## Known limitations
 
 - Source control uses generic Home Assistant switches, selects, and optional supply temperature numbers; there is no built-in Modbus driver.
-- There is no automatic heat and cool mode; an [automation](entities.md#automatic-heat-and-cool-changeover) can set the **Mode** select.
 - Heat-only loops are not exercised between the end of cooling and the next heating.
 - A zone that frost protection heats switches the Plant to heat even when all its heating loops are unarmed or unavailable, although nothing then heats.
 - The condensation guard runs only while Home Assistant runs; see [safety limits](safety.md#cooling-while-home-assistant-is-not-running).

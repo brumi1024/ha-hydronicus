@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -30,7 +31,7 @@ from .entity import (
     source_device,
 )
 from .flow_history import HOUR
-from .runtime import PlantRuntime
+from .runtime import HEARTBEAT_INTERVAL, PlantRuntime
 from .view import pump_operation, source_operation
 
 PARALLEL_UPDATES = 0
@@ -110,7 +111,18 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             return health
         plant = runtime.plant
         attributes: dict[str, Any] = {
-            "requested_mode": runtime.requested_mode.value,
+            "requested_mode": "auto" if runtime.auto_mode else runtime.requested_mode.value,
+            "changeover": None
+            if plant.changeover is None
+            else {
+                "mode": runtime.state.changeover.mode.value,
+                "average": None
+                if runtime.state.changeover.average is None
+                else round(runtime.state.changeover.average, 2),
+                "since": None
+                if runtime.state.changeover.changed is None
+                else dt_util.utc_from_timestamp(runtime.state.changeover.changed).isoformat(),
+            },
             "running_mode": view.running_mode.value,
             "live": runtime.state.live,
             "active_loops": [str(loop.ref) for loop in plant.all_loops if view.loop_flowing(loop)],
@@ -122,6 +134,16 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             "stopping_outputs": view.stopping_outputs(),
             "configuration_problem": runtime.problem,
             "frost_protection": list(view.desired.frost_protection),
+            "sensor_fallback": list(view.desired.sensor_fallback),
+            "heating_curve": None
+            if (curve := view.desired.heating_curve) is None
+            else {
+                "outdoor": None if curve.outdoor is None else round(curve.outdoor, 2),
+                "fallback": curve.fallback,
+                "warm_weather": curve.warm_weather,
+                "offset": curve.offset,
+                "room_shift": round(curve.room_shift, 2),
+            },
             "zones_not_responding": {
                 zone: dt_util.utc_from_timestamp(at).isoformat()
                 for zone, at in sorted(view.not_responding.items())
@@ -271,6 +293,64 @@ class LoopRuntimeSensor(HydronicusEntity, SensorEntity):
         return {"basis": "Loop flow inferred from equipment feedback while control is live"}
 
 
+class HeartbeatSensor(HydronicusEntity, SensorEntity):
+    """When the Plant last evaluated successfully while live, at least once a minute.
+
+    A relay-level watchdog follows it: while it advances, the outputs it lists
+    may stay on; once it stops, Hydronicus is not watching them.
+    """
+
+    _attr_translation_key = "heartbeat"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unrecorded_attributes = frozenset({"on_outputs", "interval"})
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "heartbeat"), plant_device(runtime.plant)
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        at = self.runtime.heartbeat()
+        return None if at is None else dt_util.utc_from_timestamp(at)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"on_outputs": self.runtime.heartbeat_outputs(), "interval": HEARTBEAT_INTERVAL}
+
+
+class LastDisinfectionSensor(HydronicusEntity, SensorEntity):
+    """When the DHW tank last held its disinfection cycle's temperature, or unknown."""
+
+    _attr_translation_key = "last_disinfection"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "last_disinfection"),
+            source_device(runtime),
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        done = self.runtime.state.dhw.disinfect_done
+        return None if done is None else dt_util.utc_from_timestamp(done)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        dhw = self.runtime.state.dhw
+        source = self.runtime.plant.source
+        cycle = None if source is None or source.dhw is None else source.dhw.disinfect
+        due = (
+            None
+            if cycle is None or dhw.disinfect_last is None
+            else dt_util.utc_from_timestamp(dhw.disinfect_last + cycle.interval).isoformat()
+        )
+        return {"running": dhw.disinfect_started is not None, "next_due": due}
+
+
 class CompressorStartsSensor(HydronicusEntity, SensorEntity):
     """How often the source's compressor started within the last hour."""
 
@@ -319,7 +399,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     runtime = entry.runtime_data
-    entities: list[tuple[str | None, Entity]] = [(None, PlantStatusSensor(runtime))]
+    entities: list[tuple[str | None, Entity]] = [
+        (None, PlantStatusSensor(runtime)),
+        (None, HeartbeatSensor(runtime)),
+    ]
     for zone in runtime.plant.zones:
         if zone.temperature or zone.areas:
             entities.append((zone.slug, ZoneTemperatureSensor(runtime, zone)))
@@ -331,6 +414,8 @@ async def async_setup_entry(
         (loop.zone, LoopRuntimeSensor(runtime, loop)) for loop in runtime.plant.all_loops
     )
     source = runtime.plant.source
+    if source is not None and source.dhw is not None and source.dhw.disinfect is not None:
+        entities.append((None, LastDisinfectionSensor(runtime)))
     if source is not None and source.compressor_sensor is not None:
         entities.extend(
             [(None, CompressorStartsSensor(runtime)), (None, CompressorCycleSensor(runtime))]

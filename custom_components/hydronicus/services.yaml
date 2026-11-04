@@ -30,3 +30,20 @@ end_dhw_boost:
       selector:
         config_entry:
           integration: hydronicus
+set_away:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus
+    until:
+      selector:
+        datetime:
+end_away:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus

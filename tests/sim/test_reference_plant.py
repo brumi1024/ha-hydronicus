@@ -5,7 +5,10 @@ Every scenario also checks the invariants after every event.
 
 from __future__ import annotations
 
-from custom_components.hydronicus.core.model import Mode
+from dataclasses import replace
+
+from custom_components.hydronicus.core.demand import DigitalThermostatState
+from custom_components.hydronicus.core.model import Changeover, Mode
 from tests.sim.harness import Sim
 from tests.sim.plants import (
     BASEMENT_CEILING,
@@ -26,6 +29,7 @@ OPENING = 180.0
 POST_RUN = 180.0
 MIN_ON = 600.0
 DWELL = 3600.0
+OUTDOOR = "sensor.outdoor_temperature"
 
 
 def _heating() -> Sim:
@@ -243,3 +247,31 @@ def test_the_min_flow_path_serves_the_heat_pump_while_no_zone_calls() -> None:
     )
     assert not sim.is_on(LIVING_CEILING)
     assert not sim.is_on(BEDROOM_CEILING)
+
+
+def test_auto_changes_over_to_cooling_through_the_dwell_as_the_weather_warms() -> None:
+    plant = reference_plant()
+    plant = replace(plant, changeover=Changeover(OUTDOOR, averaging=3600.0, min_dwell=3600.0))
+    sim = Sim(plant, mode=Mode.HEAT)
+    for zone in ZONES:
+        sim.set_zone_temperature(zone, 21.5)
+    sim.set_sensor(OUTDOOR, 5.0)
+    sim.set_auto(True)
+    sim.start()
+    requested = _heat_living_area(sim)
+    sim.run_until(requested + MIN_ON + 60.0)
+    assert sim.state.changeover.mode is Mode.HEAT
+
+    for zone in ZONES:
+        sim.set_thermostat(zone, DigitalThermostatState(Mode.COOL, 24.0))
+        sim.set_zone_temperature(zone, 23.0)
+    sim.set_zone_temperature("living_area", 26.0)
+    sim.set_sensor(SUPPLY, 18.0)
+    for hour in range(1, 13):
+        sim.set_sensor(OUTDOOR, 30.0 + hour * 0.01)
+        sim.run_until(sim.t + 3600.0)
+    assert sim.state.changeover.mode is Mode.COOL
+    assert any(flow.label is Mode.COOL for flow in sim.checker.flow_log)
+    heat_ended = max(flow.end or 0.0 for flow in sim.checker.flow_log if flow.label is Mode.HEAT)
+    cooled = min(flow.start for flow in sim.checker.flow_log if flow.label is Mode.COOL)
+    assert cooled >= heat_ended + DWELL

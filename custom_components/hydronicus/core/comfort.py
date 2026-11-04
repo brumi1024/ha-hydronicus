@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 
-from .model import DigitalThermostat, LearningMode, Mode, Preset
+from .model import AwayConfig, DigitalThermostat, LearningMode, Mode, Preset
 from .thermal import RecoveryEstimate
 
 # The keys of a schedule block's data that choose its level; other keys are the owner's.
@@ -286,3 +286,70 @@ def comfort_target(
         recovery_method=method,
         schedule_level=current.level,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Away:
+    """The Plant is away, until ``until`` or until the owner ends it."""
+
+    until: float | None = None
+
+
+def away_target(
+    config: DigitalThermostat,
+    mode: Mode,
+    manual_target: float,
+    temperature: float | None,
+    away: Away,
+    defaults: AwayConfig,
+    now: float,
+    reached: Callable[[float], bool],
+    early_start_event: float | None = None,
+) -> ComfortTarget | None:
+    """The away level of a digital thermostat, or an early return before ``until``.
+
+    It holds the thermostat's own away preset for the mode, else the Plant's
+    away target, and it never changes the manual target or the preset. With a
+    return time and a comfort schedule whose ``max_early_start`` allows it, it
+    recovers towards the manual comfort target in time for the return, at the
+    schedule's configured rate. Once the early return began, it stays until the
+    return, as a scheduled early start does. None in off, or once the return
+    time has passed.
+    """
+    if mode is Mode.OFF:
+        return None
+    until = away.until
+    if until is not None and (not isfinite(until) or reached(until)):
+        return None
+    default = defaults.heat_target if mode is Mode.HEAT else defaults.cool_target
+    target = config.presets_for(mode).get(Preset.AWAY, default)
+    held = ComfortTarget(target, "away", schedule_status="away", schedule_level="away")
+    returning = ComfortTarget(
+        manual_target,
+        "early return from away",
+        True,
+        "away_return",
+        until,
+        schedule_level="comfort",
+    )
+    settings = config.schedule
+    if until is not None and early_start_event == until and _warmer(mode, manual_target, target):
+        return returning
+    if (
+        until is None
+        or settings is None
+        or settings.max_early_start <= 0
+        or temperature is None
+        or not isfinite(temperature)
+        or not _warmer(mode, manual_target, target)
+    ):
+        return held
+    error = manual_target - temperature if mode is Mode.HEAT else temperature - manual_target
+    if error <= 0:
+        return held
+    rate = settings.heating_rate if mode is Mode.HEAT else settings.cooling_rate
+    seconds = 3600.0 * error / rate
+    lead = min(settings.max_early_start, seconds)
+    if reached(until - lead):
+        return replace(returning, recovery_seconds=seconds)
+    return replace(held, recovery_seconds=seconds)

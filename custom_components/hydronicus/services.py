@@ -16,6 +16,7 @@ from homeassistant.core import (
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .core.plant_file import PlantFileError, dump_yaml, export_plant
@@ -25,6 +26,9 @@ from .storage import plant_from_entry
 SERVICE_EXPORT_PLANT: Final = "export_plant"
 SERVICE_BOOST_DHW: Final = "boost_dhw"
 SERVICE_END_DHW_BOOST: Final = "end_dhw_boost"
+SERVICE_SET_AWAY: Final = "set_away"
+SERVICE_END_AWAY: Final = "end_away"
+ATTR_UNTIL: Final = "until"
 ATTR_TEMPERATURE: Final = "temperature"
 ATTR_DURATION: Final = "duration"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
@@ -40,10 +44,31 @@ _BOOST_DHW_SCHEMA: Final = vol.Schema(
     }
 )
 _END_DHW_BOOST_SCHEMA: Final = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
+_SET_AWAY_SCHEMA: Final = vol.Schema(
+    {vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string, vol.Optional(ATTR_UNTIL): cv.datetime}
+)
+_END_AWAY_SCHEMA: Final = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
 
 
-def _dhw_runtime(call: ServiceCall) -> PlantRuntime:
-    """The loaded Plant the call names, which must have a DHW setpoint."""
+async def _async_set_away(call: ServiceCall) -> None:
+    """Hold every digital thermostat at its away level, until a return time if given."""
+    until = call.data.get(ATTR_UNTIL)
+    if until is not None:
+        until = dt_util.as_utc(until if until.tzinfo else dt_util.as_local(until))
+        if until.timestamp() <= dt_util.utcnow().timestamp():
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="away_until_past"
+            )
+    _runtime(call).set_away(None if until is None else until.timestamp())
+
+
+async def _async_end_away(call: ServiceCall) -> None:
+    """End the away now."""
+    _runtime(call).end_away()
+
+
+def _runtime(call: ServiceCall) -> PlantRuntime:
+    """The loaded Plant the call names."""
     entry_id = call.data[ATTR_CONFIG_ENTRY_ID]
     entry = call.hass.config_entries.async_get_entry(entry_id)
     if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
@@ -53,12 +78,18 @@ def _dhw_runtime(call: ServiceCall) -> PlantRuntime:
             translation_placeholders={"config_entry_id": entry_id},
         )
     runtime: PlantRuntime = entry.runtime_data
+    return runtime
+
+
+def _dhw_runtime(call: ServiceCall) -> PlantRuntime:
+    """The loaded Plant the call names, which must have a DHW setpoint."""
+    runtime = _runtime(call)
     source = runtime.plant.source
     if source is None or source.dhw is None or source.dhw.setpoint is None:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
             translation_key="no_dhw_setpoint",
-            translation_placeholders={"plant": entry.title},
+            translation_placeholders={"plant": runtime.entry.title},
         )
     return runtime
 
@@ -113,3 +144,5 @@ def async_setup_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_END_DHW_BOOST, _async_end_dhw_boost, _END_DHW_BOOST_SCHEMA
     )
+    hass.services.async_register(DOMAIN, SERVICE_SET_AWAY, _async_set_away, _SET_AWAY_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_END_AWAY, _async_end_away, _END_AWAY_SCHEMA)

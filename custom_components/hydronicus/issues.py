@@ -48,6 +48,8 @@ class IssueKind(StrEnum):
     CONDENSATION_INPUT_UNUSABLE = "condensation_input_unusable"
     INVALID_SCHEDULE_BLOCK = "invalid_schedule_block"
     SOURCE_UNHEALTHY = "source_unhealthy"
+    OUTDOOR_SENSOR_UNUSABLE = "outdoor_sensor_unusable"
+    DISINFECT_FAILED = "disinfect_failed"
     SOURCE_NO_LOAD = "source_no_load"
     ZONE_NOT_RESPONDING = "zone_not_responding"
 
@@ -222,6 +224,35 @@ def source_unhealthy(plant: Plant, entity_id: str) -> Issue:
             "plant": plant.name,
             "source": plant.source.title if plant.source else "",
             "entity_id": entity_id,
+        },
+    )
+
+
+def outdoor_sensor_unusable(plant: Plant, entity_id: str) -> Issue:
+    supply = None if plant.source is None else plant.source.supply
+    fallback = None if supply is None else supply.outdoor_fallback
+    return Issue(
+        IssueKind.OUTDOOR_SENSOR_UNUSABLE,
+        entity_id,
+        {
+            "plant": plant.name,
+            "entity_id": entity_id,
+            "effect": f"the heating curve assumes its fallback of {fallback:g} °C outdoors"
+            if fallback is not None
+            else "Hydronicus does not ask the source for heat, except for frost protection",
+        },
+    )
+
+
+def disinfect_failed(plant: Plant) -> Issue:
+    cycle = None if plant.source is None or plant.source.dhw is None else plant.source.dhw.disinfect
+    return Issue(
+        IssueKind.DISINFECT_FAILED,
+        "source",
+        {
+            "plant": plant.name,
+            "temperature": "" if cycle is None else f"{cycle.temperature:g}",
+            "entity_id": "" if cycle is None else cycle.tank_temperature,
         },
     )
 

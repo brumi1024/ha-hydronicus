@@ -55,7 +55,8 @@
         "state": {
           "off": "mdi:power",
           "heat": "mdi:fire",
-          "cool": "mdi:snowflake"
+          "cool": "mdi:snowflake",
+          "auto": "mdi:thermostat-auto"
         }
       }
     },
@@ -91,6 +92,12 @@
       },
       "compressor_cycle": {
         "default": "mdi:timer-sync-outline"
+      },
+      "heartbeat": {
+        "default": "mdi:heart-pulse"
+      },
+      "last_disinfection": {
+        "default": "mdi:bacteria-outline"
       }
     },
     "switch": {
@@ -106,6 +113,13 @@
         "state": {
           "on": "mdi:water-boiler",
           "off": "mdi:water-boiler-off"
+        }
+      },
+      "away": {
+        "default": "mdi:home-export-outline",
+        "state": {
+          "on": "mdi:home-export-outline",
+          "off": "mdi:home"
         }
       }
     },
@@ -123,6 +137,9 @@
       },
       "dhw_target": {
         "default": "mdi:thermometer-water"
+      },
+      "heating_curve_offset": {
+        "default": "mdi:chart-line-variant"
       }
     }
   },
@@ -135,6 +152,12 @@
     },
     "end_dhw_boost": {
       "service": "mdi:water-boiler"
+    },
+    "set_away": {
+      "service": "mdi:home-export-outline"
+    },
+    "end_away": {
+      "service": "mdi:home-import-outline"
     }
   }
 }

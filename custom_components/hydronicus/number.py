@@ -1,4 +1,4 @@
-"""The setbacks of each scheduled zone, which a dashboard changes like a target, and DHW."""
+"""The setbacks of each scheduled zone, the heating curve offset, and the DHW target."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import HydronicusConfigEntry
-from .core.model import MAX_SETBACK, Dhw, Mode, Zone
+from .core.model import MAX_CURVE_OFFSET, MAX_SETBACK, Dhw, Mode, Zone
 from .entity import (
     HydronicusEntity,
     ZoneEntity,
@@ -55,6 +55,35 @@ class ZoneSetback(ZoneEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         self.runtime.set_setback(self._zone, self._mode, value)
+
+
+class HeatingCurveOffset(HydronicusEntity, NumberEntity):
+    """The owner's parallel shift of the heating curve, which any user may set.
+
+    The runtime persists it with the Plant's state, like the setbacks.
+    """
+
+    _attr_translation_key = "heating_curve_offset"
+    _attr_device_class = NumberDeviceClass.TEMPERATURE_DELTA
+    _attr_native_unit_of_measurement = UnitOfTemperature.KELVIN
+    _attr_native_min_value = -MAX_CURVE_OFFSET
+    _attr_native_max_value = MAX_CURVE_OFFSET
+    _attr_native_step = 0.5
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "heating_curve_offset"),
+            source_device(runtime),
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self.runtime.heating_curve_offset()
+
+    async def async_set_native_value(self, value: float) -> None:
+        self.runtime.set_curve_offset(value)
 
 
 class DhwTarget(HydronicusEntity, NumberEntity):
@@ -115,6 +144,8 @@ async def async_setup_entry(
             if mode in modes
         )
     source = runtime.plant.source
+    if runtime.heating_curve_offset() is not None:
+        entities.append((None, HeatingCurveOffset(runtime)))
     if source is not None and source.dhw is not None and source.dhw.setpoint is not None:
         entities.append((None, DhwTarget(runtime, source.dhw)))
     async_add_plant_entities(runtime, "number", async_add_entities, entities)

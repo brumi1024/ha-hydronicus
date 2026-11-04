@@ -73,11 +73,30 @@ def test_without_the_store_a_call_inside_the_band_is_not_resumed() -> None:
     assert state.demands["room"] == DemandState(Mode.HEAT, False, None)
 
 
-def test_without_the_store_a_boiler_found_on_is_released_inside_its_minimum_on_time() -> None:
+def test_without_the_store_a_boiler_found_on_is_held_for_its_minimum_on_time() -> None:
     """The boiler's 300 s minimum on time counts from an observed start a minute ago."""
     plant, observations = after_restart(21.2)
     state, desired, _ = step(plant, observations, State(), NOW)
     assert state.source_observed_changed == STARTED
+    assert desired.reasons["source"] == "found running, held for its minimum on time"
+    assert targets(desired, *OUTPUTS) == [ON, ON, ON]
+    assert state.source_request is True
+
+
+def test_without_the_store_a_boiler_found_on_is_released_once_its_minimum_on_time_passed() -> None:
+    plant, observations = after_restart(21.2)
+    state, _, _ = step(plant, observations, State(), NOW)
+    _, desired, _ = step(plant, observations, state, STARTED + 300)
+    assert desired.reasons["source"] == "released"
+    assert targets(desired, *OUTPUTS) == [ON, ON, OFF]
+
+
+def test_without_the_store_a_boiler_found_on_long_ago_is_released_at_once() -> None:
+    plant = _plant(HELD_RADIATOR)
+    observations = observe(
+        plant, temperatures={"room": 21.2}, on=OUTPUTS, since={"switch.boiler": NOW - 3600}
+    )
+    _, desired, _ = step(plant, observations, State(), NOW)
     assert desired.reasons["source"] == "no ready loop calls"
     assert targets(desired, *OUTPUTS) == [ON, ON, OFF]
 

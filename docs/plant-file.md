@@ -107,6 +107,8 @@ Read it from the top:
 | `name` | yes | | The Plant name, which also names the Plant's device and its Plant-wide entities. |
 | `mode_dwell` | no | `3600` | Seconds between the end of the old mode's flow and the start of the new mode, after a change between heating and cooling. |
 | `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` or `null` to turn it off. |
+| `changeover` | no | none | The Mode select's `auto` option, see [Automatic changeover](#automatic-changeover). It needs a loop that cools. |
+| `away` | no | `{heat_target: 16, cool_target: 30}` | The targets in °C, from 5 to 35, that a digital thermostat without its own `away` preset holds while the Plant is [away](how-it-works.md#away). |
 | `frost_protection` | no | `5` | The frost protection temperature in °C, at most 10, or `false` or `null` to turn frost protection off. A zone that a loop heats is heated whatever its thermostat says once its coldest reading falls below it, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
 | `weather` | no | none | Optional [weather forecast](#weather-forecast) inputs for recovery learning. |
@@ -134,6 +136,43 @@ Adding this mapping alone does not enable weather-aware control: each participat
 Missing or stale optional inputs return recovery planning to its learned baseline or configured schedule rate.
 Repeated forecast content keeps its original age; retrieving it again does not prove the provider issued a new forecast.
 When the provider issue time is unavailable, diagnostics distinguish that uncertainty from the time Hydronicus first observed the forecast.
+
+## Automatic changeover
+
+The optional `changeover` mapping adds `auto` to the **Mode** select, which then chooses heat or cool from a slowly averaged outdoor temperature.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `outdoor_sensor` | yes | | The outdoor temperature `sensor`. |
+| `heat_below` | no | `15` | The average at or below which the Plant heats; may be negative. |
+| `cool_above` | no | `22` | The average at or above which the Plant cools; must be above `heat_below`. |
+| `averaging` | no | `86400` | The time constant of the average in seconds, a day by default. |
+| `min_dwell` | no | `43200` | The fewest seconds between two changes, 12 hours by default. |
+| `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
+
+Between `heat_below` and `cool_above` the mode stays as it is, and so it does while the reading is missing or stale.
+A change goes through the usual changeover: the old mode stops in order, and the `mode_dwell` passes before the new mode starts.
+The average survives restarts; a gap longer than `max_age` starts it again from the reading.
+Each zone is still served only while its own thermostat's mode matches the Plant's.
+
+```yaml
+hydronicus: 2
+name: Loft
+changeover: {outdoor_sensor: sensor.outdoor_temperature, heat_below: 14, cool_above: 23}
+pumps:
+  pump:
+    switch: switch.loft_pump
+    supply_temperature: sensor.loft_supply_temperature
+zones:
+  loft:
+    temperature: [sensor.loft_temperature]
+    humidity: [sensor.loft_humidity]
+    loops:
+      ceiling:
+        valves: [switch.loft_ceiling_valve]
+        pump: pump
+        modes: [heat, cool]
+```
 
 ## Exercise
 
@@ -233,12 +272,21 @@ Configure this only when Hydronicus owns the supply setpoint; do not let another
 | `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
 | `modes` | no | `[heat, cool]` | The modes in which Hydronicus owns the setpoint, such as `[cool]` for a heat pump whose own weather curve keeps the heating setpoint. In another mode Hydronicus sends the number nothing and does not wait for it. |
 | `step` | no | | The setpoint's resolution, such as `1` for a heat pump that takes whole degrees. A cooling target is rounded up to it, so it stays above the dew point margin, and a heating target to the nearest step within `minimum` and `maximum`. |
+| `offset` | no | `0` | A parallel shift of the heating target in K, from -5 to 5, added to the fixed target or the curve; the starting value of the source's **Heating curve offset**. |
+| `outdoor_damping` | no | `0` | Only with `outdoor_sensor`: the time constant in seconds of a first-order filter of the outdoor reading, such as `10800`, so a building that reacts over hours does not follow every gust; `0` turns it off. |
+| `outdoor_fallback` | no | none | Only with `outdoor_sensor`: the outdoor temperature from -50 to 50 °C that the curve uses while the reading is missing, invalid, or stale, such as `0`. Without it, a lost reading blocks the heating request, except for frost protection. |
+| `heating_limit` | no | none | Only with `outdoor_sensor`: the damped outdoor temperature at or above which the source does not heat, such as `16`; it heats again once the outdoor temperature is 1 K below it. Frost protection heats whatever the weather. |
+| `room_influence` | no | none | A lead zone that shifts the heating curve, as a mapping of `zone`, its slug, `factor`, the shift per kelvin the zone is below its heating target, `1` by default, and `limit`, the largest shift either way in K, `3` by default. The zone needs a digital thermostat and a loop that heats it. |
 
 With a mode select, a target is proposed only once the select shows the mode, since a heat pump's setpoint range often follows its mode.
 
 The curve is linear between its two endpoints and stays at an endpoint outside their outdoor range.
 Every configured fixed or curve supply temperature of the setpoint's `modes` must lie within `minimum` and `maximum`.
-A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target.
+A missing, invalid, or stale outdoor reading blocks the heating request instead of silently choosing a different target, unless `outdoor_fallback` names the temperature to use.
+While frost protection heats a zone and neither a reading nor a fallback is usable, the curve assumes 0 °C outdoors, so frost protection never waits for an outdoor sensor.
+After 10 minutes without a usable reading, the [outdoor sensor Repair](troubleshooting.md#the-outdoor-sensor-is-not-usable) says which of the two applies.
+The heating limit uses the damped reading, and a fallback never starts or keeps it, so a lost sensor heats.
+Room influence raises the curve while the lead zone is colder than its effective heating target and lowers it while the zone is warmer, within `limit`; a lead zone without a usable reading shifts nothing.
 A cooling target that cannot satisfy the condensation margin within `maximum` blocks the source, and the measured condensation guard remains active regardless of the setpoint.
 See [supply control](how-it-works.md#supply-temperature-control) and the [comfort and feedback example](examples/comfort-and-feedback.yaml).
 
@@ -275,6 +323,29 @@ While the source's handover sensor reads on, or Control equipment is off, Hydron
 | `tolerance` | no | `0.5` | The difference in K accepted as confirmation of the setpoint. |
 | `step` | no | | The setpoint's resolution, such as `1` for whole degrees. |
 | `max_boost` | no | `7200` | The longest a boost may last, in seconds. |
+| `schedule` | no | | A `schedule` helper whose blocks may name a DHW target in their data, such as `{target: 52}`, held while the block runs; outside blocks, and in a block without one, the owned target applies. A boost still wins. |
+| `disinfect` | no | | A periodic [disinfection cycle](#disinfection-cycle), which needs a `setpoint`. |
+
+### Disinfection cycle
+
+The `dhw` mapping's `disinfect` runs a periodic pasteurisation of the DHW tank, as heat pump controllers do, for a tank whose owned target stays below the temperature that keeps legionella bacteria at bay.
+Every `interval` it raises the DHW setpoint to its `temperature`, beyond the DHW `maximum`, until the tank's sensor has held that temperature, less the DHW `tolerance`, for `hold` seconds.
+It then restores the owned target and records the time on the source's **Last disinfection** sensor.
+If the tank does not hold it within `timeout`, it restores the target, raises the [disinfection Repair](troubleshooting.md#the-disinfection-cycle-did-not-finish), and tries again a day later.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `tank_temperature` | yes | | The DHW tank's temperature `sensor`, which proves the cycle. |
+| `temperature` | no | `60` | The cycle's temperature in °C, from 55 to 70. |
+| `interval` | no | `604800` | Seconds between cycles, from a day to 30 days, a week by default. Its clock starts when Hydronicus first sees the tank, so a new tank is not heated at once. |
+| `hold` | no | `1800` | Seconds the tank must hold the temperature, from 60 to 7200. |
+| `timeout` | no | `10800` | Seconds after its start that a cycle gives up, from 1800 to 43200, and at least 10 minutes longer than `hold`. |
+| `window` | no | | A `schedule` helper whose on periods the cycle may start in, such as the night; without it, a cycle starts as soon as it is due. |
+
+The cycle runs only while the DHW is on, **Control equipment** is on, and the source is not handed over; it stops if any of these ends.
+A missing or stale tank reading neither proves nor resets the hold.
+Water that hot scalds at the taps, so keep a thermostatic mixing valve after the tank, as legionella guidance such as the UK HSE's expects anyway.
+Hydronicus controls only the setpoint: the source must be able to reach the temperature, for example with its immersion heater, which its own settings may need to allow.
 
 ## Pumps
 
@@ -418,6 +489,7 @@ It covers zero or more Home Assistant areas and owns its loops.
 | `window_close_delay` | no | `60` | Seconds every window must read closed before the zone's demand comes back. |
 | `window_detection` | no | `false` | Counts a sudden temperature change as an open window, see [Window detection](#window-detection). |
 | `response_check` | no | `true` | Reports a zone whose temperature does not respond while it is served, see [Response check](#response-check). |
+| `sensor_fallback` | no | `false` | Heats the zone for a share of time while it has no usable temperature, see [Sensor fallback](#sensor-fallback). |
 | `max_humidity` | no | `70` | The highest humidity, in percent, at which the loops that read the zone's dew point may cool, from 30 to 100. `null` turns the cutoff off. |
 | `loops` | no | | Slug to [loop](#loops) of the zone. |
 
@@ -499,6 +571,39 @@ zones:
     window_detection: {change: 0.3, within: 300, max_duration: 3600}
     loops:
       radiator:
+        pump: pump
+```
+
+### Sensor fallback
+
+A zone whose temperatures are all missing, stale, or implausible does not call, so a dead sensor leaves its room unheated until it reports again.
+`sensor_fallback` heats such a zone for a bounded share of time instead, in heating only: `true` uses the defaults, and a mapping changes them.
+
+| Key | Default | Value |
+| --- | --- | --- |
+| `after` | `3600` | Seconds without a usable temperature before the fallback starts, from 600 to 86400. |
+| `duty` | `0.15` | The share of each period it heats, at most `0.5`, and at least 600 seconds of each period. |
+| `period` | `7200` | The length of each period in seconds, from 1800 to 21600. |
+
+It acts only while the Plant's **Mode** and the zone's thermostat heat, never in cooling, because cooling without a dew point is where floors condense.
+It needs a digital thermostat and a loop that heats the zone.
+Its demand goes through windows, arming, and the source's minimum times and starts per hour like any other.
+Its reason reads `sensor fallback: heat 15% of every 120 min without a usable temperature`, the Status sensor's `sensor_fallback` attribute lists the zones it serves, and the [sensor Repair](troubleshooting.md#a-sensor-blocks-its-zone) still names the sensor.
+Once a reading returns, the thermostat decides again, and the fallback's clock starts over at the next loss.
+
+```yaml
+hydronicus: 2
+name: Flat
+pumps:
+  pump:
+    switch: switch.flat_pump
+zones:
+  bedroom:
+    temperature: [sensor.bedroom]
+    sensor_fallback: {after: 1800, duty: 0.2}
+    loops:
+      radiator:
+        valves: [switch.bedroom_valve]
         pump: pump
 ```
 

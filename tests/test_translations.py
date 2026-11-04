@@ -25,6 +25,7 @@ from custom_components.hydronicus.issues import (
     invalid_plant,
     missing_area_sensor,
     missing_binding,
+    outdoor_sensor_unusable,
     output_not_responding,
     outputs_awaiting_confirmation,
     source_unhealthy,
@@ -40,7 +41,7 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 ENTITY_KEYS = {
     "button": {"reset_learning"},
     "climate": {"zone"},
-    "number": {"heat_setback", "cool_setback", "dhw_target"},
+    "number": {"heat_setback", "cool_setback", "dhw_target", "heating_curve_offset"},
     "binary_sensor": {
         "heating_demand",
         "cooling_demand",
@@ -51,6 +52,8 @@ ENTITY_KEYS = {
     "select": {"mode"},
     "sensor": {
         "status",
+        "heartbeat",
+        "last_disinfection",
         "combined_temperature",
         "dew_point",
         "duty_cycle",
@@ -58,7 +61,7 @@ ENTITY_KEYS = {
         "compressor_starts",
         "compressor_cycle",
     },
-    "switch": {"control", "dhw"},
+    "switch": {"control", "away", "dhw"},
 }
 
 
@@ -93,6 +96,7 @@ def _issues() -> list[Issue]:
         missing_binding(plant, export_plant(plant), "switch.a", "pumps.floor.switch"),
         missing_area_sensor(plant, "Kitchen", "sensor.kitchen"),
         source_unhealthy(plant, "binary_sensor.modbus_healthy"),
+        outdoor_sensor_unusable(plant, "sensor.outdoor"),
         *(
             zone_area_issue(plant, ZoneAreaProblem(kind, "basement", "workshop"), areas)
             for kind in ZoneAreaProblemKind
@@ -165,8 +169,15 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
         "plant_not_found",
         "no_dhw_setpoint",
         "unsupported_hvac_mode",
+        "away_until_past",
     }
-    assert set(STRINGS["services"]) == {"export_plant", "boost_dhw", "end_dhw_boost"}
+    assert set(STRINGS["services"]) == {
+        "export_plant",
+        "boost_dhw",
+        "end_dhw_boost",
+        "set_away",
+        "end_away",
+    }
 
 
 def test_every_form_field_has_a_label() -> None:

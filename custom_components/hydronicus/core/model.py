@@ -317,6 +317,27 @@ class ModeSwitch:
         return None if mode is Mode.OFF else mode in self.modes
 
 
+# How far the owner may shift the heating curve, in K either way.
+MAX_CURVE_OFFSET: Final = 5.0
+# How far below the heating limit the outdoor temperature must fall before the
+# source may heat again, in K.
+HEATING_LIMIT_RELEASE: Final = 1.0
+# The outdoor temperature the heating curve assumes while frost protection heats
+# and no usable outdoor reading or fallback says otherwise, in °C.
+FROST_CURVE_OUTDOOR: Final = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class RoomInfluence:
+    """A lead zone whose distance from its heating target shifts the heating curve."""
+
+    zone: str
+    # The shift per kelvin the zone is below its target.
+    factor: float = 1.0
+    # The largest shift either way, in K.
+    limit: float = 3.0
+
+
 @dataclass(frozen=True, slots=True)
 class SupplyControl:
     """A bounded source supply setpoint, optionally compensated for outdoor temperature."""
@@ -339,11 +360,46 @@ class SupplyControl:
     # The setpoint's resolution, such as 1 for whole degrees: a cooling target is
     # rounded up, so it stays above the dew point, and a heating target to nearest.
     step: float | None = None
+    # The heating curve's parallel shift in K, the starting value of the owner's offset.
+    offset: float = 0.0
+    # The time constant of the outdoor reading's first-order filter in seconds; 0 is none.
+    outdoor_damping: float = 0.0
+    # The outdoor temperature the curve uses while the reading is not usable, or
+    # None to block the heating request instead.
+    outdoor_fallback: float | None = None
+    # The damped outdoor temperature at or above which the source does not heat.
+    heating_limit: float | None = None
+    room_influence: RoomInfluence | None = None
 
 
 DEFAULT_DHW_MINIMUM: Final = 40.0
 DEFAULT_DHW_MAXIMUM: Final = 55.0
 DEFAULT_DHW_BOOST: Final = 7200.0
+# The bounds of a disinfection cycle's temperature, in °C, and of its interval, in seconds.
+MIN_DISINFECT_TEMPERATURE: Final = 55.0
+MAX_DISINFECT_TEMPERATURE: Final = 70.0
+MIN_DISINFECT_INTERVAL: Final = 86400.0
+MAX_DISINFECT_INTERVAL: Final = 30 * 86400.0
+# How soon a disinfection cycle that timed out is tried again, in seconds.
+DISINFECT_RETRY: Final = 86400.0
+
+
+@dataclass(frozen=True, slots=True)
+class Disinfect:
+    """A periodic pasteurisation cycle of the DHW tank, proved by its temperature.
+
+    Every ``interval`` it raises the setpoint to ``temperature``, beyond the DHW
+    maximum, until ``tank_temperature`` has held it for ``hold`` seconds, or
+    gives up after ``timeout`` and tries again a day later. ``window`` is a
+    schedule helper whose on periods it may start in, such as the night.
+    """
+
+    tank_temperature: str
+    temperature: float = 60.0
+    interval: float = 7 * 86400.0
+    hold: float = 1800.0
+    timeout: float = 10800.0
+    window: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +421,9 @@ class Dhw:
     step: float | None = None
     # The longest a boost may raise the setpoint, in seconds.
     max_boost: float = DEFAULT_DHW_BOOST
+    # A schedule helper whose blocks may name a ``target``, held while they run.
+    schedule: str | None = None
+    disinfect: Disinfect | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,6 +605,30 @@ class ExternalThermostat:
 type Thermostat = DigitalThermostat | ExternalThermostat
 
 
+# The bounds of a sensor fallback, in seconds and as a share of its period.
+MIN_SENSOR_FALLBACK_AFTER: Final = 600.0
+MAX_SENSOR_FALLBACK_AFTER: Final = 86400.0
+MIN_SENSOR_FALLBACK_PERIOD: Final = 1800.0
+MAX_SENSOR_FALLBACK_PERIOD: Final = 21600.0
+MAX_SENSOR_FALLBACK_DUTY: Final = 0.5
+# The shortest on and off spell of a sensor fallback, so slow valves open and close.
+MIN_SENSOR_FALLBACK_SPELL: Final = 600.0
+
+
+@dataclass(frozen=True, slots=True)
+class SensorFallback:
+    """Heat a zone for a share of time while none of its temperatures is usable.
+
+    It starts ``after`` seconds without a usable reading, heats for ``duty`` of
+    every ``period``, and only in heating, so a lost sensor never leaves a room
+    unheated for days, nor heats it without bound.
+    """
+
+    after: float = 3600.0
+    duty: float = 0.15
+    period: float = 7200.0
+
+
 @dataclass(frozen=True, slots=True)
 class WindowDetection:
     """Count a sudden move of a zone's temperature away from its target as an open window.
@@ -598,6 +681,9 @@ class Zone:
     window_detection: WindowDetection | None = None
     # Reports the zone when its temperature does not respond; None turns it off.
     response_check: ResponseCheck | None = DEFAULT_RESPONSE_CHECK
+    # Heats the zone for a bounded share of time while it has no usable
+    # temperature, in heating only; None, the default, leaves it unheated.
+    sensor_fallback: SensorFallback | None = None
     # The highest humidity at which the loops that read the zone's dew point may
     # cool, in percent; None turns the cutoff off.
     max_humidity: float | None = DEFAULT_MAX_HUMIDITY
@@ -625,6 +711,28 @@ DEFAULT_EXERCISE: Final = Exercise()
 
 
 @dataclass(frozen=True, slots=True)
+class Changeover:
+    """Switch the Plant between heat and cool from a slowly averaged outdoor temperature."""
+
+    outdoor_sensor: str
+    heat_below: float = 15.0
+    cool_above: float = 22.0
+    # The time constant of the outdoor average, in seconds.
+    averaging: float = 86400.0
+    # The shortest time between two changes, in seconds.
+    min_dwell: float = 43200.0
+    max_age: float = DEFAULT_MAX_AGE
+
+
+@dataclass(frozen=True, slots=True)
+class AwayConfig:
+    """The targets a digital thermostat without its own away preset holds while away."""
+
+    heat_target: float = 16.0
+    cool_target: float = 30.0
+
+
+@dataclass(frozen=True, slots=True)
 class Plant:
     """One config entry: an optional source, its pumps, its zones, and its plant loops."""
 
@@ -641,6 +749,9 @@ class Plant:
     # The frost protection temperature in °C, or None to turn frost protection off.
     frost_protection: float | None = DEFAULT_FROST_PROTECTION
     weather: WeatherConfig | None = None
+    away: AwayConfig = AwayConfig()
+    # The Mode select's auto option, or None while it offers none.
+    changeover: Changeover | None = None
 
     @property
     def all_loops(self) -> tuple[Loop, ...]:
@@ -799,6 +910,21 @@ class Hold:
 
 
 @dataclass(frozen=True, slots=True)
+class HeatingCurve:
+    """What shaped the heating curve this evaluation, for the entities and diagnostics."""
+
+    # The outdoor temperature the curve and the heating limit use, damped, or the
+    # fallback while ``fallback``; None while neither exists.
+    outdoor: float | None
+    fallback: bool
+    # The heating limit keeps the source from heating.
+    warm_weather: bool
+    # The owner's offset and the lead zone's shift, in K.
+    offset: float
+    room_shift: float
+
+
+@dataclass(frozen=True, slots=True)
 class Desired:
     """What every output should be now, computed by each evaluation."""
 
@@ -846,3 +972,7 @@ class Desired:
     source_no_load: str | None = None
     # When the no-load guard tripped within the last day, oldest first.
     no_load_trips: tuple[float, ...] = ()
+    # The zones that a sensor fallback serves now, whether it heats them or not.
+    sensor_fallback: tuple[str, ...] = ()
+    # The heating curve's inputs, while the supply control reads an outdoor sensor.
+    heating_curve: HeatingCurve | None = None

@@ -171,6 +171,10 @@ class Sim:
 
     # Inputs
 
+    def set_auto(self, auto: bool) -> None:
+        self.world.auto = auto
+        self.world.changed()
+
     def set_mode(self, mode: Mode, *, thermostats: bool = True) -> None:
         self.world.mode = mode
         if thermostats:

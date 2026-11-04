@@ -32,7 +32,7 @@ Dry run sends nothing and only checks the configuration and the sequence; see [w
 ## What fails safe
 
 - A command counts as done only once Home Assistant shows its result; until then Hydronicus assumes the worst, and after three attempts a Repair names the output.
-- A required sensor that is unavailable, stale, or implausible stops its zone from calling.
+- A required sensor that is unavailable, stale, or implausible stops its zone from calling, unless the zone has a [sensor fallback](plant-file.md#sensor-fallback), which heats it for a bounded share of time, in heating only.
 - A missing or stale condensation reference, or a condensation switch that is unavailable, blocks cooling.
 - A window sensor is the one exception: an unavailable one reads as closed, so a lost sensor never leaves a home unheated.
 
@@ -66,7 +66,7 @@ Protect against that independently of Hydronicus:
 
 - A hardware dew point or condensation switch on the cooling supply pipe, wired to stop the pump or close the valves directly; such switches typically trip at about 90 % surface relative humidity.
 - A relay-level watchdog, such as a Shelly Gen2 switch's `auto_off` on the source request or the cooling valves, with an automation that refreshes them while cooling should run.
-  The automation must only refresh a relay that is already on, never turn one on that Hydronicus has not asked for.
+  The automation must only refresh a relay that is already on, never turn one on that Hydronicus has not asked for; the **Heartbeat** sensor's [example](entities.md#keep-relays-on-only-while-hydronicus-watches) does that.
 - The heat pump's own minimum supply temperature for cooling, typically 16 to 18 °C for floors and ceilings, as the last line of defence.
 
 ## Reloads, restarts, and changes

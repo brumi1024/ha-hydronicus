@@ -42,6 +42,8 @@ REFERENCE_ENTITIES = {
     "select.home_mode",
     "switch.home_control_equipment",
     "sensor.home_status",
+    "sensor.home_heartbeat",
+    "switch.home_away",
     "binary_sensor.home_towel_dryer_flowing",
     "sensor.home_towel_dryer_runtime",
     "binary_sensor.heat_pump_requested",
@@ -79,7 +81,7 @@ async def test_the_reference_plant_publishes_about_30_entities(hass: HomeAssista
     } == {"basement": "Basement", "bedroom_area": "Bedroom area", "living_area": "Living area"}
     entities = plant_entities(hass, entry)
     assert set(entities.values()) == REFERENCE_ENTITIES
-    assert len(entities) == 32
+    assert len(entities) == 34
     assert all(unique_id.startswith(REFERENCE_PLANT_ID) for unique_id in entities)
     # Zone entities belong to their zone's subentry, the rest to the Plant.
     registry = er.async_get(hass)

@@ -32,7 +32,8 @@ from dataclasses import dataclass, field, replace
 from math import ceil, isfinite
 from typing import Any, Final
 
-from .comfort import ComfortTarget, ScheduleState, Setbacks, comfort_target
+from .changeover import ChangeoverState, changeover
+from .comfort import Away, ComfortTarget, ScheduleState, Setbacks, away_target, comfort_target
 from .demand import (
     AreaSensors,
     DemandState,
@@ -51,13 +52,15 @@ from .demand import (
     zone_demand,
     zone_values,
 )
-from .dhw import DhwCommand, DhwResult, DhwState, dhw_step
+from .dhw import DhwCommand, DhwResult, DhwSchedule, DhwState, dhw_step
 from .model import (
+    FROST_CURVE_OUTDOOR,
     SETTING_ROLES,
     Demand,
     Desired,
     DigitalThermostat,
     Exercise,
+    HeatingCurve,
     Hold,
     HoldKind,
     LearningMode,
@@ -75,7 +78,7 @@ from .model import (
     Valve,
     Zone,
 )
-from .supply import supply_target
+from .supply import DampedOutdoor, outdoor_temperature, room_shift, supply_target, warm_weather
 from .thermal import RecoveryEstimate
 
 __all__ = [
@@ -219,6 +222,17 @@ class Observations:
     recovery: Mapping[str, RecoveryEstimate] = field(default_factory=dict)
     # The owner's last command to the source's DHW through Hydronicus's entities.
     dhw_command: DhwCommand | None = None
+    # The owner's heating curve offset in K, or None for the configured one.
+    curve_offset: float | None = None
+    # The Plant is away, or None while it is not.
+    away: Away | None = None
+    # The DHW schedule helper now, and whether the disinfection cycle's window is
+    # open; None while it has none or it is not known.
+    dhw_schedule: DhwSchedule | None = None
+    disinfect_window: bool | None = None
+    # The Mode select asks for auto: the changeover chooses heat or cool, and
+    # ``mode`` is only what applies when the Plant has no changeover.
+    auto: bool = False
 
 
 def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
@@ -349,6 +363,14 @@ class State:
     no_load_since: float | None = None
     no_load_until: float | None = None
     no_load_trips: tuple[float, ...] = ()
+    # The damped outdoor temperature of the heating curve, and whether the
+    # heating limit keeps the source from heating.
+    outdoor_damped: DampedOutdoor | None = None
+    warm_weather: bool = False
+    # Since when each zone has had no usable temperature, by zone slug.
+    sensorless: Mapping[str, float] = field(default_factory=dict)
+    # The automatic changeover's average and the mode it chose.
+    changeover: ChangeoverState = ChangeoverState()
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -411,6 +433,12 @@ class State:
             "no_load_since": self.no_load_since,
             "no_load_until": self.no_load_until,
             "no_load_trips": list(self.no_load_trips),
+            "outdoor_damped": None
+            if self.outdoor_damped is None
+            else {"value": self.outdoor_damped.value, "at": self.outdoor_damped.at},
+            "warm_weather": self.warm_weather,
+            "sensorless": dict(self.sensorless),
+            "changeover": self.changeover.to_dict(),
         }
 
     @classmethod
@@ -473,7 +501,17 @@ class State:
             no_load_since=_optional_float(data.get("no_load_since")),
             no_load_until=_optional_float(data.get("no_load_until")),
             no_load_trips=tuple(float(value) for value in data.get("no_load_trips", ())),
+            outdoor_damped=_damped_outdoor(data.get("outdoor_damped")),
+            warm_weather=bool(data.get("warm_weather", False)),
+            sensorless={slug: float(at) for slug, at in data.get("sensorless", {}).items()},
+            changeover=ChangeoverState.from_dict(data.get("changeover", {})),
         )
+
+
+def _damped_outdoor(value: Any) -> DampedOutdoor | None:
+    if not isinstance(value, Mapping):
+        return None
+    return DampedOutdoor(float(value["value"]), float(value["at"]))
 
 
 def _optional_float(value: Any) -> float | None:
@@ -540,7 +578,23 @@ def step(
     sequence and then goes to Dry run, where it evaluates the requested mode
     against the proposed outputs.
     """
-    return _Evaluation(plant, observations, state, now).run()
+    auto = (
+        changeover(plant.changeover, observations.sensors, now, state.changeover)
+        if observations.auto and plant.changeover is not None
+        else None
+    )
+    if auto is not None:
+        observations = replace(observations, mode=auto.state.mode)
+    next_state, desired, due = _Evaluation(plant, observations, state, now).run()
+    if auto is None:
+        return replace(next_state, changeover=state.changeover), desired, due
+    if auto.due is not None and auto.due > now:
+        due = auto.due - now + TICK if due is None else min(due, auto.due - now + TICK)
+    return (
+        replace(next_state, changeover=auto.state),
+        replace(desired, reasons={**desired.reasons, "changeover": auto.reason}),
+        due,
+    )
 
 
 class _Evaluation:
@@ -548,6 +602,10 @@ class _Evaluation:
 
     def __init__(self, plant: Plant, obs: Observations, state: State, now: float) -> None:
         physical_flow_seen = state.physical_flow_seen or _physical_flow_possible(plant, obs)
+        # A State that has never observed the source, such as one that a lost
+        # store replaced, finds a running source as it is: its minimum on time
+        # counts from the observed start. Going live from Dry run starts from rest.
+        self.source_unknown = state.source_observed is None and not (obs.control and state.dry_run)
         if obs.control and state.dry_run:
             # An output observed off since before the dwell is already safe.
             # Otherwise its real flow must stop before a new dwell can begin.
@@ -611,6 +669,13 @@ class _Evaluation:
             and plant.source.handover_sensor is not None
             and self.feedback(plant.source.handover_sensor) is True
         )
+        supply = None if plant.source is None else plant.source.supply
+        self.outdoor = (
+            None
+            if supply is None
+            else outdoor_temperature(supply, obs.sensors, now, state.outdoor_damped)
+        )
+        self.warm = supply is not None and warm_weather(supply, self.outdoor, state.warm_weather)
         self.inhibited = (
             f"another source supplies the zones: {plant.source.inhibit_sensor} is on"
             if plant.source is not None
@@ -657,6 +722,14 @@ class _Evaluation:
         self.detected_windows: dict[str, DetectedWindow] = {}
         # The zones that frost protection heats, which the demands stage finds.
         self.frost: list[str] = []
+        # The zones that frost protection heated and that have no usable reading
+        # now: they keep their latch, so a returning reading below the release
+        # heats again, but nothing heats them while no reading says how cold they are.
+        self.frost_latched: list[str] = []
+        # Since when each zone without a usable temperature has had none, and the
+        # zones a sensor fallback serves now.
+        self.sensorless: dict[str, float] = {}
+        self.sensor_fallbacks: list[str] = []
         # This evaluation's condensation guards, and since when each output is idle.
         self.guard_states: dict[str, GuardState] = {}
         self.idle_times: dict[str, float | None] = {}
@@ -990,7 +1063,7 @@ class _Evaluation:
             winding=frozenset(winding),
             windows_open=frozenset(self.windows_open),
             detected_windows=self.detected_windows,
-            frost=frozenset(self.frost),
+            frost=frozenset(self.frost) | frozenset(self.frost_latched),
             idle_since=self.idle_times,
             exercise=plan.next_exercise,
             exercise_ended=plan.exercise_ended,
@@ -999,6 +1072,9 @@ class _Evaluation:
             no_load_since=self.no_load_state[1],
             no_load_until=self.no_load_state[2],
             no_load_trips=self.no_load_state[3],
+            outdoor_damped=state.outdoor_damped if self.outdoor is None else self.outdoor.damped,
+            warm_weather=self.warm,
+            sensorless=self.sensorless,
         )
         desired = Desired(
             outputs=outputs,
@@ -1021,10 +1097,53 @@ class _Evaluation:
             source_inhibited=self.inhibited,
             source_no_load=self.no_load_reason(),
             no_load_trips=self.no_load_state[3],
+            heating_curve=self.heating_curve(),
+            sensor_fallback=tuple(self.sensor_fallbacks),
         )
         later = [deadline for deadline in self.deadlines if deadline > now]
         due = min(later) - now + TICK if later else None
         return next_state, desired, due
+
+    def curve_offset(self) -> float:
+        """The heating curve's offset: the owner's, else the configured one."""
+        source = self.plant.source
+        if source is None or source.supply is None:
+            return 0.0
+        offset = self.obs.curve_offset
+        return source.supply.offset if offset is None else offset
+
+    def room_shift(self) -> float:
+        """The lead zone's shift of the heating curve, from this evaluation's demand."""
+        source = self.plant.source
+        if source is None or source.supply is None or source.supply.room_influence is None:
+            return 0.0
+        slug = source.supply.room_influence.zone
+        comfort = self.comfort.get(slug)
+        return room_shift(
+            source.supply,
+            None if comfort is None else comfort.target,
+            self.temperatures.get(slug),
+        )
+
+    def warm_reason(self) -> str:
+        source = self.plant.source
+        assert source is not None and source.supply is not None and self.outdoor is not None
+        assert self.outdoor.value is not None and source.supply.heating_limit is not None
+        return (
+            f"warm weather: {self.outdoor.value:.1f} °C outdoors, "
+            f"heating limit {source.supply.heating_limit:.1f} °C"
+        )
+
+    def heating_curve(self) -> HeatingCurve | None:
+        if self.outdoor is None:
+            return None
+        return HeatingCurve(
+            outdoor=self.outdoor.value,
+            fallback=self.outdoor.fallback,
+            warm_weather=self.warm,
+            offset=self.curve_offset(),
+            room_shift=self.room_shift(),
+        )
 
     def no_load_reason(self) -> str | None:
         """Why the no-load guard holds the source off, or None while it does not."""
@@ -1067,7 +1186,19 @@ class _Evaluation:
             self.now,
             self.reached,
             commands=not self.forced_off and not self.handover,
+            schedule=self.obs.dhw_schedule,
+            tank=None
+            if config.disinfect is None
+            else self.tank_temperature(config.disinfect.tank_temperature),
+            window=self.obs.disinfect_window,
         )
+
+    def tank_temperature(self, entity: str) -> float | None:
+        """The DHW tank's temperature while it reports, stale like a guard reference."""
+        reading = self.obs.sensors.get(entity)
+        if reading is None or reading.value is None or not isfinite(reading.value):
+            return None
+        return None if self.reached(reading.updated + GUARD_REFERENCE_MAX_AGE) else reading.value
 
     def current_holds(self, mode: Mode) -> tuple[Hold, ...]:
         """The holds in force, ordered by when they end; a guard holds only in cool."""
@@ -1122,7 +1253,7 @@ class _Evaluation:
                         default=0.0,
                     )
                     recovery = replace(recovery, seconds=recovery.seconds + preparation)
-                self.comfort[zone.slug] = comfort_target(
+                comfort = comfort_target(
                     config,
                     thermostat.hvac_mode,
                     thermostat.target,
@@ -1137,6 +1268,24 @@ class _Evaluation:
                     recovery,
                     obs.setbacks.get(zone.slug),
                 )
+                if obs.away is not None:
+                    comfort = (
+                        away_target(
+                            config,
+                            thermostat.hvac_mode,
+                            thermostat.target,
+                            temperature,
+                            obs.away,
+                            self.plant.away,
+                            self.now,
+                            self.reached,
+                            None
+                            if previous is None or previous.mode is not thermostat.hvac_mode
+                            else previous.early_start_event,
+                        )
+                        or comfort
+                    )
+                self.comfort[zone.slug] = comfort
             state, demand = zone_demand(
                 zone,
                 thermostat,
@@ -1153,6 +1302,8 @@ class _Evaluation:
                     HoldKind.DEMAND_MIN_ON if demand.on else HoldKind.DEMAND_MIN_OFF,
                     demand.held_until,
                 )
+            if (fallback := self.sensor_fallback(zone, thermostat, temperature)) is not None:
+                demand = fallback
             state, demand = self.window_inhibit(zone, state, demand)
             # Frost protection overrides the thermostat and an open window alike,
             # and leaves the thermostat's decision underneath as it is.
@@ -1163,6 +1314,45 @@ class _Evaluation:
             states[zone.slug], demands[zone.slug] = state, demand
             self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
         return demands, states
+
+    def sensor_fallback(
+        self, zone: Zone, thermostat: ThermostatState | None, temperature: float | None
+    ) -> Demand | None:
+        """A sensor fallback's demand, which replaces the thermostat's, or None.
+
+        It acts only once the zone has had no usable temperature for its ``after``,
+        only while the zone's digital thermostat and the Plant heat, and heats
+        for its ``duty`` of every ``period`` counted from then. The thermostat's
+        own decision stays off underneath, so a returning reading starts afresh.
+        """
+        if temperature is not None:
+            return None
+        since = self.state.sensorless.get(zone.slug, self.now)
+        if since > self.now:
+            since = self.now
+        self.sensorless[zone.slug] = since
+        config = zone.sensor_fallback
+        if (
+            config is None
+            or not isinstance(thermostat, DigitalThermostatState)
+            or thermostat.hvac_mode is not Mode.HEAT
+            or self.obs.mode is not Mode.HEAT
+        ):
+            return None
+        start = since + config.after
+        if not self.reached(start):
+            return None
+        self.sensor_fallbacks.append(zone.slug)
+        phase = (self.now - start) % config.period
+        on_for = config.duty * config.period
+        on = phase < on_for
+        self.reached(self.now - phase + (on_for if on else config.period))
+        return Demand(
+            Mode.HEAT,
+            on,
+            f"sensor fallback: heat {config.duty:.0%} of every "
+            f"{config.period / 60:g} min without a usable temperature",
+        )
 
     def window_inhibit(
         self, zone: Zone, state: DemandState, demand: Demand
@@ -1255,7 +1445,10 @@ class _Evaluation:
             return None
         obs = self.obs
         coldest = coldest_temperature(zone, obs.areas, obs.sensors, self.reached)
-        return frost_demand(frost, coldest, zone.slug in self.state.frost)
+        active = zone.slug in self.state.frost
+        if coldest is None and active:
+            self.frost_latched.append(zone.slug)
+        return frost_demand(frost, coldest, active)
 
     def heats(self, zone: Zone) -> bool:
         """A loop heats the zone: one of its own, or a plant loop that runs with it."""
@@ -1957,7 +2150,16 @@ class _Plan:
             # the setpoint waits for the select and the mode switches.
             ev.reasons["source_supply"] = "waiting for the source mode"
             return None
-        proposal = supply_target(config, self.mode, ev.obs.sensors, ev.now)
+        proposal = supply_target(
+            config,
+            self.mode,
+            ev.obs.sensors,
+            ev.now,
+            outdoor=ev.outdoor,
+            offset=ev.curve_offset(),
+            room_shift=ev.room_shift(),
+            frost_outdoor=FROST_CURVE_OUTDOOR if ev.frost else None,
+        )
         if self.mode is Mode.HEAT and config.outdoor_sensor is not None:
             reading = ev.obs.sensors.get(config.outdoor_sensor)
             if reading is not None:
@@ -2043,6 +2245,10 @@ class _Plan:
             return False
         if ev.inhibited is not None:
             reasons["source"] = ev.inhibited
+            return False
+        if self.mode is Mode.HEAT and ev.warm and not ev.frost and not ev.state.source_request:
+            # A source already running is released below, after its minimum on time.
+            reasons["source"] = ev.warm_reason()
             return False
         if (until := ev.no_load_state[2]) is not None:
             ev.hold("source", HoldKind.NO_LOAD, until)
@@ -2131,6 +2337,11 @@ class _Plan:
             return False
         qualifying = [loop for loop in self.plant.all_loops if self.qualifies(loop)]
         demanded = any(loop in self.wanted and self.calls_source(loop) for loop in qualifying)
+        # Above the heating limit the zones still circulate, but the source does
+        # not heat for them; frost protection heats whatever the weather.
+        warm = self.mode is Mode.HEAT and ev.warm and not ev.frost
+        if warm:
+            demanded = False
         state = ev.state
         if state.source_request:
             changed = ev.source_observed_changed if ev.source_observed is True else ev.now
@@ -2142,12 +2353,13 @@ class _Plan:
             if qualifying and ev.held("source", HoldKind.MIN_ON, changed + source.min_on):
                 reasons["source"] = "held for its minimum on time"
                 return True
-            if qualifying and source.hold_after_demand is not None and self.calling:
+            if qualifying and source.hold_after_demand is not None and self.calling and not warm:
                 # A new call keeps a held request while its loops open.
                 reasons["source"] = "requested while the calling loops open"
                 return True
             if (
                 qualifying
+                and not warm
                 and self.heat_sink
                 and source.hold_after_demand is not None
                 and self.demand_ended is not None
@@ -2159,10 +2371,20 @@ class _Plan:
             ):
                 reasons["source"] = "held after demand, into its heat sink"
                 return True
-            reasons["source"] = "released"
+            reasons["source"] = ev.warm_reason() if warm else "released"
             return False
+        if (
+            not demanded
+            and qualifying
+            and ev.source_unknown
+            and ev.source_observed is True
+            and ev.source_observed_changed is not None
+            and ev.held("source", HoldKind.MIN_ON, ev.source_observed_changed + source.min_on)
+        ):
+            reasons["source"] = "found running, held for its minimum on time"
+            return True
         if not demanded:
-            reasons["source"] = "no ready loop calls"
+            reasons["source"] = ev.warm_reason() if warm else "no ready loop calls"
             return False
         if source.start_threshold is not None:
             weight = sum(loop.weight for loop in self.wanted if self.calls_source(loop))
