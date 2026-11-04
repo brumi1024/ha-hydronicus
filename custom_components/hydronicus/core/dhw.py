@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from typing import Any
 
-from .model import LEGIONELLA_RETRY, Dhw, NumericTarget, OutputTarget, SwitchTarget
+from .model import DISINFECT_RETRY, Dhw, NumericTarget, OutputTarget, SwitchTarget
 
 __all__ = ["DhwCommand", "DhwResult", "DhwSchedule", "DhwState", "dhw_step"]
 
@@ -49,23 +49,23 @@ class DhwState:
     boost_until: float | None = None
     # When the last applied command was asked, so that each applies once.
     command_at: float | None = None
-    # The legionella cycle: when the last one succeeded, or when its clock began
+    # The disinfection cycle: when the last one succeeded, or when its clock began
     # for a tank that has had none; when the one in progress started, since when
     # its tank has held the temperature, and when the last one timed out.
-    legionella_last: float | None = None
-    legionella_started: float | None = None
-    legionella_held: float | None = None
-    legionella_failed: float | None = None
-    # When a legionella cycle last held its temperature, which a new tank lacks.
-    legionella_done: float | None = None
+    disinfect_last: float | None = None
+    disinfect_started: float | None = None
+    disinfect_held: float | None = None
+    disinfect_failed: float | None = None
+    # When a disinfection cycle last held its temperature, which a new tank lacks.
+    disinfect_done: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "legionella_last": self.legionella_last,
-            "legionella_started": self.legionella_started,
-            "legionella_held": self.legionella_held,
-            "legionella_failed": self.legionella_failed,
-            "legionella_done": self.legionella_done,
+            "disinfect_last": self.disinfect_last,
+            "disinfect_started": self.disinfect_started,
+            "disinfect_held": self.disinfect_held,
+            "disinfect_failed": self.disinfect_failed,
+            "disinfect_done": self.disinfect_done,
             "on": self.on,
             "target": self.target,
             "seen_on": self.seen_on,
@@ -93,11 +93,11 @@ class DhwState:
             boost=number("boost"),
             boost_until=number("boost_until"),
             command_at=number("command_at"),
-            legionella_last=number("legionella_last"),
-            legionella_started=number("legionella_started"),
-            legionella_held=number("legionella_held"),
-            legionella_failed=number("legionella_failed"),
-            legionella_done=number("legionella_done"),
+            disinfect_last=number("disinfect_last"),
+            disinfect_started=number("disinfect_started"),
+            disinfect_held=number("disinfect_held"),
+            disinfect_failed=number("disinfect_failed"),
+            disinfect_done=number("disinfect_done"),
         )
 
 
@@ -143,7 +143,7 @@ def dhw_step(
     owned values then still follow what is seen.
 
     A running block of ``schedule`` that names a target holds it instead of the
-    owned target; a boost still wins. A due legionella cycle wins over both,
+    owned target; a boost still wins. A due disinfection cycle wins over both,
     beyond the DHW maximum, while ``tank`` shows how hot the tank is and
     ``window`` whether it may start.
     """
@@ -173,8 +173,8 @@ def dhw_step(
         seen_on = switch
     if config.setpoint is not None and setpoint is not None and setpoint != seen_target:
         shown = (
-            config.legionella.temperature
-            if config.legionella is not None and state.legionella_started is not None
+            config.disinfect.temperature
+            if config.disinfect is not None and state.disinfect_started is not None
             else _clamp(
                 config,
                 boost
@@ -216,9 +216,9 @@ def dhw_step(
         config,
         boost if boost_until is not None else scheduled if scheduled is not None else target,
     )
-    cycle = _legionella(config, state, on, tank, window, now, reached, commands, events)
-    if cycle.running and config.legionella is not None:
-        wanted = config.legionella.temperature
+    cycle = _disinfect(config, state, on, tank, window, now, reached, commands, events)
+    if cycle.running and config.disinfect is not None:
+        wanted = config.disinfect.temperature
     targets: dict[str, OutputTarget] = {}
     if commands:
         if config.switch is not None and on is not None:
@@ -228,7 +228,7 @@ def dhw_step(
     if wanted is None:
         reason = "on" if on else "off" if on is not None else "unknown"
     elif cycle.running:
-        reason = f"on, legionella cycle at {wanted:g} °C"
+        reason = f"on, disinfection cycle at {wanted:g} °C"
     elif boost_until is not None:
         reason = f"{'on' if on is not False else 'off'}, boosted to {wanted:g} °C"
     elif scheduled is not None:
@@ -244,11 +244,11 @@ def dhw_step(
         boost=boost,
         boost_until=boost_until,
         command_at=command_at,
-        legionella_last=cycle.last,
-        legionella_started=cycle.started,
-        legionella_held=cycle.held,
-        legionella_failed=cycle.failed,
-        legionella_done=cycle.done if cycle.done is not None else state.legionella_done,
+        disinfect_last=cycle.last,
+        disinfect_started=cycle.started,
+        disinfect_held=cycle.held,
+        disinfect_failed=cycle.failed,
+        disinfect_done=cycle.done if cycle.done is not None else state.disinfect_done,
     )
     return DhwResult(next_state, targets, reason, tuple(events))
 
@@ -266,7 +266,7 @@ class _Cycle:
         return self.started is not None
 
 
-def _legionella(
+def _disinfect(
     config: Dhw,
     state: DhwState,
     on: bool | None,
@@ -277,25 +277,25 @@ def _legionella(
     commands: bool,
     events: list[str],
 ) -> _Cycle:
-    """Start, prove, finish, or give up the legionella cycle.
+    """Start, prove, finish, or give up the disinfection cycle.
 
     Its clock starts when it is first seen, so a new tank is not heated at once.
     It runs only while the DHW is on and Hydronicus may command the source, and
     a missing tank reading neither proves nor resets the hold.
     """
-    cycle = config.legionella
+    cycle = config.disinfect
     if cycle is None:
         return _Cycle(None)
-    last = state.legionella_last if state.legionella_last is not None else now
-    started, held, failed = state.legionella_started, state.legionella_held, state.legionella_failed
+    last = state.disinfect_last if state.disinfect_last is not None else now
+    started, held, failed = state.disinfect_started, state.disinfect_held, state.disinfect_failed
     if started is not None and (on is False or not commands):
-        events.append("the legionella cycle stopped, since the DHW may not run")
+        events.append("the disinfection cycle stopped, since the DHW may not run")
         return _Cycle(last, failed=failed)
     if started is None:
         due = last + cycle.interval
         if not reached(due) or on is False or not commands or window is False:
             return _Cycle(last, failed=failed)
-        events.append(f"the legionella cycle starts, to {cycle.temperature:g} °C")
+        events.append(f"the disinfection cycle starts, to {cycle.temperature:g} °C")
         started, held = now, None
     if tank is not None:
         if tank >= cycle.temperature - config.tolerance:
@@ -303,14 +303,14 @@ def _legionella(
         else:
             held = None
     if held is not None and reached(held + cycle.hold):
-        events.append("the legionella cycle held its temperature and is done")
+        events.append("the disinfection cycle held its temperature and is done")
         return _Cycle(now, failed=failed, done=now)
     if reached(started + cycle.timeout):
         events.append(
-            f"the legionella cycle did not hold {cycle.temperature:g} °C within its timeout"
+            f"the disinfection cycle did not hold {cycle.temperature:g} °C within its timeout"
         )
         # Try again a day later rather than after a whole interval.
-        return _Cycle(now - cycle.interval + LEGIONELLA_RETRY, failed=now)
+        return _Cycle(now - cycle.interval + DISINFECT_RETRY, failed=now)
     return _Cycle(last, started, held, failed)
 
 

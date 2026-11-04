@@ -114,10 +114,10 @@ from .issues import (
     UnusableInputs,
     async_sync_issues,
     condensation_inputs_unusable,
+    disinfect_failed,
     evaluation_failed,
     invalid_plant,
     invalid_schedule_blocks,
-    legionella_failed,
     missing_area_sensor,
     missing_binding,
     outdoor_sensor_unusable,
@@ -134,8 +134,8 @@ from .observe import (
     OutputMemory,
     SensorKind,
     dhw_schedule,
+    disinfect_window,
     external_thermostat,
-    legionella_window,
     numeric_value,
     option_value,
     reading,
@@ -1145,7 +1145,7 @@ class PlantRuntime:
             away=self.away,
             auto=self.auto_mode,
             dhw_schedule=dhw_schedule(plant, states),
-            legionella_window=legionella_window(plant, states),
+            disinfect_window=disinfect_window(plant, states),
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1157,8 +1157,8 @@ class PlantRuntime:
 
     def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
         dhw = None if plant.source is None else plant.source.dhw
-        if dhw is not None and (legionella := dhw.legionella) is not None:
-            kinds[legionella.tank_temperature] = SensorKind.WATER
+        if dhw is not None and (disinfect := dhw.disinfect) is not None:
+            kinds[disinfect.tank_temperature] = SensorKind.WATER
         if plant.changeover is not None:
             kinds[plant.changeover.outdoor_sensor] = SensorKind.AIR
         if plant.weather is not None and plant.weather.outdoor_sensor is not None:
@@ -1245,8 +1245,8 @@ class PlantRuntime:
             dhw = None if plant.source is None else plant.source.dhw
             if dhw is not None and dhw.schedule is not None:
                 tracked.add(dhw.schedule)
-            if dhw is not None and dhw.legionella is not None and dhw.legionella.window:
-                tracked.add(dhw.legionella.window)
+            if dhw is not None and dhw.disinfect is not None and dhw.disinfect.window:
+                tracked.add(dhw.disinfect.window)
         return frozenset(tracked)
 
     def _schedule_entities(self) -> frozenset[str]:
@@ -1478,10 +1478,10 @@ class PlantRuntime:
             for zone in self.zones_not_responding
         )
         dhw = self.state.dhw
-        if dhw.legionella_failed is not None and (
-            dhw.legionella_done is None or dhw.legionella_failed > dhw.legionella_done
+        if dhw.disinfect_failed is not None and (
+            dhw.disinfect_done is None or dhw.disinfect_failed > dhw.disinfect_done
         ):
-            issues.append(legionella_failed(reconciled))
+            issues.append(disinfect_failed(reconciled))
         if len(trips := self.state.no_load_trips) >= NO_LOAD_REPAIR_TRIPS:
             issues.append(source_no_load(reconciled, len(trips)))
         current = tuple(issues)

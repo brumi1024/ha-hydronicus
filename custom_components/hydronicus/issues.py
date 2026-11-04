@@ -49,7 +49,7 @@ class IssueKind(StrEnum):
     INVALID_SCHEDULE_BLOCK = "invalid_schedule_block"
     SOURCE_UNHEALTHY = "source_unhealthy"
     OUTDOOR_SENSOR_UNUSABLE = "outdoor_sensor_unusable"
-    LEGIONELLA_FAILED = "legionella_failed"
+    DISINFECT_FAILED = "disinfect_failed"
     SOURCE_NO_LOAD = "source_no_load"
     ZONE_NOT_RESPONDING = "zone_not_responding"
 
@@ -244,12 +244,10 @@ def outdoor_sensor_unusable(plant: Plant, entity_id: str) -> Issue:
     )
 
 
-def legionella_failed(plant: Plant) -> Issue:
-    cycle = (
-        None if plant.source is None or plant.source.dhw is None else plant.source.dhw.legionella
-    )
+def disinfect_failed(plant: Plant) -> Issue:
+    cycle = None if plant.source is None or plant.source.dhw is None else plant.source.dhw.disinfect
     return Issue(
-        IssueKind.LEGIONELLA_FAILED,
+        IssueKind.DISINFECT_FAILED,
         "source",
         {
             "plant": plant.name,

@@ -50,7 +50,7 @@ Each landed as its own commit on this branch:
 - F6: the **Heartbeat** sensor and a relay watchdog automation example.
 - Item 2: the **Away** switch, the `set_away` and `end_away` actions, the Plant's `away` targets, and an early return before the return time.
 - Item 3: the **Mode** select's `auto` option from a Plant `changeover`.
-- Item 5: a DHW `schedule` with block targets, and a `legionella` cycle with the **Last disinfection** sensor and the `legionella_failed` Repair.
+- Item 5: a DHW `schedule` with block targets, and a `disinfect` cycle against legionella with the **Last disinfection** sensor and the `disinfect_failed` Repair.
 - Item 4: the versioned `hydronicus/plant_view` and `hydronicus/plant_view/subscribe` websocket commands.
 
 These answers to the [questions](#questions-for-the-owner) are settled: the outdoor fallback is opt-in, and frost protection heats regardless.

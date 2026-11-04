@@ -1,4 +1,4 @@
-"""The legionella cycle in Home Assistant: its setpoint, Last disinfection sensor, and Repair."""
+"""The disinfection cycle in Home Assistant: its setpoint, Last disinfection sensor, and Repair."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ source:
   name: Boiler
   dhw:
     setpoint: {SETPOINT}
-    legionella: {{tank_temperature: {TANK}, interval: 86400, hold: 600, timeout: 3600}}
+    disinfect: {{tank_temperature: {TANK}, interval: 86400, hold: 600, timeout: 3600}}
 pumps:
   pump: {{switch: switch.pump}}
 zones:
@@ -48,11 +48,11 @@ async def _flat(hass: HomeAssistant) -> Actuators:
     return actuators
 
 
-def legionella_issues(hass: HomeAssistant) -> list[ir.IssueEntry]:
+def disinfect_issues(hass: HomeAssistant) -> list[ir.IssueEntry]:
     return [
         issue
         for (domain, _), issue in ir.async_get(hass).issues.items()
-        if domain == DOMAIN and issue.translation_key == "legionella_failed"
+        if domain == DOMAIN and issue.translation_key == "disinfect_failed"
     ]
 
 
@@ -71,7 +71,7 @@ async def test_a_cycle_heats_the_tank_holds_it_and_records_its_time(
     assert float(hass.states.get(SETPOINT).state) == 50.0
     assert datetime.fromisoformat(hass.states.get(LAST).state) is not None
     assert hass.states.get(LAST).attributes["running"] is False
-    assert legionella_issues(hass) == []
+    assert disinfect_issues(hass) == []
 
 
 async def test_a_cycle_that_times_out_raises_its_repair(
@@ -82,5 +82,5 @@ async def test_a_cycle_that_times_out_raises_its_repair(
     assert float(hass.states.get(SETPOINT).state) == 60.0
     await async_advance(hass, freezer, 3600, step=60)
     assert float(hass.states.get(SETPOINT).state) == 50.0
-    assert len(legionella_issues(hass)) == 1
+    assert len(disinfect_issues(hass)) == 1
     assert hass.states.get(LAST).state == "unknown"

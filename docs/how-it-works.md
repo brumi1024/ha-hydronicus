@@ -145,8 +145,8 @@ A new guard, such as that of a loop just added, starts blocked unless every chec
 ## Hot water
 
 A source with a `dhw` binding has its DHW switch and target owned by Hydronicus, as the [plant file](plant-file.md#domestic-hot-water) describes.
-A DHW `schedule` helper can hold another target during its blocks, such as a higher one in cheap or sunny hours, and a `legionella` cycle raises the tank to a pasteurisation temperature at an interval and proves it with the tank's sensor.
-A boost wins over the schedule, and a legionella cycle wins over both.
+A DHW `schedule` helper can hold another target during its blocks, such as a higher one in cheap or sunny hours, and a `disinfect` cycle raises the tank to a pasteurisation temperature at an interval and proves it with the tank's sensor.
+A boost wins over the schedule, and a disinfection cycle wins over both.
 
 ## Frost protection
 

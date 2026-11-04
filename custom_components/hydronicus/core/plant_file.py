@@ -48,10 +48,10 @@ from .model import (
     DEFAULT_WINDOW_CLOSE_DELAY,
     DEFAULT_WINDOW_OPEN_DELAY,
     MAX_CURVE_OFFSET,
+    MAX_DISINFECT_INTERVAL,
+    MAX_DISINFECT_TEMPERATURE,
     MAX_EXERCISE_RUN,
     MAX_FROST_PROTECTION,
-    MAX_LEGIONELLA_INTERVAL,
-    MAX_LEGIONELLA_TEMPERATURE,
     MAX_RESPONSE_DURATION,
     MAX_RESPONSE_PROGRESS,
     MAX_SENSOR_FALLBACK_AFTER,
@@ -61,10 +61,10 @@ from .model import (
     MAX_WINDOW_DETECTION_CHANGE,
     MAX_WINDOW_DETECTION_MAX_DURATION,
     MAX_WINDOW_DETECTION_WITHIN,
+    MIN_DISINFECT_INTERVAL,
+    MIN_DISINFECT_TEMPERATURE,
     MIN_EXERCISE_INTERVAL,
     MIN_EXERCISE_RUN,
-    MIN_LEGIONELLA_INTERVAL,
-    MIN_LEGIONELLA_TEMPERATURE,
     MIN_MAX_HUMIDITY,
     MIN_RESPONSE_DURATION,
     MIN_RESPONSE_PROGRESS,
@@ -81,10 +81,10 @@ from .model import (
     Changeover,
     Dhw,
     DigitalThermostat,
+    Disinfect,
     Exercise,
     ExternalThermostat,
     LearningMode,
-    Legionella,
     Loop,
     LoopRef,
     LoopRun,
@@ -173,9 +173,9 @@ _DHW_KEYS: Final = (
     "step",
     "max_boost",
     "schedule",
-    "legionella",
+    "disinfect",
 )
-_LEGIONELLA_KEYS: Final = (
+_DISINFECT_KEYS: Final = (
     "tank_temperature",
     "temperature",
     "interval",
@@ -624,23 +624,23 @@ def _dhw(value: object, path: str) -> Dhw:
             if "schedule" in document
             else None
         ),
-        legionella=_legionella(document, path, setpoint),
+        disinfect=_disinfect(document, path, setpoint),
     )
 
 
-def _legionella(document: Mapping[str, Any], path: str, setpoint: str | None) -> Legionella | None:
-    if document.get("legionella") is None:
+def _disinfect(document: Mapping[str, Any], path: str, setpoint: str | None) -> Disinfect | None:
+    if document.get("disinfect") is None:
         return None
-    path = _join(path, "legionella")
+    path = _join(path, "disinfect")
     if setpoint is None:
-        raise PlantFileError(path, "A legionella cycle needs a DHW setpoint.")
-    value = _mapping(document["legionella"], path, _LEGIONELLA_KEYS)
+        raise PlantFileError(path, "A disinfection cycle needs a DHW setpoint.")
+    value = _mapping(document["disinfect"], path, _DISINFECT_KEYS)
     tank = _entity(
         _required(value, "tank_temperature", path),
         _join(path, "tank_temperature"),
         _SENSOR_DOMAINS,
     )
-    default = Legionella(tank)
+    default = Disinfect(tank)
 
     def read(key: str, low: float, high: float) -> float:
         key_path = _join(path, key)
@@ -657,10 +657,10 @@ def _legionella(document: Mapping[str, Any], path: str, setpoint: str | None) ->
         raise PlantFileError(
             _join(path, "timeout"), "Must leave at least 10 minutes to heat before the hold."
         )
-    return Legionella(
+    return Disinfect(
         tank_temperature=tank,
-        temperature=read("temperature", MIN_LEGIONELLA_TEMPERATURE, MAX_LEGIONELLA_TEMPERATURE),
-        interval=read("interval", MIN_LEGIONELLA_INTERVAL, MAX_LEGIONELLA_INTERVAL),
+        temperature=read("temperature", MIN_DISINFECT_TEMPERATURE, MAX_DISINFECT_TEMPERATURE),
+        interval=read("interval", MIN_DISINFECT_INTERVAL, MAX_DISINFECT_INTERVAL),
         hold=hold,
         timeout=timeout,
         window=(
@@ -1641,9 +1641,9 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(plant.source.dhw.switch, "source.dhw.switch")
             bind(plant.source.dhw.setpoint, "source.dhw.setpoint")
             bind(plant.source.dhw.schedule, "source.dhw.schedule")
-            if (legionella := plant.source.dhw.legionella) is not None:
-                bind(legionella.tank_temperature, "source.dhw.legionella.tank_temperature")
-                bind(legionella.window, "source.dhw.legionella.window")
+            if (disinfect := plant.source.dhw.disinfect) is not None:
+                bind(disinfect.tank_temperature, "source.dhw.disinfect.tank_temperature")
+                bind(disinfect.window, "source.dhw.disinfect.window")
     for pump in plant.pumps:
         bind(pump.switch, f"pumps.{pump.slug}.switch")
         bind(pump.running_sensor, f"pumps.{pump.slug}.running_sensor")
@@ -1928,15 +1928,15 @@ def _export_source(source: Source) -> dict[str, Any]:
                 exported[key] = _export_number(setting)
         if dhw.schedule is not None:
             exported["schedule"] = dhw.schedule
-        if (legionella := dhw.legionella) is not None:
-            cycle: dict[str, Any] = {"tank_temperature": legionella.tank_temperature}
-            cycle_defaults = Legionella(legionella.tank_temperature)
+        if (disinfect := dhw.disinfect) is not None:
+            cycle: dict[str, Any] = {"tank_temperature": disinfect.tank_temperature}
+            cycle_defaults = Disinfect(disinfect.tank_temperature)
             for key in ("temperature", "interval", "hold", "timeout"):
-                if (setting := getattr(legionella, key)) != getattr(cycle_defaults, key):
+                if (setting := getattr(disinfect, key)) != getattr(cycle_defaults, key):
                     cycle[key] = _export_number(setting)
-            if legionella.window is not None:
-                cycle["window"] = legionella.window
-            exported["legionella"] = cycle
+            if disinfect.window is not None:
+                cycle["window"] = disinfect.window
+            exported["disinfect"] = cycle
         document["dhw"] = exported
     if source.max_starts_per_hour is not None:
         document["max_starts_per_hour"] = source.max_starts_per_hour

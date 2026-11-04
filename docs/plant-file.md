@@ -324,14 +324,14 @@ While the source's handover sensor reads on, or Control equipment is off, Hydron
 | `step` | no | | The setpoint's resolution, such as `1` for whole degrees. |
 | `max_boost` | no | `7200` | The longest a boost may last, in seconds. |
 | `schedule` | no | | A `schedule` helper whose blocks may name a DHW target in their data, such as `{target: 52}`, held while the block runs; outside blocks, and in a block without one, the owned target applies. A boost still wins. |
-| `legionella` | no | | A periodic [legionella cycle](#legionella-cycle), which needs a `setpoint`. |
+| `disinfect` | no | | A periodic [disinfection cycle](#disinfection-cycle), which needs a `setpoint`. |
 
-### Legionella cycle
+### Disinfection cycle
 
-The `dhw` mapping's `legionella` runs a periodic pasteurisation of the DHW tank, as heat pump controllers do, for a tank whose owned target stays below the temperature that keeps legionella at bay.
+The `dhw` mapping's `disinfect` runs a periodic pasteurisation of the DHW tank, as heat pump controllers do, for a tank whose owned target stays below the temperature that keeps legionella bacteria at bay.
 Every `interval` it raises the DHW setpoint to its `temperature`, beyond the DHW `maximum`, until the tank's sensor has held that temperature, less the DHW `tolerance`, for `hold` seconds.
 It then restores the owned target and records the time on the source's **Last disinfection** sensor.
-If the tank does not hold it within `timeout`, it restores the target, raises the [legionella Repair](troubleshooting.md#the-legionella-cycle-did-not-finish), and tries again a day later.
+If the tank does not hold it within `timeout`, it restores the target, raises the [disinfection Repair](troubleshooting.md#the-disinfection-cycle-did-not-finish), and tries again a day later.
 
 | Key | Required | Default | Value |
 | --- | --- | --- | --- |

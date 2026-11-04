@@ -187,8 +187,8 @@ def _source(runtime: PlantRuntime, view: PlantView) -> dict[str, Any] | None:
             "target": desired.dhw.target,
             "reason": desired.dhw_reason,
             "boost_until": _time(desired.dhw.boost_until),
-            "legionella_running": desired.dhw.legionella_started is not None,
-            "last_disinfection": _time(desired.dhw.legionella_done),
+            "disinfect_running": desired.dhw.disinfect_started is not None,
+            "last_disinfection": _time(desired.dhw.disinfect_done),
         },
         "holds": view.holds("source"),
     }

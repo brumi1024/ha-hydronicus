@@ -375,17 +375,17 @@ class SupplyControl:
 DEFAULT_DHW_MINIMUM: Final = 40.0
 DEFAULT_DHW_MAXIMUM: Final = 55.0
 DEFAULT_DHW_BOOST: Final = 7200.0
-# The bounds of a legionella cycle's temperature, in °C, and of its interval, in seconds.
-MIN_LEGIONELLA_TEMPERATURE: Final = 55.0
-MAX_LEGIONELLA_TEMPERATURE: Final = 70.0
-MIN_LEGIONELLA_INTERVAL: Final = 86400.0
-MAX_LEGIONELLA_INTERVAL: Final = 30 * 86400.0
-# How soon a legionella cycle that timed out is tried again, in seconds.
-LEGIONELLA_RETRY: Final = 86400.0
+# The bounds of a disinfection cycle's temperature, in °C, and of its interval, in seconds.
+MIN_DISINFECT_TEMPERATURE: Final = 55.0
+MAX_DISINFECT_TEMPERATURE: Final = 70.0
+MIN_DISINFECT_INTERVAL: Final = 86400.0
+MAX_DISINFECT_INTERVAL: Final = 30 * 86400.0
+# How soon a disinfection cycle that timed out is tried again, in seconds.
+DISINFECT_RETRY: Final = 86400.0
 
 
 @dataclass(frozen=True, slots=True)
-class Legionella:
+class Disinfect:
     """A periodic pasteurisation cycle of the DHW tank, proved by its temperature.
 
     Every ``interval`` it raises the setpoint to ``temperature``, beyond the DHW
@@ -423,7 +423,7 @@ class Dhw:
     max_boost: float = DEFAULT_DHW_BOOST
     # A schedule helper whose blocks may name a ``target``, held while they run.
     schedule: str | None = None
-    legionella: Legionella | None = None
+    disinfect: Disinfect | None = None
 
 
 @dataclass(frozen=True, slots=True)

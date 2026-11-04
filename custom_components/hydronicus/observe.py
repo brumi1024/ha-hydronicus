@@ -321,9 +321,9 @@ def dhw_schedule(plant: Plant, states: StateMachine) -> DhwSchedule | None:
     return DhwSchedule(active, float(value))
 
 
-def legionella_window(plant: Plant, states: StateMachine) -> bool | None:
-    """Whether the legionella cycle's window helper is on, or None without one."""
+def disinfect_window(plant: Plant, states: StateMachine) -> bool | None:
+    """Whether the disinfection cycle's window helper is on, or None without one."""
     dhw = None if plant.source is None else plant.source.dhw
-    if dhw is None or dhw.legionella is None or dhw.legionella.window is None:
+    if dhw is None or dhw.disinfect is None or dhw.disinfect.window is None:
         return None
-    return switch_value(states.get(dhw.legionella.window))
+    return switch_value(states.get(dhw.disinfect.window))
