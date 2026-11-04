@@ -657,6 +657,10 @@ class _Evaluation:
         self.detected_windows: dict[str, DetectedWindow] = {}
         # The zones that frost protection heats, which the demands stage finds.
         self.frost: list[str] = []
+        # The zones that frost protection heated and that have no usable reading
+        # now: they keep their latch, so a returning reading below the release
+        # heats again, but nothing heats them while no reading says how cold they are.
+        self.frost_latched: list[str] = []
         # This evaluation's condensation guards, and since when each output is idle.
         self.guard_states: dict[str, GuardState] = {}
         self.idle_times: dict[str, float | None] = {}
@@ -990,7 +994,7 @@ class _Evaluation:
             winding=frozenset(winding),
             windows_open=frozenset(self.windows_open),
             detected_windows=self.detected_windows,
-            frost=frozenset(self.frost),
+            frost=frozenset(self.frost) | frozenset(self.frost_latched),
             idle_since=self.idle_times,
             exercise=plan.next_exercise,
             exercise_ended=plan.exercise_ended,
@@ -1255,7 +1259,10 @@ class _Evaluation:
             return None
         obs = self.obs
         coldest = coldest_temperature(zone, obs.areas, obs.sensors, self.reached)
-        return frost_demand(frost, coldest, zone.slug in self.state.frost)
+        active = zone.slug in self.state.frost
+        if coldest is None and active:
+            self.frost_latched.append(zone.slug)
+        return frost_demand(frost, coldest, active)
 
     def heats(self, zone: Zone) -> bool:
         """A loop heats the zone: one of its own, or a plant loop that runs with it."""

@@ -148,6 +148,7 @@ Once the coldest reading of a zone is below the frost protection temperature, 5 
 Its reason then reads `frost protection: heat to 6.0 °C from 4.0 °C`.
 
 - Only a zone that a loop heats is protected, and the coldest usable reading counts, so one warm sensor cannot hide a cold room.
+- A zone whose readings drop out while it is protected is not heated meanwhile, but it stays protected, so a reading that returns below the release heats it again.
 - While the **Mode** select is off, frost protection runs the Plant in heat, only for the zones it protects.
 - It never acts while the Plant cools or is asked to cool.
 - It obeys arming and **Control equipment** like any other demand, so in Dry run it is only proposed.

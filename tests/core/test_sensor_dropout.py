@@ -136,8 +136,6 @@ def test_an_optional_sensor_dropping_out_moves_the_mean_and_can_start_a_call() -
 
 # Frost protection
 
-FROST_DROPOUT = "a dropout clears the frost state, so a reading below the release no longer heats"
-
 
 def frost_state() -> State:
     """The State after frost protection started heating the room while the Plant is off."""
@@ -153,7 +151,6 @@ def test_frost_protection_keeps_heating_below_its_release_without_a_dropout() ->
     warmer = observe(plant, mode=Mode.OFF, temperatures={"room": 5.5})
     state, desired, _ = run(plant, warmer, frost_state(), NOW + 60)
     assert desired.frost_protection == ("room",)
-    assert state.frost == frozenset({"room"})
 
 
 def test_frost_protection_stops_while_the_room_has_no_reading() -> None:
@@ -161,11 +158,11 @@ def test_frost_protection_stops_while_the_room_has_no_reading() -> None:
     lost = observe(plant, mode=Mode.OFF, sensors={"sensor.room": UNAVAILABLE})
     state, desired, _ = run(plant, lost, frost_state(), NOW + 60)
     assert desired.frost_protection == ()
-    assert state.frost == frozenset()
+    # The latch is kept, so a reading that returns below the release heats again.
+    assert state.frost == frozenset({"room"})
     assert desired.reasons["room"] == "idle: thermostat off"
 
 
-@pytest.mark.xfail(reason=FROST_DROPOUT, strict=True)
 def test_frost_protection_resumes_below_its_release_after_a_dropout() -> None:
     plant = _plant(RADIATOR)
     lost = observe(plant, mode=Mode.OFF, sensors={"sensor.room": UNAVAILABLE})
@@ -173,3 +170,13 @@ def test_frost_protection_resumes_below_its_release_after_a_dropout() -> None:
     warmer = observe(plant, mode=Mode.OFF, temperatures={"room": 5.5})
     _, desired, _ = run(plant, warmer, state, NOW + 120)
     assert desired.frost_protection == ("room",)
+
+
+def test_a_reading_that_returns_at_the_release_ends_the_latch() -> None:
+    plant = _plant(RADIATOR)
+    lost = observe(plant, mode=Mode.OFF, sensors={"sensor.room": UNAVAILABLE})
+    state, _, _ = run(plant, lost, frost_state(), NOW + 60)
+    warm = observe(plant, mode=Mode.OFF, temperatures={"room": 6.0})
+    state, desired, _ = run(plant, warm, state, NOW + 120)
+    assert desired.frost_protection == ()
+    assert state.frost == frozenset()
