@@ -111,7 +111,18 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
             return health
         plant = runtime.plant
         attributes: dict[str, Any] = {
-            "requested_mode": runtime.requested_mode.value,
+            "requested_mode": "auto" if runtime.auto_mode else runtime.requested_mode.value,
+            "changeover": None
+            if plant.changeover is None
+            else {
+                "mode": runtime.state.changeover.mode.value,
+                "average": None
+                if runtime.state.changeover.average is None
+                else round(runtime.state.changeover.average, 2),
+                "since": None
+                if runtime.state.changeover.changed is None
+                else dt_util.utc_from_timestamp(runtime.state.changeover.changed).isoformat(),
+            },
             "running_mode": view.running_mode.value,
             "live": runtime.state.live,
             "active_loops": [str(loop.ref) for loop in plant.all_loops if view.loop_flowing(loop)],

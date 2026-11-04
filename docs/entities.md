@@ -20,7 +20,7 @@ A device goes with its object: removing a zone removes its device.
 
 | Entity | Entity ID | State |
 | --- | --- | --- |
-| **Mode** select | `select.<plant>_mode` | `off`, `heat`, or `cool`, where `cool` exists only when a loop cools. An automation can set it, and it survives restarts. |
+| **Mode** select | `select.<plant>_mode` | `off`, `heat`, `cool`, or `auto`, where `cool` exists only when a loop cools and `auto` only with a [`changeover`](plant-file.md#automatic-changeover). An automation can set it, and it survives restarts. |
 | **Control equipment** switch | `switch.<plant>_control_equipment` | On while Hydronicus commands its armed outputs; off is Dry run. Its `live` attribute stays true after you turn it off until the equipment has stopped. |
 | **Status** sensor | `sensor.<plant>_status` | What the Plant does now, in the table below. It is unavailable until the Plant's first evaluation. |
 | **Away** switch | `switch.<plant>_away` | On while the Plant is [away](how-it-works.md#away): every digital thermostat holds its away level. Its `until` attribute is the return time, or none while the away lasts until it is turned off. It survives restarts. |
@@ -42,7 +42,8 @@ The **Status** sensor's attributes explain the state:
 
 | Attribute | Value |
 | --- | --- |
-| `requested_mode` | The mode the **Mode** select asks for. |
+| `requested_mode` | The mode the **Mode** select asks for, `auto` included. |
+| `changeover` | Only with a `changeover`: the `mode` it chose, the outdoor `average` it chose it from, and `since` when. Its reason is under `changeover` in `reasons`. |
 | `running_mode` | The mode the outputs run in now; during a changeover, the old mode, then `off` during the dwell. |
 | `live` | Whether outputs are commanded, as on **Control equipment**. |
 | `active_loops` | The loops that pass flow now, such as `living_area.floor` or `towel_dryer`. |
@@ -331,7 +332,7 @@ automation:
 
 ### Automatic heat and cool changeover
 
-The **Mode** select has no automatic option by design, so you choose heat or cool, or let an automation do it.
+With a [`changeover`](plant-file.md#automatic-changeover), the **Mode** select's `auto` option does this for you; without one, you choose heat or cool, or let an automation do it.
 Base the automation on a slow outdoor temperature, so a cold night or a sunny afternoon does not switch modes.
 The [`statistics`](https://www.home-assistant.io/integrations/statistics/) integration's 24 hour mean works well:
 

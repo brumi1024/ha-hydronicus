@@ -107,6 +107,7 @@ Read it from the top:
 | `name` | yes | | The Plant name, which also names the Plant's device and its Plant-wide entities. |
 | `mode_dwell` | no | `3600` | Seconds between the end of the old mode's flow and the start of the new mode, after a change between heating and cooling. |
 | `exercise` | no | `{interval: 604800, run: 60}` | The [exercise](#exercise) of idle pumps and valves, or `false` or `null` to turn it off. |
+| `changeover` | no | none | The Mode select's `auto` option, see [Automatic changeover](#automatic-changeover). It needs a loop that cools. |
 | `away` | no | `{heat_target: 16, cool_target: 30}` | The targets in °C, from 5 to 35, that a digital thermostat without its own `away` preset holds while the Plant is [away](how-it-works.md#away). |
 | `frost_protection` | no | `5` | The frost protection temperature in °C, at most 10, or `false` or `null` to turn frost protection off. A zone that a loop heats is heated whatever its thermostat says once its coldest reading falls below it, until that reading is 1 K above it; see [frost protection](how-it-works.md#frost-protection). |
 | `source` | no | no source | The [source](#source). |
@@ -135,6 +136,43 @@ Adding this mapping alone does not enable weather-aware control: each participat
 Missing or stale optional inputs return recovery planning to its learned baseline or configured schedule rate.
 Repeated forecast content keeps its original age; retrieving it again does not prove the provider issued a new forecast.
 When the provider issue time is unavailable, diagnostics distinguish that uncertainty from the time Hydronicus first observed the forecast.
+
+## Automatic changeover
+
+The optional `changeover` mapping adds `auto` to the **Mode** select, which then chooses heat or cool from a slowly averaged outdoor temperature.
+
+| Key | Required | Default | Value |
+| --- | --- | --- | --- |
+| `outdoor_sensor` | yes | | The outdoor temperature `sensor`. |
+| `heat_below` | no | `15` | The average at or below which the Plant heats; may be negative. |
+| `cool_above` | no | `22` | The average at or above which the Plant cools; must be above `heat_below`. |
+| `averaging` | no | `86400` | The time constant of the average in seconds, a day by default. |
+| `min_dwell` | no | `43200` | The fewest seconds between two changes, 12 hours by default. |
+| `max_age` | no | `3600` | Positive maximum age in seconds of the outdoor reading. |
+
+Between `heat_below` and `cool_above` the mode stays as it is, and so it does while the reading is missing or stale.
+A change goes through the usual changeover: the old mode stops in order, and the `mode_dwell` passes before the new mode starts.
+The average survives restarts; a gap longer than `max_age` starts it again from the reading.
+Each zone is still served only while its own thermostat's mode matches the Plant's.
+
+```yaml
+hydronicus: 2
+name: Loft
+changeover: {outdoor_sensor: sensor.outdoor_temperature, heat_below: 14, cool_above: 23}
+pumps:
+  pump:
+    switch: switch.loft_pump
+    supply_temperature: sensor.loft_supply_temperature
+zones:
+  loft:
+    temperature: [sensor.loft_temperature]
+    humidity: [sensor.loft_humidity]
+    loops:
+      ceiling:
+        valves: [switch.loft_ceiling_valve]
+        pump: pump
+        modes: [heat, cool]
+```
 
 ## Exercise
 

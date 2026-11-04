@@ -55,7 +55,8 @@
         "state": {
           "off": "mdi:power",
           "heat": "mdi:fire",
-          "cool": "mdi:snowflake"
+          "cool": "mdi:snowflake",
+          "auto": "mdi:thermostat-auto"
         }
       }
     },

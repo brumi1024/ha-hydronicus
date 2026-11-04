@@ -235,6 +235,8 @@ class World:
         self.wall_offset = 0.0
         self.plant = plant
         self.mode = Mode.OFF
+        # The Mode select asks for auto, which the Plant's changeover decides.
+        self.auto = False
         self.control = False
         self.armed: frozenset[str] = frozenset()
         self.switches: dict[str, SwitchBody] = {}
@@ -293,6 +295,8 @@ class World:
                 self._sensor(pump.supply_temperature, DEFAULT_REFERENCE)
         if plant.source and plant.source.supply and plant.source.supply.outdoor_sensor:
             self._sensor(plant.source.supply.outdoor_sensor, 5.0)
+        if plant.changeover is not None:
+            self._sensor(plant.changeover.outdoor_sensor, 5.0)
         if plant.source and (guard := plant.source.no_load) is not None:
             self._sensor(guard.supply_temperature, 35.0)
             self._sensor(guard.return_temperature, 31.0)
@@ -710,6 +714,7 @@ class World:
             areas=dict(self.areas),
             thermostats=dict(self.thermostats),
             dhw_command=self.dhw_command,
+            auto=self.auto,
         )
 
     def reading(self, entity: str, now: float | None = None) -> Reading:

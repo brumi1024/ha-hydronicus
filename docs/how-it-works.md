@@ -108,7 +108,7 @@ In the reference plant, the heat pump's circulator keeps the living area's ceili
 
 The **Mode** select chooses off, heat, or cool, and heating and cooling never run at the same time.
 Cool is offered only when a loop of the Plant cools.
-There is no automatic mode, but [an automation can switch it](entities.md#automatic-heat-and-cool-changeover).
+With a [`changeover`](plant-file.md#automatic-changeover) in the plant file, its `auto` option chooses heat or cool from a day's average outdoor temperature, with a neutral band and at most one change in 12 hours by default; without one, [an automation can switch it](entities.md#automatic-heat-and-cool-changeover).
 
 A change between heating and cooling runs in order:
 
@@ -357,7 +357,6 @@ Keep hardware flow proving and other source protections independent of Home Assi
 ## Known limitations
 
 - Source control uses generic Home Assistant switches, selects, and optional supply temperature numbers; there is no built-in Modbus driver.
-- There is no automatic heat and cool mode; an [automation](entities.md#automatic-heat-and-cool-changeover) can set the **Mode** select.
 - Heat-only loops are not exercised between the end of cooling and the next heating.
 - A zone that frost protection heats switches the Plant to heat even when all its heating loops are unarmed or unavailable, although nothing then heats.
 - The condensation guard runs only while Home Assistant runs; see [safety limits](safety.md#cooling-while-home-assistant-is-not-running).

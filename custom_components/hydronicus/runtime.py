@@ -192,6 +192,8 @@ class PlantRuntime:
         self.state = State()
         self.reconcile_state = ReconcileState()
         self.requested_mode = Mode.OFF
+        # The Mode select asks for auto, which the Plant's changeover decides.
+        self.auto_mode = False
         self.memory = OutputMemory()
         self.unusable = UnusableInputs()
         # Each calling zone's response check, by zone slug.
@@ -278,6 +280,7 @@ class PlantRuntime:
             self.flow = FlowHistory.from_dict(data.get("flow", {}))
             self.compressor = CompressorHistory.from_dict(data.get("compressor", {}))
             self.requested_mode = Mode(data.get("mode", Mode.OFF))
+            self.auto_mode = bool(data.get("auto", False)) and self.plant.changeover is not None
             self.setbacks = {
                 zone: Setbacks(float(values["heat"]), float(values["cool"]))
                 for zone, values in data.get("setbacks", {}).items()
@@ -578,9 +581,15 @@ class PlantRuntime:
         return None if view is None else view.desired.dhw
 
     @callback
-    def set_mode(self, mode: Mode) -> None:
-        """Take the Plant mode the mode select requests."""
-        self.requested_mode = mode
+    def set_mode(self, mode: Mode | None) -> None:
+        """Take the Plant mode the mode select requests; None is auto."""
+        if mode is None:
+            if self.plant.changeover is None:
+                return
+            self.auto_mode = True
+        else:
+            self.auto_mode = False
+            self.requested_mode = mode
         self._save()
         self._publish()
         self.request_evaluation()
@@ -1131,6 +1140,7 @@ class PlantRuntime:
             dhw_command=self.dhw_command,
             curve_offset=self.curve_offset,
             away=self.away,
+            auto=self.auto_mode,
         )
 
     def _sensor_kinds(self) -> dict[str, SensorKind]:
@@ -1141,6 +1151,8 @@ class PlantRuntime:
         return kinds
 
     def _add_sensor_kinds(self, plant: Plant, kinds: dict[str, SensorKind]) -> None:
+        if plant.changeover is not None:
+            kinds[plant.changeover.outdoor_sensor] = SensorKind.AIR
         if plant.weather is not None and plant.weather.outdoor_sensor is not None:
             kinds[plant.weather.outdoor_sensor] = SensorKind.AIR
         if (
@@ -1346,6 +1358,7 @@ class PlantRuntime:
             "flow": self.flow.to_dict(),
             "compressor": self.compressor.to_dict(),
             "mode": self.requested_mode.value,
+            "auto": self.auto_mode,
             "setbacks": {
                 zone: {"heat": values.heat, "cool": values.cool}
                 for zone, values in sorted(self.setbacks.items())

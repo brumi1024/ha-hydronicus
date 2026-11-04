@@ -683,6 +683,20 @@ DEFAULT_EXERCISE: Final = Exercise()
 
 
 @dataclass(frozen=True, slots=True)
+class Changeover:
+    """Switch the Plant between heat and cool from a slowly averaged outdoor temperature."""
+
+    outdoor_sensor: str
+    heat_below: float = 15.0
+    cool_above: float = 22.0
+    # The time constant of the outdoor average, in seconds.
+    averaging: float = 86400.0
+    # The shortest time between two changes, in seconds.
+    min_dwell: float = 43200.0
+    max_age: float = DEFAULT_MAX_AGE
+
+
+@dataclass(frozen=True, slots=True)
 class AwayConfig:
     """The targets a digital thermostat without its own away preset holds while away."""
 
@@ -708,6 +722,8 @@ class Plant:
     frost_protection: float | None = DEFAULT_FROST_PROTECTION
     weather: WeatherConfig | None = None
     away: AwayConfig = AwayConfig()
+    # The Mode select's auto option, or None while it offers none.
+    changeover: Changeover | None = None
 
     @property
     def all_loops(self) -> tuple[Loop, ...]:

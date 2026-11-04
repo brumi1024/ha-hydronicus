@@ -1,4 +1,4 @@
-"""The Plant mode select: off, heat, or cool (decision 7)."""
+"""The Plant mode select: off, heat, cool, or auto with a changeover (decision 7)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from .core.model import Mode
 from .entity import HydronicusEntity, async_add_plant_entities, plant_device, plant_unique_id
 
 PARALLEL_UPDATES = 0
+# The option that lets the Plant's changeover choose heat or cool.
+AUTO = "auto"
 
 
 class PlantModeSelect(HydronicusEntity, SelectEntity):
@@ -32,13 +34,17 @@ class PlantModeSelect(HydronicusEntity, SelectEntity):
             for mode in (Mode.OFF, Mode.HEAT, Mode.COOL)
             if cools or mode is not Mode.COOL
         ]
+        if runtime.plant.changeover is not None:
+            self._attr_options.append(AUTO)
 
     @property
     def current_option(self) -> str:
+        if self.runtime.auto_mode:
+            return AUTO
         return self.runtime.requested_mode.value
 
     async def async_select_option(self, option: str) -> None:
-        self.runtime.set_mode(Mode(option))
+        self.runtime.set_mode(None if option == AUTO else Mode(option))
 
 
 async def async_setup_entry(

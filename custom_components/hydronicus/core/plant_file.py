@@ -74,6 +74,7 @@ from .model import (
     RUNS_WITH_ZONE,
     Aggregation,
     AwayConfig,
+    Changeover,
     Dhw,
     DigitalThermostat,
     Exercise,
@@ -118,6 +119,7 @@ _TOP_KEYS: Final = (
     "exercise",
     "frost_protection",
     "away",
+    "changeover",
     "weather",
     "source",
     "pumps",
@@ -353,6 +355,7 @@ def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Pla
             top.get("frost_protection", DEFAULT_FROST_PROTECTION), "frost_protection"
         ),
         away=_away(top["away"], "away") if "away" in top else AwayConfig(),
+        changeover=_changeover(top["changeover"], "changeover") if "changeover" in top else None,
     )
     validate_plant(plant)
     return plant
@@ -371,6 +374,41 @@ def _away(value: object, path: str) -> AwayConfig:
         for key in ("heat_target", "cool_target")
     }
     return AwayConfig(**targets)
+
+
+_CHANGEOVER_KEYS: Final = (
+    "outdoor_sensor",
+    "heat_below",
+    "cool_above",
+    "averaging",
+    "min_dwell",
+    "max_age",
+)
+
+
+def _changeover(value: object, path: str) -> Changeover:
+    document = _mapping(value, path, _CHANGEOVER_KEYS)
+    sensor = _entity(
+        _required(document, "outdoor_sensor", path),
+        _join(path, "outdoor_sensor"),
+        _SENSOR_DOMAINS,
+    )
+    default = Changeover(sensor)
+    numbers = {
+        key: _number(
+            document.get(key, getattr(default, key)),
+            _join(path, key),
+            signed=key in ("heat_below", "cool_above"),
+            positive=key in ("averaging", "max_age"),
+        )
+        for key in _CHANGEOVER_KEYS
+        if key != "outdoor_sensor"
+    }
+    if numbers["cool_above"] <= numbers["heat_below"]:
+        raise PlantFileError(
+            _join(path, "cool_above"), "Must be above heat_below, so the two modes have a band."
+        )
+    return Changeover(sensor, **numbers)
 
 
 def _check_format(top: Mapping[str, Any]) -> None:
@@ -1225,6 +1263,8 @@ def validate_plant(plant: Plant) -> None:
         _check_unique(f"zones.{zone.slug}.loops", (loop.slug for loop in zone.loops), "Loop")
     for pump in plant.pumps:
         _check_pump(plant, pump)
+    if plant.changeover is not None and not any(loop.cools for loop in plant.all_loops):
+        raise PlantFileError("changeover", "Automatic changeover needs a loop that cools.")
     if plant.source is not None:
         _check_heat_sink(plant, plant.source)
         _check_room_influence(plant, plant.source)
@@ -1502,6 +1542,8 @@ def entity_paths(plant: Plant) -> dict[str, str]:
         if entity is not None:
             paths.setdefault(entity, path)
 
+    if plant.changeover is not None:
+        bind(plant.changeover.outdoor_sensor, "changeover.outdoor_sensor")
     if plant.weather is not None:
         bind(plant.weather.entity, "weather.entity")
         bind(plant.weather.outdoor_sensor, "weather.outdoor_sensor")
@@ -1571,6 +1613,7 @@ _TOP_WORDS: Final = {
     "exercise": "Exercise",
     "frost_protection": "Frost protection",
     "away": "Away",
+    "changeover": "Automatic changeover",
     "source": "Source",
     "pumps": "Pumps",
     "loops": "Plant loops",
@@ -1726,6 +1769,13 @@ def export_plant(plant: Plant) -> dict[str, Any]:
             key: _export_number(getattr(plant.away, key))
             for key in ("heat_target", "cool_target")
             if getattr(plant.away, key) != getattr(AwayConfig(), key)
+        }
+    if plant.changeover is not None:
+        defaults = Changeover(plant.changeover.outdoor_sensor)
+        document["changeover"] = {"outdoor_sensor": plant.changeover.outdoor_sensor} | {
+            key: _export_number(getattr(plant.changeover, key))
+            for key in _CHANGEOVER_KEYS
+            if key != "outdoor_sensor" and getattr(plant.changeover, key) != getattr(defaults, key)
         }
     if plant.source is not None:
         document["source"] = _export_source(plant.source)

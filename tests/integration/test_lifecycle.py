@@ -150,6 +150,7 @@ async def test_the_first_evaluation_sees_restored_thermostats_and_persisted_stat
         "setbacks",
         "curve_offset",
         "away",
+        "auto",
         "commanding",
     }
     assert stored["commanding"]["plant"]["id"] == entry.unique_id

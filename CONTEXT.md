@@ -82,6 +82,7 @@ The owner's offset shifts the heating target, a lead zone may shift it within a 
 The Mode is Plant-wide: off, heat, or cool.
 
 Heating and cooling never run at the same time, and a change of Mode is sequenced through the old Mode's shutdown and a minimum dwell.
+With a changeover, the Mode select's auto option chooses heat or cool from an averaged outdoor temperature, with a neutral band and a minimum time between changes.
 
 ## Demand
 

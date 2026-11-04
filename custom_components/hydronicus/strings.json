@@ -730,7 +730,8 @@
         "state": {
           "off": "Off",
           "heat": "Heat",
-          "cool": "Cool"
+          "cool": "Cool",
+          "auto": "Auto"
         }
       }
     },

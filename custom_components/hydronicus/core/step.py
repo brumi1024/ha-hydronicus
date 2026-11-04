@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, replace
 from math import ceil, isfinite
 from typing import Any, Final
 
+from .changeover import ChangeoverState, changeover
 from .comfort import Away, ComfortTarget, ScheduleState, Setbacks, away_target, comfort_target
 from .demand import (
     AreaSensors,
@@ -225,6 +226,9 @@ class Observations:
     curve_offset: float | None = None
     # The Plant is away, or None while it is not.
     away: Away | None = None
+    # The Mode select asks for auto: the changeover chooses heat or cool, and
+    # ``mode`` is only what applies when the Plant has no changeover.
+    auto: bool = False
 
 
 def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
@@ -361,6 +365,8 @@ class State:
     warm_weather: bool = False
     # Since when each zone has had no usable temperature, by zone slug.
     sensorless: Mapping[str, float] = field(default_factory=dict)
+    # The automatic changeover's average and the mode it chose.
+    changeover: ChangeoverState = ChangeoverState()
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -428,6 +434,7 @@ class State:
             else {"value": self.outdoor_damped.value, "at": self.outdoor_damped.at},
             "warm_weather": self.warm_weather,
             "sensorless": dict(self.sensorless),
+            "changeover": self.changeover.to_dict(),
         }
 
     @classmethod
@@ -493,6 +500,7 @@ class State:
             outdoor_damped=_damped_outdoor(data.get("outdoor_damped")),
             warm_weather=bool(data.get("warm_weather", False)),
             sensorless={slug: float(at) for slug, at in data.get("sensorless", {}).items()},
+            changeover=ChangeoverState.from_dict(data.get("changeover", {})),
         )
 
 
@@ -566,7 +574,23 @@ def step(
     sequence and then goes to Dry run, where it evaluates the requested mode
     against the proposed outputs.
     """
-    return _Evaluation(plant, observations, state, now).run()
+    auto = (
+        changeover(plant.changeover, observations.sensors, now, state.changeover)
+        if observations.auto and plant.changeover is not None
+        else None
+    )
+    if auto is not None:
+        observations = replace(observations, mode=auto.state.mode)
+    next_state, desired, due = _Evaluation(plant, observations, state, now).run()
+    if auto is None:
+        return replace(next_state, changeover=state.changeover), desired, due
+    if auto.due is not None and auto.due > now:
+        due = auto.due - now + TICK if due is None else min(due, auto.due - now + TICK)
+    return (
+        replace(next_state, changeover=auto.state),
+        replace(desired, reasons={**desired.reasons, "changeover": auto.reason}),
+        due,
+    )
 
 
 class _Evaluation:
