@@ -34,6 +34,7 @@ from .learning import store_key as learning_store_key
 from .runtime import PlantRuntime, store_key
 from .services import async_setup_services
 from .storage import plant_from_entry, pruned_entry_data, pruned_options, stored_document
+from .websocket import async_setup_websocket
 from .zone_area import async_place_new_zone_climates, zones_without_climate
 
 type HydronicusConfigEntry = ConfigEntry[PlantRuntime]
@@ -45,8 +46,9 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the Hydronicus actions."""
+    """Register the Hydronicus actions and websocket commands."""
     async_setup_services(hass)
+    async_setup_websocket(hass)
     return True
 
 

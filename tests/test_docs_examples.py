@@ -93,8 +93,6 @@ STALE_TERMS = (
     "Lovelace",
     "--hydronicus-",
     "theming",
-    "websocket",
-    "presentation",
     "Dry run off",
     "npm",
 )

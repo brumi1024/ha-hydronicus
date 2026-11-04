@@ -242,6 +242,30 @@ The [reference plant](examples/reference-plant.yaml), with the Plant `Home`, the
 Hydronicus creates no entity for a valve or a pump; they keep the entities their own integration provides.
 Problems that need you, such as an output that does not respond, are [Repairs](troubleshooting.md#repairs), not entities.
 
+## The Plant view for dashboards
+
+A dashboard card can read a whole Plant without naming any entity, over two websocket commands that only read.
+`hydronicus/plant_view` with an `entry_id` returns the view once, and `hydronicus/plant_view/subscribe` sends it at once and again after every evaluation, until the client unsubscribes or the Plant unloads, which sends a last event `{"unloaded": true}`; subscribe again after a reload.
+An `entry_id` that is not a loaded Plant returns the error `not_found`.
+
+The view's `version`, now `1`, changes only when a key changes meaning or disappears; new keys keep it.
+Its keys:
+
+| Key | Value |
+| --- | --- |
+| `plant`, `entry_id` | The Plant's ID and name, and its config entry. |
+| `evaluated`, `evaluated_at`, `evaluation_error` | Whether the Plant has evaluated, when, and the latest error. Before the first evaluation the view has only these and the keys above and below. |
+| `control`, `live`, `requested_mode`, `away`, `repairs` | **Control equipment**, whether outputs are commanded, the **Mode** select's option, the away with its return time, and each Repair as `kind:key`. |
+| `status`, `running_mode`, `blocking_reason` | As the **Status** sensor shows them. |
+| `zones` | Each zone's temperature, humidity, dew point, effective `target`, `schedule_status`, `demand` with its reason, `action`, why it is `blocked`, since when it is `not_responding`, and its loops. |
+| `loops` | Each loop's zone, pump, modes, `flowing` and `observed_flow` with their basis, reason, valves with their armed, observed, and target states, and holds. |
+| `pumps` | Each pump's switch, whether the source drives it, armed, observed, and target states, operation, reason, and holds. |
+| `source` | The request's armed, requested, and observed states, reason, operation, fault, handover, inhibit, supply target, heating curve, DHW, and holds, or none. |
+| `paths` | For each zone loop, the delivery sequence in order: the zone's call, the valves, the pump, and the source, each with `ok` once it is done, so a card can show where a path waits. |
+| `holds`, `proposed`, `frost_protection`, `sensor_fallback`, `exercising` | Every timer, the Dry run proposals, and the zones and pump these serve. |
+
+Names and reasons are the Plant's own text in English, as the **Status** sensor's are.
+
 ## Actions
 
 ### Export plant file
