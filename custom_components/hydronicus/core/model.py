@@ -409,9 +409,13 @@ FROST_CURVE_OUTDOOR: Final = 0.0
 
 @dataclass(frozen=True, slots=True)
 class RoomInfluence:
-    """A lead zone whose distance from its heating target shifts the heating curve."""
+    """Lead zones whose distance from their heating target shifts the heating curve.
 
-    zone: str
+    The coldest of them among those calling for heat leads, or the coldest of all
+    while none calls.
+    """
+
+    zones: tuple[str, ...]
     # The shift per kelvin the zone is below its target.
     factor: float = 1.0
     # The largest shift either way, in K.

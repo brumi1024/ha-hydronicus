@@ -172,11 +172,65 @@ def test_the_damped_outdoor_temperature_is_kept_in_the_state() -> None:
 
 
 def test_a_cold_lead_zone_raises_the_curve() -> None:
-    text = curve_plant(room_influence="{zone: room, factor: 1.5}")
+    text = curve_plant(room_influence="{zones: [room], factor: 1.5}")
     _, desired, _ = run(_plant(text), calling(text, 5.0, 38.0))
     # 21 °C target, 19 °C reading: 3 K, at the default limit of 3 K.
     assert desired.outputs["number.supply"] == NumericTarget(38, 0.5)
     assert desired.heating_curve is not None and desired.heating_curve.room_shift == 3.0
+
+
+def two_lead_zones() -> str:
+    """The room and a study lead the curve; the room calls only 2 K below its target."""
+    text = curve_plant(room_influence="{zones: [study, room]}").replace(
+        "thermostat: {digital: {min_on: 0, min_off: 0}}",
+        "thermostat: {digital: {min_on: 0, min_off: 0, heat_start_delta: 2}}",
+    )
+    return text + (
+        "  study:\n"
+        "    temperature: [sensor.study]\n"
+        "    thermostat: {digital: {min_on: 0, min_off: 0}}\n"
+        "    loops:\n"
+        "      radiator: {valves: [switch.study_valve], pump: pump}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("room", "study", "shift"),
+    [
+        # Both call: the colder room leads.
+        (18.5, 20.5, 2.5),
+        # Only the study calls: it leads, though the room is colder.
+        (19.5, 20.5, 0.5),
+        # Neither calls: the coldest leads.
+        (19.5, 20.9, 1.5),
+    ],
+)
+def test_the_coldest_calling_lead_zone_leads_the_curve(
+    room: float, study: float, shift: float
+) -> None:
+    text = two_lead_zones()
+    plant = _plant(text)
+    observations = replace(
+        calling(text, 5.0, 38.0),
+        sensors={
+            **calling(text, 5.0, 38.0).sensors,
+            "sensor.room": Reading(room, NOW),
+            "sensor.study": Reading(study, NOW),
+        },
+    )
+    _, desired, _ = run(plant, observations)
+    assert desired.heating_curve is not None
+    assert desired.heating_curve.room_shift == pytest.approx(shift)
+
+
+def test_a_lead_zone_without_a_reading_leads_nothing() -> None:
+    text = two_lead_zones()
+    observations = calling(text, 5.0, 38.0)
+    sensors = {key: value for key, value in observations.sensors.items() if key != "sensor.room"}
+    sensors["sensor.study"] = Reading(20.5, NOW)
+    _, desired, _ = run(_plant(text), replace(observations, sensors=sensors))
+    assert desired.heating_curve is not None
+    assert desired.heating_curve.room_shift == pytest.approx(0.5)
 
 
 # Plant file
@@ -188,13 +242,13 @@ def test_the_curve_settings_survive_an_export() -> None:
         outdoor_damping=10800,
         outdoor_fallback=-2,
         heating_limit=16,
-        room_influence="{zone: room, factor: 0.5}",
+        room_influence="{zones: [room], factor: 0.5}",
     )
     plant = _plant(text)
     supply = export_plant(plant)["source"]["supply"]
     assert supply["offset"] == 1.5 and supply["outdoor_damping"] == 10800
     assert supply["outdoor_fallback"] == -2 and supply["heating_limit"] == 16
-    assert supply["room_influence"] == {"zone": "room", "factor": 0.5}
+    assert supply["room_influence"] == {"zones": ["room"], "factor": 0.5}
     assert read_plant_file(_dump(export_plant(plant))) == plant
 
 
@@ -215,9 +269,9 @@ def _dump(document: object) -> str:
             "source.supply.heating_limit",
         ),
         (curve_plant(offset=6), "source.supply.offset"),
-        (curve_plant(room_influence="{zone: attic}"), "source.supply.room_influence.zone"),
+        (curve_plant(room_influence="{zones: [attic]}"), "source.supply.room_influence.zones.0"),
         (
-            curve_plant(room_influence="{zone: room, factor: 0}"),
+            curve_plant(room_influence="{zones: [room], factor: 0}"),
             "source.supply.room_influence.factor",
         ),
     ],

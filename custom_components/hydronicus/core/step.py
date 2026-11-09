@@ -1168,17 +1168,28 @@ class _Evaluation:
         return source.supply.offset if offset is None else offset
 
     def room_shift(self) -> float:
-        """The lead zone's shift of the heating curve, from this evaluation's demand."""
+        """The lead zones' shift of the heating curve, from this evaluation's demand.
+
+        The coldest lead zone below its target leads among those calling for
+        heat, or among all of them while none calls; a zone without a target or
+        a reading leads nothing.
+        """
         source = self.plant.source
         if source is None or source.supply is None or source.supply.room_influence is None:
             return 0.0
-        slug = source.supply.room_influence.zone
-        comfort = self.comfort.get(slug)
-        return room_shift(
-            source.supply,
-            None if comfort is None else comfort.target,
-            self.temperatures.get(slug),
+        readings = {
+            slug: (target, temperature)
+            for slug in source.supply.room_influence.zones
+            if (target := self.zone_target(slug)) is not None
+            and (temperature := self.temperatures.get(slug)) is not None
+        }
+        if not readings:
+            return 0.0
+        calling = {slug: pair for slug, pair in readings.items() if slug in self.heat_calls}
+        target, temperature = max(
+            (calling or readings).values(), key=lambda pair: pair[0] - pair[1]
         )
+        return room_shift(source.supply, target, temperature)
 
     def zone_target(self, slug: str) -> float | None:
         """A digital thermostat's heating target this evaluation, None without one."""
