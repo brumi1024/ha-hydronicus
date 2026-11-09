@@ -1,0 +1,1135 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Create a Hydronicus Plant",
+        "description": "Set up a new Plant step by step, or import a plant file.",
+        "menu_options": {
+          "guided": "Guided setup",
+          "import_plant": "Import a plant file"
+        },
+        "menu_option_descriptions": {
+          "guided": "Name the Plant and its source, add its pumps, and set up its zones and loops from your Home Assistant areas.",
+          "import_plant": "Rebuild a Plant, with the same entity IDs, from a plant file."
+        }
+      },
+      "plant": {
+        "title": "The Plant and its source",
+        "description": "A Plant is one heating and cooling system. Its source is the heat pump or boiler that Hydronicus asks for heat or cooling through a request switch; a Plant without one still opens valves and runs switched pumps.",
+        "data": {
+          "name": "Plant name",
+          "source_name": "Source name",
+          "request": "Source request switch",
+          "mode_select": "Source mode select",
+          "running_sensor": "Source running feedback"
+        },
+        "data_description": {
+          "name": "Names the Plant, its device, and its Plant-wide entities.",
+          "source_name": "Names the source, such as Heat pump.",
+          "request": "Optional. The switch that asks the heat pump or boiler for heat or cooling. Leave it empty when the source runs on its own controls; valves and switched pumps still run on demand.",
+          "mode_select": "Optional. The select that switches the source between heating and cooling. The next step asks which of its options means which.",
+          "running_sensor": "Optional. A binary sensor that confirms the source is physically running."
+        },
+        "sections": {
+          "timing": {
+            "name": "Timing",
+            "description": "How fast the Plant changes mode and how the source is protected against short cycles.",
+            "data": {
+              "mode_dwell": "Mode dwell",
+              "post_run": "Source post-run",
+              "min_on": "Source minimum on time",
+              "min_off": "Source minimum off time",
+              "feedback_timeout": "Source feedback timeout"
+            },
+            "data_description": {
+              "mode_dwell": "After a change between heating and cooling, how long the Plant waits before the new mode starts.",
+              "post_run": "How long the source keeps its pumps running after its request ends. Loops stay open for them.",
+              "min_on": "The shortest time the source request stays on.",
+              "min_off": "The shortest time the source request stays off.",
+              "feedback_timeout": "How long the source request may run before configured source and source-driven pump running or flow sensors must confirm operation."
+            }
+          },
+          "protection": {
+            "name": "Protection",
+            "description": "Keeps idle pumps and valves from seizing and rooms from freezing.",
+            "data": {
+              "exercise": "Exercise idle pumps and valves",
+              "exercise_interval": "Exercise interval",
+              "exercise_run": "Exercise pump run",
+              "frost_protection": "Frost protection",
+              "frost_temperature": "Frost protection temperature"
+            },
+            "data_description": {
+              "exercise": "While nothing else runs, open a valve and run a switched pump that has not been on for the exercise interval, so it does not seize.",
+              "exercise_interval": "How long a pump or valve may stay off before it is exercised.",
+              "exercise_run": "How long an exercised switched pump runs.",
+              "frost_protection": "Heat a zone whose coldest temperature falls below the frost protection temperature, even when its thermostat or the Plant mode is off.",
+              "frost_temperature": "Frost protection heats until the coldest temperature is 1 °C above this."
+            }
+          },
+          "supply": {
+            "name": "Supply temperature control",
+            "description": "Optional. Choose a number entity only when Hydronicus owns its supply temperature target. An outdoor sensor enables the heating curve. Without an outdoor sensor, heating uses the fixed target. An unusable configured outdoor reading blocks the source request.",
+            "data": {
+              "entity": "Supply setpoint number",
+              "outdoor_sensor": "Outdoor temperature sensor",
+              "heat_temperature": "Fixed heating temperature",
+              "cool_temperature": "Cooling temperature",
+              "minimum": "Minimum supply temperature",
+              "maximum": "Maximum supply temperature",
+              "tolerance": "Confirmation tolerance",
+              "outdoor_cold": "Cold outdoor temperature",
+              "outdoor_warm": "Warm outdoor temperature",
+              "heat_cold": "Heating temperature in cold weather",
+              "heat_warm": "Heating temperature in warm weather",
+              "max_age": "Maximum outdoor reading age"
+            }
+          },
+          "weather": {
+            "name": "Weather forecast",
+            "description": "Optional hourly weather input for recovery predictions. This works with valves and switched pumps even when no source is configured. Forecasts never replace measured safety sensors.",
+            "data": {
+              "entity": "Weather entity",
+              "outdoor_sensor": "Measured outdoor temperature",
+              "max_age": "Maximum weather input age"
+            },
+            "data_description": {
+              "entity": "Choose a weather entity that provides hourly forecasts.",
+              "outdoor_sensor": "Optional separate temperature sensor used to compare recovery in different outdoor conditions.",
+              "max_age": "Maximum age of forecast content since it was first seen and of weather or outdoor sensor reports. Repeated forecasts keep their original age; this is not the provider issue time."
+            }
+          },
+          "cycling": {
+            "name": "Cycling protection",
+            "description": "Optional. Keeps a heat pump from short cycling and stops it when it reports a fault.",
+            "data": {
+              "health_sensor": "Source health sensor",
+              "handover_sensor": "Source handover sensor",
+              "max_starts_per_hour": "Maximum starts per hour",
+              "start_threshold": "Start threshold",
+              "heat_sink_loops": "Heat sink loops",
+              "hold_after_demand": "Hold after demand",
+              "heat_sink_overshoot": "Heat sink overshoot"
+            },
+            "data_description": {
+              "health_sensor": "A binary sensor that reads on while the source and its link are healthy, such as a Modbus bridge's health. While it is off or unavailable, the source request is released at once and stays off.",
+              "handover_sensor": "A binary sensor that reads on while something else controls the source, such as a bridge that handed the heat pump to its wired controller. Hydronicus then sends the source nothing and keeps the heat sink loops open while it may heat. Needs heat sink loops.",
+              "max_starts_per_hour": "How often the source request may turn on within any hour. Empty means no limit.",
+              "start_threshold": "The total weight of calling loops needed before the source starts. Each loop's weight is set on the loop, 1 by default. Empty starts the source for any calling loop.",
+              "heat_sink_loops": "Heating loops opened when every zone is satisfied before the source's minimum on time ends, so the source runs it out into them.",
+              "hold_after_demand": "How long the source stays on into the heat sink loops after the last zone is satisfied, so a heat pump whose every stop restarts its pumps runs on between calls. Empty holds it for its minimum on time only.",
+              "heat_sink_overshoot": "Beyond the minimum on time, a heat sink loop takes heat only while its zone is less than this many kelvin over its heating target. The source is released once no heat sink has room."
+            }
+          }
+        }
+      },
+      "source_mode": {
+        "title": "Source modes",
+        "description": "Choose which options of {select} make the source heat and cool. Hydronicus sets the select to follow the Plant mode.",
+        "data": {
+          "heat": "Heating option",
+          "cool": "Cooling option"
+        },
+        "data_description": {
+          "heat": "The option of {select} that makes the source heat.",
+          "cool": "The option of {select} that makes the source cool."
+        }
+      },
+      "pump": {
+        "title": "Pump",
+        "description": "A pump is a circulator that Hydronicus switches, or one that the source runs by itself. Every loop runs on one pump.\n\nPumps of the Plant: {pumps}.",
+        "data": {
+          "name": "Pump name",
+          "switch": "Pump switch",
+          "overrun": "Overrun",
+          "min_flow": "Minimum flow",
+          "supply_temperature": "Supply temperature sensor",
+          "condensation_switch": "Condensation switch",
+          "add_another": "Add another pump",
+          "min_flow_loops": "Min-flow loops",
+          "remove": "Remove this pump",
+          "running_sensor": "Pump running feedback",
+          "flow_sensor": "Water flow proof"
+        },
+        "data_description": {
+          "name": "Names the pump in the forms and the plant file.",
+          "switch": "The switch that runs the pump. Leave it empty for a pump that the source runs, such as the heat pump's own circulator; Hydronicus never commands that one.",
+          "overrun": "Only for a pump with a switch: how long it keeps running after heating demand ends, before its loops close. Cooling stops a pump without overrun, and the source's post-run covers a pump the source runs.",
+          "min_flow": "Whether the pump needs an open loop while it runs, or a hydraulic separator, buffer, or bypass guarantees its flow.",
+          "supply_temperature": "Optional. The water temperature this pump supplies. It is the condensation reference that lets its loops cool.",
+          "condensation_switch": "Optional. A binary sensor on this pump's supply pipe that turns on at condensation, such as a dew point switch. While it is on or unavailable, none of the pump's loops cools.",
+          "add_another": "Show this form again for the next pump.",
+          "min_flow_loops": "For a pump the source runs that needs an open loop: the loops Hydronicus holds open while it may run.",
+          "remove": "Remove the pump from the Plant. A pump that a loop still uses cannot be removed.",
+          "running_sensor": "Optional. A binary sensor that confirms this pump is physically running.",
+          "flow_sensor": "Optional. A binary sensor that confirms water is flowing. This is a flow proof input, not a flow rate."
+        }
+      },
+      "zoning": {
+        "title": "How is your home zoned?",
+        "description": "A zone is the space one thermostat controls. It can cover Home Assistant areas and follow the temperature and humidity sensors that each area names in its area settings. Every answer leads to the zone form.",
+        "menu_options": {
+          "zoning_per_area": "One zone per area",
+          "zoning_grouped": "Zones that cover several areas",
+          "zoning_scratch": "Zones without areas"
+        },
+        "menu_option_descriptions": {
+          "zoning_per_area": "Each chosen area gets a zone and a thermostat of its own, named after the area.",
+          "zoning_grouped": "Add zones one by one, each over the areas you group into it, such as one zone per floor.",
+          "zoning_scratch": "Add zones one by one with their own sensors or an existing thermostat, without Home Assistant areas."
+        }
+      },
+      "zoning_per_area": {
+        "title": "Choose the areas",
+        "description": "Each chosen area gets a zone of its own. The next forms add them one by one, each prefilled with its area.",
+        "data": {
+          "areas": "Areas"
+        },
+        "data_description": {
+          "areas": "Starts with every area that names a temperature sensor in its area settings."
+        }
+      },
+      "zone": {
+        "title": "Add a zone",
+        "description": "{progress}Zones so far: {zones}.",
+        "data": {
+          "name": "Zone name",
+          "areas": "Areas",
+          "temperature": "Extra temperature sensors",
+          "humidity": "Extra humidity sensors",
+          "aggregation": "Combine temperatures by",
+          "thermostat": "Existing thermostat",
+          "windows": "Windows",
+          "window_open_delay": "Window open delay",
+          "window_close_delay": "Window close delay",
+          "max_humidity": "Maximum humidity for cooling"
+        },
+        "data_description": {
+          "name": "Names the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
+          "areas": "The Home Assistant areas this zone covers. The zone follows the temperature and humidity sensor that each area names in its area settings.",
+          "temperature": "Temperature sensors outside the chosen areas, such as a floor probe. A zone with a digital thermostat needs one unless a chosen area names one.",
+          "humidity": "Humidity sensors outside the chosen areas. A zone with a loop that cools needs one unless it covers an area.",
+          "aggregation": "How the zone combines its temperature readings.",
+          "thermostat": "Optional. An existing climate entity that owns the zone's demand; Hydronicus only reads it. Leave it empty for a digital thermostat that Hydronicus provides.",
+          "windows": "Optional. Binary sensors that are on while a window or door of the zone is open. Once one has been open for the open delay, the zone stops heating and cooling until every one has been closed for the close delay. A window sensor that is unavailable reads closed.",
+          "window_open_delay": "How long a window must be open before the zone stops. Empty means the default of 60 seconds.",
+          "window_close_delay": "How long every window must be closed before the zone runs again. Empty means the default of 60 seconds.",
+          "max_humidity": "The loops that read this zone's dew point stop cooling above this humidity, and start again 5 points below it. Empty means the default of 70 %. Only the plant file turns it off."
+        },
+        "sections": {
+          "presets": {
+            "name": "Heating presets",
+            "description": "Heating targets of the digital thermostat presets. Leave a preset empty to leave it out.",
+            "data": {
+              "comfort": "Comfort",
+              "eco": "Eco",
+              "away": "Away"
+            }
+          },
+          "cool_presets": {
+            "name": "Cooling presets",
+            "description": "Independent cooling targets. A warmer Eco or Away target reduces cooling.",
+            "data": {
+              "comfort": "Comfort",
+              "eco": "Eco",
+              "away": "Away"
+            }
+          },
+          "comfort": {
+            "name": "Default comfort temperatures",
+            "description": "Separate starting targets for heating and cooling. Changes made on the thermostat remain its manual targets.",
+            "data": {
+              "target": "Heating temperature",
+              "cool_target": "Cooling temperature"
+            }
+          },
+          "schedule": {
+            "name": "Comfort schedule",
+            "description": "Optional. After configuring a schedule helper, select Schedule on the thermostat to follow it. On uses the manual comfort target; off applies the setback. Early start estimates recovery from the current room temperature and is capped by the maximum lead time.",
+            "data": {
+              "entity": "Schedule helper",
+              "heat_setback": "Heating setback",
+              "cool_setback": "Cooling setback",
+              "max_early_start": "Maximum early start",
+              "heating_rate": "Estimated heating rate",
+              "cooling_rate": "Estimated cooling rate"
+            }
+          },
+          "learning": {
+            "name": "Recovery learning",
+            "description": "Off by default. Observe records room recovery and predictions without changing targets or early starts. Assist may use a validated recovery estimate within the existing schedule limit. A source or heat-pump control is not required.",
+            "data": {
+              "mode": "Learning mode",
+              "weather_aware": "Use weather for recovery"
+            },
+            "data_description": {
+              "mode": "Start with Observe. Assist requires a comfort schedule and keeps the configured rate as its fallback.",
+              "weather_aware": "Optional. Requires Assist, a comfort schedule, and Weather forecast settings for the Plant. Weather changes only bounded early-start timing."
+            }
+          }
+        }
+      },
+      "zone_loop": {
+        "title": "Add a loop to {zone}",
+        "description": "A loop is a flow path of the zone: the valves that open together and the pump that moves its water. Leave Valves and Pump empty for a zone that only a plant loop serves.",
+        "data": {
+          "name": "Loop name",
+          "valves": "Valves",
+          "pump": "Pump",
+          "modes": "Modes",
+          "surface_temperature": "Surface temperature sensor",
+          "surface_minimum": "Cooling surface minimum",
+          "condensation_switch": "Condensation switch",
+          "opening_time": "Valve opening time",
+          "weight": "Weight"
+        },
+        "data_description": {
+          "name": "Names the loop, such as Ceiling or Floor.",
+          "valves": "The valves or switches that open together for this loop. A loop without a valve is always open, and its pump is its only control.",
+          "pump": "The Plant pump that moves water through this loop.",
+          "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
+          "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
+          "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
+          "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
+          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
+          "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
+        }
+      },
+      "zone_menu": {
+        "title": "The zone and its loops",
+        "description": "Loops of {zone}: {loops}.{next}",
+        "menu_options": {
+          "zone_loop": "Add another loop to this zone",
+          "zone": "Add another zone",
+          "zones_done": "Continue"
+        },
+        "menu_option_descriptions": {
+          "zone_loop": "Such as an underfloor loop next to a ceiling loop.",
+          "zone": "Add the next zone.",
+          "zones_done": "Go on to the loops no zone owns."
+        }
+      },
+      "plant_loops": {
+        "title": "Plant loops",
+        "description": "A plant loop belongs to no zone. It runs whenever the source is requested, such as a towel dryer, or with a set of zones, such as a loop that several zones share.\n\nPlant loops so far: {loops}.",
+        "menu_options": {
+          "plant_loop": "Add a plant loop",
+          "loops_done": "Continue"
+        },
+        "menu_option_descriptions": {
+          "plant_loop": "Add a loop that runs with the source or with zones.",
+          "loops_done": "Finish the loops and review the Plant."
+        }
+      },
+      "plant_loop": {
+        "title": "Plant loop",
+        "description": "A plant loop runs with the source, or with the zones you choose.",
+        "data": {
+          "name": "Loop name",
+          "valves": "Valves",
+          "pump": "Pump",
+          "modes": "Modes",
+          "surface_temperature": "Surface temperature sensor",
+          "surface_minimum": "Cooling surface minimum",
+          "condensation_switch": "Condensation switch",
+          "opening_time": "Valve opening time",
+          "runs": "Runs",
+          "with_zones": "Zones",
+          "remove": "Remove this loop",
+          "weight": "Weight"
+        },
+        "data_description": {
+          "name": "Names the loop, such as Ceiling or Floor.",
+          "valves": "The valves or switches that open together for this loop. A loop without a valve is always open, and its pump is its only control.",
+          "pump": "The Plant pump that moves water through this loop.",
+          "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
+          "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
+          "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
+          "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
+          "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
+          "runs": "With the source runs the loop whenever the source is requested. With zones runs it while any of the chosen zones demands.",
+          "with_zones": "Only for With zones: the zones this loop runs with.",
+          "remove": "Remove the loop from the Plant.",
+          "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
+        }
+      },
+      "min_flow": {
+        "title": "Min-flow loops of {pump}",
+        "description": "The source runs pump {pump} by itself, and it needs an open loop while it runs. Choose the loops Hydronicus holds open whenever no other loop of the pump is ready while the pump may run.",
+        "data": {
+          "min_flow_loops": "Loops to hold open",
+          "guaranteed": "A separator guarantees its flow"
+        },
+        "data_description": {
+          "min_flow_loops": "Loops of pump {pump}. A ceiling loop is a good choice.",
+          "guaranteed": "Turn this on when a hydraulic separator, buffer, or bypass gives the pump a path whatever the loops do; then no loop is held open."
+        }
+      },
+      "min_flow_no_loop": {
+        "title": "A pump without a loop",
+        "description": "The source runs pump {pump} by itself, and it needs an open loop while it runs, but no loop uses it yet, so there is no loop to hold open. Add a plant loop for it now, and Review and save then asks which loops to hold open. For a zone loop, which the zone's own entry adds once the pump is saved, change the pump to A separator guarantees its flow for now, or remove it, then add the zone loop and change the pump's Minimum flow back.",
+        "menu_options": {
+          "min_flow_add_loop": "Add a plant loop",
+          "min_flow_edit_pump": "Change the pump",
+          "reconfigure": "Back to the menu"
+        },
+        "menu_option_descriptions": {
+          "min_flow_add_loop": "A loop that no zone owns, such as a bypass, on the new pump.",
+          "min_flow_edit_pump": "Change its minimum flow or remove it.",
+          "reconfigure": "Change something else first."
+        }
+      },
+      "review": {
+        "title": "Review the Plant",
+        "description": "{summary}\n\nWarnings:\n{warnings}\n\nThe new Plant starts with no output armed and Control equipment off, so it commands nothing until you arm its outputs in Plant settings and turn Control equipment on."
+      },
+      "import_plant": {
+        "title": "Import a plant file",
+        "description": "Paste a Hydronicus plant file, format 2. It describes the whole Plant: its source, pumps, plant loops, and zones with their loops. The next step shows the Plant before anything is created.",
+        "data": {
+          "plant_file": "Plant file"
+        },
+        "data_description": {
+          "plant_file": "The YAML of the plant file. Plant settings and the Export plant file action show it for an existing Plant."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure the Plant",
+        "description": "{status}\n\nChange the Plant, its source, pumps, or plant loops, or replace the whole Plant from a plant file, then save. Zones are changed in their own entries.",
+        "menu_options": {
+          "plant": "Plant and source",
+          "pump_pick": "Pumps",
+          "plant_loop_pick": "Plant loops",
+          "replace": "Replace from a plant file",
+          "save": "Review and save"
+        },
+        "menu_option_descriptions": {
+          "plant": "The name, the source, and the timing.",
+          "pump_pick": "Add, change, or remove a pump.",
+          "plant_loop_pick": "Add, change, or remove a loop that no zone owns.",
+          "replace": "Replace the whole Plant, zones included, from a plant file of this Plant.",
+          "save": "See what changes and store it."
+        }
+      },
+      "pump_pick": {
+        "title": "Pumps",
+        "description": "Choose a pump to change or remove, or add one.",
+        "data": {
+          "pump": "Pump"
+        }
+      },
+      "plant_loop_pick": {
+        "title": "Plant loops",
+        "description": "Choose a plant loop to change or remove, or add one.",
+        "data": {
+          "loop": "Plant loop"
+        }
+      },
+      "replace": {
+        "title": "Replace from a plant file",
+        "description": "Paste a plant file of this Plant. Zones are added, changed, and removed by their slugs, and the next step shows what changes before anything is stored. Removed outputs are disarmed, and new outputs wait for confirmation.",
+        "data": {
+          "plant_file": "Plant file"
+        },
+        "data_description": {
+          "plant_file": "The YAML of the plant file, as Plant settings show it."
+        }
+      },
+      "save": {
+        "title": "Save the changes",
+        "description": "What changes:\n{summary}\n\nWarnings:\n{warnings}"
+      }
+    },
+    "error": {
+      "name_required": "Enter a name.",
+      "mode_needs_request": "A mode select needs a request switch; choose the switch that asks the source for heat or cooling.",
+      "option_not_offered": "The select does not offer this option. It offers: {options}.",
+      "pump_required": "Choose the pump that moves water through this loop.",
+      "pump_in_use": "This pump drives {loops}. Move those loops to another pump or remove them first.",
+      "zones_required": "Choose at least one zone for a loop that runs with zones.",
+      "min_flow_loops_required": "Choose the loops to hold open, or say that a separator guarantees the pump's flow.",
+      "zone_name_required": "Enter a zone name. It can stay empty only when the chosen areas give one: a single area, or areas that are all on one floor.",
+      "areas_required": "Choose at least one area.",
+      "invalid_value": "{problem}",
+      "invalid_plant": "{where}: {problem}",
+      "invalid_plant_file": "The plant file is not valid. {where}: {problem}",
+      "different_plant": "This plant file describes another Plant, with ID {id}. Replace keeps the Plant's ID; remove the id line to keep this Plant's.",
+      "own_entity": "{where} binds {entity_id}, which Hydronicus provides; that would feed the Plant back into itself. Choose an entity from another integration.",
+      "output_bound_elsewhere": "{where} binds {entity_id}, an output of Plant {other_plant}. An output belongs to one Plant."
+    },
+    "abort": {
+      "already_configured": "This Plant is already set up. Remove it first to import its plant file again.",
+      "already_in_progress": "A setup flow for this Plant is already in progress.",
+      "reconfigure_successful": "The Plant is saved.",
+      "plant_changed": "The Plant changed while this form was open, so nothing was saved. Start again from the stored Plant."
+    }
+  },
+  "config_subentries": {
+    "zone": {
+      "entry_type": "Zone",
+      "initiate_flow": {
+        "user": "Add zone",
+        "reconfigure": "Reconfigure zone"
+      },
+      "step": {
+        "zone": {
+          "title": "Zone",
+          "description": "A zone of Plant {plant} is the space one thermostat controls, with its areas, sensors, and loops.",
+          "data": {
+            "name": "Zone name",
+            "areas": "Areas",
+            "temperature": "Extra temperature sensors",
+            "humidity": "Extra humidity sensors",
+            "aggregation": "Combine temperatures by",
+            "thermostat": "Existing thermostat",
+            "windows": "Windows",
+            "window_open_delay": "Window open delay",
+            "window_close_delay": "Window close delay",
+            "max_humidity": "Maximum humidity for cooling"
+          },
+          "data_description": {
+            "name": "Names the zone thermostat and its entities. Leave it empty to use the name of the one chosen area, or of the floor that every chosen area is on.",
+            "areas": "The Home Assistant areas this zone covers. The zone follows the temperature and humidity sensor that each area names in its area settings.",
+            "temperature": "Temperature sensors outside the chosen areas, such as a floor probe. A zone with a digital thermostat needs one unless a chosen area names one.",
+            "humidity": "Humidity sensors outside the chosen areas. A zone with a loop that cools needs one unless it covers an area.",
+            "aggregation": "How the zone combines its temperature readings.",
+            "thermostat": "Optional. An existing climate entity that owns the zone's demand; Hydronicus only reads it. Leave it empty for a digital thermostat that Hydronicus provides.",
+            "windows": "Optional. Binary sensors that are on while a window or door of the zone is open. Once one has been open for the open delay, the zone stops heating and cooling until every one has been closed for the close delay. A window sensor that is unavailable reads closed.",
+            "window_open_delay": "How long a window must be open before the zone stops. Empty means the default of 60 seconds.",
+            "window_close_delay": "How long every window must be closed before the zone runs again. Empty means the default of 60 seconds.",
+            "max_humidity": "The loops that read this zone's dew point stop cooling above this humidity, and start again 5 points below it. Empty means the default of 70 %. Only the plant file turns it off."
+          },
+          "sections": {
+            "presets": {
+              "name": "Heating presets",
+              "description": "Heating targets of the digital thermostat presets. Leave a preset empty to leave it out.",
+              "data": {
+                "comfort": "Comfort",
+                "eco": "Eco",
+                "away": "Away"
+              }
+            },
+            "cool_presets": {
+              "name": "Cooling presets",
+              "description": "Independent cooling targets. A warmer Eco or Away target reduces cooling.",
+              "data": {
+                "comfort": "Comfort",
+                "eco": "Eco",
+                "away": "Away"
+              }
+            },
+            "comfort": {
+              "name": "Default comfort temperatures",
+              "description": "Separate starting targets for heating and cooling. Changes made on the thermostat remain its manual targets.",
+              "data": {
+                "target": "Heating temperature",
+                "cool_target": "Cooling temperature"
+              }
+            },
+            "schedule": {
+              "name": "Comfort schedule",
+              "description": "Optional. After configuring a schedule helper, select Schedule on the thermostat to follow it. On uses the manual comfort target; off applies the setback. Early start estimates recovery from the current room temperature and is capped by the maximum lead time.",
+              "data": {
+                "entity": "Schedule helper",
+                "heat_setback": "Heating setback",
+                "cool_setback": "Cooling setback",
+                "max_early_start": "Maximum early start",
+                "heating_rate": "Estimated heating rate",
+                "cooling_rate": "Estimated cooling rate"
+              }
+            },
+            "learning": {
+              "name": "Recovery learning",
+              "description": "Off by default. Observe records room recovery and predictions without changing targets or early starts. Assist may use a validated recovery estimate within the existing schedule limit. A source or heat-pump control is not required.",
+              "data": {
+                "mode": "Learning mode",
+                "weather_aware": "Use weather for recovery"
+              },
+              "data_description": {
+                "mode": "Start with Observe. Assist requires a comfort schedule and keeps the configured rate as its fallback.",
+                "weather_aware": "Optional. Requires Assist, a comfort schedule, and Weather forecast settings for the Plant. Weather changes only bounded early-start timing."
+              }
+            }
+          }
+        },
+        "menu": {
+          "title": "Zone {zone}",
+          "description": "Loops of {zone}: {loops}.",
+          "menu_options": {
+            "zone": "Zone settings",
+            "loop_pick": "Loops",
+            "save": "Save"
+          },
+          "menu_option_descriptions": {
+            "zone": "The name, areas, sensors, and thermostat.",
+            "loop_pick": "Add, change, or remove a loop.",
+            "save": "Store the zone."
+          }
+        },
+        "loop_pick": {
+          "title": "Loops of {zone}",
+          "description": "Choose a loop to change or remove, or add one.",
+          "data": {
+            "loop": "Loop"
+          }
+        },
+        "loop": {
+          "title": "Loop of {zone}",
+          "description": "A loop is a flow path of the zone: the valves that open together and the Plant pump that moves its water. Leave Valves and Pump empty to add no loop, for a zone that only a plant loop serves.",
+          "data": {
+            "name": "Loop name",
+            "valves": "Valves",
+            "pump": "Pump",
+            "modes": "Modes",
+            "surface_temperature": "Surface temperature sensor",
+            "surface_minimum": "Cooling surface minimum",
+            "condensation_switch": "Condensation switch",
+            "opening_time": "Valve opening time",
+            "remove": "Remove this loop",
+            "weight": "Weight"
+          },
+          "data_description": {
+            "name": "Names the loop, such as Ceiling or Floor.",
+            "valves": "The valves or switches that open together for this loop. A loop without a valve is always open, and its pump is its only control.",
+            "pump": "The Plant pump that moves water through this loop.",
+            "modes": "Whether the loop heats, cools, or both. Cooling needs a condensation reference: the pump's supply temperature sensor or this loop's surface sensor.",
+            "surface_temperature": "Optional. The floor or ceiling surface temperature, the loop's own condensation reference.",
+            "surface_minimum": "Only with a surface sensor: while the loop cools, its surface stays at or above this. Empty means the default of 20 °C, and a ceiling may use a lower value. Only the plant file turns it off.",
+            "condensation_switch": "Optional. A binary sensor that turns on at condensation on this loop, such as a dew point switch on its pipe. While it is on or unavailable, the loop does not cool.",
+            "opening_time": "How long every valve of the loop takes to open, before its pump may start. A loop without a valve does not wait.",
+            "remove": "Remove the loop from the zone.",
+            "weight": "The loop's share of demand, such as its emitter output, for the source's start threshold."
+          }
+        }
+      },
+      "error": {
+        "zone_name_required": "Enter a zone name. It can stay empty only when the chosen areas give one: a single area, or areas that are all on one floor.",
+        "pump_required": "Choose the pump that moves water through this loop.",
+        "invalid_value": "{problem}",
+        "invalid_plant": "{where}: {problem}",
+        "own_entity": "{where} binds {entity_id}, which Hydronicus provides; that would feed the Plant back into itself. Choose an entity from another integration.",
+        "output_bound_elsewhere": "{where} binds {entity_id}, an output of Plant {other_plant}. An output belongs to one Plant."
+      },
+      "abort": {
+        "reconfigure_successful": "The zone is saved.",
+        "invalid_plant": "The Plant is not valid, so the zone cannot be saved. {where}: {problem}",
+        "plant_changed": "The Plant changed while this form was open, so nothing was saved. Start again from the stored Plant."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Plant settings",
+        "description": "Arm the outputs Hydronicus may command, or copy the plant file that describes the whole Plant. Reconfigure changes the Plant, its source, pumps, and plant loops, and each zone's own entry changes that zone.",
+        "menu_options": {
+          "arm": "Arm outputs",
+          "plant_file": "Show the plant file"
+        },
+        "menu_option_descriptions": {
+          "arm": "Confirm the outputs Hydronicus may command.",
+          "plant_file": "Copy the plant file that describes the whole Plant."
+        }
+      },
+      "arm": {
+        "title": "Arm outputs",
+        "description": "Hydronicus commands an output only once you confirm it. Check each entity against the device it controls, then check it here. A loop runs only when every output it needs is armed, and unchecking an output disarms it. Control equipment turns control on or off for the armed outputs.",
+        "data": {
+          "outputs": "Armed outputs"
+        },
+        "data_description": {
+          "outputs": "Every output of {plant} with its role."
+        }
+      }
+    },
+    "abort": {
+      "invalid_plant": "The stored Plant is not valid: {error}",
+      "plant_file": "The plant file of {plant}. Importing it rebuilds the Plant with the same entity IDs.\n\n```yaml\n{plant_file}```"
+    }
+  },
+  "selector": {
+    "pump_pick": {
+      "options": {
+        "add-new": "Add a pump"
+      }
+    },
+    "plant_loop_pick": {
+      "options": {
+        "add-new": "Add a plant loop"
+      }
+    },
+    "loop_pick": {
+      "options": {
+        "add-new": "Add a loop"
+      }
+    },
+    "min_flow": {
+      "options": {
+        "path": "Needs an open loop",
+        "guaranteed": "A separator guarantees its flow"
+      }
+    },
+    "modes": {
+      "options": {
+        "heat": "Heating",
+        "cool": "Cooling"
+      }
+    },
+    "runs": {
+      "options": {
+        "with_source": "With the source",
+        "with_zones": "With zones"
+      }
+    },
+    "aggregation": {
+      "options": {
+        "mean": "Mean",
+        "min": "Minimum",
+        "max": "Maximum"
+      }
+    },
+    "learning_mode": {
+      "options": {
+        "off": "Off",
+        "observe": "Observe",
+        "assist": "Assist"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "heating_demand": {
+        "name": "Heating demand",
+        "state_attributes": {
+          "reason": {
+            "name": "Reason"
+          }
+        }
+      },
+      "cooling_demand": {
+        "name": "Cooling demand",
+        "state_attributes": {
+          "reason": {
+            "name": "Reason"
+          }
+        }
+      },
+      "loop_flowing": {
+        "name": "{loop} flowing"
+      },
+      "source_requested": {
+        "name": "Requested"
+      },
+      "source_fault": {
+        "name": "Fault"
+      }
+    },
+    "select": {
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "off": "Off",
+          "heat": "Heat",
+          "cool": "Cool",
+          "auto": "Auto"
+        }
+      },
+      "heating_supply": {
+        "name": "Heating supply",
+        "state": {
+          "source_curve": "Heat pump curve",
+          "fixed": "Fixed",
+          "curve": "Hydronicus curve"
+        }
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "off": "Off",
+          "idle": "Idle",
+          "heating": "Heating",
+          "cooling": "Cooling",
+          "changing_over": "Changing over",
+          "exercising": "Exercising",
+          "degraded": "Degraded",
+          "stopping": "Stopping removed outputs",
+          "invalid": "Configuration not valid"
+        }
+      },
+      "combined_temperature": {
+        "name": "Combined temperature"
+      },
+      "dew_point": {
+        "name": "Dew point"
+      },
+      "duty_cycle": {
+        "name": "Duty cycle"
+      },
+      "loop_runtime": {
+        "name": "{loop} runtime"
+      },
+      "compressor_starts": {
+        "name": "Compressor starts"
+      },
+      "compressor_cycle": {
+        "name": "Compressor cycle"
+      },
+      "heartbeat": {
+        "name": "Heartbeat",
+        "state_attributes": {
+          "on_outputs": {
+            "name": "Outputs on"
+          },
+          "interval": {
+            "name": "Interval"
+          }
+        }
+      },
+      "last_disinfection": {
+        "name": "Last disinfection",
+        "state_attributes": {
+          "running": {
+            "name": "Running"
+          },
+          "next_due": {
+            "name": "Next due"
+          }
+        }
+      }
+    },
+    "switch": {
+      "control": {
+        "name": "Control equipment"
+      },
+      "dhw": {
+        "name": "DHW"
+      },
+      "away": {
+        "name": "Away",
+        "state_attributes": {
+          "until": {
+            "name": "Until"
+          }
+        }
+      }
+    },
+    "climate": {
+      "zone": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "schedule": "Schedule"
+            }
+          },
+          "recovery_method": {
+            "name": "Recovery method",
+            "state": {
+              "configured": "Configured rate",
+              "learned": "Learned recovery",
+              "weather": "Weather-informed recovery"
+            }
+          },
+          "planned_recovery_seconds": {
+            "name": "Planned recovery duration"
+          },
+          "learning_mode": {
+            "name": "Learning mode",
+            "state": {
+              "off": "Off",
+              "observe": "Observe",
+              "assist": "Assist"
+            }
+          },
+          "learning_reason": {
+            "name": "Learning reason"
+          },
+          "learning_episode_count": {
+            "name": "Independent recovery episodes"
+          },
+          "learning_confidence": {
+            "name": "Recovery prediction validated"
+          },
+          "estimated_recovery_seconds": {
+            "name": "Estimated recovery duration"
+          },
+          "schedule_status": {
+            "name": "Schedule status",
+            "state": {
+              "manual": "Not following the schedule",
+              "off": "Off",
+              "unavailable": "Schedule unavailable",
+              "comfort": "Comfort period",
+              "setback": "Setback",
+              "early_start": "Early start",
+              "invalid_block": "Invalid schedule block"
+            }
+          },
+          "schedule_level": {
+            "name": "Schedule level",
+            "state": {
+              "comfort": "Comfort",
+              "eco": "Eco",
+              "away": "Away",
+              "target": "Block target",
+              "setback": "Setback"
+            }
+          },
+          "schedule_entity": {
+            "name": "Schedule helper"
+          },
+          "schedule_next_change": {
+            "name": "Next schedule change"
+          }
+        }
+      }
+    },
+    "number": {
+      "heat_setback": {
+        "name": "Heating setback"
+      },
+      "cool_setback": {
+        "name": "Cooling setback"
+      },
+      "dhw_target": {
+        "name": "DHW target",
+        "state_attributes": {
+          "boost": {
+            "name": "Boost"
+          },
+          "boost_until": {
+            "name": "Boost until"
+          }
+        }
+      },
+      "heating_curve_offset": {
+        "name": "Heating curve offset"
+      },
+      "heating_supply_temperature": {
+        "name": "Heating supply temperature"
+      }
+    },
+    "button": {
+      "reset_learning": {
+        "name": "Reset recovery learning"
+      }
+    }
+  },
+  "issues": {
+    "invalid_plant": {
+      "title": "Plant {plant} is not valid",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Plant {plant} is not valid",
+            "description": "The stored configuration of Plant {plant} is not a valid Plant, so Hydronicus does not run it: {error}\n\nIt stops the equipment that the last valid configuration was running, in order, and then commands nothing until the configuration is fixed. This happens when a zone that the Plant still needs is removed, such as the zone of a pump's min-flow loop. Select Submit to reconfigure the Plant and fix it, for example by choosing other min-flow loops or replacing the Plant from a corrected plant file."
+          }
+        },
+        "abort": {
+          "reconfigure_opened": "The reconfigure flow of Plant {plant} is open.",
+          "plant_not_found": "The Plant no longer exists, or its stored configuration is not valid."
+        }
+      }
+    },
+    "evaluation_failed": {
+      "title": "Plant {plant} cannot evaluate",
+      "description": "Plant {plant} failed to evaluate: {error}\n\nHydronicus sends no new command while it cannot evaluate, so the outputs stay as they were last commanded, and it tries again every minute. The repair clears automatically after the next evaluation that succeeds. The Home Assistant log has the details; report the problem with that log and the Plant's diagnostics."
+    },
+    "output_not_responding": {
+      "title": "{plant}: {entity_id} does not respond",
+      "description": "Plant {plant} asked {role} {entity_id} to change, and the change was never observed: three attempts went unanswered, or a valve still showed that it was opening or closing well after its opening time. Hydronicus keeps retrying every few minutes. Check that the device is powered and reachable and that its state in Home Assistant follows it. The repair clears automatically once the output shows what the Plant asks for."
+    },
+    "outputs_awaiting_confirmation": {
+      "title": "{plant}: outputs awaiting confirmation",
+      "fix_flow": {
+        "step": {
+          "arm": {
+            "title": "{plant}: outputs awaiting confirmation",
+            "description": "Plant {plant} has outputs that are not armed: {entity_ids}. Hydronicus never commands an output until you confirm it, so the loops that need these outputs do not run, while the rest of the Plant keeps running. Check each entity against the device it controls, then check it here.",
+            "data": {
+              "outputs": "Outputs to arm"
+            },
+            "data_description": {
+              "outputs": "The outputs of {plant} that are not armed, with their roles."
+            }
+          }
+        },
+        "abort": {
+          "nothing_armed": "No output was armed, so the repair stays.",
+          "plant_not_found": "The Plant no longer exists, or its stored configuration is not valid."
+        }
+      }
+    },
+    "missing_binding": {
+      "title": "{plant}: {entity_id} does not exist",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{plant}: {entity_id} does not exist",
+            "description": "Plant {plant} binds {entity_id} as {path}, but Home Assistant has no such entity. Whatever needs it is blocked: a loop with a missing output does not run, and a zone with a missing required sensor does not call. Restore the entity, or select Submit to open the form that binds it and choose another one, then save the change. The repair clears automatically once the entity exists or the Plant no longer binds it."
+          }
+        },
+        "abort": {
+          "reconfigure_opened": "The reconfigure flow of Plant {plant} is open.",
+          "zone_opened": "The zone is open for editing.",
+          "zone_not_found": "The zone no longer exists.",
+          "plant_not_found": "The Plant no longer exists, or its stored configuration is not valid."
+        }
+      }
+    },
+    "missing_area_sensor": {
+      "title": "{plant}: area {area} names a missing sensor",
+      "description": "A zone of Plant {plant} covers area {area}, whose settings name {entity_id}, but Home Assistant has no such entity, so the area adds no reading. Home Assistant does not follow a renamed entity into the area settings. Open the settings of area {area} and choose the sensor again. The repair clears automatically once the area names an existing sensor."
+    },
+    "zone_area_missing": {
+      "title": "{plant}, zone {zone}: missing area {area}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{plant}, zone {zone}: missing area {area}",
+            "description": "In Plant {plant}, zone {zone} covers area {area}, which no longer exists in Home Assistant, so the zone gets no reading from it. Select Submit to edit zone {zone} and remove the area. Creating an area named {recreate_name} again also works: Home Assistant makes a new area's ID from its name, and that name gives the ID {area_id} that the zone covers. The repair clears automatically once the zone no longer covers a missing area."
+          }
+        },
+        "abort": {
+          "zone_opened": "Zone {zone} is open for editing.",
+          "zone_not_found": "The zone no longer exists.",
+          "plant_not_found": "The Plant no longer exists, or its stored configuration is not valid."
+        }
+      }
+    },
+    "zone_without_temperature_source": {
+      "title": "{plant}, zone {zone}: no temperature sensor",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{plant}, zone {zone}: no temperature sensor",
+            "description": "In Plant {plant}, zone {zone} covers {areas}, but the area settings name no temperature sensor that Hydronicus can follow, so the zone is blocked and does not heat or cool. Select Submit to edit zone {zone} and add a temperature sensor or another area. Choosing a temperature sensor in the area settings also works. The repair clears automatically once the zone has a temperature sensor."
+          }
+        },
+        "abort": {
+          "zone_opened": "Zone {zone} is open for editing.",
+          "zone_not_found": "The zone no longer exists.",
+          "plant_not_found": "The Plant no longer exists, or its stored configuration is not valid."
+        }
+      }
+    },
+    "zone_area_self_feed": {
+      "title": "{plant}, zone {zone}: area {area} names a Hydronicus sensor",
+      "description": "In Plant {plant}, zone {zone} covers area {area}, whose settings name {entity_ids}. Hydronicus provides that sensor, and following it would feed the Plant back into itself, so zone {zone} ignores it. Open the settings of area {area} and choose a sensor that measures the room. The repair clears automatically once the area names another sensor."
+    },
+    "zone_sensor_unusable": {
+      "title": "{plant}, zone {zone}: sensor {entity_id} blocks the zone",
+      "description": "In Plant {plant}, zone {zone} requires {entity_id}, and for at least 10 minutes its reading has been unavailable, stale, in an unsupported unit, or outside its plausible range. A zone without a required reading fails closed: while this lasts, its digital thermostat does not call, and the loops that cool by its dew point do not cool. Check the sensor, its battery, and its connection. A battery sensor that reports only on change may need a longer max_age in the plant file, and an area's sensors block the zone only when the area is marked required. The repair clears automatically once the sensor reports a usable reading."
+    },
+    "condensation_input_unusable": {
+      "title": "{plant}: {entity_id} blocks cooling",
+      "description": "In Plant {plant}, the {input} {entity_id} has had no usable state for at least 10 minutes, so {loops} cannot cool: the condensation guard blocks without it. A condensation switch is unusable while it is unavailable or unknown, and a supply or surface temperature sensor while it is unavailable, has not reported for 30 minutes, is in an unsupported unit, or is outside its plausible range. This repair shows whatever the Plant mode is, because cooling cannot start without it. Check the device, its battery, and its connection. The repair clears automatically once it reports a usable state."
+    },
+    "invalid_schedule_block": {
+      "title": "{plant}, zone {zone}: schedule {entity_id} has blocks it cannot use",
+      "description": "In Plant {plant}, zone {zone} follows {entity_id}, and these blocks name a level Hydronicus cannot use: {blocks}. A block's data may name either a preset (comfort, eco, or away) or a heat_target and cool_target from 5 to 35 °C, never both. While such a block is active, the zone holds its manual comfort target. Edit the blocks in the schedule helper; the repair clears automatically once every block is usable."
+    },
+    "source_unhealthy": {
+      "title": "{plant}: {source} is kept off by {entity_id}",
+      "description": "In Plant {plant}, the health sensor {entity_id} of {source} has not read healthy for at least 10 minutes, so Hydronicus released the source's request and does not ask it for heat or cooling. Zones that call still open their loops and run their switched pumps. Check the source and the link that reports its health, such as a Modbus bridge, its wiring, and its broker. The repair clears automatically once the health sensor reads on again."
+    },
+    "source_no_load": {
+      "title": "{plant}: {source} keeps running without a load",
+      "description": "In Plant {plant}, {source} tripped its no-load guard {trips} times within a day: its compressor ran while its leaving and returning water stayed within the guard's temperature difference, so its heat had nowhere to go. Each time Hydronicus released the source's request and held it off. Check whether another source supplies the zones, such as a fireplace's buffer selected by its own valve, a closed valve or a stopped pump on the heat pump's side, and air in the circuit. The repair clears once a day has passed without two trips."
+    },
+    "zone_not_responding": {
+      "title": "{plant}, zone {zone}: {mode} has no effect",
+      "description": "In Plant {plant}, zone {zone} has called for {mode} for {hours} hours of observed flow, with the source running when the Plant has one, and its temperature has not moved {progress} K toward the target. Check whether the zone's valves really open and its pump really runs, whether the source delivers water at the right temperature, whether the loop is air-locked or its flow is balanced too low, and whether the room sensor sits where the loop can warm or cool it. A loop too small for very cold or very hot weather can also hold a room steady short of its target; then raise the supply temperature, or lengthen the zone's response_check duration in the plant file. Hydronicus keeps controlling the zone as before. The repair clears once the temperature moves toward the target, or the zone stops calling."
+    },
+    "outdoor_sensor_unusable": {
+      "title": "{plant}: the outdoor sensor {entity_id} is not usable",
+      "description": "In Plant {plant}, the outdoor sensor {entity_id} of the heating curve has not been usable for at least 10 minutes, so {effect}. Check the sensor, its battery, and its link. The repair clears automatically once the sensor reports again."
+    },
+    "disinfect_failed": {
+      "title": "{plant}: the DHW disinfection did not finish",
+      "description": "In Plant {plant}, the DHW tank did not hold {temperature} °C, as {entity_id} reads it, for the disinfection cycle's hold time within its timeout. Hydronicus restored the DHW target and tries again in a day. Check that the source can heat the tank that far, for example with its immersion heater, and that the tank sensor sits where it reads the tank. The repair clears once a cycle succeeds."
+    }
+  },
+  "exceptions": {
+    "invalid_plant": {
+      "message": "The stored configuration of Plant {plant} is not a valid Plant: {error}"
+    },
+    "plant_not_found": {
+      "message": "Config entry {config_entry_id} is not a Hydronicus Plant. Choose a Hydronicus Plant to export."
+    },
+    "unsupported_hvac_mode": {
+      "message": "The zone thermostat has no mode {mode}. Choose one of: {modes}."
+    },
+    "no_dhw_setpoint": {
+      "message": "Plant {plant} has no DHW setpoint to boost."
+    },
+    "away_until_past": {
+      "message": "The return time of an away must lie in the future."
+    }
+  },
+  "services": {
+    "export_plant": {
+      "name": "Export plant file",
+      "description": "Returns the plant file of a Hydronicus Plant. Importing it rebuilds the Plant with the same entity IDs.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant to export."
+        }
+      }
+    },
+    "boost_dhw": {
+      "name": "Boost DHW",
+      "description": "Raises the DHW target of a Plant's source for a bounded time, such as while solar power is in surplus, and restores the owned target when it ends.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose source heats the DHW."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "The boosted DHW target; it is kept within the DHW limits."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "How long the boost lasts, at most the Plant's maximum boost, which is also the default."
+        }
+      }
+    },
+    "end_dhw_boost": {
+      "name": "End DHW boost",
+      "description": "Ends a DHW boost now and restores the owned target.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose DHW boost ends."
+        }
+      }
+    },
+    "set_away": {
+      "name": "Set away",
+      "description": "Holds every digital thermostat of a Plant at its away level, until a return time or until the away ends, and recovers in time for the return where a comfort schedule allows early start.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant that is away."
+        },
+        "until": {
+          "name": "Until",
+          "description": "When the away ends by itself; without it, the away lasts until it is ended."
+        }
+      }
+    },
+    "end_away": {
+      "name": "End away",
+      "description": "Ends the away of a Plant now.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant that is home again."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,395 @@
+"""The reconciler: call order, one call in flight, backoff, Repairs, and Dry run."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import replace
+
+import pytest
+
+from custom_components.hydronicus.core.model import (
+    Desired,
+    Mode,
+    OptionTarget,
+    OutputTarget,
+    Plant,
+    SwitchTarget,
+)
+from custom_components.hydronicus.core.plant_file import read_plant_file
+from custom_components.hydronicus.core.reconcile import (
+    BACKOFF_MAX,
+    CALL_TIMEOUT,
+    REPAIR_AFTER,
+    STATUS_RETRY,
+    TRAVEL_GRACE,
+    Action,
+    Attempt,
+    Reconciled,
+    ReconcileState,
+    backoff,
+    reconcile,
+)
+from custom_components.hydronicus.core.step import TICK, OptionState, OutputState, SwitchState
+
+NOW = 1_800_000_000.0
+ON = SwitchTarget(True)
+OFF = SwitchTarget(False)
+
+PLANT = """
+hydronicus: 2
+name: Home
+source:
+  request: switch.hp
+  mode: {entity: select.hp, heat: Heat, cool: Cool}
+pumps:
+  hp: {driven_by: source, min_flow: guaranteed}
+  floor: {switch: switch.floor_pump}
+zones:
+  room:
+    temperature: [sensor.room]
+    loops:
+      floor: {valves: [switch.floor_valve], pump: floor}
+      ceiling: {valves: [switch.ceiling_valve], pump: hp}
+"""
+
+
+@pytest.fixture
+def plant() -> Plant:
+    return read_plant_file(PLANT)
+
+
+def _desired(targets: Mapping[str, OutputTarget]) -> Desired:
+    return Desired(outputs=targets, source_request=False, mode=Mode.HEAT, reasons={})
+
+
+def _observed(on: Iterable[str] = (), option: str | None = "Heat") -> dict[str, OutputState]:
+    on = set(on)
+    outputs: dict[str, OutputState] = {
+        entity: SwitchState(entity in on, NOW - 100)
+        for entity in (
+            "switch.hp",
+            "switch.floor_pump",
+            "switch.floor_valve",
+            "switch.ceiling_valve",
+        )
+    }
+    outputs["select.hp"] = OptionState(option, NOW - 100)
+    return outputs
+
+
+def _run(
+    plant: Plant,
+    targets: Mapping[str, OutputTarget],
+    observed: Mapping[str, OutputState],
+    state: ReconcileState | None = None,
+    now: float = NOW,
+    *,
+    armed: Iterable[str] | None = None,
+    live: bool = True,
+) -> Reconciled:
+    return reconcile(
+        plant,
+        _desired(targets),
+        observed,
+        state or ReconcileState(),
+        now,
+        armed=frozenset(plant.outputs() if armed is None else armed),
+        live=live,
+    )
+
+
+def test_starting_opens_valves_before_pumps_before_the_source(plant: Plant) -> None:
+    targets = {
+        "switch.hp": ON,
+        "select.hp": OptionTarget("Cool"),
+        "switch.floor_pump": ON,
+        "switch.floor_valve": ON,
+        "switch.ceiling_valve": OFF,
+    }
+    result = _run(plant, targets, _observed(on=["switch.ceiling_valve"]))
+    assert [action.entity for action in result.send] == [
+        "switch.floor_valve",
+        "switch.ceiling_valve",
+        "switch.floor_pump",
+        "select.hp",
+        "switch.hp",
+    ]
+    assert result.retry_at == pytest.approx(NOW + CALL_TIMEOUT + TICK)
+    assert result.state.attempts["switch.hp"] == Attempt(ON, 1, NOW)
+
+
+def test_stopping_releases_the_source_before_pumps_before_valves(plant: Plant) -> None:
+    targets = {"switch.hp": OFF, "switch.floor_pump": OFF, "switch.floor_valve": OFF}
+    running = _observed(on=["switch.hp", "switch.floor_pump", "switch.floor_valve"])
+    result = _run(plant, targets, running)
+    assert result.send == (
+        Action("switch.hp", OFF),
+        Action("switch.floor_pump", OFF),
+        Action("switch.floor_valve", OFF),
+    )
+
+
+def test_a_call_in_flight_blocks_another_until_it_is_observed_or_times_out(
+    plant: Plant,
+) -> None:
+    sent = ReconcileState(attempts={"switch.floor_pump": Attempt(ON, 1, NOW - 2)})
+    # The target flipped while the start is in flight: wait for it.
+    result = _run(plant, {"switch.floor_pump": OFF}, _observed(), sent)
+    assert result.send == ()
+    assert result.retry_at == pytest.approx(NOW + 8 + TICK)
+    assert result.state == sent
+    # Observed: confirmed, and the new target goes out.
+    result = _run(plant, {"switch.floor_pump": OFF}, _observed(on=["switch.floor_pump"]), sent)
+    assert result.send == (Action("switch.floor_pump", OFF),)
+    assert result.state.attempts["switch.floor_pump"] == Attempt(OFF, 1, NOW)
+    # Timed out and no longer wanted: nothing to send, nothing kept.
+    later = NOW + CALL_TIMEOUT
+    result = _run(plant, {"switch.floor_pump": OFF}, _observed(), sent, later)
+    assert result.send == () and result.state.attempts == {}
+
+
+def test_an_unmet_target_is_retried_with_doubling_backoff_and_then_repaired(
+    plant: Plant,
+) -> None:
+    assert [backoff(count) for count in range(1, 8)] == [10, 20, 40, 80, 160, 300, 300]
+    state, now, sends = ReconcileState(), NOW, []
+    for _ in range(40):
+        result = _run(plant, {"switch.floor_valve": ON}, _observed(), state, now)
+        sends.extend(now for _ in result.send)
+        if len(sends) == REPAIR_AFTER and not result.send:
+            assert "switch.floor_valve" in result.repairs
+        state = result.state
+        assert result.retry_at is not None
+        now = result.retry_at
+    offsets = [round(sent - NOW) for sent in sends[:7]]
+    assert offsets == [0, 10, 30, 70, 150, 310, 610]
+    assert sends[7] - sends[6] == pytest.approx(BACKOFF_MAX, abs=0.01)
+    # The target changed: a new count, and no Repair.
+    result = _run(
+        plant, {"switch.floor_valve": OFF}, _observed(on=["switch.floor_valve"]), state, now
+    )
+    assert result.repairs == frozenset()
+    assert result.state.attempts["switch.floor_valve"].count == 1
+
+
+def test_a_repair_is_reported_while_the_next_retry_is_in_flight(plant: Plant) -> None:
+    state = ReconcileState(attempts={"switch.floor_valve": Attempt(ON, REPAIR_AFTER + 1, NOW)})
+    assert _run(plant, {"switch.floor_valve": ON}, _observed(), state).repairs == {
+        "switch.floor_valve"
+    }
+
+
+def test_a_new_target_after_a_failed_call_starts_a_new_count(plant: Plant) -> None:
+    failed = ReconcileState(attempts={"switch.floor_pump": Attempt(ON, 5, NOW - 60)})
+    result = _run(plant, {"switch.floor_pump": OFF}, _observed(on=["switch.floor_pump"]), failed)
+    assert result.send == (Action("switch.floor_pump", OFF),)
+    assert result.state.attempts["switch.floor_pump"] == Attempt(OFF, 1, NOW)
+    assert result.repairs == frozenset()
+    # Also when the output is unavailable: the old count goes, and nothing is sent.
+    observed = _observed()
+    observed["switch.floor_pump"] = SwitchState(None, NOW)
+    result = _run(plant, {"switch.floor_pump": OFF}, observed, failed)
+    assert result.send == () and result.state.attempts == {}
+
+
+def test_unarmed_and_unavailable_outputs_are_never_sent_anything(plant: Plant) -> None:
+    targets = {"switch.floor_valve": ON, "switch.ceiling_valve": ON}
+    observed = _observed()
+    observed["switch.ceiling_valve"] = SwitchState(None, NOW)
+    failing = ReconcileState(attempts={"switch.ceiling_valve": Attempt(ON, 2, NOW - 60)})
+    result = _run(plant, targets, observed, failing, armed=["switch.ceiling_valve"])
+    assert result.send == ()
+    assert result.state.attempts == failing.attempts, "the count survives the outage"
+    assert _run(plant, {"switch.floor_valve": ON}, {}, None).send == ()
+
+
+def test_a_valve_on_its_way_is_not_sent_again_until_it_is_overdue(plant: Plant) -> None:
+    opening = {**_observed(), "switch.floor_valve": SwitchState(True, NOW, moving=True)}
+    targets = {"switch.floor_valve": ON}
+    sent = ReconcileState(attempts={"switch.floor_valve": Attempt(ON, 1, NOW - 1)})
+    overdue = NOW + 180 + TRAVEL_GRACE
+    assert sum(backoff(count) for count in range(1, REPAIR_AFTER + 1)) == TRAVEL_GRACE
+
+    waiting = _run(plant, targets, opening, sent, NOW + CALL_TIMEOUT)
+    assert waiting.send == () and waiting.repairs == frozenset()
+    assert waiting.state.attempts == sent.attempts
+    assert waiting.retry_at == pytest.approx(overdue + TICK)
+
+    late = _run(plant, targets, opening, waiting.state, overdue)
+    assert late.send == (Action("switch.floor_valve", ON),)
+    assert late.repairs == {"switch.floor_valve"}
+    in_flight = _run(plant, targets, opening, late.state, overdue + 1)
+    assert in_flight.send == () and in_flight.repairs == {"switch.floor_valve"}, (
+        "the Repair stays while the retry is in flight"
+    )
+
+    arrived = {**opening, "switch.floor_valve": SwitchState(True, overdue + 2)}
+    done = _run(plant, targets, arrived, in_flight.state, overdue + 3)
+    assert done.state.attempts == {} and done.repairs == frozenset()
+
+
+def test_a_valve_moving_away_from_its_target_is_sent_it(plant: Plant) -> None:
+    closing = {**_observed(), "switch.floor_valve": SwitchState(False, NOW, moving=True)}
+    assert _run(plant, {"switch.floor_valve": ON}, closing).send == (
+        Action("switch.floor_valve", ON),
+    )
+    unarmed = _run(plant, {"switch.floor_valve": OFF}, closing, now=NOW + 1000, armed=())
+    assert unarmed.repairs == frozenset(), "an unarmed valve is never reported"
+
+
+def test_dry_run_keeps_a_proposal_while_the_valve_still_moves(plant: Plant) -> None:
+    opening = {**_observed(), "switch.floor_valve": SwitchState(True, NOW, moving=True)}
+    first = _run(plant, {"switch.floor_valve": ON}, opening, live=False)
+    assert first.proposed == (Action("switch.floor_valve", ON),)
+    again = _run(plant, {"switch.floor_valve": ON}, opening, first.state, NOW + 1, live=False)
+    assert again.proposed == (), "the proposal stands; proposing it again would never settle"
+
+
+def test_dry_run_proposes_and_counts_each_proposal_as_observed(plant: Plant) -> None:
+    targets = {
+        "switch.floor_valve": ON,
+        "switch.floor_pump": OFF,
+        "select.hp": OptionTarget("Cool"),
+    }
+    result = _run(plant, targets, _observed(), live=False)
+    assert result.send == ()
+    assert result.proposed == (
+        Action("switch.floor_valve", ON),
+        Action("select.hp", OptionTarget("Cool")),
+    )
+    assert result.state.dry_run == {
+        "switch.floor_valve": SwitchState(True, NOW),
+        "select.hp": OptionState("Cool", NOW),
+    }
+    assert result.retry_at is None
+    # Proposed once: not again.
+    again = _run(plant, targets, _observed(), result.state, NOW + 5, live=False)
+    assert again.proposed == () and again.state == result.state
+    # A proposal the real output now shows is dropped, and going live clears the rest.
+    real = _observed(on=["switch.floor_valve"])
+    assert _run(plant, targets, real, result.state, live=False).state.dry_run == {
+        "select.hp": OptionState("Cool", NOW)
+    }
+    assert _run(plant, {}, real, result.state).state == ReconcileState()
+
+
+def test_numeric_confirmation_persistence_and_dependency_order(plant: Plant) -> None:
+    from dataclasses import replace
+
+    from custom_components.hydronicus.core.model import NumericTarget, SupplyControl
+    from custom_components.hydronicus.core.step import NumericState, satisfies
+
+    assert plant.source is not None
+    plant = replace(plant, source=replace(plant.source, supply=SupplyControl("number.supply")))
+    desired = _desired({"number.supply": NumericTarget(35, 0.5), "switch.hp": ON})
+    outputs = {"number.supply": NumericState(20, NOW), "switch.hp": SwitchState(False, NOW)}
+    result = reconcile(
+        plant, desired, outputs, ReconcileState(), NOW, armed=frozenset(plant.outputs()), live=True
+    )
+    assert [action.entity for action in result.send] == ["number.supply", "switch.hp"]
+    assert ReconcileState.from_dict(result.state.to_dict()) == result.state
+    assert satisfies(NumericState(34.5, NOW), NumericTarget(35, 0.5))
+    assert not satisfies(NumericState(float("nan"), NOW), NumericTarget(35, 0.5))
+    confirmed = {
+        **outputs,
+        "number.supply": NumericState(35.4, NOW),
+        "switch.hp": SwitchState(True, NOW),
+    }
+    assert not reconcile(
+        plant,
+        desired,
+        confirmed,
+        result.state,
+        NOW + 1,
+        armed=frozenset(plant.outputs()),
+        live=True,
+    ).send
+    dry = reconcile(
+        plant, desired, outputs, ReconcileState(), NOW, armed=frozenset(plant.outputs()), live=False
+    )
+    assert not dry.send
+    assert dry.state.dry_run["number.supply"] == NumericState(35, NOW)
+    assert ReconcileState.from_dict(dry.state.to_dict()) == dry.state
+
+
+# A source behind a bridge that refuses a write within five minutes of the last.
+INTERVAL = 300.0
+
+
+@pytest.fixture
+def limited(plant: Plant) -> Plant:
+    assert plant.source is not None
+    return replace(plant, source=replace(plant.source, write_interval=INTERVAL))
+
+
+def test_a_write_limited_output_waits_its_interval_after_the_last_send(limited: Plant) -> None:
+    first = _run(limited, {"select.hp": OptionTarget("Cool")}, _observed())
+    assert [action.entity for action in first.send] == ["select.hp"]
+    assert first.state.last_sent == {"select.hp": NOW}
+
+    taken = _observed(option="Cool")
+    changed = _run(limited, {"select.hp": OptionTarget("Heat")}, taken, first.state, NOW + 60)
+    assert changed.send == (), "a new target waits for the interval"
+    assert changed.retry_at == NOW + INTERVAL + TICK
+    later = _run(limited, {"select.hp": OptionTarget("Heat")}, taken, changed.state, NOW + INTERVAL)
+    assert [action.entity for action in later.send] == ["select.hp"]
+
+
+def test_a_write_limited_switch_turns_off_at_once(limited: Plant) -> None:
+    on = _run(limited, {"switch.hp": ON}, _observed())
+    off = _run(limited, {"switch.hp": OFF}, _observed(on=["switch.hp"]), on.state, NOW + 30)
+    assert [action.target for action in off.send] == [OFF]
+    again = _run(limited, {"switch.hp": ON}, _observed(), off.state, NOW + 60)
+    assert again.send == (), "turning it on again keeps the interval"
+
+
+def test_a_refused_write_is_retried_at_the_interval_then_becomes_a_status(limited: Plant) -> None:
+    target = {"select.hp": OptionTarget("Cool")}
+    refused = _observed()
+    state, now, sends = ReconcileState(), NOW, []
+    for _ in range(REPAIR_AFTER + 2):
+        result = _run(limited, target, refused, state, now)
+        sends.extend(now for _ in result.send)
+        state, now = result.state, now + INTERVAL
+    assert sends == [NOW + count * INTERVAL for count in range(REPAIR_AFTER)]
+    assert result.repairs == {"select.hp"}
+    last = NOW + (REPAIR_AFTER - 1) * INTERVAL
+    assert result.retry_at == last + STATUS_RETRY + TICK, "then only once an hour"
+    hourly = _run(limited, target, refused, state, last + STATUS_RETRY)
+    assert [action.entity for action in hourly.send] == ["select.hp"]
+
+    changed = {**refused, "select.hp": OptionState("Heat", now)}
+    resumed = _run(limited, target, changed, state, now)
+    assert [action.entity for action in resumed.send] == ["select.hp"]
+
+
+def test_an_output_without_a_write_interval_keeps_the_usual_backoff(plant: Plant) -> None:
+    first = _run(plant, {"select.hp": OptionTarget("Cool")}, _observed())
+    again = _run(
+        plant, {"select.hp": OptionTarget("Cool")}, _observed(), first.state, NOW + backoff(1)
+    )
+    assert [action.entity for action in again.send] == ["select.hp"]
+    assert again.state.last_sent == {}
+
+
+def test_the_last_send_survives_persistence(limited: Plant) -> None:
+    first = _run(limited, {"select.hp": OptionTarget("Cool")}, _observed())
+    assert ReconcileState.from_dict(first.state.to_dict()) == first.state
+
+
+def test_a_write_limited_setting_turning_off_keeps_its_interval() -> None:
+    plant = read_plant_file(
+        PLANT.replace(
+            "  mode: {entity: select.hp, heat: Heat, cool: Cool}",
+            "  mode: {entity: select.hp, heat: Heat, cool: Cool}\n"
+            "  mode_switches: {switch.curve: [heat]}\n"
+            "  write_interval: 300",
+        )
+    )
+    observed = {**_observed(), "switch.curve": SwitchState(False, NOW - 100)}
+    on = _run(plant, {"switch.curve": ON}, observed)
+    turned = {**observed, "switch.curve": SwitchState(True, NOW + 1)}
+    off = _run(plant, {"switch.curve": OFF}, turned, on.state, NOW + 60)
+    assert off.send == (), "unlike the request, a mode switch turning off waits its interval"
+    later = _run(plant, {"switch.curve": OFF}, turned, off.state, NOW + INTERVAL)
+    assert [action.target for action in later.send] == [OFF]

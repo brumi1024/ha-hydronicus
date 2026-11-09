@@ -1,0 +1,176 @@
+"""Hydronicus: control a hydronic Plant from its persisted state.
+
+A Plant is one config entry of version 5: the Plant in the entry data, each zone
+in a ``zone`` subentry, and the arming in the options. A change to the data or
+the subentries reloads the Plant, which never sends a command; a change to the
+options only evaluates it again.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
+
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    STORE_VERSION,
+)
+from .core.model import Plant
+from .core.plant_file import PlantFileError, describe_path
+from .entity import async_remove_unprovided, is_stale_device, plant_device
+from .issues import async_delete_issues, async_sync_issues, invalid_plant
+from .learning import LEARNING_STORE_VERSION
+from .learning import store_key as learning_store_key
+from .runtime import PlantRuntime, store_key
+from .services import async_setup_services
+from .storage import plant_from_entry, pruned_entry_data, pruned_options, stored_document
+from .websocket import async_setup_websocket
+from .zone_area import async_place_new_zone_climates, zones_without_climate
+
+type HydronicusConfigEntry = ConfigEntry[PlantRuntime]
+
+_LOGGER = logging.getLogger(__name__)
+
+# Plants are set up in the UI only.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the Hydronicus actions and websocket commands."""
+    async_setup_services(hass)
+    async_setup_websocket(hass)
+    return True
+
+
+def configuration_fingerprint(entry: ConfigEntry) -> str:
+    """Return what a Plant is built from: its data and its zone subentries."""
+    return json.dumps(
+        {
+            "data": dict(entry.data),
+            "subentries": {
+                subentry.subentry_id: [
+                    subentry.subentry_type,
+                    subentry.unique_id,
+                    dict(subentry.data),
+                ]
+                for subentry in entry.subentries.values()
+            },
+        },
+        sort_keys=True,
+        default=str,
+    )
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -> bool:
+    """Set up a Plant: read it, restore its state, add its entities, and start it."""
+    if (pruned := pruned_entry_data(entry)) is not None:
+        hass.config_entries.async_update_entry(entry, data=pruned)
+    # What the Plant is read from, taken before anything awaits.
+    fingerprint = configuration_fingerprint(entry)
+    problem: str | None = None
+    try:
+        plant = plant_from_entry(entry)
+    except PlantFileError as error:
+        # The Plant loads without its objects: the runtime stops what the last valid
+        # configuration commanded, then only observes until a reconfigure fixes it.
+        problem = f"{describe_path(stored_document(entry), error.path)}: {error.message}"
+        _LOGGER.warning(
+            "Hydronicus Plant %s is not valid, so it stops what it commanded and then only "
+            "observes until its configuration is fixed: %s",
+            entry.title,
+            problem,
+        )
+        async_sync_issues(hass, entry.entry_id, [invalid_plant(entry.title, problem)])
+        plant = invalid_placeholder(entry)
+    else:
+        # The arming of an invalid Plant is kept for when it is fixed.
+        if (options := pruned_options(entry, plant)) is not None:
+            hass.config_entries.async_update_entry(entry, options=options)
+
+    runtime = PlantRuntime(hass, entry, plant, problem)
+    await runtime.async_load()
+    entry.runtime_data = runtime
+    runtime.plant_device_id = (
+        dr.async_get(hass)
+        .async_get_or_create(config_entry_id=entry.entry_id, **plant_device(plant))
+        .id
+    )
+    new_climates = zones_without_climate(hass, plant)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        if problem is None:
+            # An invalid Plant provides only the Plant's own entities and keeps the rest.
+            async_place_new_zone_climates(hass, plant, new_climates)
+            async_remove_unprovided(hass, entry, runtime)
+    except Exception:
+        await runtime.async_stop()
+        raise
+    runtime.fingerprint = fingerprint
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    runtime.async_start()
+    return True
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: HydronicusConfigEntry, device: dr.DeviceEntry
+) -> bool:
+    """Let the owner delete a device the Plant no longer has, and no other.
+
+    While the configuration is not valid, every device waits for it to be fixed.
+    """
+    runtime = entry.runtime_data
+    return runtime.problem is None and is_stale_device(runtime.plant, device)
+
+
+def invalid_placeholder(entry: ConfigEntry) -> Plant:
+    """Return the empty Plant an invalid configuration shows: its stored ID and name only."""
+    return Plant(id=entry.unique_id or entry.entry_id, name=entry.title)
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: HydronicusConfigEntry) -> None:
+    """Prune references to removed zones, reload on a new configuration, else evaluate."""
+    if (pruned := pruned_entry_data(entry)) is not None:
+        # The update calls this listener again with the pruned data.
+        hass.config_entries.async_update_entry(entry, data=pruned)
+        return
+    runtime: PlantRuntime | None = getattr(entry, "runtime_data", None)
+    if runtime is not None:
+        if runtime.fingerprint == configuration_fingerprint(entry):
+            # Only the options changed: arming or Control equipment.
+            runtime.request_evaluation()
+            return
+        if runtime.reloading:
+            # A flow that changes the data and several subentries at once calls this
+            # for each change; the one reload reads them all.
+            return
+        runtime.reloading = True
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: HydronicusConfigEntry) -> bool:
+    """Unload a Plant without sending a command; the equipment stays as it is.
+
+    The platforms unload first, so a platform that fails to unload leaves the
+    Plant loaded and running rather than loaded with its runtime stopped.
+    """
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    await entry.runtime_data.async_stop()
+    return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the Plant's Repairs and persisted state."""
+    async_delete_issues(hass, entry.entry_id)
+    await Store[dict[str, object]](hass, STORE_VERSION, store_key(entry.entry_id)).async_remove()
+    await Store[dict[str, object]](
+        hass, LEARNING_STORE_VERSION, learning_store_key(entry.entry_id)
+    ).async_remove()

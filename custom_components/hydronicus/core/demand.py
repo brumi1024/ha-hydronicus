@@ -1,0 +1,431 @@
+"""Zone demand and the condensation guard's inputs: readings, dew point, and thermostats.
+
+These are the parts of ``step()`` that read sensors and thermostats:
+fail-closed aggregation of fresh readings, the Magnus dew point and the
+worst-case dew point from the warmest and most humid readings, digital
+thermostat hysteresis with minimum durations, and the normalization of an
+external thermostat's ``hvac_action``. Frost protection's demand overrides a
+thermostat's, from the coldest usable reading. Window detection finds an open
+window from a sudden temperature change alone.
+
+Every time-based decision goes through a ``reached`` callback, which answers
+whether a deadline has passed and otherwise records it, so the evaluation can
+return when it is next due.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, replace
+from math import fsum, isfinite, log
+from typing import Final
+
+from .comfort import ComfortTarget, ScheduleState, comfort_target
+from .model import (
+    FROST_PROTECTION_RELEASE,
+    Aggregation,
+    Demand,
+    DigitalThermostat,
+    Mode,
+    Preset,
+    WindowDetection,
+    Zone,
+)
+
+type Reached = Callable[[float], bool]
+
+# How far below a sensor's 0.1 K step a boundary comparison tolerates float error.
+_BOUNDARY_TOLERANCE: Final = 1e-6
+_DEW_POINT_A: Final = 17.62
+_DEW_POINT_B: Final = 243.12
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """A numeric sensor as observed."""
+
+    # None while the sensor is unavailable, unknown, or not a number.
+    value: float | None
+    # When the sensor last reported, changed or not; a reading older than its
+    # ``max_age`` is stale.
+    updated: float
+
+
+@dataclass(frozen=True, slots=True)
+class AreaSensors:
+    """The temperature and humidity sensor an area currently names, if any."""
+
+    temperature: str | None = None
+    humidity: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DigitalThermostatState:
+    """A digital thermostat's restored climate entity."""
+
+    hvac_mode: Mode
+    # The manual target; a preset the zone's thermostat defines overrides it.
+    target: float
+    preset: Preset | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalThermostatState:
+    """An external thermostat's normalized ``hvac_action``, see ``external_action``."""
+
+    # HEAT for heating or preheating, COOL for cooling, OFF for idle or off, and
+    # None while the entity is unavailable or reports anything else.
+    action: Mode | None
+
+
+type ThermostatState = DigitalThermostatState | ExternalThermostatState
+
+
+@dataclass(frozen=True, slots=True)
+class DemandState:
+    """A zone's demand decision, the thermostat mode it is for, and when it last changed."""
+
+    mode: Mode
+    on: bool
+    # None for an off decision that no on decision in this mode came before: no
+    # valve has closed for it, so no minimum off time holds it.
+    since: float | None
+    # Keep an early comfort period until this schedule transition, even once the
+    # room approaches its target and the estimated lead time becomes shorter.
+    early_start_event: float | None = None
+
+
+def external_action(hvac_action: str | None, hvac_mode: str | None) -> Mode | None:
+    """Normalize an external climate entity's ``hvac_action`` and ``hvac_mode``.
+
+    Heating and preheating are heat and cooling is cool, unless the entity's own
+    mode contradicts it; idle and off are off; anything else is None, which
+    blocks the zone.
+    """
+    match hvac_action:
+        case "heating" | "preheating" if hvac_mode not in ("off", "cool"):
+            return Mode.HEAT
+        case "cooling" if hvac_mode not in ("off", "heat"):
+            return Mode.COOL
+        case "idle" | "off":
+            return Mode.OFF
+        case _:
+            return None
+
+
+# Readings
+
+
+def fresh(reading: Reading | None, max_age: float, reached: Reached) -> float | None:
+    """Return a reading's value while it is usable: present, finite, and not stale."""
+    if reading is None or reading.value is None or not isfinite(reading.value):
+        return None
+    if reached(reading.updated + max_age):
+        return None
+    return reading.value
+
+
+def _zone_sensors(
+    zone: Zone, areas: Mapping[str, AreaSensors], humidity: bool
+) -> Iterator[tuple[str, bool, float]]:
+    """Each sensor of a zone with its ``required`` and ``max_age``, explicit ones first."""
+    for sensor in zone.humidity if humidity else zone.temperature:
+        yield sensor.entity, sensor.required, sensor.max_age
+    for area in zone.areas:
+        names = areas.get(area.area)
+        entity = None if names is None else names.humidity if humidity else names.temperature
+        if entity is not None:
+            yield entity, area.required, area.max_age
+
+
+def zone_values(
+    zone: Zone,
+    areas: Mapping[str, AreaSensors],
+    sensors: Mapping[str, Reading],
+    reached: Reached,
+    *,
+    humidity: bool = False,
+) -> list[float] | None:
+    """Return a zone's usable temperatures or humidities; None fails closed.
+
+    A required sensor that is not usable blocks the zone; an optional one is left
+    out. An area that is missing or names no sensor contributes nothing.
+    """
+    values: list[float] = []
+    for entity, required, max_age in _zone_sensors(zone, areas, humidity):
+        value = fresh(sensors.get(entity), max_age, reached)
+        if value is None:
+            if required:
+                return None
+            continue
+        values.append(value)
+    return values or None
+
+
+def unusable_sensors(
+    zone: Zone,
+    areas: Mapping[str, AreaSensors],
+    sensors: Mapping[str, Reading],
+    reached: Reached,
+    *,
+    humidity: bool = False,
+) -> list[str]:
+    """Return a zone's required temperature or humidity sensors that are not usable.
+
+    These are the sensors that make ``zone_values`` fail closed.
+    """
+    return [
+        entity
+        for entity, required, max_age in _zone_sensors(zone, areas, humidity)
+        if required and fresh(sensors.get(entity), max_age, reached) is None
+    ]
+
+
+def aggregate(values: list[float], aggregation: Aggregation) -> float:
+    match aggregation:
+        case Aggregation.MIN:
+            return min(values)
+        case Aggregation.MAX:
+            return max(values)
+        case _:
+            return fsum(values) / len(values)
+
+
+def dew_point(temperature: float, humidity: float) -> float | None:
+    """Return the Magnus dew point in °C, or None outside the formula's range."""
+    if not isfinite(temperature) or not isfinite(humidity):
+        return None
+    if humidity <= 0 or humidity > 100 or temperature <= -_DEW_POINT_B:
+        return None
+    gamma = log(humidity / 100.0) + _DEW_POINT_A * temperature / (_DEW_POINT_B + temperature)
+    result = _DEW_POINT_B * gamma / (_DEW_POINT_A - gamma)
+    return result if isfinite(result) else None
+
+
+def worst_dew_point(
+    zone: Zone, areas: Mapping[str, AreaSensors], sensors: Mapping[str, Reading], reached: Reached
+) -> float | None:
+    """Return the dew point of a zone's warmest and most humid readings.
+
+    A zone can span several spaces, and without pairing each temperature with its
+    humidity their highest values bound the dew point of every one of them.
+    """
+    temperatures = zone_values(zone, areas, sensors, reached)
+    humidities = zone_values(zone, areas, sensors, reached, humidity=True)
+    if temperatures is None or humidities is None:
+        return None
+    return dew_point(max(temperatures), max(humidities))
+
+
+# Thermostats
+
+
+def zone_demand(
+    zone: Zone,
+    thermostat: ThermostatState | None,
+    temperature: float | None,
+    previous: DemandState | None,
+    now: float,
+    reached: Reached,
+    schedule: ScheduleState | None = None,
+    comfort: ComfortTarget | None = None,
+) -> tuple[DemandState, Demand]:
+    """Evaluate a zone's thermostat into its next DemandState and its Demand."""
+    if isinstance(thermostat, ExternalThermostatState):
+        action = thermostat.action
+        if action is None:
+            return _settle(previous, Mode.OFF, False, now), _off(Mode.OFF, "thermostat unavailable")
+        on = action is not Mode.OFF
+        reason = f"thermostat {action.value}" if on else "thermostat idle"
+        return _settle(previous, action, on, now), Demand(action, on, reason)
+    config = zone.thermostat
+    if not isinstance(thermostat, DigitalThermostatState) or not isinstance(
+        config, DigitalThermostat
+    ):
+        return _settle(previous, Mode.OFF, False, now), _off(Mode.OFF, "thermostat not restored")
+    mode = thermostat.hvac_mode
+    if mode is Mode.OFF:
+        return _settle(previous, mode, False, now), _off(mode, "thermostat off")
+    if temperature is None:
+        return _settle(previous, mode, False, now), _off(mode, "no usable temperature")
+    comfort = comfort or comfort_target(
+        config,
+        mode,
+        thermostat.target,
+        thermostat.preset,
+        temperature,
+        schedule,
+        now,
+        reached,
+        None if previous is None or previous.mode is not mode else previous.early_start_event,
+    )
+    target = comfort.target
+    # The distance to target in the direction the mode drives the room.
+    below = target - temperature if mode is Mode.HEAT else temperature - target
+    start, stop = (
+        (config.heat_start_delta, config.heat_stop_delta)
+        if mode is Mode.HEAT
+        else (config.cool_start_delta, config.cool_stop_delta)
+    )
+    was_on = previous is not None and previous.mode is mode and previous.on
+    # Sensors report decimal steps that floats cannot hold exactly, so a reading
+    # exactly at a boundary is compared with a tolerance far below any step.
+    requested = below >= start - _BOUNDARY_TOLERANCE or (
+        was_on and below > -stop + _BOUNDARY_TOLERANCE
+    )
+    state = _apply_timing(previous, mode, requested, config, now, reached)
+    if state.early_start_event != comfort.early_start_event:
+        state = replace(state, early_start_event=comfort.early_start_event)
+    verb = "heat" if mode is Mode.HEAT else "cool"
+    reason = f"{verb} to {target:.1f} °C from {temperature:.1f} °C"
+    if comfort.reason is not None:
+        reason += f", {comfort.reason}"
+    held_until = None
+    if state.on != requested:
+        reason += ", held for its minimum " + ("on" if state.on else "off") + " time"
+        if state.since is not None:
+            held_until = state.since + (config.min_on if state.on else config.min_off)
+    return state, Demand(mode, state.on, reason, held_until)
+
+
+def _apply_timing(
+    previous: DemandState | None,
+    mode: Mode,
+    requested: bool,
+    config: DigitalThermostat,
+    now: float,
+    reached: Reached,
+) -> DemandState:
+    """Hold a decision for its minimum on or off time after hysteresis."""
+    if previous is None or previous.mode is not mode or requested == previous.on:
+        return _settle(previous, mode, requested, now)
+    duration = config.min_on if previous.on else config.min_off
+    if previous.since is not None and duration > 0 and not reached(previous.since + duration):
+        return previous
+    return DemandState(mode, requested, now)
+
+
+def _settle(previous: DemandState | None, mode: Mode, on: bool, now: float) -> DemandState:
+    """A decision without minimum durations, keeping the time of the last change."""
+    if previous is not None and previous.mode is mode:
+        return previous if previous.on == on else DemandState(mode, on, now)
+    return DemandState(mode, on, now if on else None)
+
+
+def _off(mode: Mode, reason: str) -> Demand:
+    return Demand(mode, False, reason)
+
+
+# Window detection
+
+
+# At most this many readings are kept for window detection; older ones go first.
+MAX_WINDOW_SAMPLES: Final = 64
+# Readings come in steps such as 0.1 K, whose differences floats do not hit exactly.
+_WINDOW_TOLERANCE: Final = _BOUNDARY_TOLERANCE
+
+
+@dataclass(frozen=True, slots=True)
+class DetectedWindow:
+    """What window detection carries for one zone between evaluations.
+
+    ``samples`` are the readings of ``mode`` as (when, temperature), oldest first,
+    that the last ``within`` seconds can still compare against: every reading in
+    them and the last one before them, which held at their start. While a window
+    is detected, ``samples`` holds only the reading it moved away from, ``since``
+    is when it was detected, and ``extreme`` is the reading furthest from the
+    target since then, first read at ``extreme_at``.
+    """
+
+    mode: Mode
+    samples: tuple[tuple[float, float], ...] = ()
+    since: float | None = None
+    extreme: float | None = None
+    extreme_at: float | None = None
+
+
+def detect_window(
+    config: WindowDetection,
+    previous: DetectedWindow | None,
+    mode: Mode,
+    temperature: float | None,
+    now: float,
+    reached: Reached,
+) -> tuple[DetectedWindow | None, str | None, float | None]:
+    """Detect an open window from a zone's temperature in ``mode``.
+
+    Returns the next state, the reason while a window is detected, and when the
+    detection ends at the latest while it is. Heating detects a fall, cooling a
+    rise, and the off mode nothing. A zone without a usable temperature keeps
+    what it detected until it ends, and adds no reading.
+    """
+    if mode is Mode.OFF:
+        return None, None, None
+    state = previous if previous is not None and previous.mode is mode else DetectedWindow(mode)
+    # The sign that turns a move away from the target positive.
+    away = -1.0 if mode is Mode.HEAT else 1.0
+    if state.since is not None:
+        extreme, extreme_at = state.extreme, state.extreme_at or state.since
+        if temperature is not None and (extreme is None or (temperature - extreme) * away > 0):
+            extreme, extreme_at = temperature, now
+        settled = extreme_at + config.within
+        end = state.since + config.max_duration
+        if not reached(settled) and not reached(end):
+            state = replace(state, extreme=extreme, extreme_at=extreme_at)
+            moved = 0.0 if extreme is None else abs(extreme - state.samples[0][1])
+            verb = "fell" if mode is Mode.HEAT else "rose"
+            return state, f"window open: temperature {verb} {moved:.1f} K", min(settled, end)
+        # The detection ends, and later readings compare only from here.
+        samples = () if temperature is None else ((now, temperature),)
+        return DetectedWindow(mode, samples), None, None
+    if temperature is None:
+        return state, None, None
+    samples = [*state.samples]
+    if not samples or samples[-1][1] != temperature:
+        samples.append((now, temperature))
+    # Keep the last reading at or before the start of the period, which held then.
+    start = now - config.within
+    while len(samples) > 1 and samples[1][0] <= start:
+        samples.pop(0)
+    samples = samples[-MAX_WINDOW_SAMPLES:]
+    # The reading nearest the target side, from which the temperature moved away.
+    reference = min(samples, key=lambda sample: sample[1] * away)
+    if (temperature - reference[1]) * away >= config.change - _WINDOW_TOLERANCE:
+        detected = DetectedWindow(mode, (reference,), now, temperature, now)
+        return detect_window(config, detected, mode, temperature, now, reached)
+    return DetectedWindow(mode, tuple(samples)), None, None
+
+
+# Frost protection
+
+
+def coldest_temperature(
+    zone: Zone, areas: Mapping[str, AreaSensors], sensors: Mapping[str, Reading], reached: Reached
+) -> float | None:
+    """Return a zone's coldest usable temperature, from required and optional sensors alike.
+
+    Frost protection reads every usable reading, so a sensor that is not usable
+    never hides a room that freezes; None when no reading is usable.
+    """
+    values = [
+        value
+        for entity, _, max_age in _zone_sensors(zone, areas, False)
+        if (value := fresh(sensors.get(entity), max_age, reached)) is not None
+    ]
+    return min(values, default=None)
+
+
+def frost_demand(frost: float, coldest: float | None, active: bool) -> Demand | None:
+    """Return the heating demand of frost protection, or None while it does not act.
+
+    It starts once the coldest reading is below the frost protection temperature,
+    and holds until that reading is ``FROST_PROTECTION_RELEASE`` above it.
+    """
+    if coldest is None:
+        return None
+    stop = frost + FROST_PROTECTION_RELEASE
+    if coldest < frost or (active and coldest < stop):
+        return Demand(
+            Mode.HEAT, True, f"frost protection: heat to {stop:.1f} °C from {coldest:.1f} °C"
+        )
+    return None

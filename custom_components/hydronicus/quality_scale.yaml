@@ -1,0 +1,134 @@
+rules:
+  # Bronze
+  action-setup: done
+  appropriate-polling:
+    status: exempt
+    comment: |
+      Every entity sets should_poll = False; state is pushed from
+      PlantRuntime's own evaluation, never polled.
+  brands:
+    status: todo
+    comment: |
+      custom_components/hydronicus/brand/ ships local icons, but the
+      integration is not yet registered in home-assistant/brands.
+  common-modules: done
+  config-flow-test-coverage:
+    status: todo
+    comment: |
+      The local gate measures whole-package coverage, but this rule
+      requires complete config-flow coverage. Verify every flow module
+      in the current coverage report before marking it done.
+  config-flow: done
+  dependency-transparency: done
+  docs-actions: done
+  docs-triggers:
+    status: exempt
+    comment: Hydronicus provides no device triggers.
+  docs-conditions:
+    status: exempt
+    comment: Hydronicus provides no device conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: exempt
+    comment: |
+      The flow binds existing Home Assistant entities; there is no
+      remote device or service to test connectivity against.
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable:
+    status: todo
+    comment: |
+      Nothing logs an entity's own transition to unavailable; a
+      non-responding output becomes a Repair instead, which is a
+      different signal.
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: |
+      Hydronicus authenticates nothing; it only binds existing local
+      entities that other integrations already set up.
+  test-coverage:
+    status: todo
+    comment: |
+      The local gate reports whole-package coverage. This rule also
+      requires at least 95% per module; consult the current coverage
+      report before declaring that stronger requirement satisfied.
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery-update-info:
+    status: exempt
+    comment: Nothing is discovered; see discovery.
+  discovery:
+    status: exempt
+    comment: |
+      A Plant binds entities the owner already set up in Home
+      Assistant; there is no device on the network to discover.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices:
+    status: exempt
+    comment: |
+      Hydronicus binds generic entities supplied by other integrations.
+      Roles require matching domains, supported units, and meaningful
+      physical feedback; they do not imply compatibility with every device.
+  docs-supported-functions: done
+  docs-troubleshooting:
+    status: todo
+    comment: |
+      Each Repair explains its cause and fix in its own text; there is no
+      separate troubleshooting page.
+  docs-use-cases: done
+  dynamic-devices: done
+  entity-category:
+    status: todo
+    comment: |
+      The loop runtime and zone duty cycle sensors are diagnostic;
+      Control equipment and the Mode select read as arguable
+      config-category controls.
+  entity-device-class: done
+  entity-disabled-by-default:
+    status: todo
+    comment: |
+      No entity is registered disabled by default; a Plant with many
+      zones and loops gets no less noisy by default than a small one.
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues: done
+  stale-devices: done
+
+  # Platinum
+  async-dependency:
+    status: exempt
+    comment: |
+      No external client library; Hydronicus only calls Home
+      Assistant's own async APIs and the entities other integrations
+      provide.
+  inject-websession:
+    status: exempt
+    comment: Hydronicus opens no websession or HTTP client of its own.
+  strict-typing:
+    status: todo
+    comment: |
+      mypy already runs with disallow_untyped_defs,
+      disallow_any_generics, and warn_return_any, but not the full
+      strict set: disallow_untyped_calls, disallow_incomplete_defs,
+      no_implicit_reexport, and strict_equality are not enabled.

@@ -1,0 +1,8 @@
+{
+  "name": "Hydronicus",
+  "content_in_root": false,
+  "render_readme": true,
+  "zip_release": true,
+  "filename": "hydronicus.zip",
+  "homeassistant": "2026.9.0"
+}

@@ -1,0 +1,151 @@
+"""The zone subentry flow: add or reconfigure one zone, with its areas, sensors, and loops.
+
+A zone's loops reference only the Plant's pumps. Each form checks the whole
+Plant as it would be stored, with the entry's data and every other zone, by the
+same rules as setup (invariant 9), so the zone is saved only as part of a valid
+Plant.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import voluptuous as vol
+from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigSubentryFlow, SubentryFlowResult
+
+from ..const import INIT_PATH
+from ..core.plant_file import to_storage
+from ..storage import async_reload_if_failed
+from . import documents as docs
+from . import forms
+from .edits import DocumentEdits
+
+
+class ZoneSubentryFlow(DocumentEdits, ConfigSubentryFlow):
+    """Add or reconfigure one zone of a Plant."""
+
+    def __init__(self) -> None:
+        self._document: docs.Document = {}
+        self._stored: docs.Document | None = None
+        self._zone: str | None = None
+        # The loop being edited, or None for a new one.
+        self._editing: str | None = None
+
+    def _check(
+        self, document: docs.Document, prefix: str = "", fields: dict[str, str] | None = None
+    ) -> forms.Checked:
+        return forms.check(
+            self.hass, document, prefix=prefix, fields=fields, entry_id=self._entry_id
+        )
+
+    def _form(
+        self, step_id: str, schema: vol.Schema, checked: forms.Checked | None = None
+    ) -> SubentryFlowResult:
+        placeholders = {"plant": self._get_entry().title}
+        if self._zone is not None:
+            placeholders["zone"] = forms.zone_names(self._document).get(self._zone, "")
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=schema,
+            errors=checked.errors if checked is not None else None,
+            description_placeholders={
+                **placeholders,
+                **(checked.placeholders if checked is not None else {}),
+            },
+        )
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Add a zone."""
+        self._start(self._get_entry())
+        return await self.async_step_zone()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Change a zone, at its settings or at the loop that ``user_input``'s path names.
+
+        Only a Repair passes a path, as the flow's init data; the settings of the
+        zone come first otherwise.
+        """
+        self._start(self._get_entry())
+        self._zone = zone = self._get_reconfigure_subentry().unique_id
+        path = (user_input or {}).get(INIT_PATH)
+        keys = path.split(".") if isinstance(path, str) else []
+        loops = docs.zones(self._document).get(zone, {}).get("loops", {}) if zone else {}
+        if keys[:3] == ["zones", zone, "loops"] and len(keys) > 3 and keys[3] in loops:
+            self._editing = keys[3]
+            return await self.async_step_loop()
+        return await self.async_step_zone()
+
+    async def async_step_zone(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """The zone's name, areas, sensors, and thermostat."""
+        values = docs.zone_values(self._document, self._zone) if user_input is None else user_input
+        schema = forms.zone_schema(self.hass, values)
+        new = self._zone is None
+        checked = None if user_input is None else self._submit_zone(self._zone, user_input, schema)
+        if user_input is not None and checked is None:
+            # A new zone goes on to its first loop.
+            return await (self.async_step_loop() if new else self.async_step_menu())
+        return self._form("zone", schema, checked)
+
+    async def async_step_menu(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Change the zone's settings or loops, or save it."""
+        assert self._zone is not None
+        zone = docs.zones(self._document)[self._zone]
+        loops = [docs.title(loop, slug) for slug, loop in zone.get("loops", {}).items()]
+        return self.async_show_menu(
+            step_id="menu",
+            menu_options=["zone", "loop_pick", "save"],
+            description_placeholders={
+                "zone": docs.title(zone, self._zone),
+                "loops": ", ".join(loops) or "none",
+            },
+        )
+
+    async def async_step_loop_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Choose a loop to edit or remove, or add one."""
+        assert self._zone is not None
+        if user_input is not None:
+            self._editing = None if user_input["loop"] == docs.NEW else user_input["loop"]
+            return await self.async_step_loop()
+        loops = docs.zones(self._document)[self._zone].get("loops", {})
+        names = {slug: docs.title(loop, slug) for slug, loop in loops.items()}
+        return self._form("loop_pick", forms.pick_schema("loop_pick", "loop", names))
+
+    async def async_step_loop(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Add, edit, or remove one of the zone's loops."""
+        zone, slug = self._zone, self._editing
+        assert zone is not None
+        values = docs.loop_values(self._document, zone, slug) if user_input is None else user_input
+        schema = forms.loop_schema(
+            self.hass, values, forms.pump_labels(self._document), removable=slug is not None
+        )
+        checked = None if user_input is None else self._submit_loop(zone, slug, user_input, schema)
+        if user_input is not None and checked is None:
+            return await self.async_step_menu()
+        return self._form("loop", schema, checked)
+
+    async def async_step_save(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Store the zone as part of the whole Plant, unless the Plant changed meanwhile."""
+        zone = self._zone
+        assert zone is not None
+        entry = self._get_entry()
+        if self._changed(entry):
+            return self.async_abort(reason="plant_changed")
+        checked = self._check(self._document)
+        if (plant := checked.plant) is None:
+            return self.async_abort(
+                reason="invalid_plant", description_placeholders=checked.placeholders
+            )
+        data = to_storage(plant)[1][zone]
+        title = plant.zone(zone).title
+        if self.source != SOURCE_RECONFIGURE:
+            result = self.async_create_entry(title=title, data=data, unique_id=zone)
+        else:
+            result = self.async_update_and_abort(
+                entry, self._get_reconfigure_subentry(), title=title, data=data
+            )
+        async_reload_if_failed(self.hass, entry)
+        return result

@@ -1,0 +1,174 @@
+{
+  "entity": {
+    "climate": {
+      "zone": {
+        "default": "mdi:thermostat",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "schedule": "mdi:calendar-clock"
+            }
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "heating_demand": {
+        "default": "mdi:radiator",
+        "state": {
+          "on": "mdi:radiator",
+          "off": "mdi:radiator-off"
+        }
+      },
+      "cooling_demand": {
+        "default": "mdi:snowflake",
+        "state": {
+          "on": "mdi:snowflake",
+          "off": "mdi:snowflake-off"
+        }
+      },
+      "loop_flowing": {
+        "default": "mdi:pipe",
+        "state": {
+          "on": "mdi:pipe",
+          "off": "mdi:pipe-disconnected"
+        }
+      },
+      "source_requested": {
+        "default": "mdi:heat-pump",
+        "state": {
+          "on": "mdi:heat-pump",
+          "off": "mdi:heat-pump-outline"
+        }
+      },
+      "source_fault": {
+        "default": "mdi:heat-pump-outline",
+        "state": {
+          "on": "mdi:alert-circle",
+          "off": "mdi:check-circle-outline"
+        }
+      }
+    },
+    "select": {
+      "mode": {
+        "default": "mdi:thermostat",
+        "state": {
+          "off": "mdi:power",
+          "heat": "mdi:fire",
+          "cool": "mdi:snowflake",
+          "auto": "mdi:thermostat-auto"
+        }
+      },
+      "heating_supply": {
+        "default": "mdi:heat-wave",
+        "state": {
+          "source_curve": "mdi:heat-pump-outline",
+          "fixed": "mdi:thermometer-lines",
+          "curve": "mdi:chart-line-variant"
+        }
+      }
+    },
+    "sensor": {
+      "status": {
+        "default": "mdi:information-outline",
+        "state": {
+          "off": "mdi:power",
+          "idle": "mdi:sleep",
+          "heating": "mdi:fire",
+          "cooling": "mdi:snowflake",
+          "exercising": "mdi:cog-refresh",
+          "changing_over": "mdi:swap-horizontal",
+          "degraded": "mdi:alert-outline",
+          "stopping": "mdi:stop-circle-outline",
+          "invalid": "mdi:alert-octagon-outline"
+        }
+      },
+      "combined_temperature": {
+        "default": "mdi:home-thermometer"
+      },
+      "dew_point": {
+        "default": "mdi:water-thermometer"
+      },
+      "duty_cycle": {
+        "default": "mdi:chart-donut"
+      },
+      "loop_runtime": {
+        "default": "mdi:timer-outline"
+      },
+      "compressor_starts": {
+        "default": "mdi:counter"
+      },
+      "compressor_cycle": {
+        "default": "mdi:timer-sync-outline"
+      },
+      "heartbeat": {
+        "default": "mdi:heart-pulse"
+      },
+      "last_disinfection": {
+        "default": "mdi:bacteria-outline"
+      }
+    },
+    "switch": {
+      "control": {
+        "default": "mdi:power-plug",
+        "state": {
+          "on": "mdi:power-plug",
+          "off": "mdi:power-plug-off"
+        }
+      },
+      "dhw": {
+        "default": "mdi:water-boiler",
+        "state": {
+          "on": "mdi:water-boiler",
+          "off": "mdi:water-boiler-off"
+        }
+      },
+      "away": {
+        "default": "mdi:home-export-outline",
+        "state": {
+          "on": "mdi:home-export-outline",
+          "off": "mdi:home"
+        }
+      }
+    },
+    "button": {
+      "reset_learning": {
+        "default": "mdi:restart"
+      }
+    },
+    "number": {
+      "heat_setback": {
+        "default": "mdi:thermometer-minus"
+      },
+      "cool_setback": {
+        "default": "mdi:thermometer-plus"
+      },
+      "dhw_target": {
+        "default": "mdi:thermometer-water"
+      },
+      "heating_curve_offset": {
+        "default": "mdi:chart-line-variant"
+      },
+      "heating_supply_temperature": {
+        "default": "mdi:thermometer-water"
+      }
+    }
+  },
+  "services": {
+    "export_plant": {
+      "service": "mdi:file-export-outline"
+    },
+    "boost_dhw": {
+      "service": "mdi:water-boiler-alert"
+    },
+    "end_dhw_boost": {
+      "service": "mdi:water-boiler"
+    },
+    "set_away": {
+      "service": "mdi:home-export-outline"
+    },
+    "end_away": {
+      "service": "mdi:home-import-outline"
+    }
+  }
+}

@@ -1,0 +1,1929 @@
+"""The format 2 plant file: parse, validate, export, and the storage split."""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import replace
+from typing import Any
+
+import pytest
+import yaml
+
+from custom_components.hydronicus.core.model import (
+    Aggregation,
+    DigitalThermostat,
+    Exercise,
+    ExternalThermostat,
+    HeatingSupply,
+    LearningMode,
+    LoopRef,
+    LoopRun,
+    MinFlow,
+    Mode,
+    ModeSwitch,
+    OutputRole,
+    Plant,
+    Pump,
+    ResponseCheck,
+    RunKind,
+    Sensor,
+    Valve,
+    WeatherConfig,
+    WeatherCurve,
+    WindowDetection,
+    ZoneArea,
+)
+from custom_components.hydronicus.core.plant_file import (
+    PLANT_FILE_FORMAT,
+    PlantFileError,
+    describe_path,
+    dump_yaml,
+    entity_paths,
+    export_plant,
+    from_storage,
+    load_yaml,
+    parse_plant,
+    read_plant_file,
+    to_storage,
+    validate_plant,
+    write_plant_file,
+)
+from tests.core.plant_files import REFERENCE_PLANT, TRIAL_PLANT
+
+PLANT_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+_COMMENT = re.compile(r"\s+#.*$", re.MULTILINE)
+_HEADER_COMMENT = re.compile(r"\A(?:#.*\n)+")
+
+# A canonical plant file that uses every long form and every optional key.
+EVERY_KEY = """\
+hydronicus: 2
+id: 00000000-0000-4000-8000-000000000001
+name: Workshop
+mode_dwell: 1800
+source:
+  request: switch.boiler_request
+  post_run: 60
+  min_on: 300
+  min_off: 240.5
+pumps:
+  primary:
+    name: Primary circulator
+    driven_by: source
+    min_flow: guaranteed
+    supply_temperature: sensor.primary_supply
+    condensation_switch: binary_sensor.primary_dew
+  secondary:
+    switch: switch.secondary_pump
+    overrun: 0
+    min_flow: guaranteed
+loops:
+  garage:
+    name: Garage radiators
+    valves: [{entity: valve.garage, opening_time: 60, readiness: binary_sensor.garage_open}]
+    pump: secondary
+    runs: {with_zones: [office, lab]}
+    modes: [heat, cool]
+    surface_temperature: sensor.garage_floor
+    surface_minimum: 18.5
+    condensation_switch: binary_sensor.garage_dew
+zones:
+  office:
+    name: Front office
+    areas: [office, {area: hall, required: true, max_age: 600}]
+    temperature: [sensor.office, {entity: sensor.office_desk, required: false, max_age: 900}]
+    humidity: [sensor.office_humidity]
+    aggregation: max
+    thermostat: {digital: {target: 20.5, presets: {eco: 18}, heat_start_delta: 0.5, \
+heat_stop_delta: 0.2, cool_start_delta: 0.4, cool_stop_delta: 0.3, min_on: 300, min_off: 900}}
+    windows: [binary_sensor.office_window, binary_sensor.office_door]
+    window_open_delay: 30
+    window_close_delay: 120
+    max_humidity: 65
+    loops:
+      radiators:
+        valves: [switch.office_valve_a, {entity: switch.office_valve_b, opening_time: 240}]
+        pump: primary
+        modes: [cool]
+  lab:
+    temperature: [sensor.lab]
+    humidity: [sensor.lab_humidity]
+    thermostat: {external: climate.lab}
+    max_humidity: null
+    loops:
+      bench:
+        pump: secondary
+        modes: [heat]
+"""
+
+
+def reference_text() -> str:
+    """The reference plant file, less its introductory comment block.
+
+    docs/examples/reference-plant.yaml opens with prose for the reader that
+    write_plant_file() never reproduces; ``_COMMENT`` strips inline comments,
+    not a standalone header.
+    """
+    return _HEADER_COMMENT.sub("", REFERENCE_PLANT.read_text(encoding="utf-8"))
+
+
+def reference_document() -> dict[str, Any]:
+    return load_yaml(reference_text())
+
+
+def reference_plant() -> Plant:
+    return read_plant_file(reference_text())
+
+
+# Round trips
+
+
+def test_the_reference_plant_imports_and_exports_byte_stable() -> None:
+    """Export writes the reference plant exactly as the plan writes it, less its comments."""
+    exported = write_plant_file(reference_plant())
+
+    assert exported == _COMMENT.sub("", reference_text())
+    assert write_plant_file(read_plant_file(exported)) == exported
+
+
+def test_a_plant_file_with_every_key_is_its_own_export() -> None:
+    assert write_plant_file(read_plant_file(EVERY_KEY)) == EVERY_KEY
+
+
+def test_a_plant_file_with_every_key_decodes_every_key() -> None:
+    plant = read_plant_file(EVERY_KEY)
+
+    assert plant.id == "00000000-0000-4000-8000-000000000001"
+    assert plant.mode_dwell == 1800
+    assert plant.source is not None
+    assert plant.source.name is None
+    assert plant.source.title == "Heat source"
+    assert plant.source.mode is None
+    assert (plant.source.post_run, plant.source.min_on, plant.source.min_off) == (60, 300, 240.5)
+    assert plant.pump("primary") == Pump(
+        slug="primary",
+        switch=None,
+        min_flow=MinFlow.GUARANTEED,
+        supply_temperature="sensor.primary_supply",
+        name="Primary circulator",
+        condensation_switch="binary_sensor.primary_dew",
+    )
+    assert plant.pump("secondary").overrun == 0
+    garage = plant.loop(LoopRef(None, "garage"))
+    assert garage.valves == (
+        Valve("valve.garage", opening_time=60, readiness="binary_sensor.garage_open"),
+    )
+    assert garage.runs == LoopRun(RunKind.WITH_ZONES, ("office", "lab"))
+    assert garage.modes == frozenset({Mode.HEAT, Mode.COOL})
+    assert garage.surface_temperature == "sensor.garage_floor"
+    assert garage.surface_minimum == 18.5
+    assert garage.condensation_switch == "binary_sensor.garage_dew"
+    office = plant.zone("office")
+    assert office.title == "Front office"
+    assert office.areas == (ZoneArea("office"), ZoneArea("hall", required=True, max_age=600))
+    assert office.temperature == (
+        Sensor("sensor.office"),
+        Sensor("sensor.office_desk", required=False, max_age=900),
+    )
+    assert office.humidity == (Sensor("sensor.office_humidity"),)
+    assert office.aggregation is Aggregation.MAX
+    assert isinstance(office.thermostat, DigitalThermostat)
+    assert office.thermostat.target == 20.5
+    assert (office.thermostat.min_on, office.thermostat.min_off) == (300, 900)
+    assert office.windows == ("binary_sensor.office_window", "binary_sensor.office_door")
+    assert (office.window_open_delay, office.window_close_delay) == (30, 120)
+    assert office.max_humidity == 65
+    assert plant.zone("lab").max_humidity is None, "null turns the humidity cutoff off"
+    radiators = plant.loop(LoopRef("office", "radiators"))
+    assert radiators.runs == LoopRun(RunKind.ZONE)
+    assert radiators.valves[1] == Valve("switch.office_valve_b", opening_time=240)
+    assert plant.zone("lab").thermostat == ExternalThermostat("climate.lab")
+    assert plant.loop(LoopRef("lab", "bench")).valves == ()
+
+
+def test_a_missing_id_is_assigned_once_and_then_kept() -> None:
+    document = reference_document()
+    del document["id"]
+
+    plant = parse_plant(document, new_id=lambda: PLANT_ID.upper())
+
+    assert plant.id == PLANT_ID
+    assert export_plant(plant)["id"] == PLANT_ID
+
+
+def test_defaults() -> None:
+    plant = parse_plant(
+        {
+            "hydronicus": 2,
+            "name": "Minimal",
+            "pumps": {"pump": {"switch": "switch.pump"}},
+            "zones": {"room": {"areas": ["room"], "loops": {"loop": {"pump": "pump"}}}},
+        }
+    )
+
+    assert plant.mode_dwell == 3600
+    assert plant.source is None
+    assert plant.pump("pump").overrun == 180
+    assert plant.pump("pump").min_flow is MinFlow.PATH
+    room = plant.zone("room")
+    assert room.thermostat == DigitalThermostat()
+    assert room.aggregation is Aggregation.MEAN
+    assert room.windows == ()
+    assert (room.window_open_delay, room.window_close_delay, room.max_humidity) == (60, 60, 70)
+    assert room.loops[0].surface_minimum == 20
+    assert room.loops[0].condensation_switch is None
+    assert room.loops[0].modes == frozenset({Mode.HEAT})
+    assert room.loops[0].valves == ()
+    assert export_plant(plant) == {
+        "hydronicus": 2,
+        "id": plant.id,
+        "name": "Minimal",
+        "mode_dwell": 3600,
+        "pumps": {"pump": {"switch": "switch.pump", "overrun": 180}},
+        "zones": {
+            "room": {"areas": ["room"], "loops": {"loop": {"pump": "pump", "modes": ["heat"]}}}
+        },
+    }
+
+
+def test_the_exercise_and_frost_protection_are_on_by_default_and_can_be_changed() -> None:
+    empty = {"hydronicus": 2, "id": PLANT_ID, "name": "Empty"}
+    plant = parse_plant(empty)
+    assert plant.exercise == Exercise(interval=604800, run=60)
+    assert plant.frost_protection == 5.0
+    assert "exercise" not in export_plant(plant) and "frost_protection" not in export_plant(plant)
+
+    changed = parse_plant({**empty, "exercise": {"interval": 86400}, "frost_protection": 10})
+    assert changed.exercise == Exercise(interval=86400, run=60)
+    text = write_plant_file(changed)
+    assert "exercise: {interval: 86400, run: 60}\nfrost_protection: 10\n" in text
+    assert read_plant_file(text) == changed
+
+    off = parse_plant({**empty, "exercise": False, "frost_protection": None})
+    assert (off.exercise, off.frost_protection) == (None, None)
+    nulls = parse_plant({**empty, "exercise": None, "frost_protection": False})
+    assert (nulls.exercise, nulls.frost_protection) == (None, None), "null turns them off too"
+    assert export_plant(off)["exercise"] is False and export_plant(off)["frost_protection"] is False
+    assert read_plant_file(write_plant_file(off)) == off
+
+
+def test_window_detection_is_off_and_the_response_check_on_by_default() -> None:
+    document = {
+        "hydronicus": 2,
+        "id": PLANT_ID,
+        "name": "Flat",
+        "zones": {"room": {"areas": ["room"]}},
+    }
+    room = parse_plant(document).zone("room")
+    assert (room.window_detection, room.response_check) == (None, ResponseCheck(10800, 0.2))
+    assert set(export_plant(parse_plant(document))["zones"]["room"]) == {"areas"}
+
+    def zone(**keys: Any) -> Plant:
+        return parse_plant({**document, "zones": {"room": {"areas": ["room"], **keys}}})
+
+    detecting = zone(window_detection=True, response_check=False)
+    assert detecting.zone("room").window_detection == WindowDetection(0.5, 600, 1800)
+    assert detecting.zone("room").response_check is None
+    assert "window_detection: true\n    response_check: false\n" in write_plant_file(detecting)
+    assert read_plant_file(write_plant_file(detecting)) == detecting
+
+    changed = zone(
+        window_detection={"change": 1, "max_duration": 3600}, response_check={"duration": 21600}
+    )
+    assert changed.zone("room").window_detection == WindowDetection(1, 600, 3600)
+    assert changed.zone("room").response_check == ResponseCheck(21600, 0.2)
+    text = write_plant_file(changed)
+    assert "window_detection: {change: 1, max_duration: 3600}" in text
+    assert "response_check: {duration: 21600}" in text
+    assert read_plant_file(text) == changed
+    nulls = zone(window_detection=None, response_check=None)
+    assert nulls.zone("room").window_detection is None and nulls.zone("room").response_check is None
+    assert zone(window_detection={}).zone("room").window_detection == WindowDetection()
+
+
+def test_an_empty_plant_is_valid() -> None:
+    plant = parse_plant({"hydronicus": 2, "id": PLANT_ID, "name": "Empty"})
+
+    assert (plant.pumps, plant.loops, plant.zones) == ((), (), ())
+    assert write_plant_file(plant) == (
+        f"hydronicus: 2\nid: {PLANT_ID}\nname: Empty\nmode_dwell: 3600\n"
+    )
+
+
+# The shapes the reference plant needs
+
+
+def test_loops_without_a_valve_or_without_a_switched_pump_validate() -> None:
+    plant = reference_plant()
+
+    towel_dryer = plant.loop(LoopRef(None, "towel_dryer"))
+    assert towel_dryer.valves == ()
+    assert towel_dryer.runs == LoopRun(RunKind.WITH_SOURCE)
+    ceiling = plant.loop(LoopRef("living_area", "ceiling"))
+    assert plant.pump(ceiling.pump).switch is None
+    assert plant.pump("heat_pump").min_flow_loops == (LoopRef("living_area", "ceiling"),)
+    validate_plant(plant)
+
+
+def test_a_zone_loop_with_neither_a_valve_nor_a_switched_pump_validates() -> None:
+    document = reference_document()
+    del document["zones"]["basement"]["loops"]["ceiling"]["valves"]
+
+    plant = parse_plant(document)
+
+    assert plant.loop(LoopRef("basement", "ceiling")).valves == ()
+
+
+def test_a_guaranteed_source_driven_pump_needs_no_min_flow_loops() -> None:
+    document = reference_document()
+    document["pumps"]["heat_pump"]["min_flow"] = "guaranteed"
+    del document["pumps"]["heat_pump"]["min_flow_loops"]
+
+    assert parse_plant(document).pump("heat_pump").min_flow is MinFlow.GUARANTEED
+
+
+def test_a_plant_loop_min_flow_path_and_a_loop_surface_sensor_count() -> None:
+    document = reference_document()
+    document["pumps"]["heat_pump"]["min_flow_loops"] = ["heat_pump_bypass"]
+    del document["pumps"]["heat_pump"]["supply_temperature"]
+    document["loops"]["heat_pump_bypass"] = {
+        "pump": "heat_pump",
+        "runs": "with_source",
+        "modes": ["heat"],
+    }
+    for zone in ("basement", "bedroom_area", "living_area"):
+        document["zones"][zone]["loops"]["ceiling"]["surface_temperature"] = (
+            f"sensor.{zone}_ceiling"
+        )
+
+    plant = parse_plant(document)
+
+    assert plant.pump("heat_pump").min_flow_loops == (LoopRef(None, "heat_pump_bypass"),)
+
+
+def test_a_plant_without_a_source_opens_valves_and_runs_switched_pumps() -> None:
+    plant = read_plant_file(TRIAL_PLANT.read_text(encoding="utf-8"))
+
+    assert plant.source is None
+    assert set(plant.outputs().values()) == {OutputRole.PUMP, OutputRole.VALVE}
+    validate_plant(plant)
+
+
+def test_a_zone_with_an_external_thermostat_needs_no_temperature_sensor() -> None:
+    document = reference_document()
+    basement = document["zones"]["basement"]
+    del basement["areas"]
+    basement["thermostat"] = {"external": "climate.basement"}
+    basement["loops"]["ceiling"]["modes"] = ["heat"]
+
+    assert parse_plant(document).zone("basement").thermostat == ExternalThermostat(
+        "climate.basement"
+    )
+
+
+# Rejections
+
+
+def _without_source(document: dict[str, Any]) -> None:
+    del document["source"]
+    del document["loops"]
+
+
+def _set(path: str, value: Any) -> Callable[[dict[str, Any]], None]:
+    def mutate(document: dict[str, Any]) -> None:
+        *parents, last = path.split(".")
+        target: Any = document
+        for key in parents:
+            target = target[int(key)] if isinstance(target, list) else target[key]
+        if isinstance(target, list):
+            target[int(last)] = value
+        else:
+            target[last] = value
+
+    return mutate
+
+
+def _delete(path: str) -> Callable[[dict[str, Any]], None]:
+    def mutate(document: dict[str, Any]) -> None:
+        *parents, last = path.split(".")
+        target: Any = document
+        for key in parents:
+            target = target[key]
+        del target[last]
+
+    return mutate
+
+
+def _both(*mutations: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any]], None]:
+    def mutate(document: dict[str, Any]) -> None:
+        for mutation in mutations:
+            mutation(document)
+
+    return mutate
+
+
+CEILING = "zones.basement.loops.ceiling"
+FLOOR = "zones.living_area.loops.floor"
+HEAT_PUMP = "pumps.heat_pump"
+
+REJECTIONS: list[tuple[str, Callable[[dict[str, Any]], None], str, str]] = [
+    # The whole file
+    ("format missing", _delete("hydronicus"), "hydronicus", "format"),
+    ("format 1", _set("hydronicus", 1), "hydronicus", "Unsupported"),
+    ("format as text", _set("hydronicus", "2"), "hydronicus", "format"),
+    ("unknown top-level key", _set("valves", {}), "valves", "Unknown key"),
+    ("invalid id", _set("id", "home"), "id", "UUID"),
+    ("missing name", _delete("name"), "name", "required"),
+    ("blank name", _set("name", "  "), "name", "text"),
+    ("name as a number", _set("name", 7), "name", "text"),
+    ("negative mode dwell", _set("mode_dwell", -1), "mode_dwell", "negative"),
+    ("boolean mode dwell", _set("mode_dwell", True), "mode_dwell", "number"),
+    ("infinite mode dwell", _set("mode_dwell", float("inf")), "mode_dwell", "number"),
+    ("exercise turned on", _set("exercise", True), "exercise", "false"),
+    ("unknown exercise key", _set("exercise", {"every": 60}), "exercise.every", "Unknown key"),
+    ("zero exercise interval", _set("exercise", {"interval": 0}), "exercise.interval", "least"),
+    (
+        "exercise interval under an hour",
+        _set("exercise", {"interval": 3599}),
+        "exercise.interval",
+        "Must be at least 3600.",
+    ),
+    ("negative exercise run", _set("exercise", {"run": -1}), "exercise.run", "negative"),
+    ("short exercise run", _set("exercise", {"run": 5}), "exercise.run", "Must be at least 10."),
+    ("long exercise run", _set("exercise", {"run": 601}), "exercise.run", "Must be at most 600."),
+    ("frost protection as text", _set("frost_protection", "5"), "frost_protection", "number"),
+    ("frost protection turned on", _set("frost_protection", True), "frost_protection", "number"),
+    ("negative frost protection", _set("frost_protection", -2), "frost_protection", "negative"),
+    ("warm frost protection", _set("frost_protection", 21), "frost_protection", "at most 10."),
+    ("pumps as a list", _set("pumps", ["floor"]), "pumps", "mapping"),
+    ("invalid pump slug", _set("pumps.Floor", {"switch": "switch.x"}), "pumps.Floor", "slug"),
+    ("numeric pump slug", _set("pumps", {1: {"switch": "switch.x"}}), "pumps", "text"),
+    # Source
+    ("unknown source key", _set("source.flow", 35), "source.flow", "Unknown key"),
+    ("source without request", _delete("source.request"), "source.request", "required"),
+    ("request in the wrong domain", _set("source.request", "light.x"), "source.request", "switch"),
+    ("malformed request", _set("source.request", "switch"), "source.request", "entity ID"),
+    ("strategy is not a key", _set("source.strategy", "request"), "source.strategy", "Unknown key"),
+    ("mode without cool", _delete("source.mode.cool"), "source.mode.cool", "required"),
+    ("same mode options", _set("source.mode.cool", "Heat"), "source.mode.cool", "differ"),
+    ("mode option as bool", _set("source.mode.heat", True), "source.mode.heat", "text"),
+    (
+        "mode in the wrong domain",
+        _set("source.mode.entity", "switch.x"),
+        "source.mode.entity",
+        "select",
+    ),
+    # Pumps
+    (
+        "pump with switch and driven_by",
+        _set("pumps.floor.driven_by", "source"),
+        "pumps.floor",
+        "either",
+    ),
+    ("pump with neither", _delete("pumps.floor.switch"), "pumps.floor", "either"),
+    (
+        "driven by a boiler",
+        _set(f"{HEAT_PUMP}.driven_by", "boiler"),
+        f"{HEAT_PUMP}.driven_by",
+        "source",
+    ),
+    ("driven pump overrun", _set(f"{HEAT_PUMP}.overrun", 60), f"{HEAT_PUMP}.overrun", "post_run"),
+    ("driven pump without a source", _without_source, f"{HEAT_PUMP}.driven_by", "source"),
+    ("unknown min flow", _set(f"{HEAT_PUMP}.min_flow", "some"), f"{HEAT_PUMP}.min_flow", "path"),
+    (
+        "path pump without min-flow loops",
+        _delete(f"{HEAT_PUMP}.min_flow_loops"),
+        f"{HEAT_PUMP}.min_flow_loops",
+        "min_flow_loops",
+    ),
+    (
+        "min-flow loop missing",
+        _set(f"{HEAT_PUMP}.min_flow_loops", ["attic.ceiling"]),
+        f"{HEAT_PUMP}.min_flow_loops.0",
+        "no loop",
+    ),
+    (
+        "min-flow loop of another pump",
+        _set(f"{HEAT_PUMP}.min_flow_loops", ["living_area.floor"]),
+        f"{HEAT_PUMP}.min_flow_loops.0",
+        "pump floor",
+    ),
+    (
+        "malformed min-flow loop",
+        _set(f"{HEAT_PUMP}.min_flow_loops", ["a.b.c"]),
+        f"{HEAT_PUMP}.min_flow_loops.0",
+        "<zone>.<loop>",
+    ),
+    (
+        "duplicate min-flow loop",
+        _set(f"{HEAT_PUMP}.min_flow_loops", ["basement.ceiling", "basement.ceiling"]),
+        f"{HEAT_PUMP}.min_flow_loops.1",
+        "twice",
+    ),
+    (
+        "min-flow loops on a switched pump",
+        _set("pumps.floor.min_flow_loops", ["living_area.floor"]),
+        "pumps.floor.min_flow_loops",
+        "source-driven",
+    ),
+    (
+        "min-flow loops on a guaranteed pump",
+        _set(f"{HEAT_PUMP}.min_flow", "guaranteed"),
+        f"{HEAT_PUMP}.min_flow_loops",
+        "guaranteed",
+    ),
+    ("negative overrun", _set("pumps.floor.overrun", -5), "pumps.floor.overrun", "negative"),
+    (
+        "pump switch in the wrong domain",
+        _set("pumps.floor.switch", "valve.x"),
+        "pumps.floor.switch",
+        "switch",
+    ),
+    # Plant loops
+    (
+        "plant loop without runs",
+        _delete("loops.towel_dryer.runs"),
+        "loops.towel_dryer.runs",
+        "required",
+    ),
+    (
+        "unknown runs",
+        _set("loops.towel_dryer.runs", "always"),
+        "loops.towel_dryer.runs",
+        "with_source",
+    ),
+    (
+        "runs mapping with an unknown key",
+        _set("loops.towel_dryer.runs", {"with_zone": ["basement"]}),
+        "loops.towel_dryer.runs.with_zone",
+        "Unknown key",
+    ),
+    (
+        "runs with a missing zone",
+        _set("loops.towel_dryer.runs", {"with_zones": ["attic"]}),
+        "loops.towel_dryer.runs.with_zones.0",
+        "no zone",
+    ),
+    (
+        "runs with no zones",
+        _set("loops.towel_dryer.runs", {"with_zones": []}),
+        "loops.towel_dryer.runs.with_zones",
+        "at least one",
+    ),
+    (
+        "runs with a zone twice",
+        _set("loops.towel_dryer.runs", {"with_zones": ["basement", "basement"]}),
+        "loops.towel_dryer.runs.with_zones.1",
+        "twice",
+    ),
+    (
+        "plant loop with a missing pump",
+        _set("loops.towel_dryer.pump", "boiler"),
+        "loops.towel_dryer.pump",
+        "no pump",
+    ),
+    # Zone loops
+    ("zone loop without a pump", _delete(f"{FLOOR}.pump"), f"{FLOOR}.pump", "required"),
+    ("zone loop with a missing pump", _set(f"{FLOOR}.pump", "attic"), f"{FLOOR}.pump", "no pump"),
+    (
+        "zone loop with runs",
+        _set(f"{CEILING}.runs", "with_source"),
+        f"{CEILING}.runs",
+        "Unknown key",
+    ),
+    ("unknown zone loop key", _set(f"{FLOOR}.pumps", "floor"), f"{FLOOR}.pumps", "Unknown key"),
+    (
+        "invalid zone loop slug",
+        _set("zones.basement.loops.Ceiling", {"pump": "floor"}),
+        "zones.basement.loops.Ceiling",
+        "slug",
+    ),
+    ("no modes", _set(f"{FLOOR}.modes", []), f"{FLOOR}.modes", "at least one"),
+    ("unknown mode", _set(f"{FLOOR}.modes", ["off"]), f"{FLOOR}.modes.0", "heat"),
+    ("mode twice", _set(f"{FLOOR}.modes", ["heat", "heat"]), f"{FLOOR}.modes.1", "twice"),
+    ("modes as text", _set(f"{FLOOR}.modes", "heat"), f"{FLOOR}.modes", "list"),
+    (
+        "cooling without a condensation reference",
+        _delete(f"{HEAT_PUMP}.supply_temperature"),
+        f"{CEILING}.modes",
+        "condensation reference",
+    ),
+    (
+        "cooling a loop of a pump without a supply sensor",
+        _set(f"{FLOOR}.modes", ["heat", "cool"]),
+        f"{FLOOR}.modes",
+        "condensation reference",
+    ),
+    (
+        "supply sensor in the wrong domain",
+        _set(f"{HEAT_PUMP}.supply_temperature", "switch.x"),
+        f"{HEAT_PUMP}.supply_temperature",
+        "sensor",
+    ),
+    (
+        "condensation switch in the wrong domain",
+        _set(f"{HEAT_PUMP}.condensation_switch", "sensor.dew"),
+        f"{HEAT_PUMP}.condensation_switch",
+        "binary_sensor",
+    ),
+    (
+        "loop condensation switch in the wrong domain",
+        _set(f"{CEILING}.condensation_switch", "switch.dew"),
+        f"{CEILING}.condensation_switch",
+        "binary_sensor",
+    ),
+    (
+        "surface minimum without a surface sensor",
+        _set(f"{CEILING}.surface_minimum", 18),
+        f"{CEILING}.surface_minimum",
+        "surface_temperature",
+    ),
+    (
+        "surface minimum turned off without a surface sensor",
+        _set(f"{CEILING}.surface_minimum", None),
+        f"{CEILING}.surface_minimum",
+        "surface_temperature",
+    ),
+    (
+        "surface minimum as text",
+        _both(
+            _set(f"{CEILING}.surface_temperature", "sensor.ceiling"),
+            _set(f"{CEILING}.surface_minimum", "low"),
+        ),
+        f"{CEILING}.surface_minimum",
+        "number",
+    ),
+    # Valves and roles
+    ("valves as text", _set(f"{FLOOR}.valves", "switch.x"), f"{FLOOR}.valves", "list"),
+    (
+        "valve in the wrong domain",
+        _set(f"{FLOOR}.valves.0", "light.x"),
+        f"{FLOOR}.valves.0",
+        "switch",
+    ),
+    ("valve as a number", _set(f"{FLOOR}.valves.0", 3), f"{FLOOR}.valves.0", "entity ID"),
+    (
+        "valve mapping without entity",
+        _set(f"{FLOOR}.valves.0", {"opening_time": 60}),
+        f"{FLOOR}.valves.0.entity",
+        "required",
+    ),
+    (
+        "valve mapping with an unknown key",
+        _set(f"{FLOOR}.valves.0", {"entity": "switch.x", "opening": 60}),
+        f"{FLOOR}.valves.0.opening",
+        "Unknown key",
+    ),
+    (
+        "readiness in the wrong domain",
+        _set(f"{FLOOR}.valves.0", {"entity": "switch.x", "readiness": "sensor.x"}),
+        f"{FLOOR}.valves.0.readiness",
+        "binary_sensor",
+    ),
+    (
+        "valve that is also a pump",
+        _set(f"{FLOOR}.valves.0", "switch.home_underfloor_heating_pump"),
+        f"{FLOOR}.valves.0",
+        "pumps.floor.switch",
+    ),
+    (
+        "valve in two loops",
+        _set(f"{FLOOR}.valves.0", "switch.home_basement_ceiling_heating_valve"),
+        f"{FLOOR}.valves.0",
+        f"{CEILING}.valves.0",
+    ),
+    (
+        "valve twice in one loop",
+        _set(f"{FLOOR}.valves", ["switch.a", "switch.a"]),
+        f"{FLOOR}.valves.1",
+        f"{FLOOR}.valves.0",
+    ),
+    (
+        "pump that is the source request",
+        _set("pumps.floor.switch", "switch.heat_pump_heat_request"),
+        "pumps.floor.switch",
+        "source.request",
+    ),
+    # Zones
+    ("unknown zone key", _set("zones.basement.rooms", []), "zones.basement.rooms", "Unknown key"),
+    ("blank zone name", _set("zones.basement.name", ""), "zones.basement.name", "text"),
+    ("areas as text", _set("zones.basement.areas", "basement"), "zones.basement.areas", "list"),
+    (
+        "area twice",
+        _set("zones.basement.areas", ["basement", "basement"]),
+        "zones.basement.areas.1",
+        "twice",
+    ),
+    ("area as a number", _set("zones.basement.areas", [4]), "zones.basement.areas.0", "area ID"),
+    (
+        "area mapping with an unknown key",
+        _set("zones.basement.areas", [{"area": "basement", "weight": 2}]),
+        "zones.basement.areas.0.weight",
+        "Unknown key",
+    ),
+    (
+        "sensor required as text",
+        _set("zones.basement.temperature", [{"entity": "sensor.a", "required": "yes"}]),
+        "zones.basement.temperature.0.required",
+        "true or false",
+    ),
+    (
+        "sensor max age zero",
+        _set("zones.basement.temperature", [{"entity": "sensor.a", "max_age": 0}]),
+        "zones.basement.temperature.0.max_age",
+        "positive",
+    ),
+    (
+        "sensor twice",
+        _set("zones.basement.humidity", ["sensor.a", "sensor.a"]),
+        "zones.basement.humidity.1",
+        "twice",
+    ),
+    (
+        "median aggregation",
+        _set("zones.basement.aggregation", "median"),
+        "zones.basement.aggregation",
+        "mean",
+    ),
+    (
+        "window in the wrong domain",
+        _set("zones.basement.windows", ["sensor.window"]),
+        "zones.basement.windows.0",
+        "binary_sensor",
+    ),
+    (
+        "window twice",
+        _set("zones.basement.windows", ["binary_sensor.a", "binary_sensor.a"]),
+        "zones.basement.windows.1",
+        "twice",
+    ),
+    (
+        "window detection as a number",
+        _set("zones.basement.window_detection", 1),
+        "zones.basement.window_detection",
+        "Expected true, false, or a mapping",
+    ),
+    (
+        "unknown window detection key",
+        _set("zones.basement.window_detection", {"drop": 1}),
+        "zones.basement.window_detection.drop",
+        "Unknown key",
+    ),
+    (
+        "tiny window detection change",
+        _set("zones.basement.window_detection", {"change": 0.05}),
+        "zones.basement.window_detection.change",
+        "Must be at least 0.1.",
+    ),
+    (
+        "long window detection period",
+        _set("zones.basement.window_detection", {"within": 7200}),
+        "zones.basement.window_detection.within",
+        "Must be at most 3600.",
+    ),
+    (
+        "short window detection maximum",
+        _set("zones.basement.window_detection", {"max_duration": 60}),
+        "zones.basement.window_detection.max_duration",
+        "Must be at least 300.",
+    ),
+    (
+        "response check as text",
+        _set("zones.basement.response_check", "on"),
+        "zones.basement.response_check",
+        "Expected true, false, or a mapping",
+    ),
+    (
+        "short response check",
+        _set("zones.basement.response_check", {"duration": 600}),
+        "zones.basement.response_check.duration",
+        "Must be at least 1800.",
+    ),
+    (
+        "large response progress",
+        _set("zones.basement.response_check", {"progress": 3}),
+        "zones.basement.response_check.progress",
+        "Must be at most 2.",
+    ),
+    (
+        "negative window delay",
+        _set("zones.basement.window_open_delay", -1),
+        "zones.basement.window_open_delay",
+        "negative",
+    ),
+    (
+        "window close delay turned off",
+        _set("zones.basement.window_close_delay", None),
+        "zones.basement.window_close_delay",
+        "number",
+    ),
+    (
+        "humidity limit above 100",
+        _set("zones.basement.max_humidity", 101),
+        "zones.basement.max_humidity",
+        "at most 100",
+    ),
+    (
+        "humidity limit that blocks cooling for good",
+        _set("zones.basement.max_humidity", 0),
+        "zones.basement.max_humidity",
+        "Must be at least 30.",
+    ),
+    (
+        "digital thermostat without a temperature source",
+        _delete("zones.basement.areas"),
+        "zones.basement",
+        "temperature sensor or an area",
+    ),
+    (
+        "cooling zone without a humidity source",
+        _both(_delete("zones.basement.areas"), _set("zones.basement.temperature", ["sensor.b"])),
+        "zones.basement.humidity",
+        "humidity sensor or an area",
+    ),
+    (
+        "cooling zone without a temperature source",
+        _both(
+            _delete("zones.basement.areas"),
+            _set("zones.basement.humidity", ["sensor.b_rh"]),
+            _set("zones.basement.thermostat", {"external": "climate.basement"}),
+        ),
+        "zones.basement.temperature",
+        "temperature sensor or an area",
+    ),
+    (
+        "zone a cooling plant loop runs with, without a humidity source",
+        _both(
+            _set("zones.basement.loops.ceiling.modes", ["heat"]),
+            _delete("zones.basement.areas"),
+            _set("zones.basement.temperature", ["sensor.b"]),
+            _set(
+                "loops.hall",
+                {
+                    "valves": ["switch.hall_valve"],
+                    "pump": "heat_pump",
+                    "runs": {"with_zones": ["bedroom_area", "basement"]},
+                    "modes": ["heat", "cool"],
+                },
+            ),
+        ),
+        "zones.basement.humidity",
+        "because loop hall cools with it",
+    ),
+    (
+        "zone a cooling plant loop runs with, without a temperature source",
+        _both(
+            _set("zones.basement.loops.ceiling.modes", ["heat"]),
+            _delete("zones.basement.areas"),
+            _set("zones.basement.humidity", ["sensor.b_rh"]),
+            _set("zones.basement.thermostat", {"external": "climate.basement"}),
+            _set(
+                "loops.hall",
+                {"pump": "heat_pump", "runs": {"with_zones": ["basement"]}, "modes": ["cool"]},
+            ),
+        ),
+        "zones.basement.temperature",
+        "Zone basement needs a temperature sensor or an area",
+    ),
+    (
+        "zone a cooling plant loop runs with the source, without a humidity source",
+        _both(
+            _set("zones.basement.loops.ceiling.modes", ["heat"]),
+            _delete("zones.basement.areas"),
+            _set("zones.basement.temperature", ["sensor.b"]),
+            _set("loops.towel_dryer.modes", ["heat", "cool"]),
+            _set("pumps.towel_dryer.supply_temperature", "sensor.towel_supply"),
+        ),
+        "zones.basement.humidity",
+        "because loop towel_dryer cools with it",
+    ),
+    (
+        "thermostat with both kinds",
+        _set("zones.basement.thermostat", {"digital": {}, "external": "climate.x"}),
+        "zones.basement.thermostat",
+        "digital or external",
+    ),
+    (
+        "thermostat as text",
+        _set("zones.basement.thermostat", "climate.x"),
+        "zones.basement.thermostat",
+        "digital or external",
+    ),
+    (
+        "external thermostat in the wrong domain",
+        _set("zones.basement.thermostat", {"external": "sensor.x"}),
+        "zones.basement.thermostat.external",
+        "climate",
+    ),
+    (
+        "unknown digital thermostat key",
+        _set("zones.basement.thermostat", {"digital": {"hysteresis": 1}}),
+        "zones.basement.thermostat.digital.hysteresis",
+        "Unknown key",
+    ),
+    (
+        "unknown preset",
+        _set("zones.basement.thermostat", {"digital": {"presets": {"boost": 24}}}),
+        "zones.basement.thermostat.digital.presets.boost",
+        "Unknown key",
+    ),
+    (
+        "preset as text",
+        _set("zones.basement.thermostat", {"digital": {"presets": {"eco": "low"}}}),
+        "zones.basement.thermostat.digital.presets.eco",
+        "number",
+    ),
+    (
+        "proportional band is not a key",
+        _set("zones.basement.thermostat", {"digital": {"proportional_band": 1}}),
+        "zones.basement.thermostat.digital.proportional_band",
+        "Unknown key",
+    ),
+    (
+        "negative target is allowed but not NaN",
+        _set("zones.basement.thermostat", {"digital": {"target": float("nan")}}),
+        "zones.basement.thermostat.digital.target",
+        "number",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "path", "fragment"),
+    [pytest.param(mutate, path, fragment, id=name) for name, mutate, path, fragment in REJECTIONS],
+)
+def test_rejections_name_the_path(
+    mutate: Callable[[dict[str, Any]], None], path: str, fragment: str
+) -> None:
+    document = deepcopy(reference_document())
+    mutate(document)
+
+    with pytest.raises(PlantFileError) as caught:
+        parse_plant(document)
+
+    assert caught.value.path == path
+    assert fragment in caught.value.message
+    assert str(caught.value) == f"{path}: {caught.value.message}"
+
+
+def test_a_document_that_is_not_a_mapping_is_rejected_at_the_top() -> None:
+    with pytest.raises(PlantFileError) as caught:
+        parse_plant(["hydronicus", 2])
+
+    assert caught.value.path == ""
+    assert str(caught.value) == caught.value.message
+
+
+def test_a_loop_that_runs_with_the_source_needs_a_source() -> None:
+    document = {
+        "hydronicus": 2,
+        "name": "No source",
+        "pumps": {"dryer": {"switch": "switch.dryer"}},
+        "loops": {"dryer": {"pump": "dryer", "runs": "with_source"}},
+    }
+
+    with pytest.raises(PlantFileError) as caught:
+        parse_plant(document)
+
+    assert caught.value.path == "loops.dryer.runs"
+
+
+def test_validate_plant_checks_a_plant_built_by_hand() -> None:
+    plant = reference_plant()
+    broken = Plant(
+        id=plant.id,
+        name=plant.name,
+        pumps=(*plant.pumps, plant.pumps[1]),
+        zones=plant.zones,
+        source=plant.source,
+        loops=plant.loops,
+    )
+
+    with pytest.raises(PlantFileError) as caught:
+        validate_plant(broken)
+
+    assert caught.value.path == "pumps.floor"
+    assert "twice" in caught.value.message
+
+
+def test_validate_plant_rejects_a_zone_loop_that_runs_with_the_source() -> None:
+    plant = reference_plant()
+    zone = plant.zones[0]
+    loop = zone.loops[0]
+    broken_loop = type(loop)(
+        ref=loop.ref,
+        valves=loop.valves,
+        pump=loop.pump,
+        modes=loop.modes,
+        runs=LoopRun(RunKind.WITH_SOURCE),
+    )
+    broken_zone = type(zone)(slug=zone.slug, areas=zone.areas, loops=(broken_loop,))
+    broken = Plant(
+        id=plant.id,
+        name=plant.name,
+        source=plant.source,
+        pumps=plant.pumps,
+        loops=plant.loops,
+        zones=(broken_zone, *plant.zones[1:]),
+    )
+
+    with pytest.raises(PlantFileError) as caught:
+        validate_plant(broken)
+
+    assert caught.value.path == f"{CEILING}.runs"
+
+
+# YAML
+
+
+def test_yaml_errors_and_duplicate_keys_are_plant_file_errors() -> None:
+    with pytest.raises(PlantFileError, match="not valid YAML"):
+        load_yaml("hydronicus: [2")
+    with pytest.raises(PlantFileError, match="duplicate key 'floor'"):
+        load_yaml("pumps:\n  floor: {switch: switch.a}\n  floor: {switch: switch.b}\n")
+    with pytest.raises(PlantFileError, match="empty"):
+        read_plant_file("")
+
+
+def test_yaml_quotes_text_that_would_read_as_another_type() -> None:
+    document = {"name": "On", "ids": ["2026-01-01", "12"], "nested": {"a": "b: c"}}
+
+    assert yaml.safe_load(dump_yaml(document)) == document
+
+
+# Storage
+
+
+def test_storage_splits_the_plant_into_entry_data_and_zone_subentries() -> None:
+    plant = reference_plant()
+
+    entry_data, zones = to_storage(plant)
+
+    assert "zones" not in entry_data
+    assert entry_data["hydronicus"] == PLANT_FILE_FORMAT
+    assert entry_data["id"] == PLANT_ID
+    assert list(zones) == ["basement", "bedroom_area", "living_area"]
+    assert zones["living_area"]["slug"] == "living_area"
+    assert [loop["slug"] for loop in zones["living_area"]["loops"]] == ["ceiling", "floor"]
+    assert json.loads(json.dumps([entry_data, zones])) == [entry_data, zones]
+    assert from_storage(entry_data, zones) == plant
+
+
+def test_storage_is_the_plant_file_split_at_zones_with_objects_listed() -> None:
+    document = export_plant(reference_plant())
+    entry_data, zones = to_storage(reference_plant())
+
+    def listed(table: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"slug": slug, **item} for slug, item in table.items()]
+
+    assert entry_data == {
+        **{key: value for key, value in document.items() if key != "zones"},
+        "pumps": listed(document["pumps"]),
+        "loops": listed(document["loops"]),
+    }
+    assert zones == {
+        slug: {"slug": slug, **data, "loops": listed(data["loops"])}
+        for slug, data in document["zones"].items()
+    }
+
+
+# Pumps, plant loops, and a zone's loops in an order that sorting the keys changes.
+UNSORTED = """\
+hydronicus: 2
+id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+name: Home
+mode_dwell: 3600
+pumps:
+  radiators:
+    switch: switch.radiator_pump
+    overrun: 180
+  floor:
+    switch: switch.floor_pump
+    overrun: 180
+loops:
+  towel_dryer:
+    pump: radiators
+    runs: {with_zones: [study]}
+    modes: [heat]
+  garage:
+    valves: [switch.garage_valve]
+    pump: floor
+    runs: {with_zones: [study]}
+    modes: [heat]
+zones:
+  study:
+    temperature: [sensor.study]
+    loops:
+      radiator:
+        valves: [switch.study_radiator_valve]
+        pump: radiators
+        modes: [heat]
+      floor:
+        valves: [switch.study_floor_valve]
+        pump: floor
+        modes: [heat]
+  attic:
+    temperature: [sensor.attic]
+"""
+
+
+def test_storage_keeps_the_order_of_pumps_and_loops_through_sorted_keys() -> None:
+    """Home Assistant stores config entries with sorted keys; the order must survive.
+
+    ``ConfigEntry.as_storage_fragment`` writes the entry, its data and its
+    subentries' data, with ``json_bytes_sorted``, while the subentries stay a
+    list in their own order.
+    """
+    plant = read_plant_file(UNSORTED)
+    assert write_plant_file(plant) == UNSORTED
+    entry_data, zones = to_storage(plant)
+
+    stored_data = json.loads(json.dumps(entry_data, sort_keys=True))
+    stored_zones = {
+        slug: json.loads(json.dumps(data, sort_keys=True)) for slug, data in zones.items()
+    }
+
+    assert write_plant_file(from_storage(stored_data, stored_zones)) == UNSORTED
+
+
+def test_storage_rejects_inconsistent_data() -> None:
+    entry_data, zones = to_storage(reference_plant())
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage({**entry_data, "zones": {}}, zones)
+    assert caught.value.path == "zones"
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage(entry_data, {**zones, "attic": {**zones["basement"]}})
+    assert caught.value.path == "zones.attic.slug"
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage(entry_data, {"basement": ["not", "a", "mapping"]})
+    assert caught.value.path == "zones.basement"
+
+    without_id = {key: value for key, value in entry_data.items() if key != "id"}
+    with pytest.raises(PlantFileError) as caught:
+        from_storage(without_id, zones)
+    assert caught.value.path == "id"
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage({**entry_data, "pumps": {"floor": {"switch": "switch.floor"}}}, zones)
+    assert (caught.value.path, caught.value.message) == ("pumps", "Expected a list.")
+
+    with pytest.raises(PlantFileError) as caught:
+        from_storage({**entry_data, "pumps": [{"switch": "switch.floor"}]}, zones)
+    assert caught.value.path == "pumps.0.slug"
+
+    living = zones["living_area"]
+    twice = {**living, "loops": [living["loops"][0], living["loops"][0]]}
+    with pytest.raises(PlantFileError) as caught:
+        from_storage(entry_data, {**zones, "living_area": twice})
+    assert caught.value.path == "zones.living_area.loops.ceiling"
+
+
+def test_removing_a_zone_subentry_leaves_the_rest_of_the_plant() -> None:
+    entry_data, zones = to_storage(reference_plant())
+    del zones["bedroom_area"]
+
+    plant = from_storage(entry_data, zones)
+
+    assert [zone.slug for zone in plant.zones] == ["basement", "living_area"]
+
+
+# Bound entities
+
+
+def test_entity_paths_name_where_each_entity_is_bound() -> None:
+    document = load_yaml(EVERY_KEY)
+    document["source"]["mode"] = {"entity": "select.boiler_mode", "heat": "h", "cool": "c"}
+    paths = entity_paths(parse_plant(document))
+
+    assert paths == {
+        "switch.boiler_request": "source.request",
+        "select.boiler_mode": "source.mode.entity",
+        "sensor.primary_supply": "pumps.primary.supply_temperature",
+        "binary_sensor.primary_dew": "pumps.primary.condensation_switch",
+        "switch.secondary_pump": "pumps.secondary.switch",
+        "valve.garage": "loops.garage.valves.0",
+        "binary_sensor.garage_open": "loops.garage.valves.0.readiness",
+        "sensor.garage_floor": "loops.garage.surface_temperature",
+        "binary_sensor.garage_dew": "loops.garage.condensation_switch",
+        "sensor.office": "zones.office.temperature.0",
+        "sensor.office_desk": "zones.office.temperature.1",
+        "sensor.office_humidity": "zones.office.humidity.0",
+        "binary_sensor.office_window": "zones.office.windows.0",
+        "binary_sensor.office_door": "zones.office.windows.1",
+        "switch.office_valve_a": "zones.office.loops.radiators.valves.0",
+        "switch.office_valve_b": "zones.office.loops.radiators.valves.1",
+        "sensor.lab": "zones.lab.temperature.0",
+        "sensor.lab_humidity": "zones.lab.humidity.0",
+        "climate.lab": "zones.lab.thermostat.external",
+    }
+
+
+def test_more_rejections_of_values_a_file_can_hold() -> None:
+    cases: list[tuple[Any, str]] = [
+        ({**reference_document(), "hydronicus": 3}, "hydronicus"),
+        ({**reference_document(), "id": 5}, "id"),
+        ({**reference_document(), "source": {1: "x"}}, "source"),
+    ]
+    for document, path in cases:
+        with pytest.raises(PlantFileError) as caught:
+            parse_plant(document)
+        assert caught.value.path == path
+    with pytest.raises(PlantFileError, match="unhashable key"):
+        load_yaml("? [a, b]\n: 1\n")
+
+
+def test_validate_plant_rejects_run_and_mode_values_a_file_cannot_hold() -> None:
+    plant = reference_plant()
+    dryer = plant.loops[0]
+    for broken_loop, path in (
+        (replace(dryer, runs=LoopRun(RunKind.ZONE)), "loops.towel_dryer.runs"),
+        (replace(dryer, modes=frozenset({Mode.OFF})), "loops.towel_dryer.modes"),
+        (replace(dryer, modes=frozenset()), "loops.towel_dryer.modes"),
+    ):
+        with pytest.raises(PlantFileError) as caught:
+            validate_plant(replace(plant, loops=(broken_loop,)))
+        assert caught.value.path == path
+
+
+def test_a_zone_without_loops_runs_a_plant_loop() -> None:
+    document = load_yaml(EVERY_KEY)
+    del document["zones"]["lab"]["loops"]
+    plant = parse_plant(document)
+
+    assert plant.zone("lab").loops == ()
+    assert "loops" not in export_plant(plant)["zones"]["lab"]
+    assert write_plant_file(read_plant_file(write_plant_file(plant))) == write_plant_file(plant)
+
+
+def test_a_source_without_a_mode_select_binds_only_its_request() -> None:
+    plant = read_plant_file(EVERY_KEY)
+
+    assert plant.outputs() == {
+        "switch.boiler_request": OutputRole.SOURCE_REQUEST,
+        "switch.secondary_pump": OutputRole.PUMP,
+        "valve.garage": OutputRole.VALVE,
+        "switch.office_valve_a": OutputRole.VALVE,
+        "switch.office_valve_b": OutputRole.VALVE,
+    }
+    assert "source.mode.entity" not in entity_paths(plant).values()
+
+
+# Paths in words
+
+
+@pytest.mark.parametrize(
+    ("path", "words"),
+    [
+        ("", "The plant file"),
+        ("name", "Plant name"),
+        ("mode_dwell", "Mode dwell"),
+        ("exercise.interval", "Exercise, interval"),
+        ("frost_protection", "Frost protection"),
+        ("hydronicus", "Plant file format"),
+        ("source.mode.cool", "Source, mode select, cool option"),
+        ("source.request", "Source, request switch"),
+        ("pumps.heat_pump.min_flow_loops.0", "Pump Heat pump, min-flow loop 1"),
+        ("pumps.heat_pump.supply_temperature", "Pump Heat pump, supply temperature sensor"),
+        ("loops.towel_dryer.runs.with_zones.1", "Plant loop Towel dryer, runs with, zone 2"),
+        ("zones.living_area.loops.floor.pump", "Zone Living area, loop Floor, pump"),
+        ("zones.living_area.loops.floor.valves.0", "Zone Living area, loop Floor, valve 1"),
+        (
+            "zones.living_area.loops.floor.valves.0.readiness",
+            "Zone Living area, loop Floor, valve 1, readiness sensor",
+        ),
+        ("zones.basement.areas.1", "Zone Basement, area 2"),
+        ("zones.basement.temperature.0", "Zone Basement, temperature sensor 1"),
+        ("zones.basement.humidity", "Zone Basement, humidity sensors"),
+        ("zones.basement.windows.0", "Zone Basement, window 1"),
+        ("zones.basement.max_humidity", "Zone Basement, maximum humidity"),
+        ("zones.basement.window_close_delay", "Zone Basement, window close delay"),
+        (
+            "zones.basement.loops.ceiling.condensation_switch",
+            "Zone Basement, loop Ceiling, condensation switch",
+        ),
+        (
+            "zones.basement.loops.ceiling.surface_minimum",
+            "Zone Basement, loop Ceiling, surface minimum",
+        ),
+        (
+            "zones.basement.thermostat.digital.presets.eco",
+            "Zone Basement, thermostat, digital, presets, eco",
+        ),
+        ("zones.nowhere.odd_key", "Zone Nowhere, odd key"),
+        ("pumps", "Pumps"),
+    ],
+)
+def test_a_path_reads_in_words_with_the_names_of_its_objects(path: str, words: str) -> None:
+    document = load_yaml(REFERENCE_PLANT.read_text(encoding="utf-8"))
+    document["zones"]["basement"]["name"] = "Basement"
+    document["pumps"]["heat_pump"]["name"] = "Heat pump"
+
+    assert describe_path(document, path) == words
+
+
+def test_a_path_names_an_object_by_its_name() -> None:
+    document = {"pumps": {"p1": {"name": "Main circulator"}}, "zones": "not a mapping"}
+
+    assert describe_path(document, "pumps.p1.switch") == "Pump Main circulator, switch"
+    assert describe_path(document, "zones.study") == "Zone Study"
+
+
+def advanced_document() -> dict[str, Any]:
+    """Independent comfort policy and equipment feedback on the reference plant."""
+    document = reference_document()
+    document["source"].update(
+        {
+            "running_sensor": "binary_sensor.source_running",
+            "feedback_timeout": 180,
+            "supply": {
+                "entity": "number.supply_target",
+                "outdoor_sensor": "sensor.outdoor",
+                "heat_temperature": 36,
+                "cool_temperature": 19,
+                "minimum": 6,
+                "maximum": 55,
+                "tolerance": 0.2,
+                "outdoor_cold": -15,
+                "outdoor_warm": 18,
+                "heat_cold": 48,
+                "heat_warm": 26,
+                "max_age": 1800,
+            },
+        }
+    )
+    document["pumps"]["heat_pump"].update(
+        {
+            "running_sensor": "binary_sensor.pump_running",
+            "flow_sensor": "binary_sensor.flow",
+        }
+    )
+    document["zones"]["basement"]["thermostat"] = {
+        "digital": {
+            "target": 20,
+            "cool_target": 25,
+            "presets": {"comfort": 21, "eco": 18, "away": 16},
+            "cool_presets": {"comfort": 24, "eco": 27, "away": 30},
+            "schedule": {
+                "entity": "schedule.comfort",
+                "heat_setback": 3,
+                "cool_setback": 4,
+                "max_early_start": 7200,
+                "heating_rate": 0.7,
+                "cooling_rate": 1.2,
+            },
+        }
+    }
+    return document
+
+
+def test_advanced_controls_roundtrip_through_yaml_and_sorted_storage() -> None:
+    plant = parse_plant(advanced_document())
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.supply.heat_temperature == 36
+    assert plant.source.supply.max_age == 1800
+    assert plant.outputs()["number.supply_target"] is OutputRole.SOURCE_SETPOINT
+    paths = entity_paths(plant)
+    assert paths["number.supply_target"] == "source.supply.entity"
+    assert paths["sensor.outdoor"] == "source.supply.outdoor_sensor"
+    assert paths["binary_sensor.source_running"] == "source.running_sensor"
+    assert paths["binary_sensor.pump_running"] == "pumps.heat_pump.running_sensor"
+    assert paths["binary_sensor.flow"] == "pumps.heat_pump.flow_sensor"
+    assert paths["schedule.comfort"] == "zones.basement.thermostat.digital.schedule.entity"
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("source.running_sensor", "sensor.running"),
+        ("source.feedback_timeout", 0),
+        ("source.feedback_timeout", float("inf")),
+        ("pumps.heat_pump.running_sensor", "switch.running"),
+        ("pumps.heat_pump.flow_sensor", "sensor.flow"),
+        ("source.supply.entity", "input_number.target"),
+        ("source.supply.outdoor_sensor", "binary_sensor.outdoor"),
+        ("source.supply.minimum", float("nan")),
+        ("source.supply.maximum", float("inf")),
+        ("source.supply.maximum", 6),
+        ("source.supply.tolerance", 0),
+        ("source.supply.tolerance", 100),
+        ("source.supply.max_age", 0),
+        ("source.supply.outdoor_warm", -15),
+        ("source.supply.heat_warm", 50),
+        ("source.supply.heat_temperature", 70),
+        ("source.supply.cool_temperature", -10),
+        ("zones.basement.thermostat.digital.cool_target", float("nan")),
+        ("zones.basement.thermostat.digital.presets.schedule", 22),
+        ("zones.basement.thermostat.digital.cool_presets.schedule", 22),
+        ("zones.basement.thermostat.digital.cool_presets.eco", float("inf")),
+        ("zones.basement.thermostat.digital.schedule.entity", "calendar.comfort"),
+        ("zones.basement.thermostat.digital.schedule.heat_setback", -1),
+        ("zones.basement.thermostat.digital.schedule.cool_setback", float("nan")),
+        ("zones.basement.thermostat.digital.schedule.heat_setback", 10.5),
+        ("zones.basement.thermostat.digital.schedule.cool_setback", 11),
+        ("zones.basement.thermostat.digital.schedule.max_early_start", 21601),
+        ("zones.basement.thermostat.digital.schedule.heating_rate", 0),
+        ("zones.basement.thermostat.digital.schedule.cooling_rate", -1),
+    ],
+)
+def test_advanced_controls_reject_unsafe_or_invalid_values(path: str, value: object) -> None:
+    document = advanced_document()
+    _set(path, value)(document)
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+
+
+def test_default_optional_controls_roundtrip_without_optional_observations() -> None:
+    document = reference_document()
+    document["source"]["supply"] = {"entity": "number.supply_target"}
+    document["pumps"]["floor"]["flow_sensor"] = "binary_sensor.floor_flow"
+    document["zones"]["basement"]["thermostat"] = {
+        "digital": {"schedule": {"entity": "schedule.comfort", "max_early_start": 21600}}
+    }
+    plant = parse_plant(document)
+    assert export_plant(plant)["source"]["supply"] == {"entity": "number.supply_target"}
+    assert parse_plant(export_plant(plant)) == plant
+
+
+def predictive_document() -> dict[str, Any]:
+    """Opt-in recovery and weather bindings independent of source control."""
+    document = advanced_document()
+    document["weather"] = {
+        "entity": "weather.home",
+        "outdoor_sensor": "sensor.measured_outdoor",
+        "max_age": 3600,
+    }
+    document["zones"]["basement"]["thermostat"]["digital"].update(
+        learning="assist", weather_aware=True
+    )
+    return document
+
+
+def test_predictive_settings_roundtrip_and_bind_only_inputs() -> None:
+    plant = parse_plant(predictive_document())
+    assert plant.weather == WeatherConfig("weather.home", "sensor.measured_outdoor", 3600)
+    thermostat = plant.zone("basement").thermostat
+    assert isinstance(thermostat, DigitalThermostat)
+    assert thermostat.learning is LearningMode.ASSIST
+    assert thermostat.weather_aware is True
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    paths = entity_paths(plant)
+    assert paths["weather.home"] == "weather.entity"
+    assert paths["sensor.measured_outdoor"] == "weather.outdoor_sensor"
+    assert "weather.home" not in plant.outputs()
+    assert "sensor.measured_outdoor" not in plant.outputs()
+
+
+def test_learning_defaults_off_and_observation_needs_no_schedule_or_source() -> None:
+    document: dict[str, Any] = {
+        "hydronicus": 2,
+        "name": "Circuit control",
+        "pumps": {"floor": {"switch": "switch.floor_pump"}},
+        "zones": {
+            "room": {
+                "temperature": ["sensor.room"],
+                "loops": {"floor": {"pump": "floor", "valves": ["switch.room_valve"]}},
+            }
+        },
+    }
+    baseline = parse_plant(document)
+    assert baseline.weather is None
+    thermostat = baseline.zone("room").thermostat
+    assert isinstance(thermostat, DigitalThermostat)
+    assert thermostat.learning is LearningMode.OFF
+    assert thermostat.weather_aware is False
+    assert "thermostat" not in export_plant(baseline)["zones"]["room"]
+    document["zones"]["room"]["thermostat"] = {"digital": {"learning": "observe"}}
+    document["weather"] = {"entity": "weather.home"}
+    plant = parse_plant(document)
+    assert plant.source is None
+    assert plant.weather == WeatherConfig("weather.home")
+    assert export_plant(plant)["weather"] == {"entity": "weather.home"}
+    assert parse_plant(export_plant(plant)) == plant
+    document["zones"]["room"]["thermostat"]["digital"].update(
+        learning="assist", weather_aware=True, schedule={"entity": "schedule.room"}
+    )
+    assisted = parse_plant(document)
+    assert assisted.source is None
+    assert assisted.outputs() == baseline.outputs()
+    assert parse_plant(export_plant(assisted)) == assisted
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ("weather.entity", "sensor.forecast"),
+        ("weather.outdoor_sensor", "input_number.outdoor"),
+        ("weather.max_age", 0),
+        ("weather.max_age", float("inf")),
+        ("weather.max_age", True),
+        ("zones.basement.thermostat.digital.learning", "automatic"),
+        ("zones.basement.thermostat.digital.learning", True),
+        ("zones.basement.thermostat.digital.weather_aware", "true"),
+    ],
+)
+def test_predictive_settings_reject_invalid_values(path: str, value: object) -> None:
+    document = predictive_document()
+    _set(path, value)(document)
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        (_delete("zones.basement.thermostat.digital.schedule"), "learning"),
+        (_delete("weather"), "weather_aware"),
+        (_set("zones.basement.thermostat.digital.learning", "observe"), "weather_aware"),
+        (_set("zones.basement.thermostat.digital.learning", "off"), "weather_aware"),
+    ],
+)
+def test_predictive_settings_reject_missing_prerequisites(
+    change: Callable[[dict[str, Any]], None], field: str
+) -> None:
+    document = predictive_document()
+    change(document)
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == f"zones.basement.thermostat.digital.{field}"
+
+
+def cycling_document() -> dict[str, Any]:
+    """The reference plant with every source cycling limit and a weighted loop."""
+    document = reference_document()
+    document["source"].update(
+        {
+            "health_sensor": "binary_sensor.heat_pump_healthy",
+            "max_starts_per_hour": 3,
+            "start_threshold": 1.5,
+            "heat_sink_loops": ["living_area.floor"],
+            "hold_after_demand": 14400,
+            "heat_sink_overshoot": 0.5,
+            "handover_sensor": "binary_sensor.heat_pump_handover",
+            "write_interval": 300,
+        }
+    )
+    document["zones"]["living_area"]["loops"]["floor"]["weight"] = 2.5
+    return document
+
+
+def test_source_cycling_limits_roundtrip_through_yaml_and_sorted_storage() -> None:
+    plant = parse_plant(cycling_document())
+
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+    source = plant.source
+    assert source is not None
+    assert source.max_starts_per_hour == 3
+    assert source.start_threshold == 1.5
+    assert source.heat_sink_loops == (LoopRef("living_area", "floor"),)
+    assert (source.hold_after_demand, source.heat_sink_overshoot) == (14400.0, 0.5)
+    assert entity_paths(plant)["binary_sensor.heat_pump_handover"] == "source.handover_sensor"
+    assert source.write_interval == 300.0
+    assert source.write_limited(source.request) and not source.write_limited("switch.other")
+    assert plant.loop(LoopRef("living_area", "floor")).weight == 2.5
+    assert plant.loop(LoopRef("living_area", "ceiling")).weight == 1.0
+    assert entity_paths(plant)["binary_sensor.heat_pump_healthy"] == "source.health_sensor"
+    assert "binary_sensor.heat_pump_healthy" not in plant.outputs()
+    exported = export_plant(plant)
+    assert exported["zones"]["living_area"]["loops"]["floor"]["weight"] == 2.5
+    assert "weight" not in exported["zones"]["living_area"]["loops"]["ceiling"]
+
+
+def test_source_cycling_limits_are_off_unless_set() -> None:
+    source = parse_plant(reference_document()).source
+
+    assert source is not None
+    assert source.max_starts_per_hour is None
+    assert source.start_threshold is None
+    assert source.heat_sink_loops == ()
+    assert source.health_sensor is None
+    assert source.hold_after_demand is None
+    assert source.heat_sink_overshoot == 1.0
+    assert not {
+        "max_starts_per_hour",
+        "start_threshold",
+        "heat_sink_loops",
+        "hold_after_demand",
+        "heat_sink_overshoot",
+        "health_sensor",
+        "handover_sensor",
+        "write_interval",
+    } & set(export_plant(parse_plant(reference_document()))["source"])
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        ("source.max_starts_per_hour", 0, "positive"),
+        ("source.max_starts_per_hour", 2.5, "whole number"),
+        ("source.max_starts_per_hour", True, "number"),
+        ("source.start_threshold", 0, "positive"),
+        ("source.health_sensor", "switch.heat_pump_healthy", "binary_sensor"),
+        ("source.handover_sensor", "sensor.heat_pump_handover", "binary_sensor"),
+        ("source.write_interval", 0, "positive"),
+        ("source.heat_sink_loops", "living_area.floor", "list"),
+        ("source.heat_sink_loops.0", "attic.floor", "no loop"),
+        ("source.heat_sink_loops.1", "living_area.floor", "listed twice"),
+        ("source.heat_sink_loops.0", "towel_dryer", "already runs with the source"),
+        ("source.hold_after_demand", -1, "negative"),
+        ("source.heat_sink_overshoot", -0.5, "negative"),
+        ("zones.living_area.loops.floor.weight", 0, "positive"),
+        ("loops.towel_dryer.weight", float("inf"), "finite"),
+    ],
+)
+def test_source_cycling_limits_reject_invalid_values(
+    path: str, value: object, message: str
+) -> None:
+    document = cycling_document()
+    if path == "source.heat_sink_loops.1":
+        document["source"]["heat_sink_loops"] = ["living_area.floor", value]
+    elif path == "source.heat_sink_loops.0":
+        document["source"]["heat_sink_loops"] = [value]
+    else:
+        _set(path, value)(document)
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize("key", ["hold_after_demand", "handover_sensor"])
+def test_a_hold_after_demand_and_a_handover_need_heat_sink_loops(key: str) -> None:
+    document = cycling_document()
+    del document["source"]["heat_sink_loops"]
+    for other in {"hold_after_demand", "handover_sensor"} - {key}:
+        del document["source"][other]
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == f"source.{key}"
+    assert "heat_sink_loops" in str(error.value)
+
+
+def test_a_heat_sink_must_heat() -> None:
+    plant = parse_plant(cycling_document())
+    floor = plant.loop(LoopRef("living_area", "floor"))
+    zones = tuple(
+        replace(
+            zone,
+            loops=tuple(
+                replace(loop, modes=frozenset({Mode.COOL}), surface_temperature="sensor.surface")
+                if loop == floor
+                else loop
+                for loop in zone.loops
+            ),
+        )
+        for zone in plant.zones
+    )
+
+    with pytest.raises(PlantFileError) as error:
+        validate_plant(replace(plant, zones=zones))
+    assert error.value.path == "source.heat_sink_loops.0"
+    assert "does not heat" in str(error.value)
+
+
+def test_a_heat_sink_path_reads_in_words() -> None:
+    assert (
+        describe_path(cycling_document(), "source.heat_sink_loops.0") == "Source, heat sink loop 1"
+    )
+
+
+def test_a_weather_curve_and_a_supply_roundtrip_and_offer_their_heating_supplies() -> None:
+    document = reference_document()
+    document["source"]["weather_curve"] = {"switch": "switch.weather_curve"}
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "heat_temperature": 33,
+        "cool_temperature": 19,
+        "minimum": 16,
+        "maximum": 50,
+        "step": 1,
+    }
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.weather_curve == WeatherCurve("switch.weather_curve")
+    assert plant.source.supply.step == 1.0
+    assert plant.source.heating_supplies == (HeatingSupply.SOURCE_CURVE, HeatingSupply.FIXED)
+    assert plant.source.default_heating_supply is HeatingSupply.SOURCE_CURVE
+    assert plant.outputs()["switch.weather_curve"] is OutputRole.SOURCE_WEATHER_CURVE
+    assert plant.source.write_limited("switch.weather_curve") is (
+        plant.source.write_interval is not None
+    )
+    exported = export_plant(plant)["source"]
+    assert exported["supply"] == document["source"]["supply"]
+    assert exported["weather_curve"] == {"switch": "switch.weather_curve"}
+    assert read_plant_file(write_plant_file(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("supply", "weather_curve", "expected", "default"),
+    [
+        (None, None, (), None),
+        (None, True, (HeatingSupply.SOURCE_CURVE, HeatingSupply.FIXED), HeatingSupply.SOURCE_CURVE),
+        ({}, None, (HeatingSupply.FIXED,), HeatingSupply.FIXED),
+        (
+            {"outdoor_sensor": "sensor.outdoor"},
+            None,
+            (HeatingSupply.FIXED, HeatingSupply.CURVE),
+            HeatingSupply.CURVE,
+        ),
+        (
+            {"outdoor_sensor": "sensor.outdoor"},
+            True,
+            (HeatingSupply.SOURCE_CURVE, HeatingSupply.FIXED, HeatingSupply.CURVE),
+            HeatingSupply.CURVE,
+        ),
+    ],
+)
+def test_a_source_offers_the_heating_supplies_its_outputs_allow(
+    supply: dict[str, object] | None,
+    weather_curve: bool | None,
+    expected: tuple[HeatingSupply, ...],
+    default: HeatingSupply | None,
+) -> None:
+    document = reference_document()
+    if supply is not None:
+        document["source"]["supply"] = {"entity": "number.supply", **supply}
+    if weather_curve:
+        document["source"]["weather_curve"] = {"switch": "switch.weather_curve"}
+    source = parse_plant(document).source
+
+    assert source is not None
+    assert source.heating_supplies == expected
+    assert source.default_heating_supply is default
+
+
+@pytest.mark.parametrize(
+    ("change", "path", "message"),
+    [
+        ({"weather_curve": ["switch.weather_curve"]}, "source.weather_curve", "mapping"),
+        ({"weather_curve": {}}, "source.weather_curve.switch", "required"),
+        (
+            {"weather_curve": {"switch": "number.weather_curve"}},
+            "source.weather_curve.switch",
+            "switch",
+        ),
+        (
+            {"weather_curve": {"switch": "switch.weather_curve", "curve": 6}},
+            "source.weather_curve.curve",
+            "Unknown key",
+        ),
+        (
+            {
+                "weather_curve": {"switch": "switch.weather_curve"},
+                "mode_switches": {"switch.weather_curve": ["heat"]},
+            },
+            "source.weather_curve.switch",
+            "already bound at source.mode_switches.switch.weather_curve",
+        ),
+    ],
+)
+def test_a_weather_curve_rejects_invalid_values(
+    change: dict[str, object], path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"].update(change)
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "path", "message"),
+    [
+        ("modes", ["cool"], "source.supply.modes", "Unknown key"),
+        ("step", 0, "source.supply.step", "positive"),
+        ("heat_temperature", 35, "source.supply.heat_temperature", "at most 22"),
+        ("cool_temperature", 12, "source.supply.cool_temperature", "at least 16"),
+    ],
+)
+def test_a_supply_rejects_invalid_values_and_steps(
+    key: str, value: object, path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "heat_temperature": 20,
+        "minimum": 16,
+        "maximum": 22,
+        key: value,
+    }
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+def test_an_inhibit_and_a_no_load_guard_roundtrip() -> None:
+    document = reference_document()
+    document["source"]["inhibit_sensor"] = "input_boolean.fireplace_heating"
+    document["source"]["no_load"] = {
+        "supply_temperature": "sensor.water_outlet",
+        "return_temperature": "sensor.water_inlet",
+        "compressor_sensor": "sensor.compressor_frequency",
+        "delta": 1.5,
+    }
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.no_load is not None
+    assert plant.source.inhibit_sensor == "input_boolean.fireplace_heating"
+    assert (plant.source.no_load.delta, plant.source.no_load.duration) == (1.5, 600.0)
+    exported = export_plant(plant)["source"]
+    assert exported["no_load"] == document["source"]["no_load"]
+    assert exported["inhibit_sensor"] == "input_boolean.fireplace_heating"
+    assert read_plant_file(write_plant_file(plant)) == plant
+    paths = entity_paths(plant)
+    assert paths["sensor.compressor_frequency"] == "source.no_load.compressor_sensor"
+    assert paths["input_boolean.fireplace_heating"] == "source.inhibit_sensor"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "path", "message"),
+    [
+        ("inhibit_sensor", "switch.fireplace", "source.inhibit_sensor", "input_boolean"),
+        ("no_load", {"supply_temperature": "sensor.a"}, "source.no_load.return_temperature", ""),
+        (
+            "no_load",
+            {
+                "supply_temperature": "sensor.a",
+                "return_temperature": "sensor.b",
+                "compressor_sensor": "binary_sensor.c",
+            },
+            "source.no_load.compressor_sensor",
+            "sensor",
+        ),
+        (
+            "no_load",
+            {
+                "supply_temperature": "sensor.a",
+                "return_temperature": "sensor.b",
+                "compressor_sensor": "sensor.c",
+                "hold_off": 0,
+            },
+            "source.no_load.hold_off",
+            "positive",
+        ),
+    ],
+)
+def test_an_inhibit_and_a_no_load_guard_reject_invalid_values(
+    key: str, value: object, path: str, message: str
+) -> None:
+    document = reference_document()
+    document["source"][key] = value
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)
+
+
+def test_mode_switches_roundtrip_and_are_source_outputs() -> None:
+    document = reference_document()
+    document["source"]["mode_switches"] = {"switch.weather_curve": ["heat"]}
+    plant = parse_plant(document)
+
+    assert plant.source is not None
+    assert plant.source.mode_switches == (
+        ModeSwitch("switch.weather_curve", frozenset({Mode.HEAT})),
+    )
+    assert plant.outputs()["switch.weather_curve"] is OutputRole.SOURCE_MODE_SWITCH
+    assert plant.source.mode_switches[0].on(Mode.COOL) is False
+    assert plant.source.mode_switches[0].on(Mode.OFF) is None
+    assert export_plant(plant)["source"]["mode_switches"] == {"switch.weather_curve": ["heat"]}
+    assert read_plant_file(write_plant_file(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("value", "path", "message"),
+    [
+        (["switch.weather_curve"], "source.mode_switches", "mapping"),
+        ({"select.weather_curve": ["heat"]}, "source.mode_switches.select.weather_curve", "switch"),
+        ({"switch.weather_curve": []}, "source.mode_switches.switch.weather_curve", "one mode"),
+    ],
+)
+def test_mode_switches_reject_invalid_values(value: object, path: str, message: str) -> None:
+    document = reference_document()
+    document["source"]["mode_switches"] = value
+
+    with pytest.raises(PlantFileError) as error:
+        parse_plant(document)
+    assert error.value.path == path
+    assert message in str(error.value)

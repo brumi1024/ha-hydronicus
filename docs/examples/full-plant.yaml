@@ -1,0 +1,243 @@
+# Hydronicus full plant file: every key the plant file format reads, each with a short note.
+# It describes an air-to-water heat pump that heats, cools, and makes hot water,
+# its own circulator, two switched pumps, two plant loops, and four zones.
+# The entity IDs and area IDs are examples; replace them with your own.
+# Guided setup in the UI is the usual way to create a Plant.
+# This file is for Add integration > Hydronicus > Import a plant file, or Reconfigure > Replace from a plant file.
+# Where a key has two forms, different zones, pumps, or loops show each form.
+# Times are in seconds, temperatures in °C, and differences in K.
+# Unknown keys are errors at every level.
+
+hydronicus: 2                                # the file format, always 2
+id: 7c9e6679-7425-40de-944b-e07fc1f90ae7     # Plant UUID; keep it to keep the entity IDs on re-import (default: a new random ID)
+name: Home                                   # required; names the Plant's device and Plant-wide entities
+mode_dwell: 3600                             # pause between the old mode's flow and the new mode's (default 3600)
+exercise: {interval: 604800, run: 60}        # idle pumps/valves: interval >= 3600 (default a week), run 10-600 (default 60); false turns it off
+frost_protection: 5                          # heat any zone below this, at most 10 (default 5); false turns it off
+away: {heat_target: 16, cool_target: 30}     # targets while the Plant is away, 5-35 (defaults 16 and 30)
+
+# Automatic changeover: adds `auto` to the Mode select; needs a loop that cools.
+changeover:
+  outdoor_sensor: sensor.outdoor_temperature # required; outdoor temperature sensor
+  heat_below: 15                             # heat at or below this average (default 15)
+  cool_above: 22                             # cool at or above this average, above heat_below (default 22)
+  averaging: 86400                           # time constant of the average (default 86400)
+  min_dwell: 43200                           # fewest seconds between two changes (default 43200)
+  max_age: 3600                              # outdoor reading goes stale after this (default 3600)
+
+# Weather forecast: optional input for weather-aware recovery learning.
+weather:
+  entity: weather.home                       # required; a weather entity with hourly forecasts
+  outdoor_sensor: sensor.outdoor_temperature # optional measured outdoor temperature
+  max_age: 7200                              # forecast and readings stale after this (default 7200)
+
+# Source: the generator Hydronicus asks for heat or cooling; at most one.
+source:
+  name: Heat pump                            # names the source's device (default "Heat source")
+  request: switch.heat_pump_heat_request     # required; the switch that asks for heat or cooling
+  mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}   # select and its two options for heating and cooling
+  mode_switches: {switch.heat_pump_backup_heater: [heat]}          # switches that are on only in the listed modes
+  weather_curve: {switch: switch.heat_pump_weather_curve}          # the source's own curve; offers Heat pump curve on the Heating supply select, always off in cooling
+  post_run: 180                              # source keeps its pumps running this long after the request (default 180)
+  min_on: 600                                # shortest request on time (default 600)
+  min_off: 600                               # shortest request off time, keep above write_interval (default 600)
+  running_sensor: binary_sensor.heat_pump_running   # reports whether the source actually runs
+  feedback_timeout: 300                      # time for running/flow feedback to confirm a start (default 300)
+  max_starts_per_hour: 3                     # most request starts in any hour, whole number (default no limit)
+  start_threshold: 1                         # total loop weight needed before the request starts (default none)
+  heat_sink_loops: [living_room.floor]       # heating loops that take surplus heat while the request is held
+  hold_after_demand: 14400                   # keep heating into heat_sink_loops after the last call; needs heat_sink_loops
+  heat_sink_overshoot: 1                     # a heat sink takes heat while its zone is below target + this (default 1)
+  health_sensor: binary_sensor.heat_pump_link_healthy   # off, unknown, or unavailable releases the request
+  handover_sensor: binary_sensor.heat_pump_local_control   # on while something else controls the source; needs heat_sink_loops
+  write_interval: 60                         # fewest seconds between writes to one source output (default none)
+  inhibit_sensor: binary_sensor.fireplace_supplies_zones   # on while another source supplies the zones; releases the request
+  compressor_sensor: sensor.heat_pump_compressor_frequency   # above zero while the compressor runs; adds start statistics
+
+  # Supply temperature control: the supply setpoint number; all values in °C.
+  # The Heating supply select chooses who owns heating: Heat pump curve, Fixed, or Hydronicus curve.
+  # Cooling always uses Hydronicus's cooling target.
+  supply:
+    entity: number.heat_pump_supply_setpoint # required; the supply setpoint number
+    heat_temperature: 35                     # starting value of the Fixed heating target (default 35)
+    cool_temperature: 18                     # cooling target, raised for the dew point margin (default 18)
+    minimum: 5                               # lowest supply target (default 5)
+    maximum: 60                              # highest supply target, above minimum (default 60)
+    tolerance: 0.5                           # K accepted as confirmation of the target (default 0.5)
+    step: 1                                  # setpoint resolution (default none)
+    offset: 0                                # parallel shift of Hydronicus's heating curve, -5 to 5 K (default 0)
+    outdoor_sensor: sensor.outdoor_temperature   # offers Hydronicus's heating curve
+    outdoor_cold: -10                        # cold end of the curve (default -10)
+    outdoor_warm: 20                         # warm end of the curve, above outdoor_cold (default 20)
+    heat_cold: 45                            # supply target at or below outdoor_cold (default 45)
+    heat_warm: 25                            # supply target at or above outdoor_warm, not above heat_cold (default 25)
+    max_age: 3600                            # outdoor reading stale after this (default 3600)
+    outdoor_damping: 10800                   # filter time constant of the outdoor reading; needs outdoor_sensor (default 0, off)
+    outdoor_fallback: 0                      # outdoor temperature used while the reading is lost, -50 to 50 (default none)
+    heating_limit: 16                        # no heating at or above this damped outdoor temperature (default none)
+    room_influence:                          # a lead zone that shifts the heating curve
+      zone: living_room                      # required; zone slug with a digital thermostat and a heating loop
+      factor: 1                              # shift per K the zone is below its target (default 1)
+      limit: 3                               # largest shift either way in K (default 3)
+
+  # Domestic hot water: needs switch, setpoint, or both.
+  dhw:
+    switch: switch.heat_pump_dhw             # turns the source's DHW on and off
+    setpoint: number.heat_pump_dhw_setpoint  # the DHW tank temperature number
+    minimum: 40                              # lowest DHW target (default 40)
+    maximum: 55                              # highest DHW target, above minimum (default 55)
+    tolerance: 0.5                           # K accepted as confirmation (default 0.5)
+    step: 1                                  # setpoint resolution (default none)
+    max_boost: 7200                          # longest DHW boost (default 7200)
+    schedule: schedule.hot_water             # blocks may set {target: 52} in their data
+    disinfect:                               # periodic tank pasteurisation; needs setpoint
+      tank_temperature: sensor.dhw_tank_temperature   # required; proves the cycle
+      temperature: 60                        # cycle temperature, 55-70 (default 60)
+      interval: 604800                       # between cycles, a day to 30 days (default 604800)
+      hold: 1800                             # tank must hold the temperature this long, 60-7200 (default 1800)
+      timeout: 10800                         # give up after this, 1800-43200 and >= hold + 600 (default 10800)
+      window: schedule.night                 # only start during this schedule's on periods (default any time)
+
+  # No-load guard: releases the request when the water carries no heat.
+  no_load:
+    supply_temperature: sensor.heat_pump_leaving_water_temperature   # required; leaving water sensor
+    return_temperature: sensor.heat_pump_return_water_temperature    # required; returning water sensor
+    compressor_sensor: sensor.heat_pump_compressor_frequency         # required; above zero while it runs
+    delta: 1                                 # K under which the water carries no heat (default 1)
+    duration: 600                            # compressor run and low delta before tripping (default 600)
+    hold_off: 1800                           # request stays off this long after a trip (default 1800)
+
+# Pumps: each has either `switch` or `driven_by: source`, never both.
+pumps:
+  heat_pump:
+    name: Heat pump circulator               # default: the slug in words
+    driven_by: source                        # the source runs it; Hydronicus never switches it
+    min_flow: path                           # path: needs an open loop; guaranteed: a separator or bypass (default path)
+    min_flow_loops: [living_room.ceiling]    # source-driven with min_flow path: loops held open when none is ready
+    supply_temperature: sensor.ceiling_supply_temperature   # condensation reference that lets its loops cool
+    condensation_switch: binary_sensor.ceiling_supply_dew_point   # on, unknown, or unavailable stops cooling on its loops
+    running_sensor: binary_sensor.heat_pump_circulator_running    # reports whether the pump runs
+    flow_sensor: binary_sensor.heat_pump_flow_proved              # reports whether circulation is proved
+  floor:
+    switch: switch.floor_heating_pump        # Hydronicus switches it
+    overrun: 180                             # keeps running after heating demand ends (default 180)
+  towel_dryer:
+    switch: switch.towel_dryer_pump
+    overrun: 120
+    min_flow: guaranteed                     # the towel dryer loop has no valve, so it is always a path
+
+# Plant loops: loops no zone owns; each needs `runs`.
+# Loop keys are the same for plant and zone loops; the zones below show the rest.
+loops:
+  towel_dryer:
+    name: Towel dryer                        # default: the slug in words
+    pump: towel_dryer                        # required; the pump that moves its water
+    runs: with_source                        # run whenever the source request is on; needs a source
+    modes: [heat]                            # [heat], [cool], or [heat, cool] (default [heat])
+  hallway:
+    valves: [switch.hallway_floor_valve]
+    pump: floor
+    runs: {with_zones: [living_room, kitchen]}   # run while any listed zone demands
+    weight: 0.5                              # share of demand for start_threshold, such as kW (default 1)
+
+# Zones: the space one thermostat controls, with its own loops.
+zones:
+  # Living room: areas in both forms, a full digital thermostat, windows, and valves in the long form.
+  living_room:
+    name: Living and dining                  # names the zone's device and thermostat (default: the slug in words)
+    areas:
+      - living_room                          # short form: the Home Assistant area ID
+      - area: dining_room                    # long form: the area ID
+        required: true                       # a stale or unavailable area sensor blocks the zone (default false)
+        max_age: 900                         # area readings stale after this (default 3600)
+    aggregation: mean                        # combine temperatures with mean, min, or max (default mean)
+    windows: [binary_sensor.living_room_window, binary_sensor.patio_door]   # on while open
+    window_open_delay: 60                    # open this long before demand stops (default 60)
+    window_close_delay: 60                   # all closed this long before demand returns (default 60)
+    max_humidity: 70                         # highest humidity in % at which its loops may cool, 30-100 (default 70)
+    thermostat:
+      digital:                               # a thermostat Hydronicus provides (the default)
+        target: 21                           # heating comfort target of a new thermostat (default 21)
+        cool_target: 24                      # cooling comfort target of a new thermostat (default 24)
+        presets: {comfort: 21, eco: 19, away: 16}       # heating preset targets
+        cool_presets: {comfort: 24, eco: 26, away: 28}  # cooling preset targets
+        heat_start_delta: 0.3                # heating starts this far below target (default 0.3)
+        heat_stop_delta: 0.1                 # heating stops this far above target (default 0.1)
+        cool_start_delta: 0.3                # cooling starts this far above target (default 0.3)
+        cool_stop_delta: 0.1                 # cooling stops this far below target (default 0.1)
+        min_on: 600                          # shortest demand on time (default 600)
+        min_off: 600                         # shortest demand off time (default 600)
+        learning: assist                     # off, observe, or assist; assist needs a schedule (default off)
+        weather_aware: true                  # weather-informed recovery; needs assist and Plant weather (default false)
+        schedule:                            # comfort schedule, active with the thermostat's schedule preset
+          entity: schedule.living_room_comfort   # required; on periods are comfort periods
+          heat_setback: 2                    # heating target reduction outside comfort, 0-10 K (default 2)
+          cool_setback: 2                    # cooling target increase outside comfort, 0-10 K (default 2)
+          max_early_start: 7200              # longest early start, 0-21600; 0 disables it (default 0)
+          heating_rate: 1                    # expected warming in K/hour (default 1)
+          cooling_rate: 1                    # expected cooling in K/hour (default 1)
+    loops:
+      ceiling:
+        name: Ceiling                        # default: the slug in words
+        valves:
+          - entity: switch.living_room_ceiling_valve   # required; switch or valve entity
+            opening_time: 240                # seconds before the loop counts as ready (default 180)
+            readiness: binary_sensor.living_room_ceiling_valve_open   # on once fully open; skips opening_time
+        pump: heat_pump
+        modes: [heat, cool]                  # cooling needs a condensation reference
+        surface_temperature: sensor.living_room_ceiling_surface_temperature   # the loop's own condensation reference
+        surface_minimum: 17                  # lowest surface temperature while cooling; needs surface_temperature (default 20)
+        condensation_switch: binary_sensor.living_room_ceiling_dew_point   # on, unknown, or unavailable stops this loop cooling
+        weight: 4                            # share of demand for start_threshold (default 1)
+      floor:
+        valves: [switch.living_room_floor_valve]   # short form: entity IDs only
+        pump: floor
+        modes: [heat]
+
+  # Kitchen: sensors in both forms, and window detection, response check, and sensor fallback as mappings.
+  kitchen:
+    temperature:
+      - sensor.kitchen_temperature           # short form: a sensor entity ID
+      - entity: sensor.kitchen_floor_probe   # long form: the sensor
+        required: false                      # a stale or unavailable sensor blocks the zone (default true)
+        max_age: 1800                        # reading stale after this (default 3600)
+    humidity: [sensor.kitchen_humidity]
+    aggregation: min
+    window_detection:                        # an open window from a sudden temperature change (default false)
+      change: 0.5                            # K away from target, 0.1-5 (default 0.5)
+      within: 600                            # within this many seconds, 60-3600 (default 600)
+      max_duration: 1800                     # longest a detected window stops the zone, 300-14400 (default 1800)
+    response_check:                          # report a zone that does not respond while served (default true)
+      duration: 21600                        # service without response before it fails, 1800-86400 (default 10800)
+      progress: 0.2                          # K toward target that counts as a response, 0.05-2 (default 0.2)
+    sensor_fallback:                         # heat on a duty cycle without a usable temperature (default false)
+      after: 3600                            # seconds without a temperature first, 600-86400 (default 3600)
+      duty: 0.15                             # share of each period heated, at most 0.5 (default 0.15)
+      period: 7200                           # period length, 1800-21600 (default 7200)
+    thermostat: {digital: {learning: observe}}
+    loops:
+      ceiling:
+        valves: [switch.kitchen_ceiling_valve]
+        pump: heat_pump
+        modes: [heat, cool]
+
+  # Bedroom: an area only, and the boolean forms of the zone checks.
+  bedroom:
+    areas: [bedroom]
+    window_detection: true                   # on with the defaults
+    response_check: false                    # off
+    sensor_fallback: true                    # on with the defaults
+    loops:
+      ceiling:
+        valves: [switch.bedroom_ceiling_valve]
+        pump: heat_pump
+        modes: [heat, cool]
+
+  # Office: an external thermostat owns the demand; Hydronicus reads only its hvac_action.
+  office:
+    areas: [office]
+    thermostat: {external: climate.office}
+    loops:
+      radiator:
+        valves: [valve.office_radiator]
+        pump: floor

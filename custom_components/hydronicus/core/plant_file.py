@@ -1,0 +1,2356 @@
+"""The plant file, format 2, which is also the storage schema.
+
+A plant file describes one whole Plant: an optional source, its pumps, its plant
+loops, and its zones with their loops, all addressed by slugs. ``parse_plant``
+reads a parsed document into a validated ``Plant``, and ``export_plant`` writes
+the canonical document back, so exporting and importing a Plant reproduces it,
+its ID, and therefore its entity IDs.
+
+Storage is the same document split in two: the config entry's data holds
+everything except ``zones``, and each zone subentry's data holds that zone's
+mapping plus its slug. Home Assistant stores both with sorted keys, so storage
+lists pumps and loops as objects that carry their slugs, which keeps their order.
+``to_storage`` and ``from_storage`` convert between them.
+
+The canonical export writes every structural and timing key and omits optional
+keys at their defaults: names, sensors, the exercise and frost protection, and
+settings a user left out. Lists and small mappings are written in flow style, so
+``write_plant_file`` produces the compact form of
+``docs/examples/reference-plant.yaml``.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from enum import StrEnum
+from typing import Any, Final
+from uuid import UUID, uuid4
+
+import yaml
+
+from .comfort import MAX_TARGET, MIN_TARGET
+from .model import (
+    DEFAULT_EXERCISE,
+    DEFAULT_FROST_PROTECTION,
+    DEFAULT_HEAT_SINK_OVERSHOOT,
+    DEFAULT_MAX_AGE,
+    DEFAULT_MAX_HUMIDITY,
+    DEFAULT_MIN_OFF,
+    DEFAULT_MIN_ON,
+    DEFAULT_MODE_DWELL,
+    DEFAULT_OPENING_TIME,
+    DEFAULT_OVERRUN,
+    DEFAULT_POST_RUN,
+    DEFAULT_RESPONSE_CHECK,
+    DEFAULT_SURFACE_MINIMUM,
+    DEFAULT_WINDOW_CLOSE_DELAY,
+    DEFAULT_WINDOW_OPEN_DELAY,
+    MAX_CURVE_OFFSET,
+    MAX_DISINFECT_INTERVAL,
+    MAX_DISINFECT_TEMPERATURE,
+    MAX_EXERCISE_RUN,
+    MAX_FROST_PROTECTION,
+    MAX_RESPONSE_DURATION,
+    MAX_RESPONSE_PROGRESS,
+    MAX_SENSOR_FALLBACK_AFTER,
+    MAX_SENSOR_FALLBACK_DUTY,
+    MAX_SENSOR_FALLBACK_PERIOD,
+    MAX_SETBACK,
+    MAX_WINDOW_DETECTION_CHANGE,
+    MAX_WINDOW_DETECTION_MAX_DURATION,
+    MAX_WINDOW_DETECTION_WITHIN,
+    MIN_DISINFECT_INTERVAL,
+    MIN_DISINFECT_TEMPERATURE,
+    MIN_EXERCISE_INTERVAL,
+    MIN_EXERCISE_RUN,
+    MIN_MAX_HUMIDITY,
+    MIN_RESPONSE_DURATION,
+    MIN_RESPONSE_PROGRESS,
+    MIN_SENSOR_FALLBACK_AFTER,
+    MIN_SENSOR_FALLBACK_PERIOD,
+    MIN_SENSOR_FALLBACK_SPELL,
+    MIN_WINDOW_DETECTION_CHANGE,
+    MIN_WINDOW_DETECTION_MAX_DURATION,
+    MIN_WINDOW_DETECTION_WITHIN,
+    RUNS_WITH_SOURCE,
+    RUNS_WITH_ZONE,
+    Aggregation,
+    AwayConfig,
+    Changeover,
+    Dhw,
+    DigitalThermostat,
+    Disinfect,
+    Exercise,
+    ExternalThermostat,
+    LearningMode,
+    Loop,
+    LoopRef,
+    LoopRun,
+    MinFlow,
+    Mode,
+    ModeSwitch,
+    NoLoadGuard,
+    Plant,
+    Preset,
+    Pump,
+    ResponseCheck,
+    RoomInfluence,
+    RunKind,
+    Schedule,
+    Sensor,
+    SensorFallback,
+    Source,
+    SourceModeSelect,
+    SupplyControl,
+    Thermostat,
+    Valve,
+    WeatherConfig,
+    WeatherCurve,
+    WindowDetection,
+    Zone,
+    ZoneArea,
+    title_from_slug,
+)
+
+PLANT_FILE_FORMAT: Final = 2
+
+# Keys in canonical order.
+_TOP_KEYS: Final = (
+    "hydronicus",
+    "id",
+    "name",
+    "mode_dwell",
+    "exercise",
+    "frost_protection",
+    "away",
+    "changeover",
+    "weather",
+    "source",
+    "pumps",
+    "loops",
+    "zones",
+)
+_SOURCE_KEYS: Final = (
+    "name",
+    "request",
+    "mode",
+    "mode_switches",
+    "post_run",
+    "min_on",
+    "min_off",
+    "running_sensor",
+    "supply",
+    "weather_curve",
+    "feedback_timeout",
+    "max_starts_per_hour",
+    "heat_sink_loops",
+    "hold_after_demand",
+    "heat_sink_overshoot",
+    "start_threshold",
+    "health_sensor",
+    "handover_sensor",
+    "write_interval",
+    "dhw",
+    "inhibit_sensor",
+    "no_load",
+    "compressor_sensor",
+)
+_NO_LOAD_KEYS: Final = (
+    "supply_temperature",
+    "return_temperature",
+    "compressor_sensor",
+    "delta",
+    "duration",
+    "hold_off",
+)
+_INHIBIT_DOMAINS: Final = ("binary_sensor", "input_boolean")
+_DHW_KEYS: Final = (
+    "switch",
+    "setpoint",
+    "minimum",
+    "maximum",
+    "tolerance",
+    "step",
+    "max_boost",
+    "schedule",
+    "disinfect",
+)
+_DISINFECT_KEYS: Final = (
+    "tank_temperature",
+    "temperature",
+    "interval",
+    "hold",
+    "timeout",
+    "window",
+)
+_SUPPLY_KEYS: Final = (
+    "entity",
+    "outdoor_sensor",
+    "heat_temperature",
+    "cool_temperature",
+    "minimum",
+    "maximum",
+    "tolerance",
+    "outdoor_cold",
+    "outdoor_warm",
+    "heat_cold",
+    "heat_warm",
+    "max_age",
+    "step",
+    "offset",
+    "outdoor_damping",
+    "outdoor_fallback",
+    "heating_limit",
+    "room_influence",
+)
+_ROOM_INFLUENCE_KEYS: Final = ("zone", "factor", "limit")
+_WEATHER_CURVE_KEYS: Final = ("switch",)
+# The supply keys that are not plain numbers with a default.
+_SUPPLY_SPECIAL_KEYS: Final = (
+    "entity",
+    "outdoor_sensor",
+    "step",
+    "outdoor_fallback",
+    "heating_limit",
+    "room_influence",
+)
+# The supply keys that only work with an outdoor sensor.
+_SUPPLY_OUTDOOR_KEYS: Final = (
+    "outdoor_damping",
+    "outdoor_fallback",
+    "heating_limit",
+)
+_SCHEDULE_KEYS: Final = (
+    "entity",
+    "heat_setback",
+    "cool_setback",
+    "max_early_start",
+    "heating_rate",
+    "cooling_rate",
+)
+_WEATHER_KEYS: Final = ("entity", "outdoor_sensor", "max_age")
+_CONFIG_PRESETS: Final = (Preset.COMFORT, Preset.ECO, Preset.AWAY)
+_SOURCE_MODE_KEYS: Final = ("entity", "heat", "cool")
+_PUMP_KEYS: Final = (
+    "name",
+    "switch",
+    "driven_by",
+    "overrun",
+    "min_flow",
+    "min_flow_loops",
+    "supply_temperature",
+    "condensation_switch",
+    "running_sensor",
+    "flow_sensor",
+)
+_PLANT_LOOP_KEYS: Final = (
+    "name",
+    "valves",
+    "pump",
+    "runs",
+    "modes",
+    "surface_temperature",
+    "surface_minimum",
+    "condensation_switch",
+    "weight",
+)
+_ZONE_LOOP_KEYS: Final = (
+    "name",
+    "valves",
+    "pump",
+    "modes",
+    "surface_temperature",
+    "surface_minimum",
+    "condensation_switch",
+    "weight",
+)
+_ZONE_KEYS: Final = (
+    "name",
+    "areas",
+    "temperature",
+    "humidity",
+    "aggregation",
+    "thermostat",
+    "windows",
+    "window_open_delay",
+    "window_close_delay",
+    "window_detection",
+    "response_check",
+    "sensor_fallback",
+    "max_humidity",
+    "loops",
+)
+_VALVE_KEYS: Final = ("entity", "opening_time", "readiness")
+_SENSOR_KEYS: Final = ("entity", "required", "max_age")
+_AREA_KEYS: Final = ("area", "required", "max_age")
+_THERMOSTAT_KEYS: Final = ("digital", "external")
+_DIGITAL_KEYS: Final = (
+    "target",
+    "presets",
+    "cool_target",
+    "cool_presets",
+    "schedule",
+    "learning",
+    "weather_aware",
+    "heat_start_delta",
+    "heat_stop_delta",
+    "cool_start_delta",
+    "cool_stop_delta",
+    "min_on",
+    "min_off",
+)
+_RUNS_KEYS: Final = ("with_zones",)
+_EXERCISE_KEYS: Final = ("interval", "run")
+_WINDOW_DETECTION_KEYS: Final = ("change", "within", "max_duration")
+_RESPONSE_CHECK_KEYS: Final = ("duration", "progress")
+_SENSOR_FALLBACK_KEYS: Final = ("after", "duty", "period")
+_LOOP_MODES: Final = (Mode.HEAT, Mode.COOL)
+_DEFAULT_MODES: Final = frozenset({Mode.HEAT})
+_DEFAULT_THERMOSTAT: Final = DigitalThermostat()
+SLUG_KEY: Final = "slug"
+
+_VALVE_DOMAINS: Final = ("switch", "valve")
+_SWITCH_DOMAINS: Final = ("switch",)
+_SELECT_DOMAINS: Final = ("select",)
+_SENSOR_DOMAINS: Final = ("sensor",)
+# Valve readiness sensors, condensation switches, and windows.
+_BINARY_SENSOR_DOMAINS: Final = ("binary_sensor",)
+_CLIMATE_DOMAINS: Final = ("climate",)
+
+SLUG_PATTERN: Final = re.compile(r"[a-z][a-z0-9_]*")
+# Home Assistant's entity ID rule: lowercase words joined by single underscores.
+_ENTITY_ID: Final = re.compile(r"(?!_)[a-z0-9_]+(?<!_)\.(?!_)[a-z0-9_]+(?<!_)")
+_THERMOSTAT_SHAPE: Final = (
+    "A thermostat is either digital or external: {digital: {...}} or {external: climate.x}."
+)
+
+
+class PlantFileError(ValueError):
+    """A plant file or stored Plant is not valid.
+
+    ``path`` is the dotted path of the offending key, such as
+    ``zones.living_area.loops.floor.pump``, with list items as indices. It is
+    empty for errors about the whole document, and the message starts with it.
+    """
+
+    def __init__(self, path: str, message: str) -> None:
+        self.path = path
+        self.message = message
+        super().__init__(f"{path}: {message}" if path else message)
+
+
+def _new_id() -> str:
+    return str(uuid4())
+
+
+# Reading
+
+
+def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Plant:
+    """Return the validated Plant a parsed plant file describes.
+
+    A file without an ``id`` gets ``new_id()``, which the export then keeps.
+    Raise ``PlantFileError`` for the first problem found.
+    """
+    if document is None or document == "":
+        raise PlantFileError("", "The plant file is empty.")
+    top = _mapping(document, "", _TOP_KEYS)
+    _check_format(top)
+    plant = Plant(
+        id=_plant_id(top["id"] if "id" in top else new_id(), "id"),
+        name=_text(_required(top, "name", ""), "name"),
+        mode_dwell=_number(top.get("mode_dwell", DEFAULT_MODE_DWELL), "mode_dwell"),
+        source=_source(top["source"], "source") if "source" in top else None,
+        weather=_weather(top["weather"], "weather") if "weather" in top else None,
+        pumps=tuple(
+            _pump(slug, value, path) for slug, value, path in _slugs(top.get("pumps", {}), "pumps")
+        ),
+        loops=tuple(
+            _loop(LoopRef(None, slug), value, path)
+            for slug, value, path in _slugs(top.get("loops", {}), "loops")
+        ),
+        zones=tuple(
+            _zone(slug, value, path) for slug, value, path in _slugs(top.get("zones", {}), "zones")
+        ),
+        exercise=_exercise(top["exercise"], "exercise") if "exercise" in top else DEFAULT_EXERCISE,
+        frost_protection=_frost_protection(
+            top.get("frost_protection", DEFAULT_FROST_PROTECTION), "frost_protection"
+        ),
+        away=_away(top["away"], "away") if "away" in top else AwayConfig(),
+        changeover=_changeover(top["changeover"], "changeover") if "changeover" in top else None,
+    )
+    validate_plant(plant)
+    return plant
+
+
+def _away(value: object, path: str) -> AwayConfig:
+    document = _mapping(value, path, ("heat_target", "cool_target"))
+    default = AwayConfig()
+    targets = {
+        key: _within(
+            _number(document.get(key, getattr(default, key)), _join(path, key)),
+            _join(path, key),
+            low=MIN_TARGET,
+            high=MAX_TARGET,
+        )
+        for key in ("heat_target", "cool_target")
+    }
+    return AwayConfig(**targets)
+
+
+_CHANGEOVER_KEYS: Final = (
+    "outdoor_sensor",
+    "heat_below",
+    "cool_above",
+    "averaging",
+    "min_dwell",
+    "max_age",
+)
+
+
+def _changeover(value: object, path: str) -> Changeover:
+    document = _mapping(value, path, _CHANGEOVER_KEYS)
+    sensor = _entity(
+        _required(document, "outdoor_sensor", path),
+        _join(path, "outdoor_sensor"),
+        _SENSOR_DOMAINS,
+    )
+    default = Changeover(sensor)
+    numbers = {
+        key: _number(
+            document.get(key, getattr(default, key)),
+            _join(path, key),
+            signed=key in ("heat_below", "cool_above"),
+            positive=key in ("averaging", "max_age"),
+        )
+        for key in _CHANGEOVER_KEYS
+        if key != "outdoor_sensor"
+    }
+    if numbers["cool_above"] <= numbers["heat_below"]:
+        raise PlantFileError(
+            _join(path, "cool_above"), "Must be above heat_below, so the two modes have a band."
+        )
+    return Changeover(sensor, **numbers)
+
+
+def _check_format(top: Mapping[str, Any]) -> None:
+    if "hydronicus" not in top:
+        raise PlantFileError(
+            "hydronicus", f"State the plant file format: hydronicus: {PLANT_FILE_FORMAT}."
+        )
+    value = top["hydronicus"]
+    if type(value) is int and value == PLANT_FILE_FORMAT:
+        return
+    raise PlantFileError(
+        "hydronicus",
+        f"Unsupported plant file format {value!r}; this version reads format {PLANT_FILE_FORMAT}.",
+    )
+
+
+def _exercise(value: object, path: str) -> Exercise | None:
+    """Read ``false`` or ``null``, which turn the exercise off, or its interval and run time."""
+    if value is False or value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected a mapping of interval and run, or false.")
+    exercise = _mapping(value, path, _EXERCISE_KEYS)
+    interval_path, run_path = _join(path, "interval"), _join(path, "run")
+    interval = _number(exercise.get("interval", DEFAULT_EXERCISE.interval), interval_path)
+    run = _number(exercise.get("run", DEFAULT_EXERCISE.run), run_path)
+    return Exercise(
+        interval=_within(interval, interval_path, low=MIN_EXERCISE_INTERVAL),
+        run=_within(run, run_path, low=MIN_EXERCISE_RUN, high=MAX_EXERCISE_RUN),
+    )
+
+
+def _frost_protection(value: object, path: str) -> float | None:
+    """Read the frost protection temperature, or ``false`` or ``null``, which turn it off."""
+    if value is False or value is None:
+        return None
+    return _within(_number(value, path), path, high=MAX_FROST_PROTECTION)
+
+
+def _weather(value: object, path: str) -> WeatherConfig:
+    weather = _mapping(value, path, _WEATHER_KEYS)
+    entity = _entity(_required(weather, "entity", path), _join(path, "entity"), ("weather",))
+    return WeatherConfig(
+        entity=entity,
+        outdoor_sensor=(
+            _entity(weather["outdoor_sensor"], _join(path, "outdoor_sensor"), _SENSOR_DOMAINS)
+            if "outdoor_sensor" in weather
+            else None
+        ),
+        max_age=_number(
+            weather.get("max_age", WeatherConfig(entity).max_age),
+            _join(path, "max_age"),
+            positive=True,
+        ),
+    )
+
+
+def _source(value: object, path: str) -> Source:
+    source = _mapping(value, path, _SOURCE_KEYS)
+    return Source(
+        request=_entity(
+            _required(source, "request", path), _join(path, "request"), _SWITCH_DOMAINS
+        ),
+        mode=_source_mode(source["mode"], _join(path, "mode")) if "mode" in source else None,
+        mode_switches=(
+            _mode_switches(source["mode_switches"], _join(path, "mode_switches"))
+            if "mode_switches" in source
+            else ()
+        ),
+        post_run=_number(source.get("post_run", DEFAULT_POST_RUN), _join(path, "post_run")),
+        min_on=_number(source.get("min_on", DEFAULT_MIN_ON), _join(path, "min_on")),
+        min_off=_number(source.get("min_off", DEFAULT_MIN_OFF), _join(path, "min_off")),
+        feedback_timeout=_number(
+            source.get("feedback_timeout", 300.0), _join(path, "feedback_timeout"), positive=True
+        ),
+        name=_name(source, path),
+        running_sensor=_contact(source, "running_sensor", path),
+        supply=_supply(source["supply"], _join(path, "supply")) if "supply" in source else None,
+        weather_curve=(
+            _weather_curve(source["weather_curve"], _join(path, "weather_curve"))
+            if "weather_curve" in source
+            else None
+        ),
+        max_starts_per_hour=_max_starts(source, path),
+        heat_sink_loops=(
+            _loop_refs(source["heat_sink_loops"], _join(path, "heat_sink_loops"))
+            if "heat_sink_loops" in source
+            else ()
+        ),
+        hold_after_demand=(
+            _number(source["hold_after_demand"], _join(path, "hold_after_demand"))
+            if "hold_after_demand" in source
+            else None
+        ),
+        heat_sink_overshoot=_number(
+            source.get("heat_sink_overshoot", DEFAULT_HEAT_SINK_OVERSHOOT),
+            _join(path, "heat_sink_overshoot"),
+        ),
+        start_threshold=(
+            _number(source["start_threshold"], _join(path, "start_threshold"), positive=True)
+            if "start_threshold" in source
+            else None
+        ),
+        health_sensor=_contact(source, "health_sensor", path),
+        handover_sensor=_contact(source, "handover_sensor", path),
+        write_interval=(
+            _number(source["write_interval"], _join(path, "write_interval"), positive=True)
+            if "write_interval" in source
+            else None
+        ),
+        dhw=_dhw(source["dhw"], _join(path, "dhw")) if "dhw" in source else None,
+        inhibit_sensor=(
+            _entity(source["inhibit_sensor"], _join(path, "inhibit_sensor"), _INHIBIT_DOMAINS)
+            if "inhibit_sensor" in source
+            else None
+        ),
+        no_load=(
+            _no_load(source["no_load"], _join(path, "no_load")) if "no_load" in source else None
+        ),
+        compressor_sensor=(
+            _entity(source["compressor_sensor"], _join(path, "compressor_sensor"), _SENSOR_DOMAINS)
+            if "compressor_sensor" in source
+            else None
+        ),
+    )
+
+
+def _no_load(value: object, path: str) -> NoLoadGuard:
+    document = _mapping(value, path, _NO_LOAD_KEYS)
+    defaults = NoLoadGuard("", "", "")
+
+    def sensor(key: str) -> str:
+        return _entity(_required(document, key, path), _join(path, key), _SENSOR_DOMAINS)
+
+    def setting(key: str) -> float:
+        return _number(document.get(key, getattr(defaults, key)), _join(path, key), positive=True)
+
+    return NoLoadGuard(
+        supply_temperature=sensor("supply_temperature"),
+        return_temperature=sensor("return_temperature"),
+        compressor_sensor=sensor("compressor_sensor"),
+        delta=setting("delta"),
+        duration=setting("duration"),
+        hold_off=setting("hold_off"),
+    )
+
+
+def _dhw(value: object, path: str) -> Dhw:
+    document = _mapping(value, path, _DHW_KEYS)
+    switch = (
+        _entity(document["switch"], _join(path, "switch"), _SWITCH_DOMAINS)
+        if "switch" in document
+        else None
+    )
+    setpoint = (
+        _entity(document["setpoint"], _join(path, "setpoint"), ("number",))
+        if "setpoint" in document
+        else None
+    )
+    if switch is None and setpoint is None:
+        raise PlantFileError(path, "Bind a DHW switch, a setpoint, or both.")
+    defaults = Dhw()
+    minimum = _number(
+        document.get("minimum", defaults.minimum), _join(path, "minimum"), signed=True
+    )
+    maximum = _number(
+        document.get("maximum", defaults.maximum), _join(path, "maximum"), signed=True
+    )
+    if minimum >= maximum:
+        raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
+    return Dhw(
+        switch=switch,
+        setpoint=setpoint,
+        minimum=minimum,
+        maximum=maximum,
+        tolerance=_number(
+            document.get("tolerance", defaults.tolerance), _join(path, "tolerance"), positive=True
+        ),
+        step=(
+            _number(document["step"], _join(path, "step"), positive=True)
+            if "step" in document
+            else None
+        ),
+        max_boost=_number(
+            document.get("max_boost", defaults.max_boost), _join(path, "max_boost"), positive=True
+        ),
+        schedule=(
+            _entity(document["schedule"], _join(path, "schedule"), ("schedule",))
+            if "schedule" in document
+            else None
+        ),
+        disinfect=_disinfect(document, path, setpoint),
+    )
+
+
+def _disinfect(document: Mapping[str, Any], path: str, setpoint: str | None) -> Disinfect | None:
+    if document.get("disinfect") is None:
+        return None
+    path = _join(path, "disinfect")
+    if setpoint is None:
+        raise PlantFileError(path, "A disinfection cycle needs a DHW setpoint.")
+    value = _mapping(document["disinfect"], path, _DISINFECT_KEYS)
+    tank = _entity(
+        _required(value, "tank_temperature", path),
+        _join(path, "tank_temperature"),
+        _SENSOR_DOMAINS,
+    )
+    default = Disinfect(tank)
+
+    def read(key: str, low: float, high: float) -> float:
+        key_path = _join(path, key)
+        return _within(
+            _number(value.get(key, getattr(default, key)), key_path, positive=True),
+            key_path,
+            low=low,
+            high=high,
+        )
+
+    hold = read("hold", 60, 7200)
+    timeout = read("timeout", 1800, 43200)
+    if timeout < hold + 600:
+        raise PlantFileError(
+            _join(path, "timeout"), "Must leave at least 10 minutes to heat before the hold."
+        )
+    return Disinfect(
+        tank_temperature=tank,
+        temperature=read("temperature", MIN_DISINFECT_TEMPERATURE, MAX_DISINFECT_TEMPERATURE),
+        interval=read("interval", MIN_DISINFECT_INTERVAL, MAX_DISINFECT_INTERVAL),
+        hold=hold,
+        timeout=timeout,
+        window=(
+            _entity(value["window"], _join(path, "window"), ("schedule",))
+            if "window" in value
+            else None
+        ),
+    )
+
+
+def _mode_switches(value: object, path: str) -> tuple[ModeSwitch, ...]:
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected a mapping of switches to the modes they are on in.")
+    return tuple(
+        ModeSwitch(
+            _entity(entity, _join(path, str(entity)), _SWITCH_DOMAINS),
+            _modes(modes, _join(path, str(entity))),
+        )
+        for entity, modes in value.items()
+    )
+
+
+def _weather_curve(value: object, path: str) -> WeatherCurve:
+    document = _mapping(value, path, _WEATHER_CURVE_KEYS)
+    switch = _entity(_required(document, "switch", path), _join(path, "switch"), _SWITCH_DOMAINS)
+    return WeatherCurve(switch)
+
+
+def _max_starts(source: Mapping[str, Any], path: str) -> int | None:
+    if "max_starts_per_hour" not in source:
+        return None
+    key_path = _join(path, "max_starts_per_hour")
+    value = _number(source["max_starts_per_hour"], key_path, positive=True)
+    if not value.is_integer():
+        raise PlantFileError(key_path, "Expected a whole number of starts.")
+    return int(value)
+
+
+def _supply(value: object, path: str) -> SupplyControl:
+    document = _mapping(value, path, _SUPPLY_KEYS)
+    entity = _entity(_required(document, "entity", path), _join(path, "entity"), ("number",))
+    defaults = SupplyControl(entity)
+    settings = {
+        key: _number(
+            document.get(key, getattr(defaults, key)),
+            _join(path, key),
+            signed=key not in ("tolerance", "max_age", "outdoor_damping"),
+            positive=key in ("tolerance", "max_age"),
+        )
+        for key in _SUPPLY_KEYS
+        if key not in _SUPPLY_SPECIAL_KEYS
+    }
+    _within(settings["offset"], _join(path, "offset"), low=-MAX_CURVE_OFFSET, high=MAX_CURVE_OFFSET)
+    optional = {
+        key: (
+            None if document[key] is None else _number(document[key], _join(path, key), signed=True)
+        )
+        for key in ("outdoor_fallback", "heating_limit")
+        if key in document
+    }
+    step = (
+        _number(document["step"], _join(path, "step"), positive=True)
+        if "step" in document
+        else None
+    )
+    if settings["minimum"] >= settings["maximum"]:
+        raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
+    if settings["outdoor_cold"] >= settings["outdoor_warm"]:
+        raise PlantFileError(
+            _join(path, "outdoor_warm"),
+            "Warm outdoor temperature must exceed cold outdoor temperature.",
+        )
+    if settings["heat_cold"] < settings["heat_warm"]:
+        raise PlantFileError(
+            _join(path, "heat_warm"),
+            "The warm-weather heating target must not exceed the cold-weather target.",
+        )
+    # The curve's targets matter only with its outdoor sensor, and the cooling
+    # target is checked with the loops, since only a cooling Plant uses it.
+    checked = ("heat_temperature", "heat_cold", "heat_warm")
+    for key in checked if "outdoor_sensor" in document else checked[:1]:
+        _within(settings[key], _join(path, key), low=settings["minimum"], high=settings["maximum"])
+    _within(
+        settings["tolerance"],
+        _join(path, "tolerance"),
+        high=settings["maximum"] - settings["minimum"],
+    )
+    outdoor = (
+        _entity(document["outdoor_sensor"], _join(path, "outdoor_sensor"), _SENSOR_DOMAINS)
+        if "outdoor_sensor" in document
+        else None
+    )
+    if outdoor is None:
+        for key in _SUPPLY_OUTDOOR_KEYS:
+            if document.get(key) not in (None, 0):
+                raise PlantFileError(_join(path, key), "This needs an outdoor_sensor.")
+    fallback = optional.get("outdoor_fallback")
+    if fallback is not None:
+        _within(fallback, _join(path, "outdoor_fallback"), low=-50, high=50)
+    influence = (
+        _room_influence(document["room_influence"], _join(path, "room_influence"))
+        if document.get("room_influence") is not None
+        else None
+    )
+    return SupplyControl(
+        entity=entity,
+        outdoor_sensor=outdoor,
+        step=step,
+        outdoor_fallback=fallback,
+        heating_limit=optional.get("heating_limit"),
+        room_influence=influence,
+        **settings,
+    )
+
+
+def _room_influence(value: object, path: str) -> RoomInfluence:
+    document = _mapping(value, path, _ROOM_INFLUENCE_KEYS)
+    zone = _required(document, "zone", path)
+    if not isinstance(zone, str):
+        raise PlantFileError(_join(path, "zone"), "Expected a zone slug.")
+    defaults = RoomInfluence(zone)
+    factor = _number(document.get("factor", defaults.factor), _join(path, "factor"), positive=True)
+    _within(factor, _join(path, "factor"), high=10)
+    limit = _number(document.get("limit", defaults.limit), _join(path, "limit"), positive=True)
+    _within(limit, _join(path, "limit"), high=MAX_CURVE_OFFSET * 2)
+    return RoomInfluence(zone, factor, limit)
+
+
+def _schedule(value: object, path: str) -> Schedule:
+    document = _mapping(value, path, _SCHEDULE_KEYS)
+    entity = _entity(_required(document, "entity", path), _join(path, "entity"), ("schedule",))
+    defaults = Schedule(entity)
+    settings = {
+        key: _number(
+            document.get(key, getattr(defaults, key)),
+            _join(path, key),
+            positive=key in ("heating_rate", "cooling_rate"),
+        )
+        for key in _SCHEDULE_KEYS
+        if key != "entity"
+    }
+    _within(settings["max_early_start"], _join(path, "max_early_start"), high=21600)
+    for key in ("heat_setback", "cool_setback"):
+        _within(settings[key], _join(path, key), high=MAX_SETBACK)
+    return Schedule(entity=entity, **settings)
+
+
+def _source_mode(value: object, path: str) -> SourceModeSelect:
+    mode = _mapping(value, path, _SOURCE_MODE_KEYS)
+    entity = _entity(_required(mode, "entity", path), _join(path, "entity"), _SELECT_DOMAINS)
+    heat = _text(_required(mode, "heat", path), _join(path, "heat"))
+    cool = _text(_required(mode, "cool", path), _join(path, "cool"))
+    if heat == cool:
+        raise PlantFileError(_join(path, "cool"), "The heat and cool options must differ.")
+    return SourceModeSelect(entity=entity, heat=heat, cool=cool)
+
+
+def _pump(slug: str, value: object, path: str) -> Pump:
+    pump = _mapping(value, path, _PUMP_KEYS)
+    if ("switch" in pump) == ("driven_by" in pump):
+        raise PlantFileError(path, "A pump has either a switch or driven_by: source.")
+    min_flow = _choice(pump.get("min_flow", MinFlow.PATH), _join(path, "min_flow"), tuple(MinFlow))
+    min_flow_loops = (
+        _loop_refs(pump["min_flow_loops"], _join(path, "min_flow_loops"))
+        if "min_flow_loops" in pump
+        else ()
+    )
+    supply_temperature = (
+        _entity(pump["supply_temperature"], _join(path, "supply_temperature"), _SENSOR_DOMAINS)
+        if "supply_temperature" in pump
+        else None
+    )
+    condensation_switch = _contact(pump, "condensation_switch", path)
+    if "switch" in pump:
+        return Pump(
+            slug=slug,
+            switch=_entity(pump["switch"], _join(path, "switch"), _SWITCH_DOMAINS),
+            overrun=_number(pump.get("overrun", DEFAULT_OVERRUN), _join(path, "overrun")),
+            min_flow=min_flow,
+            min_flow_loops=min_flow_loops,
+            supply_temperature=supply_temperature,
+            name=_name(pump, path),
+            condensation_switch=condensation_switch,
+            running_sensor=_contact(pump, "running_sensor", path),
+            flow_sensor=_contact(pump, "flow_sensor", path),
+        )
+    if pump["driven_by"] != "source":
+        raise PlantFileError(
+            _join(path, "driven_by"), "driven_by must be source, for a pump the source runs."
+        )
+    if "overrun" in pump:
+        raise PlantFileError(
+            _join(path, "overrun"),
+            "A source-driven pump has no overrun; the source's post_run covers it.",
+        )
+    return Pump(
+        slug=slug,
+        switch=None,
+        min_flow=min_flow,
+        min_flow_loops=min_flow_loops,
+        supply_temperature=supply_temperature,
+        name=_name(pump, path),
+        condensation_switch=condensation_switch,
+        running_sensor=_contact(pump, "running_sensor", path),
+        flow_sensor=_contact(pump, "flow_sensor", path),
+    )
+
+
+def _loop_refs(value: object, path: str) -> tuple[LoopRef, ...]:
+    refs = []
+    for item, item_path in _items(value, path):
+        try:
+            refs.append(LoopRef.parse(_text(item, item_path)))
+        except ValueError:
+            raise PlantFileError(item_path, "Expected a loop slug or <zone>.<loop>.") from None
+    return tuple(refs)
+
+
+def _loop(ref: LoopRef, value: object, path: str) -> Loop:
+    plant_loop = ref.zone is None
+    loop = _mapping(value, path, _PLANT_LOOP_KEYS if plant_loop else _ZONE_LOOP_KEYS)
+    return Loop(
+        ref=ref,
+        valves=tuple(
+            _valve(item, item_path) for item, item_path in _items_of(loop, "valves", path)
+        ),
+        pump=_text(_required(loop, "pump", path), _join(path, "pump")),
+        modes=_modes(loop["modes"], _join(path, "modes")) if "modes" in loop else _DEFAULT_MODES,
+        runs=_runs(_required(loop, "runs", path), _join(path, "runs"))
+        if plant_loop
+        else RUNS_WITH_ZONE,
+        surface_temperature=(
+            _entity(
+                loop["surface_temperature"], _join(path, "surface_temperature"), _SENSOR_DOMAINS
+            )
+            if "surface_temperature" in loop
+            else None
+        ),
+        name=_name(loop, path),
+        condensation_switch=_contact(loop, "condensation_switch", path),
+        surface_minimum=_setting(loop, "surface_minimum", DEFAULT_SURFACE_MINIMUM, path),
+        weight=_number(loop.get("weight", 1.0), _join(path, "weight"), positive=True),
+    )
+
+
+def _modes(value: object, path: str) -> frozenset[Mode]:
+    modes: list[Mode] = []
+    for item, item_path in _items(value, path):
+        mode = _choice(item, item_path, _LOOP_MODES)
+        if mode in modes:
+            raise PlantFileError(item_path, f"Mode {mode} is listed twice.")
+        modes.append(mode)
+    if not modes:
+        raise PlantFileError(path, "List at least one mode.")
+    return frozenset(modes)
+
+
+def _runs(value: object, path: str) -> LoopRun:
+    if value == RunKind.WITH_SOURCE:
+        return RUNS_WITH_SOURCE
+    if isinstance(value, Mapping):
+        runs = _mapping(value, path, _RUNS_KEYS)
+        zones_path = _join(path, "with_zones")
+        return LoopRun(
+            RunKind.WITH_ZONES,
+            tuple(
+                _text(item, item_path)
+                for item, item_path in _items(_required(runs, "with_zones", path), zones_path)
+            ),
+        )
+    raise PlantFileError(path, "Expected with_source or {with_zones: [<zone>, ...]}.")
+
+
+def _valve(value: object, path: str) -> Valve:
+    if not isinstance(value, Mapping):
+        return Valve(_entity(value, path, _VALVE_DOMAINS))
+    valve = _mapping(value, path, _VALVE_KEYS)
+    return Valve(
+        entity=_entity(_required(valve, "entity", path), _join(path, "entity"), _VALVE_DOMAINS),
+        opening_time=_number(
+            valve.get("opening_time", DEFAULT_OPENING_TIME), _join(path, "opening_time")
+        ),
+        readiness=(
+            _entity(valve["readiness"], _join(path, "readiness"), _BINARY_SENSOR_DOMAINS)
+            if "readiness" in valve
+            else None
+        ),
+    )
+
+
+def _zone(slug: str, value: object, path: str) -> Zone:
+    zone = _mapping(value, path, _ZONE_KEYS)
+    loops_path = _join(path, "loops")
+    return Zone(
+        slug=slug,
+        loops=tuple(
+            _loop(LoopRef(slug, loop_slug), loop, loop_path)
+            for loop_slug, loop, loop_path in _slugs(zone.get("loops", {}), loops_path)
+        ),
+        areas=tuple(_area(item, item_path) for item, item_path in _items_of(zone, "areas", path)),
+        temperature=tuple(
+            _sensor(item, item_path) for item, item_path in _items_of(zone, "temperature", path)
+        ),
+        humidity=tuple(
+            _sensor(item, item_path) for item, item_path in _items_of(zone, "humidity", path)
+        ),
+        aggregation=_choice(
+            zone.get("aggregation", Aggregation.MEAN),
+            _join(path, "aggregation"),
+            tuple(Aggregation),
+        ),
+        thermostat=(
+            _thermostat(zone["thermostat"], _join(path, "thermostat"))
+            if "thermostat" in zone
+            else _DEFAULT_THERMOSTAT
+        ),
+        name=_name(zone, path),
+        windows=tuple(
+            _entity(item, item_path, _BINARY_SENSOR_DOMAINS)
+            for item, item_path in _items_of(zone, "windows", path)
+        ),
+        window_open_delay=_number(
+            zone.get("window_open_delay", DEFAULT_WINDOW_OPEN_DELAY),
+            _join(path, "window_open_delay"),
+        ),
+        window_close_delay=_number(
+            zone.get("window_close_delay", DEFAULT_WINDOW_CLOSE_DELAY),
+            _join(path, "window_close_delay"),
+        ),
+        window_detection=_window_detection(
+            zone.get("window_detection"), _join(path, "window_detection")
+        ),
+        response_check=_response_check(
+            zone.get("response_check", True), _join(path, "response_check")
+        ),
+        sensor_fallback=_sensor_fallback(
+            zone.get("sensor_fallback"), _join(path, "sensor_fallback")
+        ),
+        max_humidity=_max_humidity(zone, path),
+    )
+
+
+def _window_detection(value: object, path: str) -> WindowDetection | None:
+    """Read ``true`` for the defaults, ``false`` or ``null``, which turn it off, or its settings."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return WindowDetection()
+    if not isinstance(value, Mapping):
+        raise PlantFileError(
+            path, "Expected true, false, or a mapping of change, within, and max_duration."
+        )
+    detection = _mapping(value, path, _WINDOW_DETECTION_KEYS)
+    default = WindowDetection()
+
+    def read(key: str, fallback: float, low: float, high: float) -> float:
+        key_path = _join(path, key)
+        return _within(
+            _number(detection.get(key, fallback), key_path), key_path, low=low, high=high
+        )
+
+    return WindowDetection(
+        change=read(
+            "change", default.change, MIN_WINDOW_DETECTION_CHANGE, MAX_WINDOW_DETECTION_CHANGE
+        ),
+        within=read(
+            "within", default.within, MIN_WINDOW_DETECTION_WITHIN, MAX_WINDOW_DETECTION_WITHIN
+        ),
+        max_duration=read(
+            "max_duration",
+            default.max_duration,
+            MIN_WINDOW_DETECTION_MAX_DURATION,
+            MAX_WINDOW_DETECTION_MAX_DURATION,
+        ),
+    )
+
+
+def _sensor_fallback(value: object, path: str) -> SensorFallback | None:
+    """Read ``true`` for the defaults, ``false`` or ``null``, which turn it off, or its settings."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return SensorFallback()
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected true, false, or a mapping of after, duty, and period.")
+    document = _mapping(value, path, _SENSOR_FALLBACK_KEYS)
+    default = SensorFallback()
+
+    def read(key: str, fallback: float, low: float, high: float) -> float:
+        key_path = _join(path, key)
+        return _within(
+            _number(document.get(key, fallback), key_path, positive=True),
+            key_path,
+            low=low,
+            high=high,
+        )
+
+    fallback = SensorFallback(
+        after=read("after", default.after, MIN_SENSOR_FALLBACK_AFTER, MAX_SENSOR_FALLBACK_AFTER),
+        duty=read("duty", default.duty, 0.0, MAX_SENSOR_FALLBACK_DUTY),
+        period=read(
+            "period", default.period, MIN_SENSOR_FALLBACK_PERIOD, MAX_SENSOR_FALLBACK_PERIOD
+        ),
+    )
+    if fallback.duty * fallback.period < MIN_SENSOR_FALLBACK_SPELL:
+        raise PlantFileError(
+            _join(path, "duty"),
+            f"Must heat for at least {MIN_SENSOR_FALLBACK_SPELL:g} seconds of each period.",
+        )
+    return fallback
+
+
+def _response_check(value: object, path: str) -> ResponseCheck | None:
+    """Read ``true`` for the defaults, ``false`` or ``null``, which turn it off, or its settings."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return DEFAULT_RESPONSE_CHECK
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected true, false, or a mapping of duration and progress.")
+    check = _mapping(value, path, _RESPONSE_CHECK_KEYS)
+    duration_path, progress_path = _join(path, "duration"), _join(path, "progress")
+    duration = _number(check.get("duration", DEFAULT_RESPONSE_CHECK.duration), duration_path)
+    progress = _number(check.get("progress", DEFAULT_RESPONSE_CHECK.progress), progress_path)
+    return ResponseCheck(
+        duration=_within(
+            duration, duration_path, low=MIN_RESPONSE_DURATION, high=MAX_RESPONSE_DURATION
+        ),
+        progress=_within(
+            progress, progress_path, low=MIN_RESPONSE_PROGRESS, high=MAX_RESPONSE_PROGRESS
+        ),
+    )
+
+
+def _max_humidity(zone: Mapping[str, Any], path: str) -> float | None:
+    """Read a zone's humidity limit, or ``null``, which turns the cutoff off."""
+    value = _setting(zone, "max_humidity", DEFAULT_MAX_HUMIDITY, path)
+    if value is None:
+        return None
+    return _within(value, _join(path, "max_humidity"), low=MIN_MAX_HUMIDITY, high=100.0)
+
+
+def _area(value: object, path: str) -> ZoneArea:
+    if not isinstance(value, Mapping):
+        return ZoneArea(_area_id(value, path))
+    area = _mapping(value, path, _AREA_KEYS)
+    return ZoneArea(
+        area=_area_id(_required(area, "area", path), _join(path, "area")),
+        required=_flag(area.get("required", False), _join(path, "required")),
+        max_age=_number(
+            area.get("max_age", DEFAULT_MAX_AGE), _join(path, "max_age"), positive=True
+        ),
+    )
+
+
+def _area_id(value: object, path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PlantFileError(path, "Expected an area ID.")
+    return value
+
+
+def _sensor(value: object, path: str) -> Sensor:
+    if not isinstance(value, Mapping):
+        return Sensor(_entity(value, path, _SENSOR_DOMAINS))
+    sensor = _mapping(value, path, _SENSOR_KEYS)
+    return Sensor(
+        entity=_entity(_required(sensor, "entity", path), _join(path, "entity"), _SENSOR_DOMAINS),
+        required=_flag(sensor.get("required", True), _join(path, "required")),
+        max_age=_number(
+            sensor.get("max_age", DEFAULT_MAX_AGE), _join(path, "max_age"), positive=True
+        ),
+    )
+
+
+def _thermostat(value: object, path: str) -> Thermostat:
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, _THERMOSTAT_SHAPE)
+    thermostat = _mapping(value, path, _THERMOSTAT_KEYS)
+    if len(thermostat) != 1:
+        raise PlantFileError(path, _THERMOSTAT_SHAPE)
+    if "external" in thermostat:
+        return ExternalThermostat(
+            _entity(thermostat["external"], _join(path, "external"), _CLIMATE_DOMAINS)
+        )
+    path = _join(path, "digital")
+    digital = _mapping(thermostat["digital"], path, _DIGITAL_KEYS)
+    defaults = _DEFAULT_THERMOSTAT
+
+    def setting(key: str, *, signed: bool = False) -> float:
+        value = digital.get(key, getattr(defaults, key))
+        return _number(value, _join(path, key), signed=signed)
+
+    def presets(key: str) -> tuple[tuple[Preset, float], ...]:
+        preset_path = _join(path, key)
+        values = _mapping(digital.get(key, {}), preset_path, _CONFIG_PRESETS)
+        return tuple(
+            (preset, _number(values[preset], _join(preset_path, preset), signed=True))
+            for preset in _CONFIG_PRESETS
+            if preset in values
+        )
+
+    return DigitalThermostat(
+        target=setting("target", signed=True),
+        presets=presets("presets"),
+        cool_target=setting("cool_target", signed=True),
+        cool_presets=presets("cool_presets"),
+        schedule=_schedule(digital["schedule"], _join(path, "schedule"))
+        if "schedule" in digital
+        else None,
+        learning=_choice(
+            digital.get("learning", LearningMode.OFF), _join(path, "learning"), tuple(LearningMode)
+        ),
+        weather_aware=_flag(digital.get("weather_aware", False), _join(path, "weather_aware")),
+        heat_start_delta=setting("heat_start_delta"),
+        heat_stop_delta=setting("heat_stop_delta"),
+        cool_start_delta=setting("cool_start_delta"),
+        cool_stop_delta=setting("cool_stop_delta"),
+        min_on=setting("min_on"),
+        min_off=setting("min_off"),
+    )
+
+
+# Scalar and collection readers
+
+
+def _join(path: str, key: object) -> str:
+    return f"{path}.{key}" if path else str(key)
+
+
+def _mapping(value: object, path: str, keys: Sequence[str]) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected a mapping.")
+    for key in value:
+        if not isinstance(key, str):
+            raise PlantFileError(path, f"Key {key!r} must be text.")
+        if key not in keys:
+            raise PlantFileError(
+                _join(path, key), f"Unknown key; expected one of: {', '.join(keys)}."
+            )
+    return value
+
+
+def _slugs(value: object, path: str) -> Iterator[tuple[str, Any, str]]:
+    """Yield the slug, value, and path of each entry of a mapping keyed by slugs."""
+    if not isinstance(value, Mapping):
+        raise PlantFileError(path, "Expected a mapping.")
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise PlantFileError(path, f"Key {key!r} must be text.")
+        item_path = _join(path, key)
+        if not SLUG_PATTERN.fullmatch(key):
+            raise PlantFileError(
+                item_path,
+                "A slug starts with a lowercase letter and holds only lowercase letters, "
+                "digits, and underscores.",
+            )
+        yield key, item, item_path
+
+
+def _items(value: object, path: str) -> Iterator[tuple[Any, str]]:
+    """Yield each item of a list with its path."""
+    if not isinstance(value, list):
+        raise PlantFileError(path, "Expected a list.")
+    for index, item in enumerate(value):
+        yield item, _join(path, index)
+
+
+def _items_of(mapping: Mapping[str, Any], key: str, path: str) -> Iterator[tuple[Any, str]]:
+    """Yield each item of an optional list key with its path."""
+    if key in mapping:
+        yield from _items(mapping[key], _join(path, key))
+
+
+def _required(mapping: Mapping[str, Any], key: str, path: str) -> Any:
+    if key not in mapping:
+        raise PlantFileError(_join(path, key), "This key is required.")
+    return mapping[key]
+
+
+def _contact(mapping: Mapping[str, Any], key: str, path: str) -> str | None:
+    """Read an optional binary sensor, such as a condensation switch."""
+    if key not in mapping:
+        return None
+    return _entity(mapping[key], _join(path, key), _BINARY_SENSOR_DOMAINS)
+
+
+def _setting(mapping: Mapping[str, Any], key: str, default: float, path: str) -> float | None:
+    """Read a number that ``null`` turns off, or its default when the key is left out."""
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    return None if value is None else _number(value, _join(path, key))
+
+
+def _within(
+    value: float, path: str, *, low: float | None = None, high: float | None = None
+) -> float:
+    if low is not None and value < low:
+        raise PlantFileError(path, f"Must be at least {low:g}.")
+    if high is not None and value > high:
+        raise PlantFileError(path, f"Must be at most {high:g}.")
+    return value
+
+
+def _name(mapping: Mapping[str, Any], path: str) -> str | None:
+    return _text(mapping["name"], _join(path, "name")) if "name" in mapping else None
+
+
+def _text(value: object, path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PlantFileError(path, "Expected non-empty text.")
+    return value
+
+
+def _entity(value: object, path: str, domains: Sequence[str]) -> str:
+    if not isinstance(value, str) or not _ENTITY_ID.fullmatch(value):
+        raise PlantFileError(path, f"Expected an entity ID, such as {domains[0]}.example.")
+    if value.split(".", 1)[0] not in domains:
+        raise PlantFileError(path, f"Expected an entity of the {' or '.join(domains)} domain.")
+    return value
+
+
+def _number(value: object, path: str, *, signed: bool = False, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise PlantFileError(path, "Expected a number.")
+    if not math.isfinite(value):
+        raise PlantFileError(path, "Expected a finite number.")
+    if positive and value <= 0:
+        raise PlantFileError(path, "Must be positive.")
+    if not signed and value < 0:
+        raise PlantFileError(path, "Must not be negative.")
+    return float(value)
+
+
+def _flag(value: object, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise PlantFileError(path, "Expected true or false.")
+    return value
+
+
+def _choice[E: StrEnum](value: object, path: str, choices: Sequence[E]) -> E:
+    for choice in choices:
+        if value == choice.value:
+            return choice
+    raise PlantFileError(path, f"Expected one of: {', '.join(choices)}.")
+
+
+def _plant_id(value: object, path: str) -> str:
+    if isinstance(value, str):
+        try:
+            return str(UUID(value))
+        except ValueError:
+            pass
+    raise PlantFileError(path, "Expected a UUID, such as 7c9e6679-7425-40de-944b-e07fc1f90ae7.")
+
+
+# Validation
+
+
+def validate_plant(plant: Plant) -> None:
+    """Check the relationships between a Plant's objects.
+
+    ``parse_plant`` calls this after it has checked every value, so a Plant built
+    by hand, such as one with a zone removed, gets the same structural checks.
+    Raise ``PlantFileError`` with the plant file path of the first problem.
+    """
+    _plant_id(plant.id, "id")
+    _text(plant.name, "name")
+    _check_unique("pumps", (pump.slug for pump in plant.pumps), "Pump")
+    _check_unique("loops", (loop.slug for loop in plant.loops), "Loop")
+    _check_unique("zones", (zone.slug for zone in plant.zones), "Zone")
+    for zone in plant.zones:
+        _check_unique(f"zones.{zone.slug}.loops", (loop.slug for loop in zone.loops), "Loop")
+    for pump in plant.pumps:
+        _check_pump(plant, pump)
+    if plant.changeover is not None and not any(loop.cools for loop in plant.all_loops):
+        raise PlantFileError("changeover", "Automatic changeover needs a loop that cools.")
+    if plant.source is not None:
+        _check_heat_sink(plant, plant.source)
+        _check_room_influence(plant, plant.source)
+        supply = plant.source.supply
+        if supply is not None and any(loop.cools for loop in plant.all_loops):
+            _within(
+                supply.cool_temperature,
+                "source.supply.cool_temperature",
+                low=supply.minimum,
+                high=supply.maximum,
+            )
+    for loop in plant.all_loops:
+        _check_loop(plant, loop)
+    for zone in plant.zones:
+        _check_zone(zone)
+        _check_learning(plant, zone)
+        _check_sensor_fallback(plant, zone)
+    for loop in plant.loops:
+        if loop.cools:
+            for zone in plant.dew_point_zones(loop):
+                _check_dew_point(zone, loop)
+    _check_roles(plant)
+
+
+def _check_unique(path: str, slugs: Iterator[str] | Sequence[str], kind: str) -> None:
+    seen: set[str] = set()
+    for slug in slugs:
+        if slug in seen:
+            raise PlantFileError(_join(path, slug), f"{kind} {slug} is listed twice.")
+        seen.add(slug)
+
+
+def _check_pump(plant: Plant, pump: Pump) -> None:
+    path = f"pumps.{pump.slug}"
+    loops_path = _join(path, "min_flow_loops")
+    if pump.driven_by_source and plant.source is None:
+        raise PlantFileError(
+            _join(path, "driven_by"),
+            "A source-driven pump needs a source; add one or give the pump a switch.",
+        )
+    if pump.min_flow_loops and not pump.driven_by_source:
+        raise PlantFileError(
+            loops_path,
+            "Only a source-driven pump with min_flow: path names min_flow_loops; "
+            "a switched pump never runs without a ready loop.",
+        )
+    if pump.min_flow_loops and pump.min_flow is MinFlow.GUARANTEED:
+        raise PlantFileError(
+            loops_path, "A pump with min_flow: guaranteed needs no min_flow_loops."
+        )
+    if pump.driven_by_source and pump.min_flow is MinFlow.PATH and not pump.min_flow_loops:
+        raise PlantFileError(
+            loops_path,
+            "A source-driven pump with min_flow: path needs min_flow_loops, the loops held open "
+            "while it may run, or min_flow: guaranteed when a separator protects it.",
+        )
+    seen: set[LoopRef] = set()
+    for index, ref in enumerate(pump.min_flow_loops):
+        item_path = _join(loops_path, index)
+        if ref in seen:
+            raise PlantFileError(item_path, f"Loop {ref} is listed twice.")
+        seen.add(ref)
+        try:
+            loop = plant.loop(ref)
+        except KeyError:
+            raise PlantFileError(item_path, f"There is no loop {ref}.") from None
+        if loop.pump != pump.slug:
+            raise PlantFileError(
+                item_path, f"Loop {ref} runs on pump {loop.pump}, not {pump.slug}."
+            )
+
+
+def _check_heat_sink(plant: Plant, source: Source) -> None:
+    loops_path = "source.heat_sink_loops"
+    if source.hold_after_demand is not None and not source.heat_sink_loops:
+        raise PlantFileError(
+            "source.hold_after_demand",
+            "Holding the request after demand needs heat_sink_loops to take the heat.",
+        )
+    if source.handover_sensor is not None and not source.heat_sink_loops:
+        raise PlantFileError(
+            "source.handover_sensor",
+            "A handover sensor needs heat_sink_loops to take the heat while the source "
+            "runs by itself.",
+        )
+    seen: set[LoopRef] = set()
+    for index, ref in enumerate(source.heat_sink_loops):
+        item_path = _join(loops_path, index)
+        if ref in seen:
+            raise PlantFileError(item_path, f"Loop {ref} is listed twice.")
+        seen.add(ref)
+        try:
+            loop = plant.loop(ref)
+        except KeyError:
+            raise PlantFileError(item_path, f"There is no loop {ref}.") from None
+        if Mode.HEAT not in loop.modes:
+            raise PlantFileError(item_path, f"Loop {ref} does not heat, so it is no heat sink.")
+        if loop.runs.kind is RunKind.WITH_SOURCE:
+            raise PlantFileError(
+                item_path, f"Loop {ref} already runs with the source; it needs no heat sink role."
+            )
+
+
+def _check_room_influence(plant: Plant, source: Source) -> None:
+    if source.supply is None or source.supply.room_influence is None:
+        return
+    path = "source.supply.room_influence.zone"
+    slug = source.supply.room_influence.zone
+    zone = next((zone for zone in plant.zones if zone.slug == slug), None)
+    if zone is None:
+        raise PlantFileError(path, f"There is no zone {slug}.")
+    if not isinstance(zone.thermostat, DigitalThermostat):
+        raise PlantFileError(path, f"Zone {slug} needs a digital thermostat to lead the curve.")
+    if Mode.HEAT not in plant.zone_modes(slug):
+        raise PlantFileError(path, f"No loop heats zone {slug}, so it cannot lead the curve.")
+
+
+def _check_loop(plant: Plant, loop: Loop) -> None:
+    path = _loop_path(loop.ref)
+    try:
+        pump = plant.pump(loop.pump)
+    except KeyError:
+        raise PlantFileError(_join(path, "pump"), f"There is no pump {loop.pump}.") from None
+    _check_runs(plant, loop, _join(path, "runs"))
+    modes_path = _join(path, "modes")
+    if not loop.modes or not loop.modes <= set(_LOOP_MODES):
+        raise PlantFileError(modes_path, "List at least one mode, heat or cool.")
+    if loop.cools and pump.supply_temperature is None and loop.surface_temperature is None:
+        raise PlantFileError(
+            modes_path,
+            "A loop that cools needs a condensation reference: a supply_temperature on pump "
+            f"{pump.slug} or the loop's surface_temperature. Without one the loop is heat only.",
+        )
+    if loop.surface_temperature is None and loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        raise PlantFileError(
+            _join(path, "surface_minimum"),
+            "A surface_minimum needs the loop's surface_temperature, which it reads.",
+        )
+
+
+def _check_runs(plant: Plant, loop: Loop, path: str) -> None:
+    runs = loop.runs
+    if loop.zone is not None:
+        if runs != RUNS_WITH_ZONE:
+            raise PlantFileError(path, "A zone loop runs with its zone.")
+        return
+    if runs.kind is RunKind.ZONE:
+        raise PlantFileError(path, "A plant loop runs with_source or with_zones.")
+    if runs.kind is RunKind.WITH_SOURCE:
+        if plant.source is None:
+            raise PlantFileError(path, "A loop that runs with the source needs a source.")
+        return
+    zones_path = _join(path, "with_zones")
+    if not runs.zones:
+        raise PlantFileError(zones_path, "List at least one zone.")
+    slugs = {zone.slug for zone in plant.zones}
+    seen: set[str] = set()
+    for index, slug in enumerate(runs.zones):
+        item_path = _join(zones_path, index)
+        if slug in seen:
+            raise PlantFileError(item_path, f"Zone {slug} is listed twice.")
+        seen.add(slug)
+        if slug not in slugs:
+            raise PlantFileError(item_path, f"There is no zone {slug}.")
+
+
+def _check_sensor_fallback(plant: Plant, zone: Zone) -> None:
+    if zone.sensor_fallback is None:
+        return
+    path = f"zones.{zone.slug}.sensor_fallback"
+    if not isinstance(zone.thermostat, DigitalThermostat):
+        raise PlantFileError(path, "A sensor fallback needs a digital thermostat.")
+    if Mode.HEAT not in plant.zone_modes(zone.slug):
+        raise PlantFileError(path, "A sensor fallback needs a loop that heats the zone.")
+
+
+def _check_zone(zone: Zone) -> None:
+    path = f"zones.{zone.slug}"
+    _check_listed_once(_join(path, "areas"), [area.area for area in zone.areas], "Area")
+    _check_listed_once(
+        _join(path, "temperature"), [sensor.entity for sensor in zone.temperature], "Sensor"
+    )
+    _check_listed_once(
+        _join(path, "humidity"), [sensor.entity for sensor in zone.humidity], "Sensor"
+    )
+    _check_listed_once(_join(path, "windows"), list(zone.windows), "Window")
+    if isinstance(zone.thermostat, DigitalThermostat) and not zone.temperature and not zone.areas:
+        raise PlantFileError(path, "A digital thermostat needs a temperature sensor or an area.")
+    if zone.cools and not zone.humidity and not zone.areas:
+        raise PlantFileError(
+            _join(path, "humidity"),
+            "A zone that cools needs a humidity sensor or an area for its dew point.",
+        )
+    if zone.cools and not zone.temperature and not zone.areas:
+        raise PlantFileError(
+            _join(path, "temperature"),
+            "A zone that cools needs a temperature sensor or an area for its dew point.",
+        )
+
+
+def _check_learning(plant: Plant, zone: Zone) -> None:
+    thermostat = zone.thermostat
+    if not isinstance(thermostat, DigitalThermostat):
+        return
+    path = f"zones.{zone.slug}.thermostat.digital"
+    if thermostat.learning is LearningMode.ASSIST and thermostat.schedule is None:
+        raise PlantFileError(_join(path, "learning"), "Assisted recovery needs a comfort schedule.")
+    if thermostat.weather_aware and (
+        thermostat.learning is not LearningMode.ASSIST or plant.weather is None
+    ):
+        raise PlantFileError(
+            _join(path, "weather_aware"),
+            "Weather-aware recovery needs assisted learning, a comfort schedule, "
+            "and Plant weather settings.",
+        )
+
+
+def _check_dew_point(zone: Zone, loop: Loop) -> None:
+    """Refuse a zone whose dew point a cooling plant loop's guard needs and cannot have."""
+    path = f"zones.{zone.slug}"
+    because = f"because loop {loop.slug} cools with it"
+    if not zone.humidity and not zone.areas:
+        raise PlantFileError(
+            _join(path, "humidity"),
+            f"Zone {zone.slug} needs a humidity sensor or an area for its dew point, {because}.",
+        )
+    if not zone.temperature and not zone.areas:
+        raise PlantFileError(
+            _join(path, "temperature"),
+            f"Zone {zone.slug} needs a temperature sensor or an area for its dew point, {because}.",
+        )
+
+
+def _check_listed_once(path: str, values: Sequence[str], kind: str) -> None:
+    seen: set[str] = set()
+    for index, value in enumerate(values):
+        if value in seen:
+            raise PlantFileError(_join(path, index), f"{kind} {value} is listed twice.")
+        seen.add(value)
+
+
+def _check_roles(plant: Plant) -> None:
+    """Refuse an output entity that has more than one role in the Plant."""
+    bound: dict[str, str] = {}
+    for entity, path in _output_paths(plant):
+        if entity in bound:
+            raise PlantFileError(
+                path,
+                f"{entity} is already bound at {bound[entity]}; "
+                "an output has exactly one role in a Plant.",
+            )
+        bound[entity] = path
+
+
+def _output_paths(plant: Plant) -> Iterator[tuple[str, str]]:
+    if plant.source is not None:
+        yield plant.source.request, "source.request"
+        if plant.source.mode is not None:
+            yield plant.source.mode.entity, "source.mode.entity"
+        for switch in plant.source.mode_switches:
+            yield switch.entity, f"source.mode_switches.{switch.entity}"
+        if plant.source.weather_curve is not None:
+            yield plant.source.weather_curve.switch, "source.weather_curve.switch"
+        if plant.source.supply is not None:
+            yield plant.source.supply.entity, "source.supply.entity"
+    for pump in plant.pumps:
+        if pump.switch is not None:
+            yield pump.switch, f"pumps.{pump.slug}.switch"
+    for loop in plant.all_loops:
+        for index, valve in enumerate(loop.valves):
+            yield valve.entity, f"{_loop_path(loop.ref)}.valves.{index}"
+
+
+def _loop_path(ref: LoopRef) -> str:
+    return f"loops.{ref.loop}" if ref.zone is None else f"zones.{ref.zone}.loops.{ref.loop}"
+
+
+def entity_paths(plant: Plant) -> dict[str, str]:
+    """Return every entity the Plant binds, inputs included, with the path of its first use.
+
+    Adapters use it to refuse an entity that another Plant binds, or that
+    Hydronicus itself provides, and to name where the file binds it.
+    """
+    paths: dict[str, str] = {}
+
+    def bind(entity: str | None, path: str) -> None:
+        if entity is not None:
+            paths.setdefault(entity, path)
+
+    if plant.changeover is not None:
+        bind(plant.changeover.outdoor_sensor, "changeover.outdoor_sensor")
+    if plant.weather is not None:
+        bind(plant.weather.entity, "weather.entity")
+        bind(plant.weather.outdoor_sensor, "weather.outdoor_sensor")
+    if plant.source is not None:
+        bind(plant.source.request, "source.request")
+        bind(plant.source.running_sensor, "source.running_sensor")
+        bind(plant.source.health_sensor, "source.health_sensor")
+        bind(plant.source.handover_sensor, "source.handover_sensor")
+        if plant.source.supply is not None:
+            bind(plant.source.supply.entity, "source.supply.entity")
+            bind(plant.source.supply.outdoor_sensor, "source.supply.outdoor_sensor")
+        if plant.source.mode is not None:
+            bind(plant.source.mode.entity, "source.mode.entity")
+        for switch in plant.source.mode_switches:
+            bind(switch.entity, f"source.mode_switches.{switch.entity}")
+        if plant.source.weather_curve is not None:
+            bind(plant.source.weather_curve.switch, "source.weather_curve.switch")
+        bind(plant.source.inhibit_sensor, "source.inhibit_sensor")
+        bind(plant.source.compressor_sensor, "source.compressor_sensor")
+        if (guard := plant.source.no_load) is not None:
+            bind(guard.supply_temperature, "source.no_load.supply_temperature")
+            bind(guard.return_temperature, "source.no_load.return_temperature")
+            bind(guard.compressor_sensor, "source.no_load.compressor_sensor")
+        if plant.source.dhw is not None:
+            bind(plant.source.dhw.switch, "source.dhw.switch")
+            bind(plant.source.dhw.setpoint, "source.dhw.setpoint")
+            bind(plant.source.dhw.schedule, "source.dhw.schedule")
+            if (disinfect := plant.source.dhw.disinfect) is not None:
+                bind(disinfect.tank_temperature, "source.dhw.disinfect.tank_temperature")
+                bind(disinfect.window, "source.dhw.disinfect.window")
+    for pump in plant.pumps:
+        bind(pump.switch, f"pumps.{pump.slug}.switch")
+        bind(pump.running_sensor, f"pumps.{pump.slug}.running_sensor")
+        bind(pump.flow_sensor, f"pumps.{pump.slug}.flow_sensor")
+        bind(pump.supply_temperature, f"pumps.{pump.slug}.supply_temperature")
+        bind(pump.condensation_switch, f"pumps.{pump.slug}.condensation_switch")
+    for loop in plant.loops:
+        _bind_loop(loop, bind)
+    for zone in plant.zones:
+        path = f"zones.{zone.slug}"
+        for index, sensor in enumerate(zone.temperature):
+            bind(sensor.entity, f"{path}.temperature.{index}")
+        for index, sensor in enumerate(zone.humidity):
+            bind(sensor.entity, f"{path}.humidity.{index}")
+        if isinstance(zone.thermostat, ExternalThermostat):
+            bind(zone.thermostat.entity, f"{path}.thermostat.external")
+        elif zone.thermostat.schedule is not None:
+            bind(zone.thermostat.schedule.entity, f"{path}.thermostat.digital.schedule.entity")
+        for index, window in enumerate(zone.windows):
+            bind(window, f"{path}.windows.{index}")
+        for loop in zone.loops:
+            _bind_loop(loop, bind)
+    return paths
+
+
+def _bind_loop(loop: Loop, bind: Callable[[str | None, str], None]) -> None:
+    path = _loop_path(loop.ref)
+    for index, valve in enumerate(loop.valves):
+        bind(valve.entity, f"{path}.valves.{index}")
+        bind(valve.readiness, f"{path}.valves.{index}.readiness")
+    bind(loop.surface_temperature, f"{path}.surface_temperature")
+    bind(loop.condensation_switch, f"{path}.condensation_switch")
+
+
+# Paths in words
+
+_TOP_WORDS: Final = {
+    "": "The plant file",
+    "hydronicus": "Plant file format",
+    "id": "Plant ID",
+    "name": "Plant name",
+    "mode_dwell": "Mode dwell",
+    "exercise": "Exercise",
+    "frost_protection": "Frost protection",
+    "away": "Away",
+    "changeover": "Automatic changeover",
+    "source": "Source",
+    "pumps": "Pumps",
+    "loops": "Plant loops",
+    "zones": "Zones",
+}
+_KEY_WORDS: Final = {
+    "request": "request switch",
+    "mode": "mode select",
+    "heat": "heat option",
+    "cool": "cool option",
+    "post_run": "post-run",
+    "min_on": "minimum on time",
+    "min_off": "minimum off time",
+    "driven_by": "driven by",
+    "min_flow": "minimum flow",
+    "min_flow_loops": "min-flow loops",
+    "supply_temperature": "supply temperature sensor",
+    "surface_temperature": "surface temperature sensor",
+    "opening_time": "opening time",
+    "readiness": "readiness sensor",
+    "runs": "runs with",
+    "with_zones": "zones",
+    "temperature": "temperature sensors",
+    "humidity": "humidity sensors",
+    "max_age": "maximum age",
+    "condensation_switch": "condensation switch",
+    "surface_minimum": "surface minimum",
+    "window_open_delay": "window open delay",
+    "window_close_delay": "window close delay",
+    "window_detection": "window detection",
+    "change": "temperature change",
+    "within": "within",
+    "max_duration": "maximum duration",
+    "response_check": "response check",
+    "sensor_fallback": "sensor fallback",
+    "after": "after",
+    "duty": "duty",
+    "period": "period",
+    "progress": "progress",
+    "max_humidity": "maximum humidity",
+    "max_starts_per_hour": "maximum starts per hour",
+    "heat_sink_loops": "heat sink loops",
+    "hold_after_demand": "hold after demand",
+    "heat_sink_overshoot": "heat sink overshoot",
+    "start_threshold": "start threshold",
+    "health_sensor": "health sensor",
+    "handover_sensor": "handover sensor",
+    "write_interval": "write interval",
+    "dhw": "DHW",
+    "setpoint": "setpoint",
+    "max_boost": "maximum boost",
+    "inhibit_sensor": "inhibit sensor",
+    "mode_switches": "mode switches",
+    "weather_curve": "weather curve",
+    "no_load": "no-load guard",
+    "return_temperature": "return temperature sensor",
+    "compressor_sensor": "compressor sensor",
+    "delta": "temperature difference",
+    "duration": "duration",
+    "hold_off": "hold off",
+}
+# A list key and the word for one of its items, which the path numbers from 1.
+_ITEM_WORDS: Final = {
+    "min_flow_loops": "min-flow loop",
+    "heat_sink_loops": "heat sink loop",
+    "valves": "valve",
+    "with_zones": "zone",
+    "areas": "area",
+    "temperature": "temperature sensor",
+    "humidity": "humidity sensor",
+    "windows": "window",
+}
+_OBJECT_WORDS: Final = {"pumps": "Pump", "loops": "Plant loop", "zones": "Zone"}
+
+
+def describe_path(document: Mapping[str, Any], path: str) -> str:
+    """Return a plant file path in words, naming each object by its name.
+
+    ``zones.living_area.loops.floor.pump`` reads ``Zone Living area, loop Floor,
+    pump``, so a form can show where a problem is without the file's keys.
+    """
+    keys = path.split(".") if path else []
+    if len(keys) <= 1:
+        key = keys[0] if keys else ""
+        return _TOP_WORDS.get(key, _words(key))
+    parts: list[str] = []
+    rest = keys
+    if keys[0] in _OBJECT_WORDS:
+        objects = document.get(keys[0])
+        item = _named_item(objects, keys[1])
+        parts.append(f"{_OBJECT_WORDS[keys[0]]} {_item_title(item, keys[1])}")
+        rest = keys[2:]
+        if keys[0] == "zones" and len(rest) >= 2 and rest[0] == "loops":
+            loop = _named_item(item.get("loops") if isinstance(item, Mapping) else None, rest[1])
+            parts.append(f"loop {_item_title(loop, rest[1])}")
+            rest = rest[2:]
+    else:
+        parts.append(_TOP_WORDS.get(keys[0], _words(keys[0])))
+        rest = keys[1:]
+    index = 0
+    while index < len(rest):
+        key = rest[index]
+        following = rest[index + 1] if index + 1 < len(rest) else None
+        if key in _ITEM_WORDS and following is not None and following.isdigit():
+            parts.append(f"{_ITEM_WORDS[key]} {int(following) + 1}")
+            index += 2
+            continue
+        parts.append(_KEY_WORDS.get(key, _words(key)))
+        index += 1
+    return ", ".join(parts)
+
+
+def _named_item(objects: object, slug: str) -> Mapping[str, Any] | None:
+    if isinstance(objects, Mapping) and isinstance(item := objects.get(slug), Mapping):
+        return item
+    return None
+
+
+def _item_title(item: Mapping[str, Any] | None, slug: str) -> str:
+    name = item.get("name") if item is not None else None
+    return name if isinstance(name, str) and name.strip() else title_from_slug(slug)
+
+
+def _words(key: str) -> str:
+    return key.replace("_", " ")
+
+
+# Writing
+
+
+def export_plant(plant: Plant) -> dict[str, Any]:
+    """Return the canonical plant file of a Plant."""
+    document: dict[str, Any] = {
+        "hydronicus": PLANT_FILE_FORMAT,
+        "id": plant.id,
+        "name": plant.name,
+        "mode_dwell": _export_number(plant.mode_dwell),
+    }
+    if plant.exercise != DEFAULT_EXERCISE:
+        document["exercise"] = (
+            False
+            if plant.exercise is None
+            else {
+                "interval": _export_number(plant.exercise.interval),
+                "run": _export_number(plant.exercise.run),
+            }
+        )
+    if plant.frost_protection != DEFAULT_FROST_PROTECTION:
+        document["frost_protection"] = (
+            False if plant.frost_protection is None else _export_number(plant.frost_protection)
+        )
+    if plant.away != AwayConfig():
+        document["away"] = {
+            key: _export_number(getattr(plant.away, key))
+            for key in ("heat_target", "cool_target")
+            if getattr(plant.away, key) != getattr(AwayConfig(), key)
+        }
+    if plant.changeover is not None:
+        defaults = Changeover(plant.changeover.outdoor_sensor)
+        document["changeover"] = {"outdoor_sensor": plant.changeover.outdoor_sensor} | {
+            key: _export_number(getattr(plant.changeover, key))
+            for key in _CHANGEOVER_KEYS
+            if key != "outdoor_sensor" and getattr(plant.changeover, key) != getattr(defaults, key)
+        }
+    if plant.source is not None:
+        document["source"] = _export_source(plant.source)
+    if plant.weather is not None:
+        document["weather"] = _export_configuration(
+            plant.weather, WeatherConfig(plant.weather.entity), _WEATHER_KEYS
+        )
+    if plant.pumps:
+        document["pumps"] = {pump.slug: _export_pump(pump) for pump in plant.pumps}
+    if plant.loops:
+        document["loops"] = {loop.slug: _export_loop(loop) for loop in plant.loops}
+    if plant.zones:
+        document["zones"] = {zone.slug: _export_zone(zone) for zone in plant.zones}
+    return document
+
+
+def _export_number(value: float) -> int | float:
+    """Write a whole number without a fraction, as a person would."""
+    return int(value) if float(value).is_integer() else value
+
+
+def _export_source(source: Source) -> dict[str, Any]:
+    document = _named(source.name)
+    document["request"] = source.request
+    if source.mode is not None:
+        document["mode"] = {
+            "entity": source.mode.entity,
+            "heat": source.mode.heat,
+            "cool": source.mode.cool,
+        }
+    if source.mode_switches:
+        document["mode_switches"] = {
+            switch.entity: [str(mode) for mode in _LOOP_MODES if mode in switch.modes]
+            for switch in source.mode_switches
+        }
+    if source.weather_curve is not None:
+        document["weather_curve"] = {"switch": source.weather_curve.switch}
+    document["post_run"] = _export_number(source.post_run)
+    document["min_on"] = _export_number(source.min_on)
+    document["min_off"] = _export_number(source.min_off)
+    if source.feedback_timeout != 300.0:
+        document["feedback_timeout"] = _export_number(source.feedback_timeout)
+    if source.running_sensor is not None:
+        document["running_sensor"] = source.running_sensor
+    if source.health_sensor is not None:
+        document["health_sensor"] = source.health_sensor
+    if source.handover_sensor is not None:
+        document["handover_sensor"] = source.handover_sensor
+    if source.write_interval is not None:
+        document["write_interval"] = _export_number(source.write_interval)
+    if source.inhibit_sensor is not None:
+        document["inhibit_sensor"] = source.inhibit_sensor
+    if source.compressor_sensor is not None:
+        document["compressor_sensor"] = source.compressor_sensor
+    if (guard := source.no_load) is not None:
+        guard_defaults = NoLoadGuard("", "", "")
+        document["no_load"] = {
+            "supply_temperature": guard.supply_temperature,
+            "return_temperature": guard.return_temperature,
+            "compressor_sensor": guard.compressor_sensor,
+            **{
+                key: _export_number(getattr(guard, key))
+                for key in ("delta", "duration", "hold_off")
+                if getattr(guard, key) != getattr(guard_defaults, key)
+            },
+        }
+    if (dhw := source.dhw) is not None:
+        defaults = Dhw()
+        exported: dict[str, Any] = {}
+        if dhw.switch is not None:
+            exported["switch"] = dhw.switch
+        if dhw.setpoint is not None:
+            exported["setpoint"] = dhw.setpoint
+        for key in ("minimum", "maximum", "tolerance", "step", "max_boost"):
+            if (setting := getattr(dhw, key)) != getattr(defaults, key):
+                exported[key] = _export_number(setting)
+        if dhw.schedule is not None:
+            exported["schedule"] = dhw.schedule
+        if (disinfect := dhw.disinfect) is not None:
+            cycle: dict[str, Any] = {"tank_temperature": disinfect.tank_temperature}
+            cycle_defaults = Disinfect(disinfect.tank_temperature)
+            for key in ("temperature", "interval", "hold", "timeout"):
+                if (setting := getattr(disinfect, key)) != getattr(cycle_defaults, key):
+                    cycle[key] = _export_number(setting)
+            if disinfect.window is not None:
+                cycle["window"] = disinfect.window
+            exported["disinfect"] = cycle
+        document["dhw"] = exported
+    if source.max_starts_per_hour is not None:
+        document["max_starts_per_hour"] = source.max_starts_per_hour
+    if source.start_threshold is not None:
+        document["start_threshold"] = _export_number(source.start_threshold)
+    if source.heat_sink_loops:
+        document["heat_sink_loops"] = [str(ref) for ref in source.heat_sink_loops]
+    if source.hold_after_demand is not None:
+        document["hold_after_demand"] = _export_number(source.hold_after_demand)
+    if source.heat_sink_overshoot != DEFAULT_HEAT_SINK_OVERSHOOT:
+        document["heat_sink_overshoot"] = _export_number(source.heat_sink_overshoot)
+    if source.supply is not None:
+        document["supply"] = _export_configuration(
+            source.supply,
+            SupplyControl(source.supply.entity),
+            [key for key in _SUPPLY_KEYS if key != "room_influence"],
+        )
+        if (influence := source.supply.room_influence) is not None:
+            room: dict[str, Any] = {"zone": influence.zone}
+            defaults = RoomInfluence(influence.zone)
+            if influence.factor != defaults.factor:
+                room["factor"] = _export_number(influence.factor)
+            if influence.limit != defaults.limit:
+                room["limit"] = _export_number(influence.limit)
+            document["supply"]["room_influence"] = room
+    return document
+
+
+def _export_pump(pump: Pump) -> dict[str, Any]:
+    document = _named(pump.name)
+    if pump.switch is None:
+        document["driven_by"] = "source"
+    else:
+        document["switch"] = pump.switch
+        document["overrun"] = _export_number(pump.overrun)
+    # A source-driven pump always states its minimum flow, which is a safety decision.
+    if pump.driven_by_source or pump.min_flow is not MinFlow.PATH:
+        document["min_flow"] = str(pump.min_flow)
+    if pump.min_flow_loops:
+        document["min_flow_loops"] = [str(ref) for ref in pump.min_flow_loops]
+    if pump.supply_temperature is not None:
+        document["supply_temperature"] = pump.supply_temperature
+    if pump.condensation_switch is not None:
+        document["condensation_switch"] = pump.condensation_switch
+    if pump.running_sensor is not None:
+        document["running_sensor"] = pump.running_sensor
+    if pump.flow_sensor is not None:
+        document["flow_sensor"] = pump.flow_sensor
+    return document
+
+
+def _export_loop(loop: Loop) -> dict[str, Any]:
+    document = _named(loop.name)
+    if loop.valves:
+        document["valves"] = [_export_valve(valve) for valve in loop.valves]
+    document["pump"] = loop.pump
+    if loop.runs.kind is RunKind.WITH_SOURCE:
+        document["runs"] = str(RunKind.WITH_SOURCE)
+    elif loop.runs.kind is RunKind.WITH_ZONES:
+        document["runs"] = {"with_zones": list(loop.runs.zones)}
+    document["modes"] = [str(mode) for mode in _LOOP_MODES if mode in loop.modes]
+    if loop.surface_temperature is not None:
+        document["surface_temperature"] = loop.surface_temperature
+    if loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        document["surface_minimum"] = _export_setting(loop.surface_minimum)
+    if loop.condensation_switch is not None:
+        document["condensation_switch"] = loop.condensation_switch
+    if loop.weight != 1.0:
+        document["weight"] = _export_number(loop.weight)
+    return document
+
+
+def _export_setting(value: float | None) -> int | float | None:
+    """Write a setting that ``null`` turns off."""
+    return None if value is None else _export_number(value)
+
+
+def _export_valve(valve: Valve) -> str | dict[str, Any]:
+    document: dict[str, Any] = {"entity": valve.entity}
+    if valve.opening_time != DEFAULT_OPENING_TIME:
+        document["opening_time"] = _export_number(valve.opening_time)
+    if valve.readiness is not None:
+        document["readiness"] = valve.readiness
+    return valve.entity if len(document) == 1 else document
+
+
+def _export_zone(zone: Zone) -> dict[str, Any]:
+    document = _named(zone.name)
+    if zone.areas:
+        document["areas"] = [
+            _export_reading(area.area, "area", area.required, False, area.max_age)
+            for area in zone.areas
+        ]
+    if zone.temperature:
+        document["temperature"] = [_export_sensor(sensor) for sensor in zone.temperature]
+    if zone.humidity:
+        document["humidity"] = [_export_sensor(sensor) for sensor in zone.humidity]
+    if zone.aggregation is not Aggregation.MEAN:
+        document["aggregation"] = str(zone.aggregation)
+    if zone.thermostat != _DEFAULT_THERMOSTAT:
+        document["thermostat"] = _export_thermostat(zone.thermostat)
+    if zone.windows:
+        document["windows"] = list(zone.windows)
+    if zone.window_open_delay != DEFAULT_WINDOW_OPEN_DELAY:
+        document["window_open_delay"] = _export_number(zone.window_open_delay)
+    if zone.window_close_delay != DEFAULT_WINDOW_CLOSE_DELAY:
+        document["window_close_delay"] = _export_number(zone.window_close_delay)
+    if zone.window_detection is not None:
+        document["window_detection"] = (
+            True
+            if zone.window_detection == WindowDetection()
+            else _export_changed(zone.window_detection, WindowDetection(), _WINDOW_DETECTION_KEYS)
+        )
+    if zone.response_check != DEFAULT_RESPONSE_CHECK:
+        document["response_check"] = (
+            False
+            if zone.response_check is None
+            else _export_changed(zone.response_check, DEFAULT_RESPONSE_CHECK, _RESPONSE_CHECK_KEYS)
+        )
+    if zone.sensor_fallback is not None:
+        document["sensor_fallback"] = (
+            True
+            if zone.sensor_fallback == SensorFallback()
+            else _export_changed(zone.sensor_fallback, SensorFallback(), _SENSOR_FALLBACK_KEYS)
+        )
+    if zone.max_humidity != DEFAULT_MAX_HUMIDITY:
+        document["max_humidity"] = _export_setting(zone.max_humidity)
+    if zone.loops:
+        document["loops"] = {loop.slug: _export_loop(loop) for loop in zone.loops}
+    return document
+
+
+def _export_sensor(sensor: Sensor) -> str | dict[str, Any]:
+    return _export_reading(sensor.entity, "entity", sensor.required, True, sensor.max_age)
+
+
+def _export_reading(
+    key: str, name: str, required: bool, default_required: bool, max_age: float
+) -> str | dict[str, Any]:
+    """Write an area or sensor as its ID, or as a mapping when a setting differs."""
+    document: dict[str, Any] = {name: key}
+    if required != default_required:
+        document["required"] = required
+    if max_age != DEFAULT_MAX_AGE:
+        document["max_age"] = _export_number(max_age)
+    return key if len(document) == 1 else document
+
+
+def _export_thermostat(thermostat: Thermostat) -> dict[str, Any]:
+    if isinstance(thermostat, ExternalThermostat):
+        return {"external": thermostat.entity}
+    settings: dict[str, Any] = {}
+    for key in _DIGITAL_KEYS:
+        value = getattr(thermostat, key)
+        if value == getattr(_DEFAULT_THERMOSTAT, key):
+            continue
+        if key in ("presets", "cool_presets"):
+            settings[key] = {str(preset): _export_number(target) for preset, target in value}
+        elif key == "schedule":
+            settings[key] = _export_configuration(value, Schedule(value.entity), _SCHEDULE_KEYS)
+        elif key in ("learning", "weather_aware"):
+            settings[key] = str(value) if key == "learning" else value
+        else:
+            settings[key] = _export_number(value)
+    return {"digital": settings}
+
+
+def _export_changed(
+    value: WindowDetection | ResponseCheck | SensorFallback,
+    defaults: WindowDetection | ResponseCheck | SensorFallback,
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    """Write the numeric settings that differ from their defaults."""
+    return {
+        key: _export_number(getattr(value, key))
+        for key in keys
+        if getattr(value, key) != getattr(defaults, key)
+    }
+
+
+def _export_configuration(
+    value: SupplyControl | Schedule | WeatherConfig,
+    defaults: SupplyControl | Schedule | WeatherConfig,
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    document: dict[str, Any] = {"entity": value.entity}
+    for key in keys:
+        setting = getattr(value, key)
+        if setting == getattr(defaults, key):
+            continue
+        if isinstance(setting, frozenset):
+            document[key] = [str(mode) for mode in _LOOP_MODES if mode in setting]
+        elif isinstance(setting, (float, int)):
+            document[key] = _export_number(setting)
+        else:
+            document[key] = setting
+    return document
+
+
+def _named(name: str | None) -> dict[str, Any]:
+    return {} if name is None else {"name": name}
+
+
+# Storage
+
+
+# The mappings keyed by slugs whose order the user chose. Home Assistant stores a
+# config entry with sorted keys, so storage lists their objects, each with its slug.
+_LISTED_KEYS: Final = ("pumps", "loops")
+
+
+def to_storage(plant: Plant) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Split a Plant into its config entry data and its zone subentry data by slug.
+
+    Pumps, plant loops, and each zone's loops are stored as lists of objects
+    that carry their slug, as zone subentries do, so their order survives Home
+    Assistant sorting the keys of what it stores.
+    """
+    entry_data = export_plant(plant)
+    zones: dict[str, dict[str, Any]] = entry_data.pop("zones", {})
+    return _listed(entry_data), {
+        slug: {SLUG_KEY: slug, **_listed(zone)} for slug, zone in zones.items()
+    }
+
+
+def _listed(document: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: [{SLUG_KEY: slug, **item} for slug, item in value.items()]
+        if key in _LISTED_KEYS
+        else value
+        for key, value in document.items()
+    }
+
+
+def plant_file_from_storage(
+    entry_data: Mapping[str, Any], zones: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Return the plant file stored as config entry data and zone subentry data, unvalidated.
+
+    ``zones`` maps each zone subentry's slug, its unique ID, to its data. Raise
+    ``PlantFileError`` when the stored data does not have the storage's shape.
+    """
+    if "zones" in entry_data:
+        raise PlantFileError("zones", "Zones are stored in their subentries, not the entry data.")
+    if "id" not in entry_data:
+        raise PlantFileError("id", "A stored Plant keeps its ID.")
+    documents: dict[str, Any] = {}
+    for slug, data in zones.items():
+        path = _join("zones", slug)
+        if not isinstance(data, Mapping):
+            raise PlantFileError(path, "Expected a mapping.")
+        if data.get(SLUG_KEY) != slug:
+            raise PlantFileError(
+                _join(path, SLUG_KEY),
+                f"The subentry of zone {slug} holds the slug {data.get(SLUG_KEY)!r}.",
+            )
+        documents[slug] = _unlisted(
+            {key: value for key, value in data.items() if key != SLUG_KEY}, path
+        )
+    return {**_unlisted(entry_data, ""), "zones": documents}
+
+
+def _unlisted(data: Mapping[str, Any], path: str) -> dict[str, Any]:
+    """Return stored data with each list of objects as a mapping by slug, in list order."""
+    document = dict(data)
+    for key in _LISTED_KEYS:
+        if key not in document:
+            continue
+        key_path = _join(path, key)
+        if not isinstance(document[key], list):
+            raise PlantFileError(key_path, "Expected a list.")
+        table: dict[str, Any] = {}
+        for item, item_path in _items(document[key], key_path):
+            slug = item.get(SLUG_KEY) if isinstance(item, Mapping) else None
+            if not isinstance(slug, str):
+                raise PlantFileError(_join(item_path, SLUG_KEY), "A stored object keeps its slug.")
+            if slug in table:
+                raise PlantFileError(_join(key_path, slug), f"Slug {slug} is stored twice.")
+            table[slug] = {name: value for name, value in item.items() if name != SLUG_KEY}
+        document[key] = table
+    return document
+
+
+def from_storage(entry_data: Mapping[str, Any], zones: Mapping[str, Mapping[str, Any]]) -> Plant:
+    """Return the validated Plant stored as config entry data and zone subentry data.
+
+    ``zones`` maps each zone subentry's slug, its unique ID, to its data.
+    """
+    return parse_plant(plant_file_from_storage(entry_data, zones))
+
+
+# YAML
+
+
+class _Dumper(yaml.SafeDumper):
+    """Write block mappings, and flow lists and small mappings, without aliases."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+class _FlowMapping(dict[str, Any]):
+    """A mapping written on one line."""
+
+
+# Mappings under these keys are written on one line.
+_FLOW_MAPPINGS: Final = frozenset(
+    {
+        "mode",
+        "runs",
+        "thermostat",
+        "exercise",
+        "window_detection",
+        "response_check",
+        "sensor_fallback",
+    }
+)
+_MAP_TAG: Final = "tag:yaml.org,2002:map"
+_SEQ_TAG: Final = "tag:yaml.org,2002:seq"
+# Never fold a long line.
+_UNLIMITED_WIDTH: Final = 1 << 20
+
+_Dumper.add_representer(
+    dict, lambda dumper, data: dumper.represent_mapping(_MAP_TAG, data, flow_style=False)
+)
+_Dumper.add_representer(
+    _FlowMapping, lambda dumper, data: dumper.represent_mapping(_MAP_TAG, data, flow_style=True)
+)
+_Dumper.add_representer(
+    list, lambda dumper, data: dumper.represent_sequence(_SEQ_TAG, data, flow_style=True)
+)
+
+
+def _styled(value: Any, key: object = None) -> Any:
+    if isinstance(value, Mapping):
+        styled = {item_key: _styled(item, item_key) for item_key, item in value.items()}
+        return _FlowMapping(styled) if key in _FLOW_MAPPINGS else styled
+    if isinstance(value, list | tuple):
+        return [_styled(item) for item in value]
+    return value
+
+
+def dump_yaml(document: Mapping[str, Any]) -> str:
+    """Render a plant file as YAML in the canonical style."""
+    return str(
+        yaml.dump(
+            _styled(document),
+            Dumper=_Dumper,
+            sort_keys=False,
+            allow_unicode=True,
+            width=_UNLIMITED_WIDTH,
+        )
+    )
+
+
+class _Loader(yaml.SafeLoader):
+    """Read YAML safely and refuse a mapping that repeats a key."""
+
+
+def _construct_mapping(loader: _Loader, node: Any) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    keys: set[Any] = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        try:
+            repeated = key in keys
+        except TypeError:
+            continue
+        if repeated:
+            raise yaml.constructor.ConstructorError(
+                "while reading a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        keys.add(key)
+    return dict(loader.construct_mapping(node, deep=True))
+
+
+_Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+
+
+def load_yaml(text: str) -> Any:
+    """Parse plant file text; raise ``PlantFileError`` when it is not valid YAML."""
+    try:
+        # _Loader is a SafeLoader, which builds only plain data.
+        return yaml.load(text, Loader=_Loader)
+    except yaml.YAMLError as error:
+        raise PlantFileError("", f"The plant file is not valid YAML: {error}") from error
+
+
+def read_plant_file(text: str, *, new_id: Callable[[], str] = _new_id) -> Plant:
+    """Return the validated Plant that plant file text describes."""
+    return parse_plant(load_yaml(text), new_id=new_id)
+
+
+def write_plant_file(plant: Plant) -> str:
+    """Return the canonical plant file text of a Plant."""
+    return dump_yaml(export_plant(plant))

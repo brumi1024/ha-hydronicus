@@ -1,0 +1,69 @@
+"""Tests for the public release package contract."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from zipfile import ZipFile
+
+import pytest
+
+from scripts.package_release import (
+    ReleaseValidationError,
+    _readme_states_minimum_version,
+    build_archive,
+    inspect_archive,
+    normalize_version,
+    validate_repository,
+)
+
+REPOSITORY_ROOT = Path(__file__).parents[1]
+# The version the repository is at, so a version bump never needs a test edit.
+VERSION = validate_repository(REPOSITORY_ROOT).version
+
+
+def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> None:
+    """HACS can extract the release directly into its integration directory."""
+
+    archive_path = tmp_path / "hydronicus.zip"
+    files = build_archive(REPOSITORY_ROOT, archive_path, f"v{VERSION}")
+    install_path = tmp_path / "config" / "custom_components" / "hydronicus"
+
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, VERSION) == files
+    with ZipFile(archive_path) as archive:
+        assert archive.namelist() == files
+        assert "manifest.json" in archive.namelist()
+        assert not any(path.startswith("custom_components/") for path in files)
+        assert not any(path.startswith("frontend/") for path in files)
+        archive.extractall(install_path)
+
+    assert (install_path / "manifest.json").is_file()
+    assert not (install_path / "custom_components").exists()
+
+
+@pytest.mark.parametrize("version", ["1.02.3", "1.2.3-alpha.01", "1.2", "v1.2.3.4"])
+def test_normalize_version_rejects_invalid_semver(version: str) -> None:
+    """Release tags must use strict semantic-version syntax."""
+
+    with pytest.raises(ReleaseValidationError):
+        normalize_version(version)
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [
+        "Hydronicus requires Home Assistant 2026.8.0 or newer.",
+        "The minimum Home Assistant version declared by this repository is `2026.8.0`.",
+    ],
+)
+def test_readme_minimum_version_check_allows_clear_prose(readme: str) -> None:
+    """Metadata validation must not depend on one exact documentation sentence."""
+
+    assert _readme_states_minimum_version(readme, "2026.8.0")
+
+
+def test_readme_minimum_version_check_rejects_unrelated_version() -> None:
+    """A README must state the configured version, not merely mention Home Assistant."""
+
+    assert not _readme_states_minimum_version(
+        "This integration supports Home Assistant.", "2026.8.0"
+    )

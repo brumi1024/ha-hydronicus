@@ -1,0 +1,49 @@
+export_plant:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus
+boost_dhw:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus
+    temperature:
+      required: true
+      selector:
+        number:
+          min: 30
+          max: 70
+          step: 0.5
+          unit_of_measurement: "°C"
+    duration:
+      selector:
+        duration:
+end_dhw_boost:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus
+set_away:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus
+    until:
+      selector:
+        datetime:
+end_away:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: hydronicus

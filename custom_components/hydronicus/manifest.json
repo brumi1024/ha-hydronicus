@@ -1,0 +1,12 @@
+{
+  "domain": "hydronicus",
+  "name": "Hydronicus",
+  "codeowners": ["@brumi1024"],
+  "config_flow": true,
+  "dependencies": ["websocket_api"],
+  "documentation": "https://github.com/brumi1024/ha-hydronicus",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/brumi1024/ha-hydronicus/issues",
+  "version": "1.0.0"
+}

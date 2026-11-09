@@ -1,0 +1,1022 @@
+"""The Plant: an optional source, its pumps, its zones, and its loops.
+
+Every type is a frozen, slotted value. A Plant is built by ``plant_file`` from a
+plant file or from stored data, and ``plant_file.validate_plant`` checks the
+relationships between its objects. Objects are addressed by slugs, which never
+change and form unique IDs with the Plant ID; names are separate and optional,
+and a missing name reads as the slug in words.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from .comfort import ComfortTarget
+    from .dhw import DhwState
+    from .heating_supply import HeatingSupplyResult
+
+
+class Mode(StrEnum):
+    """The Plant mode, which a select chooses."""
+
+    OFF = "off"
+    HEAT = "heat"
+    COOL = "cool"
+
+
+class MinFlow(StrEnum):
+    """How a pump is protected against running without flow."""
+
+    # The pump needs an open loop while it runs.
+    PATH = "path"
+    # A separator, buffer, or bypass gives the pump a path whatever the loops do.
+    GUARANTEED = "guaranteed"
+
+
+class Aggregation(StrEnum):
+    """How a zone combines its temperature readings."""
+
+    MEAN = "mean"
+    MIN = "min"
+    MAX = "max"
+
+
+class Preset(StrEnum):
+    """A digital thermostat preset with its own target."""
+
+    COMFORT = "comfort"
+    ECO = "eco"
+    AWAY = "away"
+    SCHEDULE = "schedule"
+
+
+class LearningMode(StrEnum):
+    """Whether recovery learning is disabled, observed, or used for early start."""
+
+    OFF = "off"
+    OBSERVE = "observe"
+    ASSIST = "assist"
+
+
+class RunKind(StrEnum):
+    """What makes a loop wanted."""
+
+    # A zone loop runs when its zone demands in the current mode.
+    ZONE = "zone"
+    # A plant loop that runs while the source is requested.
+    WITH_SOURCE = "with_source"
+    # A plant loop that runs while any of a set of zones demands.
+    WITH_ZONES = "with_zones"
+
+
+class OutputRole(StrEnum):
+    """The one role an output entity has in a Plant."""
+
+    SOURCE_REQUEST = "source_request"
+    SOURCE_MODE = "source_mode"
+    SOURCE_MODE_SWITCH = "source_mode_switch"
+    SOURCE_WEATHER_CURVE = "source_weather_curve"
+    SOURCE_SETPOINT = "source_setpoint"
+    DHW_SWITCH = "dhw_switch"
+    DHW_SETPOINT = "dhw_setpoint"
+    PUMP = "pump"
+    VALVE = "valve"
+
+
+# The roles of numeric outputs, which take a ``NumericTarget``; every other role
+# but the source mode is a switch.
+NUMERIC_ROLES: Final = frozenset({OutputRole.SOURCE_SETPOINT, OutputRole.DHW_SETPOINT})
+# The roles that set the source up rather than run the hydronics, which the off
+# sequence leaves as they are.
+SETTING_ROLES: Final = frozenset(
+    {
+        OutputRole.SOURCE_MODE,
+        OutputRole.SOURCE_MODE_SWITCH,
+        OutputRole.SOURCE_WEATHER_CURVE,
+        OutputRole.SOURCE_SETPOINT,
+        OutputRole.DHW_SWITCH,
+        OutputRole.DHW_SETPOINT,
+    }
+)
+
+
+DEFAULT_MODE_DWELL: Final = 3600.0
+DEFAULT_POST_RUN: Final = 180.0
+DEFAULT_MIN_ON: Final = 600.0
+DEFAULT_MIN_OFF: Final = 600.0
+# A digital thermostat holds each demand decision this long, in seconds, so a
+# short dip does not open a slow thermoelectric valve, which takes about three
+# minutes, and close it again before its pump ever starts.
+DEFAULT_DEMAND_MIN_ON: Final = 600.0
+# The largest schedule setback, in K, in the plant file and on its number entities.
+MAX_SETBACK: Final = 10.0
+DEFAULT_DEMAND_MIN_OFF: Final = 600.0
+DEFAULT_OVERRUN: Final = 180.0
+DEFAULT_OPENING_TIME: Final = 180.0
+# A zone or area sensor's reading is stale this long after its last report. Many
+# battery sensors report only on change, with a heartbeat about once an hour.
+DEFAULT_MAX_AGE: Final = 3600.0
+DEFAULT_SOURCE_TITLE: Final = "Heat source"
+# A heat sink zone may warm this far over its heating target, in kelvin, while
+# the source is held after demand.
+DEFAULT_HEAT_SINK_OVERSHOOT: Final = 1.0
+# While cooling, a loop's surface stays at or above this, in °C: the comfortable
+# floor minimum of ISO 7730 and REHVA. A ceiling may run colder.
+DEFAULT_SURFACE_MINIMUM: Final = 20.0
+# While cooling, a zone's highest humidity stays at or below this, in percent.
+DEFAULT_MAX_HUMIDITY: Final = 70.0
+# A window counts as open once it has read open this long, and as closed once
+# every window of the zone has read closed this long, in seconds.
+DEFAULT_WINDOW_OPEN_DELAY: Final = 60.0
+DEFAULT_WINDOW_CLOSE_DELAY: Final = 60.0
+# A zone whose temperature moves this far away from its target, in kelvin,
+# within this many seconds, counts as having an open window, until its
+# temperature has stopped moving away for that long again, or at most for the
+# maximum duration, in seconds.
+DEFAULT_WINDOW_DETECTION_CHANGE: Final = 0.5
+DEFAULT_WINDOW_DETECTION_WITHIN: Final = 600.0
+DEFAULT_WINDOW_DETECTION_MAX_DURATION: Final = 1800.0
+# A zone whose loops have passed flow for its demand this long, in seconds,
+# without its temperature moving this far toward its target, in kelvin, does
+# not respond.
+DEFAULT_RESPONSE_DURATION: Final = 10800.0
+DEFAULT_RESPONSE_PROGRESS: Final = 0.2
+# An idle switched pump or valve is exercised once it has not been seen on for a
+# week, and an exercised pump runs for a minute, so neither seizes.
+DEFAULT_EXERCISE_INTERVAL: Final = 604800.0
+DEFAULT_EXERCISE_RUN: Final = 60.0
+# A zone whose coldest reading falls below this, in °C, is heated whatever its thermostat says.
+DEFAULT_FROST_PROTECTION: Final = 5.0
+# Frost protection heats until the coldest reading is this far above its temperature, in kelvin.
+FROST_PROTECTION_RELEASE: Final = 1.0
+
+# The bounds a plant file keeps these settings within. Frost protection above
+# 10 °C would heat rooms whose thermostats are off; a humidity limit below 30 %
+# would block cooling for good; and an exercise more often than hourly, or a
+# pump run outside 10 seconds to 10 minutes, would hardly let the Plant rest.
+MAX_FROST_PROTECTION: Final = 10.0
+MIN_MAX_HUMIDITY: Final = 30.0
+MIN_EXERCISE_INTERVAL: Final = 3600.0
+MIN_EXERCISE_RUN: Final = 10.0
+MAX_EXERCISE_RUN: Final = 600.0
+# The plant file's limits of window detection and the response check.
+MIN_WINDOW_DETECTION_CHANGE: Final = 0.1
+MAX_WINDOW_DETECTION_CHANGE: Final = 5.0
+MIN_WINDOW_DETECTION_WITHIN: Final = 60.0
+MAX_WINDOW_DETECTION_WITHIN: Final = 3600.0
+MIN_WINDOW_DETECTION_MAX_DURATION: Final = 300.0
+MAX_WINDOW_DETECTION_MAX_DURATION: Final = 14400.0
+MIN_RESPONSE_DURATION: Final = 1800.0
+MAX_RESPONSE_DURATION: Final = 86400.0
+MIN_RESPONSE_PROGRESS: Final = 0.05
+MAX_RESPONSE_PROGRESS: Final = 2.0
+
+
+def title_from_slug(slug: str) -> str:
+    """Return the name a slug reads as, such as ``Living area`` for ``living_area``."""
+    return slug.replace("_", " ").capitalize()
+
+
+@dataclass(frozen=True, slots=True)
+class LoopRef:
+    """The address of a loop: its zone's slug, or None for a plant loop, and its slug."""
+
+    zone: str | None
+    loop: str
+
+    def __str__(self) -> str:
+        return self.loop if self.zone is None else f"{self.zone}.{self.loop}"
+
+    @classmethod
+    def parse(cls, text: str) -> LoopRef:
+        """Read ``<zone>.<loop>`` or a plant loop's slug; raise ``ValueError`` otherwise."""
+        parts = text.split(".")
+        if len(parts) > 2 or not all(parts):
+            raise ValueError(f"Not a loop reference: {text!r}")
+        return cls(None, parts[0]) if len(parts) == 1 else cls(parts[0], parts[1])
+
+
+@dataclass(frozen=True, slots=True)
+class LoopRun:
+    """When a loop runs; ``zones`` is set only for ``WITH_ZONES``."""
+
+    kind: RunKind
+    zones: tuple[str, ...] = ()
+
+
+RUNS_WITH_ZONE: Final = LoopRun(RunKind.ZONE)
+RUNS_WITH_SOURCE: Final = LoopRun(RunKind.WITH_SOURCE)
+
+
+@dataclass(frozen=True, slots=True)
+class Valve:
+    """A valve that Hydronicus opens and closes as part of a loop."""
+
+    entity: str
+    opening_time: float = DEFAULT_OPENING_TIME
+    # A binary sensor that confirms the valve is open, instead of its opening time.
+    readiness: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Pump:
+    """A circulator that Hydronicus switches, or that the source drives."""
+
+    slug: str
+    # None when the source drives the pump and Hydronicus never commands it.
+    switch: str | None
+    overrun: float = DEFAULT_OVERRUN
+    min_flow: MinFlow = MinFlow.PATH
+    # Loops held open for a source-driven ``path`` pump while it may run.
+    min_flow_loops: tuple[LoopRef, ...] = ()
+    supply_temperature: str | None = None
+    name: str | None = None
+    # A binary sensor on the pump's supply pipe that reads on at condensation; it
+    # blocks the cooling of every loop of the pump.
+    condensation_switch: str | None = None
+
+    # Optional independent proof of circulation and actual flow.
+    running_sensor: str | None = None
+    flow_sensor: str | None = None
+
+    @property
+    def driven_by_source(self) -> bool:
+        return self.switch is None
+
+    @property
+    def title(self) -> str:
+        return self.name or title_from_slug(self.slug)
+
+
+@dataclass(frozen=True, slots=True)
+class Loop:
+    """A flow path: zero or more valves that open together, and exactly one pump."""
+
+    ref: LoopRef
+    valves: tuple[Valve, ...]
+    pump: str
+    modes: frozenset[Mode]
+    runs: LoopRun
+    # The loop's own condensation reference, besides its pump's supply sensor.
+    surface_temperature: str | None = None
+    name: str | None = None
+    # A binary sensor that reads on at condensation, besides its pump's.
+    condensation_switch: str | None = None
+    # The lowest surface temperature while cooling, in °C; None turns it off. It
+    # needs ``surface_temperature``.
+    surface_minimum: float | None = DEFAULT_SURFACE_MINIMUM
+    # The loop's share of demand, such as its emitter output, for the source's
+    # ``start_threshold``.
+    weight: float = 1.0
+
+    @property
+    def slug(self) -> str:
+        return self.ref.loop
+
+    @property
+    def zone(self) -> str | None:
+        return self.ref.zone
+
+    @property
+    def cools(self) -> bool:
+        return Mode.COOL in self.modes
+
+    @property
+    def title(self) -> str:
+        return self.name or title_from_slug(self.slug)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceModeSelect:
+    """A select entity that switches the source between heating and cooling."""
+
+    entity: str
+    heat: str
+    cool: str
+
+    def option(self, mode: Mode) -> str | None:
+        """Return the option for a Plant mode, or None for off."""
+        return {Mode.HEAT: self.heat, Mode.COOL: self.cool}.get(mode)
+
+
+@dataclass(frozen=True, slots=True)
+class ModeSwitch:
+    """A switch of the source that is on in some modes and off in the others.
+
+    Such as a heat pump's weather curve, on while heating and off while cooling,
+    so that a cooling setpoint is the source's own.
+    """
+
+    entity: str
+    # The modes it is on in; it is off in every other mode but off.
+    modes: frozenset[Mode]
+
+    def on(self, mode: Mode) -> bool | None:
+        """Whether it is on in a mode, or None in off, where it stays as it is."""
+        return None if mode is Mode.OFF else mode in self.modes
+
+
+class HeatingSupply(StrEnum):
+    """Who owns the heating supply temperature, the owner's choice."""
+
+    # The source's own weather curve, which its switch turns on.
+    SOURCE_CURVE = "source_curve"
+    # A fixed setpoint: Hydronicus's on a supply number, else the source's own.
+    FIXED = "fixed"
+    # Hydronicus's heating curve on the supply number.
+    CURVE = "curve"
+
+
+@dataclass(frozen=True, slots=True)
+class WeatherCurve:
+    """The source's own weather curve, which a switch turns on.
+
+    Whether it is on in heating is the owner's choice of ``HeatingSupply``; it is
+    off while cooling, since a source's own cooling curve knows no dew point.
+    """
+
+    switch: str
+
+
+# How far the owner may shift the heating curve, in K either way.
+MAX_CURVE_OFFSET: Final = 5.0
+# How far below the heating limit the outdoor temperature must fall before the
+# source may heat again, in K.
+HEATING_LIMIT_RELEASE: Final = 1.0
+# The outdoor temperature the heating curve assumes while frost protection heats
+# and no usable outdoor reading or fallback says otherwise, in °C.
+FROST_CURVE_OUTDOOR: Final = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class RoomInfluence:
+    """A lead zone whose distance from its heating target shifts the heating curve."""
+
+    zone: str
+    # The shift per kelvin the zone is below its target.
+    factor: float = 1.0
+    # The largest shift either way, in K.
+    limit: float = 3.0
+
+
+@dataclass(frozen=True, slots=True)
+class SupplyControl:
+    """A bounded source supply setpoint, optionally compensated for outdoor temperature."""
+
+    entity: str
+    outdoor_sensor: str | None = None
+    heat_temperature: float = 35.0
+    cool_temperature: float = 18.0
+    minimum: float = 5.0
+    maximum: float = 60.0
+    tolerance: float = 0.5
+    outdoor_cold: float = -10.0
+    outdoor_warm: float = 20.0
+    heat_cold: float = 45.0
+    heat_warm: float = 25.0
+    max_age: float = DEFAULT_MAX_AGE
+    # The setpoint's resolution, such as 1 for whole degrees: a cooling target is
+    # rounded up, so it stays above the dew point, and a heating target to nearest.
+    step: float | None = None
+    # The heating curve's parallel shift in K, the starting value of the owner's offset.
+    offset: float = 0.0
+    # The time constant of the outdoor reading's first-order filter in seconds; 0 is none.
+    outdoor_damping: float = 0.0
+    # The outdoor temperature the curve uses while the reading is not usable, or
+    # None to block the heating request instead.
+    outdoor_fallback: float | None = None
+    # The damped outdoor temperature at or above which the source does not heat.
+    heating_limit: float | None = None
+    room_influence: RoomInfluence | None = None
+
+
+DEFAULT_DHW_MINIMUM: Final = 40.0
+DEFAULT_DHW_MAXIMUM: Final = 55.0
+DEFAULT_DHW_BOOST: Final = 7200.0
+# The bounds of a disinfection cycle's temperature, in °C, and of its interval, in seconds.
+MIN_DISINFECT_TEMPERATURE: Final = 55.0
+MAX_DISINFECT_TEMPERATURE: Final = 70.0
+MIN_DISINFECT_INTERVAL: Final = 86400.0
+MAX_DISINFECT_INTERVAL: Final = 30 * 86400.0
+# How soon a disinfection cycle that timed out is tried again, in seconds.
+DISINFECT_RETRY: Final = 86400.0
+
+
+@dataclass(frozen=True, slots=True)
+class Disinfect:
+    """A periodic pasteurisation cycle of the DHW tank, proved by its temperature.
+
+    Every ``interval`` it raises the setpoint to ``temperature``, beyond the DHW
+    maximum, until ``tank_temperature`` has held it for ``hold`` seconds, or
+    gives up after ``timeout`` and tries again a day later. ``window`` is a
+    schedule helper whose on periods it may start in, such as the night.
+    """
+
+    tank_temperature: str
+    temperature: float = 60.0
+    interval: float = 7 * 86400.0
+    hold: float = 1800.0
+    timeout: float = 10800.0
+    window: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Dhw:
+    """The source's domestic hot water: a switch, a setpoint, or both, which Hydronicus owns.
+
+    A change made elsewhere, such as on the source's own controller, is adopted
+    as Hydronicus's value and never written back.
+    """
+
+    switch: str | None = None
+    setpoint: str | None = None
+    # Hard limits of the setpoint, in °C: an owned or adopted value outside them
+    # is clamped.
+    minimum: float = DEFAULT_DHW_MINIMUM
+    maximum: float = DEFAULT_DHW_MAXIMUM
+    tolerance: float = 0.5
+    # The setpoint's resolution, such as 1 for whole degrees.
+    step: float | None = None
+    # The longest a boost may raise the setpoint, in seconds.
+    max_boost: float = DEFAULT_DHW_BOOST
+    # A schedule helper whose blocks may name a ``target``, held while they run.
+    schedule: str | None = None
+    disinfect: Disinfect | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NoLoadGuard:
+    """Releases a source whose compressor runs while its water barely changes temperature.
+
+    A heat pump whose leaving and returning water stay within ``delta`` of each
+    other while its compressor runs has nowhere to put its heat: another source
+    supplies the zones, every valve is closed, a pump failed, or air blocks the
+    flow. The request is then released and held off for ``hold_off``.
+    """
+
+    supply_temperature: str
+    return_temperature: str
+    # A numeric sensor, such as the compressor frequency, that reads above zero
+    # while the compressor runs.
+    compressor_sensor: str
+    delta: float = 1.0
+    # How long the compressor must have run, and the water stayed within
+    # ``delta``, before the guard trips, in seconds.
+    duration: float = 600.0
+    hold_off: float = 1800.0
+
+
+@dataclass(frozen=True, slots=True)
+class Source:
+    """The generator Hydronicus asks for heat or cooling; at most one per Plant."""
+
+    request: str
+    mode: SourceModeSelect | None = None
+    # Switches that follow the mode, set with the mode select before the source runs.
+    mode_switches: tuple[ModeSwitch, ...] = ()
+    post_run: float = DEFAULT_POST_RUN
+    min_on: float = DEFAULT_MIN_ON
+    min_off: float = DEFAULT_MIN_OFF
+    name: str | None = None
+    running_sensor: str | None = None
+    supply: SupplyControl | None = None
+    weather_curve: WeatherCurve | None = None
+    # Seconds after a request turns on for independent running and flow proof.
+    feedback_timeout: float = 300.0
+    # The most observed request starts within any hour; None turns the limit off.
+    max_starts_per_hour: int | None = None
+    # Heating loops held open while the request is held for its minimum on time
+    # after demand ended, so the source keeps a sink until its run may end.
+    heat_sink_loops: tuple[LoopRef, ...] = ()
+    # Seconds a heating request stays on into the heat sink loops after the last
+    # calling loop is satisfied, so a source whose every stop costs a restart of
+    # its own pumps keeps running between calls; None holds it for ``min_on`` only.
+    hold_after_demand: float | None = None
+    # Beyond ``min_on``, a heat sink loop takes heat only while each zone it
+    # serves reads less than this many kelvin over its heating target.
+    heat_sink_overshoot: float = DEFAULT_HEAT_SINK_OVERSHOOT
+    # The total weight of wanted loops that must call before the request starts;
+    # None starts it for any calling loop. It never shortens a running request.
+    start_threshold: float | None = None
+    # A binary sensor that reads on while the source and its link are healthy;
+    # off, unknown, or unavailable releases the request at once and keeps it off.
+    health_sensor: str | None = None
+    # A binary sensor that reads on while something else controls the source,
+    # such as a bridge that handed it to its own controller: Hydronicus then
+    # sends the source nothing and keeps a heat sink open while it may heat.
+    handover_sensor: str | None = None
+    # The fewest seconds between two writes to one of the source's outputs, for
+    # a bridge that refuses faster ones; the request or the DHW switch turning off
+    # is never held.
+    write_interval: float | None = None
+    dhw: Dhw | None = None
+    # A binary sensor or input boolean that reads on while another source supplies
+    # the zones, such as a fireplace's buffer: the request is then released at
+    # once and stays off, while the zones go on circulating. No fault, no Repair.
+    inhibit_sensor: str | None = None
+    no_load: NoLoadGuard | None = None
+    # A numeric sensor that reads above zero while the compressor runs, such as
+    # its frequency, for the compressor's starts and cycle length diagnostics.
+    compressor_sensor: str | None = None
+
+    @property
+    def title(self) -> str:
+        return self.name or DEFAULT_SOURCE_TITLE
+
+    @property
+    def heating_supplies(self) -> tuple[HeatingSupply, ...]:
+        """The heating supply strategies this source supports, in the select's order."""
+        supplies: list[HeatingSupply] = []
+        if self.weather_curve is not None:
+            supplies.append(HeatingSupply.SOURCE_CURVE)
+        if self.weather_curve is not None or self.supply is not None:
+            supplies.append(HeatingSupply.FIXED)
+        if self.supply is not None and self.supply.outdoor_sensor is not None:
+            supplies.append(HeatingSupply.CURVE)
+        return tuple(supplies)
+
+    @property
+    def default_heating_supply(self) -> HeatingSupply | None:
+        """Hydronicus's curve where offered, else the source's, else a fixed setpoint."""
+        supplies = self.heating_supplies
+        for supply in (HeatingSupply.CURVE, HeatingSupply.SOURCE_CURVE, HeatingSupply.FIXED):
+            if supply in supplies:
+                return supply
+        return None
+
+    def write_limited(self, entity: str) -> bool:
+        """Whether writes to one of the source's outputs keep ``write_interval``."""
+        return self.write_interval is not None and entity in self.outputs()
+
+    def outputs(self) -> tuple[str, ...]:
+        """The source's own outputs: its request, mode select, supply setpoint, and DHW."""
+        return tuple(
+            entity
+            for entity in (
+                self.request,
+                None if self.mode is None else self.mode.entity,
+                *(switch.entity for switch in self.mode_switches),
+                None if self.weather_curve is None else self.weather_curve.switch,
+                None if self.supply is None else self.supply.entity,
+                None if self.dhw is None else self.dhw.switch,
+                None if self.dhw is None else self.dhw.setpoint,
+            )
+            if entity is not None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Sensor:
+    """An explicit temperature or humidity sensor of a zone."""
+
+    entity: str
+    required: bool = True
+    max_age: float = DEFAULT_MAX_AGE
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneArea:
+    """A Home Assistant area that a zone covers, with the settings of its sensors."""
+
+    area: str
+    required: bool = False
+    max_age: float = DEFAULT_MAX_AGE
+
+
+@dataclass(frozen=True, slots=True)
+class Schedule:
+    """A comfort schedule with setbacks and a bounded estimate of recovery time."""
+
+    entity: str
+    heat_setback: float = 2.0
+    cool_setback: float = 2.0
+    max_early_start: float = 0.0
+    heating_rate: float = 1.0
+    cooling_rate: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class WeatherConfig:
+    """Optional hourly forecast input and a separate measured outdoor temperature."""
+
+    entity: str
+    outdoor_sensor: str | None = None
+    max_age: float = 7200.0
+
+
+@dataclass(frozen=True, slots=True)
+class DigitalThermostat:
+    """A Hydronicus climate entity that owns a zone's target and demand."""
+
+    target: float = 21.0
+    # Heating preset targets in the order of ``Preset``, excluding SCHEDULE.
+    presets: tuple[tuple[Preset, float], ...] = ()
+    heat_start_delta: float = 0.3
+    heat_stop_delta: float = 0.1
+    cool_start_delta: float = 0.3
+    cool_stop_delta: float = 0.1
+    min_on: float = DEFAULT_DEMAND_MIN_ON
+    min_off: float = DEFAULT_DEMAND_MIN_OFF
+    cool_target: float = 24.0
+    cool_presets: tuple[tuple[Preset, float], ...] = ()
+    schedule: Schedule | None = None
+    learning: LearningMode = LearningMode.OFF
+    weather_aware: bool = False
+
+    def presets_for(self, mode: Mode) -> Mapping[Preset, float]:
+        """Return the configured preset targets of the selected mode."""
+        return dict(self.cool_presets if mode is Mode.COOL else self.presets)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalThermostat:
+    """An existing climate entity whose ``hvac_action`` is a zone's demand; never commanded."""
+
+    entity: str
+
+
+type Thermostat = DigitalThermostat | ExternalThermostat
+
+
+# The bounds of a sensor fallback, in seconds and as a share of its period.
+MIN_SENSOR_FALLBACK_AFTER: Final = 600.0
+MAX_SENSOR_FALLBACK_AFTER: Final = 86400.0
+MIN_SENSOR_FALLBACK_PERIOD: Final = 1800.0
+MAX_SENSOR_FALLBACK_PERIOD: Final = 21600.0
+MAX_SENSOR_FALLBACK_DUTY: Final = 0.5
+# The shortest on and off spell of a sensor fallback, so slow valves open and close.
+MIN_SENSOR_FALLBACK_SPELL: Final = 600.0
+
+
+@dataclass(frozen=True, slots=True)
+class SensorFallback:
+    """Heat a zone for a share of time while none of its temperatures is usable.
+
+    It starts ``after`` seconds without a usable reading, heats for ``duty`` of
+    every ``period``, and only in heating, so a lost sensor never leaves a room
+    unheated for days, nor heats it without bound.
+    """
+
+    after: float = 3600.0
+    duty: float = 0.15
+    period: float = 7200.0
+
+
+@dataclass(frozen=True, slots=True)
+class WindowDetection:
+    """Count a sudden move of a zone's temperature away from its target as an open window.
+
+    Heating counts a fall and cooling a rise of ``change`` within ``within``
+    seconds. The window counts as closed once the temperature has not moved
+    further away for ``within`` seconds, or after ``max_duration`` seconds.
+    """
+
+    change: float = DEFAULT_WINDOW_DETECTION_CHANGE
+    within: float = DEFAULT_WINDOW_DETECTION_WITHIN
+    max_duration: float = DEFAULT_WINDOW_DETECTION_MAX_DURATION
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseCheck:
+    """Report a zone whose temperature does not move toward its target while it is served.
+
+    It counts only the time in which the zone calls and a loop serving it is
+    observed passing flow, and, with a source, the source is observed running.
+    The zone responds each time its temperature moves ``progress`` toward the
+    target; ``duration`` seconds of such time without that is a failure.
+    """
+
+    duration: float = DEFAULT_RESPONSE_DURATION
+    progress: float = DEFAULT_RESPONSE_PROGRESS
+
+
+DEFAULT_RESPONSE_CHECK: Final = ResponseCheck()
+
+
+@dataclass(frozen=True, slots=True)
+class Zone:
+    """The space one thermostat controls, with its areas, sensors, and loops."""
+
+    slug: str
+    loops: tuple[Loop, ...] = ()
+    areas: tuple[ZoneArea, ...] = ()
+    temperature: tuple[Sensor, ...] = ()
+    humidity: tuple[Sensor, ...] = ()
+    aggregation: Aggregation = Aggregation.MEAN
+    thermostat: Thermostat = DigitalThermostat()
+    name: str | None = None
+    # Binary sensors that read on while a window is open; an open window turns
+    # the zone's demand off.
+    windows: tuple[str, ...] = ()
+    window_open_delay: float = DEFAULT_WINDOW_OPEN_DELAY
+    window_close_delay: float = DEFAULT_WINDOW_CLOSE_DELAY
+    # Counts a sudden temperature change as an open window too; None turns it off.
+    window_detection: WindowDetection | None = None
+    # Reports the zone when its temperature does not respond; None turns it off.
+    response_check: ResponseCheck | None = DEFAULT_RESPONSE_CHECK
+    # Heats the zone for a bounded share of time while it has no usable
+    # temperature, in heating only; None, the default, leaves it unheated.
+    sensor_fallback: SensorFallback | None = None
+    # The highest humidity at which the loops that read the zone's dew point may
+    # cool, in percent; None turns the cutoff off.
+    max_humidity: float | None = DEFAULT_MAX_HUMIDITY
+
+    @property
+    def cools(self) -> bool:
+        return any(loop.cools for loop in self.loops)
+
+    @property
+    def title(self) -> str:
+        return self.name or title_from_slug(self.slug)
+
+
+@dataclass(frozen=True, slots=True)
+class Exercise:
+    """How often an idle pump or valve is exercised so it does not seize."""
+
+    # Seconds a switched pump or a valve may stay unseen on before it is exercised.
+    interval: float = DEFAULT_EXERCISE_INTERVAL
+    # Seconds an exercised switched pump runs.
+    run: float = DEFAULT_EXERCISE_RUN
+
+
+DEFAULT_EXERCISE: Final = Exercise()
+
+
+@dataclass(frozen=True, slots=True)
+class Changeover:
+    """Switch the Plant between heat and cool from a slowly averaged outdoor temperature."""
+
+    outdoor_sensor: str
+    heat_below: float = 15.0
+    cool_above: float = 22.0
+    # The time constant of the outdoor average, in seconds.
+    averaging: float = 86400.0
+    # The shortest time between two changes, in seconds.
+    min_dwell: float = 43200.0
+    max_age: float = DEFAULT_MAX_AGE
+
+
+@dataclass(frozen=True, slots=True)
+class AwayConfig:
+    """The targets a digital thermostat without its own away preset holds while away."""
+
+    heat_target: float = 16.0
+    cool_target: float = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class Plant:
+    """One config entry: an optional source, its pumps, its zones, and its plant loops."""
+
+    id: str
+    name: str
+    mode_dwell: float = DEFAULT_MODE_DWELL
+    source: Source | None = None
+    pumps: tuple[Pump, ...] = ()
+    # Plant loops, which no zone owns.
+    loops: tuple[Loop, ...] = ()
+    zones: tuple[Zone, ...] = ()
+    # None turns the exercise of idle pumps and valves off.
+    exercise: Exercise | None = DEFAULT_EXERCISE
+    # The frost protection temperature in °C, or None to turn frost protection off.
+    frost_protection: float | None = DEFAULT_FROST_PROTECTION
+    weather: WeatherConfig | None = None
+    away: AwayConfig = AwayConfig()
+    # The Mode select's auto option, or None while it offers none.
+    changeover: Changeover | None = None
+
+    @property
+    def all_loops(self) -> tuple[Loop, ...]:
+        """Return the plant loops, then each zone's loops."""
+        return (*self.loops, *(loop for zone in self.zones for loop in zone.loops))
+
+    def pump(self, slug: str) -> Pump:
+        return _find(self.pumps, lambda pump: pump.slug == slug, slug)
+
+    def zone(self, slug: str) -> Zone:
+        return _find(self.zones, lambda zone: zone.slug == slug, slug)
+
+    def loop(self, ref: LoopRef) -> Loop:
+        return _find(self.all_loops, lambda loop: loop.ref == ref, str(ref))
+
+    def dew_point_zones(self, loop: Loop) -> tuple[Zone, ...]:
+        """Return the zones whose worst-case dew point guards a loop while it cools.
+
+        A zone loop cools its own zone, a plant loop that runs with zones cools
+        those, and one that runs with the source may cool while any zone calls.
+        """
+        match loop.runs.kind:
+            case RunKind.ZONE:
+                return tuple(zone for zone in self.zones if zone.slug == loop.zone)
+            case RunKind.WITH_ZONES:
+                return tuple(zone for zone in self.zones if zone.slug in loop.runs.zones)
+            case _:
+                return self.zones
+
+    def zone_loops(self, slug: str) -> tuple[Loop, ...]:
+        """Return the owned and shared loops that directly serve this zone."""
+        return (
+            *self.zone(slug).loops,
+            *(
+                loop
+                for loop in self.loops
+                if loop.runs.kind is RunKind.WITH_ZONES and slug in loop.runs.zones
+            ),
+        )
+
+    def zone_modes(self, slug: str) -> frozenset[Mode]:
+        """Return the heating and cooling capabilities of all loops serving a zone."""
+        return frozenset(mode for loop in self.zone_loops(slug) for mode in loop.modes)
+
+    def pump_loops(self, slug: str) -> tuple[Loop, ...]:
+        """Return every loop that a pump drives."""
+        return tuple(loop for loop in self.all_loops if loop.pump == slug)
+
+    def outputs(self) -> dict[str, OutputRole]:
+        """Return every entity Hydronicus commands, with its role, in dependency order."""
+        outputs: dict[str, OutputRole] = {}
+        if self.source is not None:
+            outputs.setdefault(self.source.request, OutputRole.SOURCE_REQUEST)
+            if self.source.mode is not None:
+                outputs.setdefault(self.source.mode.entity, OutputRole.SOURCE_MODE)
+            for switch in self.source.mode_switches:
+                outputs.setdefault(switch.entity, OutputRole.SOURCE_MODE_SWITCH)
+            if self.source.weather_curve is not None:
+                outputs.setdefault(
+                    self.source.weather_curve.switch, OutputRole.SOURCE_WEATHER_CURVE
+                )
+            if self.source.supply is not None:
+                outputs.setdefault(self.source.supply.entity, OutputRole.SOURCE_SETPOINT)
+            if (dhw := self.source.dhw) is not None:
+                if dhw.switch is not None:
+                    outputs.setdefault(dhw.switch, OutputRole.DHW_SWITCH)
+                if dhw.setpoint is not None:
+                    outputs.setdefault(dhw.setpoint, OutputRole.DHW_SETPOINT)
+        for pump in self.pumps:
+            if pump.switch is not None:
+                outputs.setdefault(pump.switch, OutputRole.PUMP)
+        for loop in self.all_loops:
+            for valve in loop.valves:
+                outputs.setdefault(valve.entity, OutputRole.VALVE)
+        return outputs
+
+
+def _find[T](items: tuple[T, ...], match: Callable[[T], bool], key: str) -> T:
+    for item in items:
+        if match(item):
+            return item
+    raise KeyError(key)
+
+
+# Desired state
+
+
+@dataclass(frozen=True, slots=True)
+class SwitchTarget:
+    """A switch or valve that should be on or off."""
+
+    on: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OptionTarget:
+    """A select that should show an option."""
+
+    option: str
+
+
+@dataclass(frozen=True, slots=True)
+class NumericTarget:
+    """A numeric output target and the accepted observation tolerance."""
+
+    value: float
+    tolerance: float = 0.5
+
+
+type OutputTarget = SwitchTarget | OptionTarget | NumericTarget
+
+
+@dataclass(frozen=True, slots=True)
+class Demand:
+    """A zone's request: on or off in a thermostat mode."""
+
+    mode: Mode
+    on: bool
+    reason: str
+    # While the thermostat's minimum on or off time holds the decision, when it ends.
+    held_until: float | None = None
+
+
+class HoldKind(StrEnum):
+    """A timer that keeps an object as it is for now."""
+
+    VALVE_OPENING = "valve_opening"
+    VALVE_CLOSING = "valve_closing"
+    WAITING_FOR_VALVES = "waiting_for_valves"
+    OVERRUN = "overrun"
+    SOURCE_MIN_ON = "source_min_on"
+    MIN_ON = "min_on"
+    HOLD_AFTER_DEMAND = "hold_after_demand"
+    MIN_OFF = "min_off"
+    POST_RUN = "post_run"
+    FEEDBACK = "feedback"
+    MAX_STARTS = "max_starts"
+    NO_LOAD = "no_load"
+    MODE_DWELL = "mode_dwell"
+    WINDOW_OPEN_DELAY = "window_open_delay"
+    WINDOW_CLOSE_DELAY = "window_close_delay"
+    WINDOW_DETECTED = "window_detected"
+    DEMAND_MIN_ON = "demand_min_on"
+    DEMAND_MIN_OFF = "demand_min_off"
+    GUARD_MIN_BLOCKED = "guard_min_blocked"
+    EXERCISE = "exercise"
+
+
+@dataclass(frozen=True, slots=True)
+class Hold:
+    """A timer that holds ``target`` as it is until ``until``, or None when that is open-ended.
+
+    ``target`` is keyed as in ``Desired.reasons``: a zone slug, a loop reference,
+    an output entity, ``source``, ``mode``, or ``<loop>.guard``.
+    """
+
+    target: str
+    kind: HoldKind
+    until: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class HeatingCurve:
+    """What shaped the heating curve this evaluation, for the entities and diagnostics."""
+
+    # The outdoor temperature the curve and the heating limit use, damped, or the
+    # fallback while ``fallback``; None while neither exists.
+    outdoor: float | None
+    fallback: bool
+    # The heating limit keeps the source from heating.
+    warm_weather: bool
+    # The owner's offset and the lead zone's shift, in K.
+    offset: float
+    room_shift: float
+
+
+@dataclass(frozen=True, slots=True)
+class Desired:
+    """What every output should be now, computed by each evaluation."""
+
+    outputs: Mapping[str, OutputTarget]
+    source_request: bool
+    # The mode the outputs run in now: during a changeover it stays the old mode
+    # until the old mode's loops have stopped, and it is off during the dwell.
+    mode: Mode
+    # Why, per zone, loop, and output.
+    reasons: Mapping[str, str]
+    # Each zone's demand, by zone slug, which the entities publish.
+    demands: Mapping[str, Demand] = field(default_factory=dict)
+    # By zone slug, the required sensors whose readings are not usable, among the
+    # readings the zone needs; the zone fails closed until they report again.
+    blocking_sensors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # By loop that cools, ``str(LoopRef)``, its condensation inputs that are not
+    # usable, in any mode: its pump's and its own condensation switch while
+    # unavailable, unknown, or missing, and its pump's supply and its own surface
+    # temperature while missing, stale, or not plausible. Its guard blocks until
+    # they report again.
+    blocking_condensation_inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # The zones that frost protection heats, whatever their thermostats say.
+    frost_protection: tuple[str, ...] = ()
+    # The slug of the pump whose idle switch or valves are being exercised, if any.
+    exercise: str | None = None
+    # The comfort proposal used for each digital thermostat's demand this evaluation.
+    comfort: Mapping[str, ComfortTarget] = field(default_factory=dict)
+    # Every timer that holds an object as it is now, ordered by when it ends.
+    holds: tuple[Hold, ...] = ()
+    # Why the source's health sensor forbids a request, or None while it reads healthy.
+    source_fault: str | None = None
+    # The source request is observed on while no loop of the mode may pass flow
+    # from a running pump, which ``step()`` never commands and releases at once.
+    source_without_path: bool = False
+    # The source's handover sensor reads on: something else controls the source,
+    # and ``outputs`` holds no target for any of its outputs.
+    source_handover: bool = False
+    # The owned DHW settings, why the DHW outputs are as they are, and what changed
+    # this evaluation that the owner should hear about.
+    dhw: DhwState | None = None
+    dhw_reason: str | None = None
+    dhw_events: tuple[str, ...] = ()
+    # Why the source is kept off for another source or a missing load, if it is.
+    source_inhibited: str | None = None
+    source_no_load: str | None = None
+    # When the no-load guard tripped within the last day, oldest first.
+    no_load_trips: tuple[float, ...] = ()
+    # The zones that a sensor fallback serves now, whether it heats them or not.
+    sensor_fallback: tuple[str, ...] = ()
+    # The heating curve's inputs, while the supply control reads an outdoor sensor.
+    heating_curve: HeatingCurve | None = None
+    # The heating supply strategy in force, and what changed this evaluation,
+    # None while the source offers none.
+    heating_supply: HeatingSupplyResult | None = None

@@ -1,0 +1,2764 @@
+"""One pure evaluation: from configuration, observations, and state to the desired state.
+
+``step()`` is the whole control policy. It reads a snapshot of what the runtime
+observed, the State persisted by the previous evaluation, and the time, and
+returns the next State, the desired state of every output, and the seconds until
+the next evaluation is due. It never talks to Home Assistant; the runtime builds
+``Observations`` from entity states, and the reconciler in ``reconcile`` drives
+the outputs to the desired state.
+
+The desired state already carries every hydraulic sequence: a valve stays open
+while a pump that may still run needs it as its path, a pump stays on while the
+source request may still be on and needs it, and the source is requested only
+once its loops are ready and their pumps are observed running. The reconciler
+therefore only orders the calls of one evaluation, retries, and counts failures.
+
+Times are POSIX timestamps in seconds from the wall clock, the same clock that
+stamps each observation. The clock may step backwards, so an observation can
+carry a time later than ``now``; such an interval counts as not yet elapsed.
+Readiness that was once observed is kept in State, so a backward step never
+takes a ready loop away.
+
+A decision never counts on a call having acted: a call sent less than
+``CALL_TIMEOUT`` ago that no observation has confirmed may still act, so a pump
+or the source it may start counts as possibly running, and one it may stop
+counts as possibly stopped.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field, replace
+from math import ceil, isfinite
+from typing import Any, Final
+
+from .changeover import ChangeoverState, changeover
+from .comfort import Away, ComfortTarget, ScheduleState, Setbacks, away_target, comfort_target
+from .demand import (
+    AreaSensors,
+    DemandState,
+    DetectedWindow,
+    DigitalThermostatState,
+    ExternalThermostatState,
+    Reading,
+    ThermostatState,
+    aggregate,
+    coldest_temperature,
+    detect_window,
+    fresh,
+    frost_demand,
+    unusable_sensors,
+    worst_dew_point,
+    zone_demand,
+    zone_values,
+)
+from .dhw import DhwCommand, DhwResult, DhwSchedule, DhwState, dhw_step
+from .heating_supply import (
+    HeatingSupplyResult,
+    HeatingSupplyState,
+    SupplyCommand,
+    heating_supply_step,
+)
+from .model import (
+    FROST_CURVE_OUTDOOR,
+    SETTING_ROLES,
+    Demand,
+    Desired,
+    DigitalThermostat,
+    Exercise,
+    HeatingCurve,
+    HeatingSupply,
+    Hold,
+    HoldKind,
+    LearningMode,
+    Loop,
+    MinFlow,
+    Mode,
+    NumericTarget,
+    OptionTarget,
+    OutputTarget,
+    Plant,
+    Pump,
+    RunKind,
+    Source,
+    SwitchTarget,
+    Valve,
+    Zone,
+)
+from .supply import DampedOutdoor, outdoor_temperature, room_shift, supply_target, warm_weather
+from .thermal import RecoveryEstimate
+
+__all__ = [
+    "CALL_TIMEOUT",
+    "CONDENSATION_MARGIN",
+    "EXERCISE_GRACE",
+    "GUARD_MIN_BLOCKED",
+    "GUARD_REFERENCE_MAX_AGE",
+    "GUARD_RELEASE",
+    "HUMIDITY_RELEASE",
+    "START_WINDOW",
+    "TICK",
+    "AreaSensors",
+    "DemandState",
+    "DigitalThermostatState",
+    "ExerciseState",
+    "ExternalThermostatState",
+    "GuardState",
+    "NumericState",
+    "Observations",
+    "OptionState",
+    "OutputState",
+    "Reading",
+    "Sent",
+    "State",
+    "SwitchState",
+    "ThermostatState",
+    "satisfies",
+    "step",
+    "value_of",
+]
+
+# The guard blocks a cooling loop below the worst-case dew point plus this margin, in kelvin.
+CONDENSATION_MARGIN: Final = 2.0
+# A blocked guard releases only this far above the blocking threshold, in kelvin.
+GUARD_RELEASE: Final = 1.0
+# A blocked guard releases only after it has blocked this long, in seconds.
+GUARD_MIN_BLOCKED: Final = 300.0
+# A humidity cutoff releases only this far below its limit, in percentage points.
+HUMIDITY_RELEASE: Final = 5.0
+# A condensation reference is stale this long after its last report, in seconds.
+# Supply and surface temperatures fall fast once cooling starts, so a reference
+# must be fresher than a room reading.
+GUARD_REFERENCE_MAX_AGE: Final = 1800.0
+# How long the runtime waits for one service call; one sent longer ago has acted or never will.
+CALL_TIMEOUT: Final = 10.0
+# Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
+TICK: Final = 0.001
+# The window ``Source.max_starts_per_hour`` counts observed request starts in, in seconds.
+START_WINDOW: Final = 3600.0
+# The window in which the no-load guard's trips are counted for its Repair, in seconds.
+NO_LOAD_WINDOW: Final = 86400.0
+# An exercise gives up this long after its valves' travel and opening time and its
+# pump's run time: the reconciler's ``TRAVEL_GRACE``, which three calls to a valve
+# that does not respond take before its Repair.
+EXERCISE_GRACE: Final = 70.0
+
+ON: Final = SwitchTarget(True)
+OFF: Final = SwitchTarget(False)
+
+
+# Observations
+
+
+@dataclass(frozen=True, slots=True)
+class SwitchState:
+    """A switch, valve, or binary sensor as observed."""
+
+    # None while the entity is unavailable or unknown.
+    on: bool | None
+    # When the observed state last changed (``last_changed``), including a
+    # change to or from unavailable, and from moving to arrived.
+    since: float
+    # The entity reports that it is still on its way to ``on``, as a valve entity
+    # does while it is opening or closing. A moving valve does not show its
+    # target yet and may pass flow either way.
+    moving: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OptionState:
+    """A select as observed."""
+
+    option: str | None
+    since: float
+
+
+@dataclass(frozen=True, slots=True)
+class NumericState:
+    """A numeric output observed in degrees Celsius."""
+
+    value: float | None
+    since: float
+
+
+type OutputState = SwitchState | OptionState | NumericState
+
+
+@dataclass(frozen=True, slots=True)
+class Sent:
+    """A call the reconciler sent that no observation has confirmed yet."""
+
+    target: OutputTarget
+    # When it was sent; it may act until ``CALL_TIMEOUT`` after that.
+    at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Observations:
+    """One snapshot of everything ``step()`` reads, taken by the runtime."""
+
+    # The Plant mode the mode select requests.
+    mode: Mode
+    # The Control equipment switch.
+    control: bool
+    # The output entities the owner has confirmed Hydronicus may command.
+    armed: frozenset[str]
+    # Every output of ``Plant.outputs()``; a missing entity counts as unavailable.
+    outputs: Mapping[str, OutputState] = field(default_factory=dict)
+    # Real outputs retained when the reconciler overlays simulated Dry run states.
+    physical_outputs: Mapping[str, OutputState] | None = None
+    # Every binary sensor the Plant reads: valve readiness sensors, condensation
+    # switches, and windows; a missing one counts as unavailable.
+    readiness: Mapping[str, SwitchState] = field(default_factory=dict)
+    # Every numeric sensor the Plant reads: zone temperature and humidity,
+    # explicit or named by an area, pump supply, and loop surface temperatures.
+    sensors: Mapping[str, Reading] = field(default_factory=dict)
+    # Each covered area's current sensors, resolved by the runtime on every evaluation.
+    areas: Mapping[str, AreaSensors] = field(default_factory=dict)
+    # Each zone's thermostat, by zone slug.
+    thermostats: Mapping[str, ThermostatState] = field(default_factory=dict)
+    # The reconciler's unconfirmed calls, by output entity; ``reconcile.step_view`` fills it.
+    sent: Mapping[str, Sent] = field(default_factory=dict)
+    # The current state and next transition of configured Home Assistant schedules.
+    schedules: Mapping[str, ScheduleState] = field(default_factory=dict)
+    # The owner's current setbacks of each scheduled zone, by zone slug; a zone
+    # without one uses its configured setbacks.
+    setbacks: Mapping[str, Setbacks] = field(default_factory=dict)
+    # Optional predictions never authorize control; comfort policy checks consent,
+    # confidence, expiry, and the owner's existing early-start bound.
+    recovery: Mapping[str, RecoveryEstimate] = field(default_factory=dict)
+    # The owner's last command to the source's DHW through Hydronicus's entities.
+    dhw_command: DhwCommand | None = None
+    # The owner's heating curve offset in K, or None for the configured one.
+    curve_offset: float | None = None
+    # The owner's last command to the heating supply through Hydronicus's entities.
+    supply_command: SupplyCommand | None = None
+    # The Plant is away, or None while it is not.
+    away: Away | None = None
+    # The DHW schedule helper now, and whether the disinfection cycle's window is
+    # open; None while it has none or it is not known.
+    dhw_schedule: DhwSchedule | None = None
+    disinfect_window: bool | None = None
+    # The Mode select asks for auto: the changeover chooses heat or cool, and
+    # ``mode`` is only what applies when the Plant has no changeover.
+    auto: bool = False
+
+
+def satisfies(state: OutputState | None, target: OutputTarget) -> bool:
+    """Whether an observed output shows a target."""
+    match target, state:
+        case SwitchTarget(on=on), SwitchState(on=observed, moving=moving):
+            return observed is on and not moving
+        case OptionTarget(option=option), OptionState(option=observed):
+            return observed == option
+        case NumericTarget(value=value, tolerance=tolerance), NumericState(value=observed):
+            return (
+                observed is not None and isfinite(observed) and abs(observed - value) <= tolerance
+            )
+        case _:
+            return False
+
+
+def value_of(state: OutputState) -> bool | str | float | None:
+    """The observed value of an output, None while it is unavailable."""
+    match state:
+        case SwitchState(on=on):
+            return on
+        case OptionState(option=option):
+            return option
+        case NumericState(value=value):
+            return value if value is not None and isfinite(value) else None
+
+
+# State
+
+
+@dataclass(frozen=True, slots=True)
+class GuardState:
+    """A cooling loop's condensation guard and when it last changed, for its minimum time."""
+
+    blocked: bool
+    since: float
+
+
+@dataclass(frozen=True, slots=True)
+class ExerciseState:
+    """The exercise of one pump's idle switch or valves, see ``_Plan.exercise``."""
+
+    pump: str
+    # When the exercise began, from which it gives up.
+    began: float
+    # When the switched pump was first seen running in the exercise.
+    started: float | None = None
+    # The exercise is over and its pump, still possibly running, stops without overrun.
+    done: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class State:
+    """What ``step()`` carries from one evaluation to the next.
+
+    The runtime persists it with ``to_dict`` after every evaluation that changes
+    it and restores it with ``from_dict`` before the first evaluation, so a
+    reload or restart continues every timer. The runtime reads only ``live``;
+    the other fields belong to ``step()``.
+    """
+
+    # Outputs are commanded: Control equipment is on, or it was turned off and
+    # the off-mode sequence has not finished. False is Dry run.
+    live: bool = False
+    # Sequence history produced by a Dry run cannot authorize physical actuation.
+    dry_run: bool = False
+    # Handover stops actual flow and waits a whole dwell, even if Mode changes to off.
+    commissioning: bool = False
+    # Dry run proposals never set this physical history.
+    physical_flow_seen: bool = False
+    # The mode the outputs run in, ``Desired.mode``: during a changeover it stays
+    # the old mode until the old mode's loops have stopped, and it is off during the dwell.
+    mode: Mode = Mode.OFF
+    # The last heat or cool mode that ran, which labels any flow; off before any ran.
+    # An exercise sets no mode, see ``_Plan.exercise``.
+    last_mode: Mode = Mode.OFF
+    # Whether a loop could flow at the last evaluation, and when the last such
+    # flow was seen to end; the opposite mode starts ``mode_dwell`` after that.
+    # The flow of an exercise counts for neither.
+    flowing: bool = False
+    flow_ended: float | None = None
+    # The last desired source request and when that decision changed, for diagnostics.
+    source_request: bool = False
+    source_changed: float | None = None
+    # Observed request transitions own minimum cycle timers, never desired changes.
+    source_observed: bool | None = None
+    source_observed_changed: float | None = None
+    # When the request was observed to turn on within ``START_WINDOW``, oldest first.
+    source_starts: tuple[float, ...] = ()
+    # Whether a loop called for the source at the last evaluation, and when the
+    # last call was seen to end, from which ``Source.hold_after_demand`` counts.
+    source_demanding: bool = False
+    source_demand_ended: float | None = None
+    # Each zone's demand, by zone slug.
+    demands: Mapping[str, DemandState] = field(default_factory=dict)
+    # Each cooling loop's condensation guard, by ``str(LoopRef)``.
+    guards: Mapping[str, GuardState] = field(default_factory=dict)
+    # When each switched pump's overrun started, by pump slug.
+    overruns: Mapping[str, float] = field(default_factory=dict)
+    # Each valve observed ready, with the observed ``since`` it was ready at, so
+    # it stays ready until its observed state changes.
+    ready: Mapping[str, float] = field(default_factory=dict)
+    # The valves and the source request that may have been on, whose closing or
+    # post-run may still go on once they are observed off.
+    winding: frozenset[str] = frozenset()
+    # The zones whose demand an open window turns off, by slug.
+    windows_open: frozenset[str] = frozenset()
+    # What window detection carries for each zone that uses it, by slug.
+    detected_windows: Mapping[str, DetectedWindow] = field(default_factory=dict)
+    # The zones that frost protection heats, by zone slug, until they are warm again.
+    frost: frozenset[str] = frozenset()
+    # Since when each switched pump and valve has not been seen on, by entity, or
+    # None while it is on; the clock of a new one starts when it is first seen.
+    # Only what the outputs really show moves it, never a Dry run proposal.
+    idle_since: Mapping[str, float | None] = field(default_factory=dict)
+    # The exercise in progress, if any.
+    exercise: ExerciseState | None = None
+    # When the last exercise of each pump ended, by pump slug, so that one that
+    # gave up or was only proposed in Dry run does not start again within the interval.
+    exercise_ended: Mapping[str, float] = field(default_factory=dict)
+    # The source's owned DHW settings and its boost.
+    dhw: DhwState = DhwState()
+    # The owner's heating supply choice.
+    heating_supply: HeatingSupplyState = HeatingSupplyState()
+    # The no-load guard: since when the compressor runs, since when the water has
+    # stayed within its difference, until when it holds the source off, and when
+    # it tripped within ``NO_LOAD_WINDOW``.
+    compressor_since: float | None = None
+    no_load_since: float | None = None
+    no_load_until: float | None = None
+    no_load_trips: tuple[float, ...] = ()
+    # The damped outdoor temperature of the heating curve, and whether the
+    # heating limit keeps the source from heating.
+    outdoor_damped: DampedOutdoor | None = None
+    warm_weather: bool = False
+    # Since when each zone has had no usable temperature, by zone slug.
+    sensorless: Mapping[str, float] = field(default_factory=dict)
+    # The automatic changeover's average and the mode it chose.
+    changeover: ChangeoverState = ChangeoverState()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON-friendly data that ``from_dict`` reads back."""
+        return {
+            "live": self.live,
+            "dry_run": self.dry_run,
+            "commissioning": self.commissioning,
+            "physical_flow_seen": self.physical_flow_seen,
+            "mode": self.mode.value,
+            "last_mode": self.last_mode.value,
+            "flowing": self.flowing,
+            "flow_ended": self.flow_ended,
+            "source_request": self.source_request,
+            "source_changed": self.source_changed,
+            "source_observed": self.source_observed,
+            "source_observed_changed": self.source_observed_changed,
+            "source_starts": list(self.source_starts),
+            "source_demanding": self.source_demanding,
+            "source_demand_ended": self.source_demand_ended,
+            "demands": {
+                slug: {
+                    "mode": demand.mode.value,
+                    "on": demand.on,
+                    "since": demand.since,
+                    "early_start_event": demand.early_start_event,
+                }
+                for slug, demand in self.demands.items()
+            },
+            "guards": {
+                ref: {"blocked": guard.blocked, "since": guard.since}
+                for ref, guard in self.guards.items()
+            },
+            "overruns": dict(self.overruns),
+            "ready": dict(self.ready),
+            "winding": sorted(self.winding),
+            "windows_open": sorted(self.windows_open),
+            "detected_windows": {
+                slug: {
+                    "mode": window.mode.value,
+                    "samples": [list(sample) for sample in window.samples],
+                    "since": window.since,
+                    "extreme": window.extreme,
+                    "extreme_at": window.extreme_at,
+                }
+                for slug, window in self.detected_windows.items()
+            },
+            "frost": sorted(self.frost),
+            "idle_since": dict(self.idle_since),
+            "exercise": None
+            if self.exercise is None
+            else {
+                "pump": self.exercise.pump,
+                "began": self.exercise.began,
+                "started": self.exercise.started,
+                "done": self.exercise.done,
+            },
+            "exercise_ended": dict(self.exercise_ended),
+            "dhw": self.dhw.to_dict(),
+            "heating_supply": self.heating_supply.to_dict(),
+            "compressor_since": self.compressor_since,
+            "no_load_since": self.no_load_since,
+            "no_load_until": self.no_load_until,
+            "no_load_trips": list(self.no_load_trips),
+            "outdoor_damped": None
+            if self.outdoor_damped is None
+            else {"value": self.outdoor_damped.value, "at": self.outdoor_damped.at},
+            "warm_weather": self.warm_weather,
+            "sensorless": dict(self.sensorless),
+            "changeover": self.changeover.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> State:
+        """Read persisted data; a missing key takes its initial value."""
+        return cls(
+            live=bool(data.get("live", False)),
+            dry_run=bool(data.get("dry_run", False)),
+            commissioning=bool(data.get("commissioning", False)),
+            physical_flow_seen=bool(data.get("physical_flow_seen", False)),
+            mode=Mode(data.get("mode", Mode.OFF)),
+            last_mode=Mode(data.get("last_mode", Mode.OFF)),
+            flowing=bool(data.get("flowing", False)),
+            flow_ended=_optional_float(data.get("flow_ended")),
+            source_request=bool(data.get("source_request", False)),
+            source_changed=_optional_float(data.get("source_changed")),
+            source_observed=data.get("source_observed"),
+            source_observed_changed=_optional_float(data.get("source_observed_changed")),
+            source_starts=tuple(float(value) for value in data.get("source_starts", ())),
+            source_demanding=bool(data.get("source_demanding", False)),
+            source_demand_ended=_optional_float(data.get("source_demand_ended")),
+            demands={
+                slug: DemandState(
+                    Mode(value["mode"]),
+                    bool(value["on"]),
+                    _optional_float(value["since"]),
+                    _optional_float(value.get("early_start_event")),
+                )
+                for slug, value in data.get("demands", {}).items()
+            },
+            guards={
+                ref: GuardState(bool(value["blocked"]), float(value["since"]))
+                for ref, value in data.get("guards", {}).items()
+            },
+            overruns={slug: float(value) for slug, value in data.get("overruns", {}).items()},
+            ready={entity: float(value) for entity, value in data.get("ready", {}).items()},
+            winding=frozenset(str(entity) for entity in data.get("winding", ())),
+            windows_open=frozenset(str(zone) for zone in data.get("windows_open", ())),
+            detected_windows={
+                slug: DetectedWindow(
+                    Mode(value["mode"]),
+                    tuple((float(at), float(reading)) for at, reading in value.get("samples", ())),
+                    _optional_float(value.get("since")),
+                    _optional_float(value.get("extreme")),
+                    _optional_float(value.get("extreme_at")),
+                )
+                for slug, value in data.get("detected_windows", {}).items()
+            },
+            frost=frozenset(str(zone) for zone in data.get("frost", ())),
+            idle_since={
+                entity: _optional_float(value)
+                for entity, value in data.get("idle_since", {}).items()
+            },
+            exercise=_exercise_state(data.get("exercise")),
+            exercise_ended={
+                slug: float(value) for slug, value in data.get("exercise_ended", {}).items()
+            },
+            dhw=DhwState.from_dict(data.get("dhw", {})),
+            heating_supply=HeatingSupplyState.from_dict(data.get("heating_supply", {})),
+            compressor_since=_optional_float(data.get("compressor_since")),
+            no_load_since=_optional_float(data.get("no_load_since")),
+            no_load_until=_optional_float(data.get("no_load_until")),
+            no_load_trips=tuple(float(value) for value in data.get("no_load_trips", ())),
+            outdoor_damped=_damped_outdoor(data.get("outdoor_damped")),
+            warm_weather=bool(data.get("warm_weather", False)),
+            sensorless={slug: float(at) for slug, at in data.get("sensorless", {}).items()},
+            changeover=ChangeoverState.from_dict(data.get("changeover", {})),
+        )
+
+
+def _damped_outdoor(value: Any) -> DampedOutdoor | None:
+    if not isinstance(value, Mapping):
+        return None
+    return DampedOutdoor(float(value["value"]), float(value["at"]))
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+@dataclass(frozen=True, slots=True)
+class _Check:
+    """One condition of a condensation guard: whether it blocks, whether it releases, and why."""
+
+    blocks: bool
+    releases: bool
+    reason: str
+    # The condensation inputs it found unusable.
+    unusable: tuple[str, ...] = ()
+
+
+def _exercise_state(value: Any) -> ExerciseState | None:
+    if value is None:
+        return None
+    return ExerciseState(
+        str(value["pump"]),
+        float(value["began"]),
+        _optional_float(value["started"]),
+        bool(value["done"]),
+    )
+
+
+# Evaluation
+
+
+def _physical_flow_possible(plant: Plant, obs: Observations) -> bool:
+    """Real requests and feedback can show flow; virtual proposals cannot."""
+    outputs = obs.outputs if obs.physical_outputs is None else obs.physical_outputs
+    entities = [pump.switch for pump in plant.pumps if pump.switch is not None]
+    if plant.source is not None:
+        entities.append(plant.source.request)
+    for entity in entities:
+        observed = outputs.get(entity)
+        if not isinstance(observed, SwitchState) or observed.on is not False or observed.moving:
+            return True
+    feedback = [
+        entity
+        for pump in plant.pumps
+        for entity in (pump.running_sensor, pump.flow_sensor)
+        if entity is not None
+    ]
+    if plant.source is not None and plant.source.running_sensor is not None:
+        feedback.append(plant.source.running_sensor)
+    return any(
+        (observed := obs.readiness.get(entity)) is None or observed.on is not False
+        for entity in feedback
+    )
+
+
+def step(
+    plant: Plant, observations: Observations, state: State, now: float
+) -> tuple[State, Desired, float | None]:
+    """Return the next State, the desired state, and the seconds until the next evaluation.
+
+    The seconds are None when only a change of observation needs a new
+    evaluation. Safe shutdown is this same evaluation with the Plant mode
+    forced to off: with Control equipment off, a live Plant runs the off-mode
+    sequence and then goes to Dry run, where it evaluates the requested mode
+    against the proposed outputs.
+    """
+    auto = (
+        changeover(plant.changeover, observations.sensors, now, state.changeover)
+        if observations.auto and plant.changeover is not None
+        else None
+    )
+    if auto is not None:
+        observations = replace(observations, mode=auto.state.mode)
+    next_state, desired, due = _Evaluation(plant, observations, state, now).run()
+    if auto is None:
+        return replace(next_state, changeover=state.changeover), desired, due
+    if auto.due is not None and auto.due > now:
+        due = auto.due - now + TICK if due is None else min(due, auto.due - now + TICK)
+    return (
+        replace(next_state, changeover=auto.state),
+        replace(desired, reasons={**desired.reasons, "changeover": auto.reason}),
+        due,
+    )
+
+
+_SUPPLY_REASONS: Final = {
+    HeatingSupply.SOURCE_CURVE: "the source's own weather curve",
+    HeatingSupply.FIXED: "a fixed supply temperature",
+    HeatingSupply.CURVE: "Hydronicus's heating curve",
+}
+
+
+class _Evaluation:
+    """The stages of one ``step()``, with the caches and deadlines they share."""
+
+    def __init__(self, plant: Plant, obs: Observations, state: State, now: float) -> None:
+        physical_flow_seen = state.physical_flow_seen or _physical_flow_possible(plant, obs)
+        # A State that has never observed the source, such as one that a lost
+        # store replaced, finds a running source as it is: its minimum on time
+        # counts from the observed start. Going live from Dry run starts from rest.
+        self.source_unknown = state.source_observed is None and not (obs.control and state.dry_run)
+        if obs.control and state.dry_run:
+            # An output observed off since before the dwell is already safe.
+            # Otherwise its real flow must stop before a new dwell can begin.
+            ends: list[float] = []
+            physical = [pump.switch for pump in plant.pumps if pump.switch is not None]
+            if plant.source is not None:
+                physical.append(plant.source.request)
+            feedback = [
+                entity
+                for pump in plant.pumps
+                for entity in (pump.running_sensor, pump.flow_sensor)
+                if entity is not None
+            ]
+            if plant.source is not None and plant.source.running_sensor is not None:
+                feedback.append(plant.source.running_sensor)
+            for entity in physical + feedback:
+                observed = (
+                    obs.outputs.get(entity) if entity in physical else obs.readiness.get(entity)
+                )
+                if (
+                    not isinstance(observed, SwitchState)
+                    or observed.on is not False
+                    or observed.moving
+                ):
+                    break
+                post_run = (
+                    plant.source.post_run
+                    if plant.source is not None and entity == plant.source.request
+                    else 0.0
+                )
+                ends.append(observed.since + post_run)
+            settled = len(ends) == len(physical) + len(feedback)
+            state = replace(
+                state,
+                mode=Mode.OFF,
+                last_mode=Mode.OFF,
+                flowing=not settled,
+                flow_ended=max(ends, default=now) if settled and physical_flow_seen else None,
+                source_request=False,
+                source_changed=None,
+                source_observed=None,
+                source_observed_changed=None,
+                source_starts=(),
+                exercise=None,
+                overruns={},
+                ready={},
+                commissioning=physical_flow_seen,
+                winding=(
+                    frozenset((plant.source.request,))
+                    if plant.source is not None and physical_flow_seen
+                    else frozenset()
+                ),
+                dry_run=False,
+            )
+        self.plant, self.obs, self.state, self.now = plant, obs, state, now
+        # The heating supply strategy, chosen once the outputs' mode is known.
+        self.heating: HeatingSupplyResult | None = None
+        self.commissioning = state.commissioning
+        self.physical_flow_seen = physical_flow_seen
+        self.source_observed = None if plant.source is None else self.switch(plant.source.request)
+        self.handover = (
+            plant.source is not None
+            and plant.source.handover_sensor is not None
+            and self.feedback(plant.source.handover_sensor) is True
+        )
+        supply = None if plant.source is None else plant.source.supply
+        self.outdoor = (
+            None
+            if supply is None
+            else outdoor_temperature(supply, obs.sensors, now, state.outdoor_damped)
+        )
+        self.warm = supply is not None and warm_weather(supply, self.outdoor, state.warm_weather)
+        self.inhibited = (
+            f"another source supplies the zones: {plant.source.inhibit_sensor} is on"
+            if plant.source is not None
+            and plant.source.inhibit_sensor is not None
+            and self.feedback(plant.source.inhibit_sensor) is True
+            else None
+        )
+        self.source_observed_changed = state.source_observed_changed
+        if (
+            plant.source is not None
+            and self.source_observed is not None
+            and (
+                (self.source_observed is True and self.source_observed_changed is None)
+                or (
+                    self.source_observed != state.source_observed
+                    and (
+                        state.source_observed is not None
+                        or state.source_observed_changed is not None
+                    )
+                )
+            )
+        ):
+            self.source_observed_changed = self.since(plant.source.request)
+        # A start is the request observed turning on; a clock stepping backwards
+        # keeps a start that seems to lie ahead.
+        starts = [start for start in state.source_starts if start > now - START_WINDOW]
+        if (
+            self.source_observed is True
+            and state.source_observed is not True
+            and self.source_observed_changed is not None
+            and self.source_observed_changed not in starts
+        ):
+            starts.append(self.source_observed_changed)
+        self.source_starts = tuple(sorted(starts))
+        self.deadlines: list[float] = []
+        self.reasons: dict[str, str] = {}
+        # The timers holding objects as they are, by target and kind.
+        self.holds: dict[tuple[str, HoldKind], Hold] = {}
+        self.comfort: dict[str, ComfortTarget] = {}
+        # Each zone's aggregated temperature, None while it has no usable reading.
+        self.temperatures: dict[str, float | None] = {}
+        # The zones whose demand an open window turns off now.
+        self.windows_open: set[str] = set()
+        self.detected_windows: dict[str, DetectedWindow] = {}
+        # The zones that frost protection heats, which the demands stage finds.
+        self.frost: list[str] = []
+        # The zones that frost protection heated and that have no usable reading
+        # now: they keep their latch, so a returning reading below the release
+        # heats again, but nothing heats them while no reading says how cold they are.
+        self.frost_latched: list[str] = []
+        # Since when each zone without a usable temperature has had none, and the
+        # zones a sensor fallback serves now.
+        self.sensorless: dict[str, float] = {}
+        self.sensor_fallbacks: list[str] = []
+        # This evaluation's condensation guards, and since when each output is idle.
+        self.guard_states: dict[str, GuardState] = {}
+        self.idle_times: dict[str, float | None] = {}
+        # By cooling loop, whether its checks against condensation release, which
+        # is all an exercise needs, and the condensation inputs that are not usable.
+        self.condensation_released: dict[str, bool] = {}
+        self.unusable_inputs: dict[str, tuple[str, ...]] = {}
+        self._ready: dict[Loop, bool] = {}
+        self._pumps = {pump.slug: pump for pump in plant.pumps}
+        self._loops_of: dict[str, list[Loop]] = {pump.slug: [] for pump in plant.pumps}
+        for loop in plant.all_loops:
+            self._loops_of[loop.pump].append(loop)
+        self.no_load_state = self.no_load()
+
+    # Time
+
+    def reached(self, deadline: float) -> bool:
+        """Whether ``deadline`` has passed; if not, the evaluation is due then."""
+        if self.now >= deadline:
+            return True
+        self.deadlines.append(deadline)
+        return False
+
+    def hold(self, target: str, kind: HoldKind, until: float | None) -> None:
+        """Record a timer that holds ``target`` as it is, keyed as in the reasons."""
+        self.holds[(target, kind)] = Hold(target, kind, until)
+
+    def held(self, target: str, kind: HoldKind, deadline: float) -> bool:
+        """Whether ``deadline`` is still ahead; if so, it holds ``target`` until then."""
+        if self.reached(deadline):
+            return False
+        self.hold(target, kind, deadline)
+        return True
+
+    # Outputs as observed, with the calls that may still act
+
+    def switch(self, entity: str) -> bool | None:
+        """Whether an output is observed on; None while it is unknown or still moving."""
+        observed = self.obs.outputs.get(entity)
+        if not isinstance(observed, SwitchState) or observed.moving:
+            return None
+        return observed.on
+
+    def since(self, entity: str) -> float:
+        observed = self.obs.outputs.get(entity)
+        return self.now if observed is None else observed.since
+
+    def pending(self, entity: str) -> OutputTarget | None:
+        """The target of a call to ``entity`` that may still act."""
+        sent = self.obs.sent.get(entity)
+        if sent is None or satisfies(self.obs.outputs.get(entity), sent.target):
+            return None
+        return None if self.reached(sent.at + CALL_TIMEOUT) else sent.target
+
+    def may_be_on(self, entity: str) -> bool:
+        return self.switch(entity) is not False or self.pending(entity) == ON
+
+    def surely_on(self, entity: str) -> bool:
+        return self.switch(entity) is True and self.pending(entity) != OFF
+
+    def usable(self, entity: str) -> bool:
+        """Armed and available, so a call can reach it."""
+        observed = self.obs.outputs.get(entity)
+        return entity in self.obs.armed and observed is not None and value_of(observed) is not None
+
+    # Valves and loops
+
+    def valve_ready(self, valve: Valve) -> bool:
+        """Observed open for its opening time, or confirmed by its readiness sensor."""
+        entity = valve.entity
+        if self.switch(entity) is not True or self.pending(entity) == OFF:
+            return False
+        since = self.since(entity)
+        if self.state.ready.get(entity) == since:
+            return True
+        if valve.readiness is not None:
+            readiness = self.obs.readiness.get(valve.readiness)
+            if readiness is not None and readiness.on is True:
+                return True
+        return not self.held(entity, HoldKind.VALVE_OPENING, since + valve.opening_time)
+
+    def ready_at(self, loop: Loop) -> float | None:
+        """When a loop's valves are ready by their opening times, or None until all are open."""
+        ends = [self.now]
+        for valve in loop.valves:
+            if self.valve_ready(valve):
+                continue
+            if self.switch(valve.entity) is not True or self.pending(valve.entity) == OFF:
+                return None
+            ends.append(self.since(valve.entity) + valve.opening_time)
+        return max(ends)
+
+    def winding_down(
+        self, entity: str, duration: float, kind: HoldKind, target: str | None = None
+    ) -> bool:
+        """Observed off for less than ``duration`` after it may have been on.
+
+        That is a valve still closing or the source in its post-run. Only an
+        output that may have been on at the last evaluation counts, so outputs
+        found off when the Plant starts are not taken for still running.
+        """
+        return (
+            entity in self.state.winding
+            and self.switch(entity) is False
+            and self.held(target or entity, kind, self.since(entity) + duration)
+        )
+
+    def valve_may_pass(self, valve: Valve) -> bool:
+        """Possibly passing flow: on, unknown, about to open, or still closing."""
+        return self.may_be_on(valve.entity) or self.winding_down(
+            valve.entity, valve.opening_time, HoldKind.VALVE_CLOSING
+        )
+
+    def ready(self, loop: Loop) -> bool:
+        if loop not in self._ready:
+            self._ready[loop] = all(self.valve_ready(valve) for valve in loop.valves)
+        return self._ready[loop]
+
+    def valve_preparation(self, valve: Valve) -> float:
+        """Budget remaining configured travel without promising physical readiness."""
+        if self.valve_ready(valve):
+            return 0.0
+        observed = self.obs.outputs.get(valve.entity)
+        if (
+            isinstance(observed, SwitchState)
+            and observed.on is True
+            and self.pending(valve.entity) != OFF
+        ):
+            return max(0.0, observed.since + valve.opening_time - self.now)
+        return valve.opening_time
+
+    def may_pass(self, loop: Loop) -> bool:
+        return all(self.valve_may_pass(valve) for valve in loop.valves)
+
+    def loops_of(self, pump: Pump) -> list[Loop]:
+        return self._loops_of[pump.slug]
+
+    # The source and pumps
+
+    def source_may_run(self) -> bool:
+        """The source may be requested or in its post-run, so its pumps may run."""
+        source = self.plant.source
+        if source is None:
+            return False
+        return (
+            self.may_be_on(source.request)
+            or self.winding_down(source.request, source.post_run, HoldKind.POST_RUN, "source")
+            or (
+                source.running_sensor is not None
+                and self.feedback(source.running_sensor) is not False
+            )
+        )
+
+    def feedback(self, entity: str) -> bool | None:
+        observed = self.obs.readiness.get(entity)
+        return None if observed is None else observed.on
+
+    def source_fault(self) -> str | None:
+        """Why the source's health sensor forbids a request, or None while it reads healthy."""
+        source = self.plant.source
+        if source is None or source.health_sensor is None:
+            return None
+        health = self.feedback(source.health_sensor)
+        if health is True:
+            return None
+        state = "reports a fault" if health is False else "is unavailable"
+        return f"source health sensor {source.health_sensor} {state}"
+
+    def source_without_path(self) -> bool:
+        """The request is observed on while no loop may pass flow from a pump that may run.
+
+        ``step()`` never requests the source so, and releases a request that finds
+        itself so; the runtime reports it, since equipment or a person did it.
+        Which mode the flow carries is invariant 5's concern, not this one's. A
+        separator or a heat exchanger gives a source-driven pump its flow, not
+        the source a sink, so only an open loop counts.
+        """
+        if self.plant.source is None or self.source_observed is not True or self.handover:
+            return False
+        return not any(
+            self.may_pass(loop) and self.pump_may_run(self._pumps[loop.pump])
+            for loop in self.plant.all_loops
+        )
+
+    def no_load(self) -> tuple[float | None, float | None, float | None, tuple[float, ...]]:
+        """The no-load guard: when the compressor started, the low difference began, it holds
+        the source off until, and its trips within ``NO_LOAD_WINDOW``.
+
+        It trips once the request is on, the compressor has run for its duration,
+        and the leaving and returning water have stayed within its difference for
+        its duration too. A reading that is missing or stale never trips it.
+        """
+        state, now = self.state, self.now
+        trips = tuple(trip for trip in state.no_load_trips if trip > now - NO_LOAD_WINDOW)
+        source = self.plant.source
+        guard = None if source is None else source.no_load
+        until = state.no_load_until
+        if until is not None and self.reached(until):
+            until = None
+        if guard is None:
+            return None, None, until, trips
+
+        def fresh(entity: str) -> float | None:
+            reading = self.obs.sensors.get(entity)
+            if reading is None or reading.value is None or not isfinite(reading.value):
+                return None
+            stale = self.reached(reading.updated + GUARD_REFERENCE_MAX_AGE)
+            return None if stale else reading.value
+
+        compressor = fresh(guard.compressor_sensor)
+        running = self.source_observed is True and compressor is not None and compressor > 0
+        started = (state.compressor_since or now) if running else None
+        supply, back = fresh(guard.supply_temperature), fresh(guard.return_temperature)
+        low = (
+            running
+            and started is not None
+            and supply is not None
+            and back is not None
+            and abs(supply - back) < guard.delta
+        )
+        since = (state.no_load_since or now) if low else None
+        if started is not None and since is not None:
+            trip_at = max(started, since) + guard.duration
+            if self.reached(trip_at):
+                return None, None, now + guard.hold_off, (*trips, now)
+        return started, since, until, trips
+
+    def pump_feedback(self, pump: Pump) -> tuple[str, ...]:
+        return tuple(
+            entity for entity in (pump.running_sensor, pump.flow_sensor) if entity is not None
+        )
+
+    def pump_may_run(self, pump: Pump) -> bool:
+        inferred = self.source_may_run() if pump.switch is None else self.may_be_on(pump.switch)
+        return inferred or any(
+            self.feedback(entity) is not False for entity in self.pump_feedback(pump)
+        )
+
+    def pump_confirmed(self, pump: Pump) -> bool:
+        return all(self.feedback(entity) is True for entity in self.pump_feedback(pump))
+
+    # The pipeline
+
+    def run(self) -> tuple[State, Desired, float | None]:
+        plant, obs, state, now = self.plant, self.obs, self.state, self.now
+        demands, demand_states = self.demands()
+        guards = self.guards()
+        self.guard_states = guards
+        self.idle_times = self.idle_since()
+        # The loops of an exercised pump carry only the exercise's flow, which sets
+        # no mode and starts no dwell, but a change of mode still waits for it.
+        exercised = None if state.exercise is None else state.exercise.pump
+        may_flow = {
+            loop: self.pump_may_run(self._pumps[loop.pump]) and self.may_pass(loop)
+            for loop in plant.all_loops
+        }
+        exercise_flowing = any(may_flow[loop] for loop in may_flow if loop.pump == exercised)
+        flowing = self.source_may_run() or any(
+            may_flow[loop] for loop in may_flow if loop.pump != exercised
+        )
+        flow_ended = now if state.flowing and not flowing else state.flow_ended
+        mode, leaving = self.mode(flowing, exercise_flowing, flow_ended)
+        self.heating = self.heating_supply(mode)
+        label = mode if mode is not Mode.OFF else state.last_mode
+        active = mode is not Mode.OFF and not leaving
+        # A mode the select changed keeps the source for its minimum on time, as the
+        # end of demand does; Control equipment off stops it at once.
+        winding_down = leaving and not self.forced_off
+
+        blocked_by_guard = {loop: self.guard_blocks(loop, mode) for loop in plant.all_loops}
+        if mode is not Mode.COOL:
+            # A guard blocks only cooling; outside it, it only follows its reference.
+            for key in [f"{ref}.guard" for ref in guards]:
+                self.reasons.pop(key, None)
+        # With the Mode select off, the Plant heats only for frost protection.
+        plan_demands = (
+            demands
+            if obs.mode is not Mode.OFF
+            else {slug: demand for slug, demand in demands.items() if slug in self.frost}
+        )
+        plan = _Plan(self, mode, label, active, winding_down, plan_demands, blocked_by_guard)
+        outputs = plan.outputs()
+        dhw = self.dhw()
+        if dhw is not None:
+            outputs.update(dhw.targets)
+
+        live = obs.control or (state.live and not self.finished())
+        ready = {
+            valve.entity: self.since(valve.entity)
+            for loop in plant.all_loops
+            for valve in loop.valves
+            if self.valve_ready(valve)
+        }
+        winding = {
+            valve.entity
+            for loop in plant.all_loops
+            for valve in loop.valves
+            if self.valve_may_pass(valve)
+        }
+        if plant.source is not None and self.source_may_run():
+            winding.add(plant.source.request)
+        source_changed = now if plan.request != state.source_request else state.source_changed
+        next_state = State(
+            live=live,
+            dry_run=self.proposing,
+            commissioning=self.commissioning,
+            physical_flow_seen=self.physical_flow_seen,
+            mode=mode,
+            last_mode=plan.label,
+            flowing=flowing,
+            flow_ended=flow_ended,
+            # While Hydronicus sends the request nothing, during a handover or
+            # while it is unarmed, the request it holds on to is the one it
+            # finds, so arming or a handback takes over from there without a stop.
+            source_request=(
+                self.source_observed is True
+                if self.handover or not self.usable(plant.source.request)
+                else plan.request
+            )
+            if plant.source is not None
+            else plan.request,
+            source_changed=source_changed,
+            source_observed=self.source_observed,
+            source_observed_changed=self.source_observed_changed,
+            source_starts=self.source_starts,
+            source_demanding=plan.calling,
+            source_demand_ended=plan.demand_ended,
+            demands=demand_states,
+            guards=guards,
+            overruns=plan.overruns,
+            ready=ready,
+            winding=frozenset(winding),
+            windows_open=frozenset(self.windows_open),
+            detected_windows=self.detected_windows,
+            frost=frozenset(self.frost) | frozenset(self.frost_latched),
+            idle_since=self.idle_times,
+            exercise=plan.next_exercise,
+            exercise_ended=plan.exercise_ended,
+            dhw=state.dhw if dhw is None else dhw.state,
+            heating_supply=state.heating_supply
+            if self.heating is None
+            else replace(
+                self.heating.state,
+                last_target=state.heating_supply.last_target
+                if plan.heating_target is None
+                else plan.heating_target,
+            ),
+            compressor_since=self.no_load_state[0],
+            no_load_since=self.no_load_state[1],
+            no_load_until=self.no_load_state[2],
+            no_load_trips=self.no_load_state[3],
+            outdoor_damped=state.outdoor_damped if self.outdoor is None else self.outdoor.damped,
+            warm_weather=self.warm,
+            sensorless=self.sensorless,
+        )
+        desired = Desired(
+            outputs=outputs,
+            source_request=plan.request,
+            mode=mode,
+            reasons=self.reasons,
+            demands=demands,
+            blocking_sensors=self.blocking_sensors(),
+            blocking_condensation_inputs=self.unusable_inputs,
+            frost_protection=tuple(self.frost),
+            exercise=plan.exercising,
+            comfort=self.comfort,
+            holds=self.current_holds(mode),
+            source_fault=self.source_fault(),
+            source_without_path=self.source_without_path(),
+            source_handover=self.handover,
+            dhw=None if dhw is None else dhw.state,
+            dhw_reason=None if dhw is None else dhw.reason,
+            dhw_events=() if dhw is None else dhw.events,
+            source_inhibited=self.inhibited,
+            source_no_load=self.no_load_reason(),
+            no_load_trips=self.no_load_state[3],
+            heating_curve=self.heating_curve(),
+            heating_supply=self.heating,
+            sensor_fallback=tuple(self.sensor_fallbacks),
+        )
+        later = [deadline for deadline in self.deadlines if deadline > now]
+        due = min(later) - now + TICK if later else None
+        return next_state, desired, due
+
+    def curve_offset(self) -> float:
+        """The heating curve's offset: the owner's, else the configured one."""
+        source = self.plant.source
+        if source is None or source.supply is None:
+            return 0.0
+        offset = self.obs.curve_offset
+        return source.supply.offset if offset is None else offset
+
+    def room_shift(self) -> float:
+        """The lead zone's shift of the heating curve, from this evaluation's demand."""
+        source = self.plant.source
+        if source is None or source.supply is None or source.supply.room_influence is None:
+            return 0.0
+        slug = source.supply.room_influence.zone
+        comfort = self.comfort.get(slug)
+        return room_shift(
+            source.supply,
+            None if comfort is None else comfort.target,
+            self.temperatures.get(slug),
+        )
+
+    def warm_reason(self) -> str:
+        source = self.plant.source
+        assert source is not None and source.supply is not None and self.outdoor is not None
+        assert self.outdoor.value is not None and source.supply.heating_limit is not None
+        return (
+            f"warm weather: {self.outdoor.value:.1f} °C outdoors, "
+            f"heating limit {source.supply.heating_limit:.1f} °C"
+        )
+
+    def heating_curve(self) -> HeatingCurve | None:
+        if self.outdoor is None:
+            return None
+        return HeatingCurve(
+            outdoor=self.outdoor.value,
+            fallback=self.outdoor.fallback,
+            warm_weather=self.warm,
+            offset=self.curve_offset(),
+            room_shift=self.room_shift(),
+        )
+
+    def no_load_reason(self) -> str | None:
+        """Why the no-load guard holds the source off, or None while it does not."""
+        source, until = self.plant.source, self.no_load_state[2]
+        if source is None or source.no_load is None or until is None:
+            return None
+        return (
+            f"the source ran with its water within {source.no_load.delta:g} K, "
+            "so its heat had nowhere to go"
+        )
+
+    def dhw(self) -> DhwResult | None:
+        """The source's DHW: adopt what changed elsewhere, apply the owner's command, target."""
+        source = self.plant.source
+        if source is None or source.dhw is None:
+            return None
+        config = source.dhw
+        # Changes are judged on what the outputs really show, never a Dry run proposal.
+        physical = (
+            self.obs.outputs if self.obs.physical_outputs is None else self.obs.physical_outputs
+        )
+
+        def ours(entity: str) -> bool:
+            sent = self.obs.sent.get(entity)
+            return sent is not None and satisfies(physical.get(entity), sent.target)
+
+        switch = physical.get(config.switch) if config.switch is not None else None
+        setpoint = physical.get(config.setpoint) if config.setpoint is not None else None
+        return dhw_step(
+            config,
+            switch.on if isinstance(switch, SwitchState) and not switch.moving else None,
+            setpoint.value
+            if isinstance(setpoint, NumericState)
+            and setpoint.value is not None
+            and isfinite(setpoint.value)
+            else None,
+            ours,
+            self.state.dhw,
+            self.obs.dhw_command,
+            self.now,
+            self.reached,
+            commands=not self.forced_off and not self.handover,
+            schedule=self.obs.dhw_schedule,
+            tank=None
+            if config.disinfect is None
+            else self.tank_temperature(config.disinfect.tank_temperature),
+            window=self.obs.disinfect_window,
+        )
+
+    def heating_supply(self, mode: Mode) -> HeatingSupplyResult | None:
+        """The heating supply strategy: adopt what changed elsewhere, apply the owner's command."""
+        source = self.plant.source
+        if source is None:
+            return None
+        # Changes are judged on what the outputs really show, never a Dry run proposal.
+        physical = (
+            self.obs.outputs if self.obs.physical_outputs is None else self.obs.physical_outputs
+        )
+
+        def ours(entity: str) -> bool:
+            sent = self.obs.sent.get(entity)
+            return sent is not None and satisfies(physical.get(entity), sent.target)
+
+        weather = source.weather_curve
+        switch = physical.get(weather.switch) if weather is not None else None
+        number = physical.get(source.supply.entity) if source.supply is not None else None
+        result = heating_supply_step(
+            source,
+            mode,
+            switch.on if isinstance(switch, SwitchState) and not switch.moving else None,
+            number.value
+            if isinstance(number, NumericState)
+            and number.value is not None
+            and isfinite(number.value)
+            else None,
+            ours,
+            self.state.heating_supply,
+            self.obs.supply_command,
+        )
+        if result is not None:
+            self.reasons["heating_supply"] = _SUPPLY_REASONS[result.strategy]
+        return result
+
+    def tank_temperature(self, entity: str) -> float | None:
+        """The DHW tank's temperature while it reports, stale like a guard reference."""
+        reading = self.obs.sensors.get(entity)
+        if reading is None or reading.value is None or not isfinite(reading.value):
+            return None
+        return None if self.reached(reading.updated + GUARD_REFERENCE_MAX_AGE) else reading.value
+
+    def current_holds(self, mode: Mode) -> tuple[Hold, ...]:
+        """The holds in force, ordered by when they end; a guard holds only in cool."""
+        holds = [
+            hold
+            for hold in self.holds.values()
+            if (hold.until is None or hold.until > self.now)
+            and (mode is Mode.COOL or hold.kind is not HoldKind.GUARD_MIN_BLOCKED)
+        ]
+        return tuple(
+            sorted(holds, key=lambda hold: (hold.until is None, hold.until or 0.0, hold.target))
+        )
+
+    def demands(self) -> tuple[dict[str, Demand], dict[str, DemandState]]:
+        """Stage 2: aggregate each zone's temperature, evaluate its thermostat, then its windows."""
+        obs = self.obs
+        demands: dict[str, Demand] = {}
+        states: dict[str, DemandState] = {}
+        for zone in self.plant.zones:
+            values = zone_values(zone, obs.areas, obs.sensors, self.reached)
+            temperature = None if values is None else aggregate(values, zone.aggregation)
+            self.temperatures[zone.slug] = temperature
+            config = zone.thermostat
+            thermostat = obs.thermostats.get(zone.slug)
+            previous = self.state.demands.get(zone.slug)
+            schedule = (
+                obs.schedules.get(config.schedule.entity)
+                if isinstance(config, DigitalThermostat) and config.schedule is not None
+                else None
+            )
+            if isinstance(config, DigitalThermostat) and isinstance(
+                thermostat, DigitalThermostatState
+            ):
+                recovery = obs.recovery.get(zone.slug)
+                if (
+                    config.learning is LearningMode.ASSIST
+                    and recovery is not None
+                    and recovery.confidence
+                    and recovery.seconds is not None
+                    and isfinite(recovery.seconds)
+                    and recovery.seconds > 0
+                ):
+                    # Episodes start at observed circulation. Valves prepare in
+                    # parallel before that interval, through normal sequencing.
+                    preparation = max(
+                        (
+                            self.valve_preparation(valve)
+                            for loop in self.plant.zone_loops(zone.slug)
+                            if thermostat.hvac_mode in loop.modes
+                            for valve in loop.valves
+                        ),
+                        default=0.0,
+                    )
+                    recovery = replace(recovery, seconds=recovery.seconds + preparation)
+                comfort = comfort_target(
+                    config,
+                    thermostat.hvac_mode,
+                    thermostat.target,
+                    thermostat.preset,
+                    temperature,
+                    schedule,
+                    self.now,
+                    self.reached,
+                    None
+                    if previous is None or previous.mode is not thermostat.hvac_mode
+                    else previous.early_start_event,
+                    recovery,
+                    obs.setbacks.get(zone.slug),
+                )
+                if obs.away is not None:
+                    comfort = (
+                        away_target(
+                            config,
+                            thermostat.hvac_mode,
+                            thermostat.target,
+                            temperature,
+                            obs.away,
+                            self.plant.away,
+                            self.now,
+                            self.reached,
+                            None
+                            if previous is None or previous.mode is not thermostat.hvac_mode
+                            else previous.early_start_event,
+                        )
+                        or comfort
+                    )
+                self.comfort[zone.slug] = comfort
+            state, demand = zone_demand(
+                zone,
+                thermostat,
+                temperature,
+                previous,
+                self.now,
+                self.reached,
+                schedule=schedule,
+                comfort=self.comfort.get(zone.slug),
+            )
+            if demand.held_until is not None:
+                self.hold(
+                    zone.slug,
+                    HoldKind.DEMAND_MIN_ON if demand.on else HoldKind.DEMAND_MIN_OFF,
+                    demand.held_until,
+                )
+            if (fallback := self.sensor_fallback(zone, thermostat, temperature)) is not None:
+                demand = fallback
+            state, demand = self.window_inhibit(zone, state, demand)
+            # Frost protection overrides the thermostat and an open window alike,
+            # and leaves the thermostat's decision underneath as it is.
+            frost = self.frost_protection(zone)
+            if frost is not None:
+                demand = frost
+                self.frost.append(zone.slug)
+            states[zone.slug], demands[zone.slug] = state, demand
+            self.reasons[zone.slug] = f"{'demands' if demand.on else 'idle'}: {demand.reason}"
+        return demands, states
+
+    def sensor_fallback(
+        self, zone: Zone, thermostat: ThermostatState | None, temperature: float | None
+    ) -> Demand | None:
+        """A sensor fallback's demand, which replaces the thermostat's, or None.
+
+        It acts only once the zone has had no usable temperature for its ``after``,
+        only while the zone's digital thermostat and the Plant heat, and heats
+        for its ``duty`` of every ``period`` counted from then. The thermostat's
+        own decision stays off underneath, so a returning reading starts afresh.
+        """
+        if temperature is not None:
+            return None
+        since = self.state.sensorless.get(zone.slug, self.now)
+        if since > self.now:
+            since = self.now
+        self.sensorless[zone.slug] = since
+        config = zone.sensor_fallback
+        if (
+            config is None
+            or not isinstance(thermostat, DigitalThermostatState)
+            or thermostat.hvac_mode is not Mode.HEAT
+            or self.obs.mode is not Mode.HEAT
+        ):
+            return None
+        start = since + config.after
+        if not self.reached(start):
+            return None
+        self.sensor_fallbacks.append(zone.slug)
+        phase = (self.now - start) % config.period
+        on_for = config.duty * config.period
+        on = phase < on_for
+        self.reached(self.now - phase + (on_for if on else config.period))
+        return Demand(
+            Mode.HEAT,
+            on,
+            f"sensor fallback: heat {config.duty:.0%} of every "
+            f"{config.period / 60:g} min without a usable temperature",
+        )
+
+    def window_inhibit(
+        self, zone: Zone, state: DemandState, demand: Demand
+    ) -> tuple[DemandState, Demand]:
+        """Turn a zone's demand off while a window is open, after its thermostat decided.
+
+        A window is open while a window sensor says so, or while window detection
+        finds one from the zone's temperature. The thermostat's own decision goes
+        on underneath, so its hysteresis and minimum times are the same when the
+        window closes. A decision that is on then counts its minimum on time from
+        the end of the inhibit, because the zone's valves have closed meanwhile,
+        so it cannot end as soon as it resumes.
+        """
+        was_open = zone.slug in self.state.windows_open
+        detected = self.detect_window(zone, demand.mode)
+        if self.window_open(zone, was_open):
+            self.windows_open.add(zone.slug)
+            return state, Demand(demand.mode, False, "window open")
+        if detected is not None:
+            self.windows_open.add(zone.slug)
+            return state, Demand(demand.mode, False, detected)
+        if was_open and state.on:
+            state = replace(state, since=self.now)
+        return state, demand
+
+    def detect_window(self, zone: Zone, mode: Mode) -> str | None:
+        """Run a zone's window detection, and return its reason while it finds a window."""
+        config = zone.window_detection
+        if config is None:
+            return None
+        window, reason, until = detect_window(
+            config,
+            self.state.detected_windows.get(zone.slug),
+            mode,
+            self.temperatures.get(zone.slug),
+            self.now,
+            self.reached,
+        )
+        if window is not None:
+            self.detected_windows[zone.slug] = window
+        if until is not None:
+            self.hold(zone.slug, HoldKind.WINDOW_DETECTED, until)
+        return reason
+
+    def window_open(self, zone: Zone, was_open: bool) -> bool:
+        """Whether a zone's windows turn its demand off.
+
+        They do once a window has read open for the open delay, and stop once
+        every window has read closed for the close delay. An unavailable or
+        unknown window reads closed, so a lost sensor never stops heating.
+        """
+        windows = [self.obs.readiness.get(entity) for entity in zone.windows]
+        if not was_open:
+            opening = [
+                window.since + zone.window_open_delay
+                for window in windows
+                if window is not None and window.on is True
+            ]
+            if any(self.reached(end) for end in opening):
+                return True
+            if opening:
+                self.hold(zone.slug, HoldKind.WINDOW_OPEN_DELAY, min(opening))
+            return False
+        if any(window is not None and window.on is True for window in windows):
+            return True
+        closing = [
+            window.since + zone.window_close_delay for window in windows if window is not None
+        ]
+        if all(self.reached(end) for end in closing):
+            return False
+        self.hold(zone.slug, HoldKind.WINDOW_CLOSE_DELAY, max(closing))
+        return True
+
+    def frost_protection(self, zone: Zone) -> Demand | None:
+        """Frost protection's demand, which overrides the thermostat's, or None.
+
+        It heats a zone whose coldest usable reading is below the frost protection
+        temperature, whatever its thermostat and the Mode select say, when a loop
+        heats the zone. It never acts while the Plant runs or is asked to run
+        cool, because a zone that cold in cooling has a broken sensor, nor while
+        Control equipment off or a previous configuration stops the Plant.
+        """
+        frost = self.plant.frost_protection
+        if (
+            frost is None
+            or self.forced_off
+            or Mode.COOL in (self.obs.mode, self.state.mode)
+            or not self.heats(zone)
+        ):
+            return None
+        obs = self.obs
+        coldest = coldest_temperature(zone, obs.areas, obs.sensors, self.reached)
+        active = zone.slug in self.state.frost
+        if coldest is None and active:
+            self.frost_latched.append(zone.slug)
+        return frost_demand(frost, coldest, active)
+
+    def heats(self, zone: Zone) -> bool:
+        """A loop heats the zone: one of its own, or a plant loop that runs with it."""
+        return any(Mode.HEAT in loop.modes for loop in zone.loops) or any(
+            Mode.HEAT in loop.modes and zone.slug in loop.runs.zones for loop in self.plant.loops
+        )
+
+    def idle_since(self) -> dict[str, float | None]:
+        """Since when each switched pump and valve has not been seen on, or None while on.
+
+        In Dry run the outputs ``step()`` sees may be proposals, so the clocks
+        stand still, and a Plant that sat in Dry run exercises its equipment soon
+        after Control equipment turns on.
+        """
+        plant, previous = self.plant, self.state.idle_since
+        entities = [pump.switch for pump in plant.pumps if pump.switch is not None]
+        entities.extend(valve.entity for loop in plant.all_loops for valve in loop.valves)
+        idle: dict[str, float | None] = {}
+        for entity in entities:
+            if not self.proposing and self.switch(entity) is True:
+                idle[entity] = None
+            elif entity not in previous:
+                # A new output's clock starts now, so a new Plant is not overdue.
+                idle[entity] = self.now
+            elif self.proposing:
+                idle[entity] = previous[entity]
+            else:
+                last = previous[entity]
+                idle[entity] = self.since(entity) if last is None else last
+        return idle
+
+    def blocking_sensors(self) -> dict[str, tuple[str, ...]]:
+        """Each zone's required sensors that are not usable, among the readings it needs.
+
+        A digital thermostat needs its zone's temperature, and a condensation
+        guard needs the temperature and humidity of each zone whose dew point it reads.
+        """
+        plant, obs = self.plant, self.obs
+        guarded = {
+            zone.slug
+            for loop in plant.all_loops
+            if loop.cools
+            for zone in plant.dew_point_zones(loop)
+        }
+        blocking: dict[str, tuple[str, ...]] = {}
+        for zone in plant.zones:
+            needs = [False] if isinstance(zone.thermostat, DigitalThermostat) else []
+            if zone.slug in guarded:
+                needs = [False, True]
+            entities = [
+                entity
+                for humidity in needs
+                for entity in unusable_sensors(
+                    zone, obs.areas, obs.sensors, self.reached, humidity=humidity
+                )
+            ]
+            if entities:
+                blocking[zone.slug] = tuple(dict.fromkeys(entities))
+        return blocking
+
+    def guards(self) -> dict[str, GuardState]:
+        """The condensation guard of every loop that cools."""
+        guards: dict[str, GuardState] = {}
+        for loop in self.plant.all_loops:
+            if loop.cools:
+                guards[str(loop.ref)] = self.guard(loop)
+        return guards
+
+    def guard(self, loop: Loop) -> GuardState:
+        """Block at once on any of the guard's checks; release once all of them release.
+
+        The dew point check comes first and always applies. The condensation
+        switches, the surface minimum, and the humidity cutoff only add to it. A
+        new guard starts blocked unless every check already releases.
+        """
+        now, ref = self.now, str(loop.ref)
+        condensation = [self.dew_point_check(loop), *self.switch_checks(loop)]
+        checks = [*condensation, *self.surface_checks(loop), *self.humidity_checks(loop)]
+        self.condensation_released[ref] = all(check.releases for check in condensation)
+        if unusable := tuple(dict.fromkeys(e for check in checks for e in check.unusable)):
+            self.unusable_inputs[ref] = unusable
+        previous = self.state.guards.get(ref)
+        blocking = any(check.blocks for check in checks)
+        releasing = all(check.releases for check in checks)
+        if blocking:
+            reason = "; ".join(check.reason for check in checks if check.blocks)
+        elif releasing:
+            readings = "; ".join(check.reason for check in checks)
+            reason = f"{readings}, held for its minimum blocked time"
+        else:
+            reason = "; ".join(check.reason for check in checks if not check.releases)
+        if previous is None:
+            guard = GuardState(blocking or not releasing, now)
+        elif not previous.blocked:
+            guard = GuardState(True, now) if blocking else previous
+        elif releasing and not self.held(
+            f"{ref}.guard", HoldKind.GUARD_MIN_BLOCKED, previous.since + GUARD_MIN_BLOCKED
+        ):
+            guard = GuardState(False, now)
+        else:
+            guard = previous
+        if guard.blocked:
+            self.reasons[f"{ref}.guard"] = f"condensation guard blocks: {reason}"
+        return guard
+
+    def guard_blocks(self, loop: Loop, label: Mode, *, exercise: bool = False) -> bool:
+        """Whether a loop's condensation guard keeps it from flowing in ``label``.
+
+        Only cooling is guarded. An exercise runs no source, so no chilled water
+        flows, and it needs only the checks against condensation to release: the
+        dew point and the condensation switches. The surface minimum and the
+        humidity cutoff limit what cooling does to a room, which an exercise does not.
+        """
+        ref = str(loop.ref)
+        if label is not Mode.COOL or ref not in self.guard_states:
+            return False
+        if exercise:
+            return not self.condensation_released[ref]
+        return self.guard_states[ref].blocked
+
+    def dew_point_check(self, loop: Loop) -> _Check:
+        """Block below the worst-case dew point plus the margin; release 1 K above it."""
+        plant, obs = self.plant, self.obs
+        pump = self._pumps[loop.pump]
+        references = [e for e in (pump.supply_temperature, loop.surface_temperature) if e]
+        values = [
+            fresh(obs.sensors.get(entity), GUARD_REFERENCE_MAX_AGE, self.reached)
+            for entity in references
+        ]
+        points = [
+            worst_dew_point(zone, obs.areas, obs.sensors, self.reached)
+            for zone in plant.dew_point_zones(loop)
+        ]
+        usable = [value for value in values if value is not None]
+        known = [point for point in points if point is not None]
+        if not usable or len(usable) < len(values) or not known or len(known) < len(points):
+            missing = tuple(e for e, value in zip(references, values, strict=True) if value is None)
+            return _Check(True, False, "no usable condensation reference or dew point", missing)
+        threshold = max(known) + CONDENSATION_MARGIN
+        reference = min(usable)
+        if reference < threshold:
+            return _Check(True, False, f"reference {reference:.1f} °C below {threshold:.1f} °C")
+        if reference >= threshold + GUARD_RELEASE:
+            return _Check(False, True, f"reference {reference:.1f} °C")
+        return _Check(
+            False,
+            False,
+            f"reference {reference:.1f} °C, releases at {threshold + GUARD_RELEASE:.1f} °C",
+        )
+
+    def switch_checks(self, loop: Loop) -> Iterator[_Check]:
+        """Block at once while a condensation switch reads on or is unavailable.
+
+        The loop's own switch and its pump's switch cover it, and each releases
+        once it has read off for the guard's minimum blocked time.
+        """
+        pump = self._pumps[loop.pump]
+        for entity in (pump.condensation_switch, loop.condensation_switch):
+            if entity is None:
+                continue
+            switch = self.obs.readiness.get(entity)
+            if switch is None or switch.on is None:
+                yield _Check(True, False, f"condensation switch {entity} unavailable", (entity,))
+            elif switch.on:
+                yield _Check(True, False, f"condensation switch {entity} on")
+            elif self.reached(switch.since + GUARD_MIN_BLOCKED):
+                yield _Check(False, True, f"condensation switch {entity} off")
+            else:
+                yield _Check(
+                    False,
+                    False,
+                    f"condensation switch {entity} off for less than {GUARD_MIN_BLOCKED:.0f} s",
+                )
+
+    def surface_checks(self, loop: Loop) -> Iterator[_Check]:
+        """Block below the loop's surface minimum; release 1 K above it.
+
+        Without a usable surface reading the dew point check already blocks.
+        """
+        minimum = loop.surface_minimum
+        if loop.surface_temperature is None or minimum is None:
+            return
+        surface = fresh(
+            self.obs.sensors.get(loop.surface_temperature), GUARD_REFERENCE_MAX_AGE, self.reached
+        )
+        if surface is None:
+            return
+        if surface < minimum:
+            yield _Check(True, False, f"surface {surface:.1f} °C below its minimum {minimum:g} °C")
+        elif surface >= minimum + GUARD_RELEASE:
+            yield _Check(False, True, f"surface {surface:.1f} °C")
+        else:
+            yield _Check(
+                False,
+                False,
+                f"surface {surface:.1f} °C, releases at {minimum + GUARD_RELEASE:g} °C",
+            )
+
+    def humidity_checks(self, loop: Loop) -> Iterator[_Check]:
+        """Block while a zone whose dew point guards the loop is above its humidity limit.
+
+        It releases 5 points below the limit. Without a usable humidity the dew
+        point check already blocks.
+        """
+        obs = self.obs
+        for zone in self.plant.dew_point_zones(loop):
+            limit = zone.max_humidity
+            if limit is None:
+                continue
+            values = zone_values(zone, obs.areas, obs.sensors, self.reached, humidity=True)
+            if values is None:
+                continue
+            humidity = max(values)
+            where = f"humidity {humidity:.1f} % in zone {zone.slug}"
+            if humidity > limit:
+                yield _Check(True, False, f"{where} above {limit:g} %")
+            elif humidity <= limit - HUMIDITY_RELEASE:
+                yield _Check(False, True, where)
+            else:
+                yield _Check(False, False, f"{where}, releases at {limit - HUMIDITY_RELEASE:g} %")
+
+    @property
+    def forced_off(self) -> bool:
+        """Control equipment is off while outputs are still commanded: the off sequence."""
+        return not self.obs.control and self.state.live
+
+    @property
+    def proposing(self) -> bool:
+        """Dry run: the outputs ``step()`` sees may be proposals, not what they show."""
+        return not self.obs.control and not self.state.live
+
+    def requested(self) -> Mode:
+        """The mode asked for: the Mode select's, or heat for frost protection while it is off.
+
+        Control equipment turned off asks for off, so its off sequence runs and
+        then nothing, frost protection included.
+        """
+        if self.forced_off:
+            return Mode.OFF
+        if self.obs.mode is Mode.OFF and self.frost:
+            return Mode.HEAT
+        return self.obs.mode
+
+    def mode(
+        self, flowing: bool, exercise_flowing: bool, flow_ended: float | None
+    ) -> tuple[Mode, bool]:
+        """Stage 3: the mode the outputs run in, and whether it is being left.
+
+        ``flowing`` is whether a loop may flow outside an exercise, and
+        ``exercise_flowing`` whether one may in the exercise, which a change of
+        mode waits for without a dwell after it.
+        """
+        state = self.state
+        requested = self.requested()
+        if self.commissioning:
+            if (
+                flowing
+                or flow_ended is None
+                or self.held("mode", HoldKind.MODE_DWELL, flow_ended + self.plant.mode_dwell)
+            ):
+                self.reasons["mode"] = (
+                    "commissioning: stopping physical flow and waiting for the mode dwell"
+                )
+                return Mode.OFF, False
+            self.commissioning = False
+        mode = state.mode
+        if mode is not Mode.OFF and requested is not mode:
+            if flowing or exercise_flowing:
+                self.reasons["mode"] = f"stopping {mode.value} before {requested.value}"
+                return mode, True
+            mode = Mode.OFF
+        if mode is Mode.OFF and requested is not Mode.OFF:
+            fresh_start = (
+                state.last_mode is Mode.OFF and state.flow_ended is None and not state.flowing
+            )
+            if state.last_mode is requested:
+                mode = requested
+            elif exercise_flowing:
+                self.reasons["mode"] = f"stopping the exercise before {requested.value}"
+            elif fresh_start or (
+                not flowing
+                and (
+                    flow_ended is None
+                    or not self.held(
+                        "mode", HoldKind.MODE_DWELL, flow_ended + self.plant.mode_dwell
+                    )
+                )
+            ):
+                mode = requested
+            else:
+                self.reasons["mode"] = f"waiting for the mode dwell before {requested.value}"
+        return mode, False
+
+    def finished(self) -> bool:
+        """The off-mode sequence is over: armed outputs are off and nothing may still act."""
+        for entity, role in self.plant.outputs().items():
+            if entity not in self.obs.armed:
+                continue
+            if self.pending(entity) is not None:
+                return False
+            if role not in SETTING_ROLES and self.switch(entity) is not False:
+                return False
+        source = self.plant.source
+        return (
+            source is None or self.switch(source.request) is not False or not self.source_may_run()
+        )
+
+
+class _Plan:
+    """Stages 4 to 9: wanted loops, readiness, min flow, valves, pumps, and the source."""
+
+    def __init__(
+        self,
+        ev: _Evaluation,
+        mode: Mode,
+        label: Mode,
+        active: bool,
+        winding_down: bool,
+        demands: Mapping[str, Demand],
+        guard_blocked: Mapping[Loop, bool],
+    ) -> None:
+        self.ev, self.mode, self.label, self.active = ev, mode, label, active
+        # The mode is being left for another the select asked for, and a request
+        # already on may be held for its minimum on time.
+        self.winding_down = winding_down
+        self.demands = demands
+        self.guard_blocked = guard_blocked
+        self.plant = ev.plant
+        self.request = False
+        self.overruns: dict[str, float] = {}
+
+    def outputs(self) -> dict[str, OutputTarget]:
+        ev, plant = self.ev, self.plant
+        source = plant.source
+        self.surely_requested = source is not None and ev.surely_on(source.request)
+        self.wanted = {loop for loop in plant.all_loops if self.is_wanted(loop)}
+        self.heat_sink: set[Loop] = set()
+        self.exercised: set[Loop] = set()
+        self.calling = any(self.calls_source(loop) for loop in self.wanted)
+        self.demand_ended = (
+            None
+            if self.calling
+            else ev.now
+            if ev.state.source_demanding
+            else ev.state.source_demand_ended
+        )
+        self.heat_sink = self.heat_sink_loops()
+        self.wanted |= self.heat_sink
+        self.exercise()
+        self.blocked = {
+            pump.slug: self.pump_blocked(pump, exercise=pump.slug == self.exercising)
+            for pump in plant.pumps
+        }
+        self.source_wanted = (
+            self.active
+            and source is not None
+            and ev.usable(source.request)
+            and any(self.calls_source(loop) and not self.blocked[loop.pump] for loop in self.wanted)
+        )
+        self.paths = {pump.slug: self.path(pump) for pump in plant.pumps}
+        self.pumps_on = {
+            pump.slug: self.pump_on(pump) for pump in plant.pumps if pump.switch is not None
+        }
+        self.supply_target = self.supply()
+        # The heating supply target Hydronicus proposes, which it then knows as its own.
+        self.heating_target = (
+            self.supply_target.value
+            if self.supply_target is not None and self.mode is Mode.HEAT
+            else None
+        )
+        self.request = self.source_request()
+        held = self.hold_for_source()
+
+        outputs: dict[str, OutputTarget] = {}
+        if source is not None and not ev.handover:
+            outputs[source.request] = SwitchTarget(self.request)
+            if source.supply is not None and self.supply_target is not None:
+                outputs[source.supply.entity] = self.supply_target
+            option = None if source.mode is None else source.mode.option(self.mode)
+            if option is not None and source.mode is not None:
+                outputs[source.mode.entity] = OptionTarget(option)
+            for switch in source.mode_switches:
+                if (on := switch.on(self.mode)) is not None:
+                    outputs[switch.entity] = SwitchTarget(on)
+            if source.weather_curve is not None and self.mode is not Mode.OFF:
+                outputs[source.weather_curve.switch] = SwitchTarget(
+                    self.mode is Mode.HEAT
+                    and ev.heating is not None
+                    and ev.heating.strategy is HeatingSupply.SOURCE_CURVE
+                )
+        for pump in plant.pumps:
+            if pump.switch is not None:
+                outputs[pump.switch] = SwitchTarget(self.pumps_on[pump.slug])
+        open_loops = {loop for loops in self.paths.values() for loop in loops} | held
+        for loop in plant.all_loops:
+            for valve in loop.valves:
+                outputs[valve.entity] = SwitchTarget(loop in open_loops)
+            if loop in open_loops:
+                ev.reasons.setdefault(str(loop.ref), "held open as a path")
+        return outputs
+
+    # Stage 4: wanted loops
+
+    def is_wanted(self, loop: Loop) -> bool:
+        ev, key = self.ev, str(loop.ref)
+        if not self.active or self.mode not in loop.modes:
+            return False
+        match loop.runs.kind:
+            case RunKind.ZONE:
+                assert loop.zone is not None
+                wants = self.zone_demands(loop.zone)
+            case RunKind.WITH_ZONES:
+                wants = any(self.zone_demands(zone) for zone in loop.runs.zones)
+            case _:
+                wants = self.surely_requested
+        if not wants:
+            return False
+        missing = [entity for entity in self.needs(loop) if not ev.usable(entity)]
+        if missing:
+            ev.reasons[key] = f"dropped: {', '.join(missing)} unarmed or unavailable"
+            return False
+        if self.guard_blocked[loop]:
+            ev.reasons[key] = "dropped: condensation guard blocks"
+            return False
+        ev.reasons[key] = "wanted"
+        return True
+
+    def calls_source(self, loop: Loop) -> bool:
+        """A wanted loop asks for heat, unless it runs with the source, sinks, or is exercised."""
+        return (
+            loop.runs.kind is not RunKind.WITH_SOURCE
+            and loop not in self.heat_sink
+            and loop not in self.exercised
+        )
+
+    def sink_until(self) -> float | None:
+        """Until when a heating request without demand is held, or None without a start.
+
+        That is its minimum on time, or ``Source.hold_after_demand`` after the
+        last call ended when that ends later.
+        """
+        ev, source = self.ev, self.plant.source
+        if source is None or ev.source_observed is not True or ev.source_observed_changed is None:
+            return None
+        until = ev.source_observed_changed + source.min_on
+        if source.hold_after_demand is not None and self.demand_ended is not None:
+            until = max(until, self.demand_ended + source.hold_after_demand)
+        return until
+
+    def heat_sink_loops(self) -> set[Loop]:
+        """The source's heat sink loops, while its request is held without demand.
+
+        Once every calling loop is satisfied within the source's minimum on
+        time, or within its hold after demand, the request is held until that
+        time ends, and the loops that happened to be open would be its only
+        sink. The heat sink loops open then, and the others close once a heat
+        sink loop is ready, so the source runs into the loops chosen to absorb
+        it. A heat sink loop never asks for heat itself, so the request is
+        released when that time ends.
+        """
+        ev, source = self.ev, self.plant.source
+        if source is not None and ev.handover:
+            return self.handover_sink(source)
+        if (
+            source is None
+            or not source.heat_sink_loops
+            or not self.active
+            or self.mode is not Mode.HEAT
+            or not ev.state.source_request
+            or (until := self.sink_until()) is None
+            or ev.source_fault() is not None
+            or ev.inhibited is not None
+            or ev.no_load_state[2] is not None
+            or any(loop.runs.kind is not RunKind.WITH_SOURCE for loop in self.wanted)
+            or ev.reached(until)
+        ):
+            return set()
+        assert ev.source_observed_changed is not None
+        bounded = ev.reached(ev.source_observed_changed + source.min_on)
+        sink: set[Loop] = set()
+        for ref in source.heat_sink_loops:
+            loop = self.plant.loop(ref)
+            key = str(loop.ref)
+            missing = [entity for entity in self.needs(loop) if not ev.usable(entity)]
+            if missing:
+                ev.reasons[key] = f"heat sink dropped: {', '.join(missing)} unarmed or unavailable"
+            elif bounded and (full := self.sink_full(loop, source.heat_sink_overshoot)):
+                ev.reasons[key] = f"heat sink full: {full}"
+            elif not self.guard_blocked[loop]:
+                ev.reasons[key] = "heat sink while the source is held"
+                sink.add(loop)
+        return sink
+
+    def handover_sink(self, source: Source) -> set[Loop]:
+        """The heat sink loops while something else controls the source and it may heat.
+
+        Hydronicus can then neither stop the source nor wait for it, so every
+        heat sink loop it may open takes the heat, however warm its zone, until
+        a calling loop does or the source is seen off.
+        """
+        ev = self.ev
+        if not self.active or self.mode is not Mode.HEAT or not ev.source_may_run() or self.calling:
+            return set()
+        sink: set[Loop] = set()
+        for ref in source.heat_sink_loops:
+            loop = self.plant.loop(ref)
+            key = str(loop.ref)
+            missing = [entity for entity in self.needs(loop) if not ev.usable(entity)]
+            if missing:
+                ev.reasons[key] = f"heat sink dropped: {', '.join(missing)} unarmed or unavailable"
+            else:
+                ev.reasons[key] = "heat sink while the source runs by itself"
+                sink.add(loop)
+        return sink
+
+    def sink_full(self, loop: Loop, overshoot: float) -> str | None:
+        """Why a heat sink loop takes no more heat, or None while its zones have room.
+
+        A zone has room while it reads less than ``overshoot`` over its heating
+        target; one without a usable reading or a target of its own has none.
+        """
+        ev = self.ev
+        for zone in self.plant.dew_point_zones(loop):
+            temperature = ev.temperatures.get(zone.slug)
+            comfort = ev.comfort.get(zone.slug)
+            if temperature is None:
+                return f"{zone.slug} has no usable temperature"
+            if comfort is None:
+                return f"{zone.slug} has no heating target of its own"
+            if temperature >= comfort.target + overshoot:
+                return f"{zone.slug} reads {temperature:.1f} °C"
+        return None
+
+    def zone_demands(self, slug: str) -> bool:
+        demand = self.demands.get(slug)
+        return demand is not None and demand.on and demand.mode is self.mode
+
+    def needs(self, loop: Loop) -> Iterable[str]:
+        yield from (valve.entity for valve in loop.valves)
+        pump = self.ev._pumps[loop.pump]
+        if pump.switch is not None:
+            yield pump.switch
+        elif self.plant.source is not None:
+            yield self.plant.source.request
+
+    def pump_blocked(self, pump: Pump, *, exercise: bool = False) -> bool:
+        """A pump must not run when a loop on it would flow where it must not.
+
+        That is a loop that does not run in the mode, or whose condensation guard
+        blocks, and that is valveless or whose valves may pass. A pump already
+        running may go on while a blocked loop closes, since stopping it would
+        not end that flow sooner. The pump of an exercise answers to the
+        exercise's mode and guard.
+        """
+        ev = self.ev
+        mode = self.exercise_label if exercise else self.label
+        if mode is Mode.OFF:
+            return True
+        source = self.plant.source
+        stop = pump.switch or (source.request if source is not None else None)
+        running = stop is not None and ev.surely_on(stop)
+        for loop in ev.loops_of(pump):
+            if mode not in loop.modes:
+                if not loop.valves or ev.may_pass(loop):
+                    return True
+            elif (
+                ev.guard_blocks(loop, mode, exercise=True) if exercise else self.guard_blocked[loop]
+            ) and (not loop.valves or (not running and ev.may_pass(loop))):
+                return True
+        return False
+
+    # Stages 5 to 7: readiness, min flow, and the valves each pump needs open
+
+    def path(self, pump: Pump) -> set[Loop]:
+        """The loops to keep open for a pump: wanted, held as its last path, or min flow."""
+        ev = self.ev
+        loops = ev.loops_of(pump)
+        wanted = [loop for loop in loops if loop in self.wanted]
+        path = set(wanted)
+        # A valveless loop is always open, and a ready wanted loop is path enough.
+        if any(not loop.valves for loop in loops) or any(ev.ready(loop) for loop in wanted):
+            return path
+        held: list[Loop] = []
+        may_run = ev.pump_may_run(pump)
+        if pump.min_flow is MinFlow.PATH and may_run:
+            ready = [loop for loop in loops if loop.valves and ev.ready(loop)]
+            held = ready or [loop for loop in loops if loop.valves and ev.may_pass(loop)]
+            path.update(held)
+        if (
+            pump.driven_by_source
+            and pump.min_flow is MinFlow.PATH
+            and (may_run or self.source_wanted)
+            and not wanted
+            and not any(ev.ready(loop) for loop in held)
+        ):
+            for ref in pump.min_flow_loops:
+                loop = self.plant.loop(ref)
+                if (
+                    self.label in loop.modes
+                    and (may_run or not self.guard_blocked[loop])
+                    and all(ev.usable(valve.entity) for valve in loop.valves)
+                ):
+                    path.add(loop)
+                    ev.reasons[str(loop.ref)] = "min-flow path"
+        return path
+
+    def carries(self, pump: Pump, loop: Loop) -> bool:
+        """The loop is an open path for its pump that stays open."""
+        return self.ev.ready(loop) and (not loop.valves or loop in self.paths[pump.slug])
+
+    def path_ready(self, pump: Pump) -> bool:
+        """The pump has an open path of the mode whose guard permits."""
+        return any(
+            self.carries(pump, loop) and self.label in loop.modes and not self.guard_blocked[loop]
+            for loop in self.ev.loops_of(pump)
+        )
+
+    # Stage 8: switched pumps
+
+    def pump_on(self, pump: Pump) -> bool:
+        ev, now = self.ev, self.ev.now
+        assert pump.switch is not None
+        if self.blocked[pump.slug] or self.exercise_stops(pump):
+            return False
+        missing = [entity for entity in ev.pump_feedback(pump) if ev.feedback(entity) is None]
+        if missing:
+            ev.reasons[pump.switch] = f"waiting for usable pump feedback: {', '.join(missing)}"
+            return False
+        wanted = [loop for loop in self.paths[pump.slug] if loop in self.wanted]
+        if any(ev.ready(loop) for loop in wanted):
+            return True
+        if wanted:
+            ends = [end for loop in wanted if (end := ev.ready_at(loop)) is not None]
+            ev.reasons[pump.switch] = "waiting for its valves to open"
+            ev.hold(pump.switch, HoldKind.WAITING_FOR_VALVES, min(ends, default=None))
+        source = self.plant.source
+        if (
+            source is not None
+            and ev.state.source_request
+            and ev.source_observed is True
+            and (self.active or self.winding_down)
+            and ev.surely_on(pump.switch)
+            and ev.source_observed_changed is not None
+            and not ev.reached(ev.source_observed_changed + source.min_on)
+            and self.path_ready(pump)
+            and not any(
+                other.driven_by_source and not self.blocked[other.slug] and self.path_ready(other)
+                for other in self.plant.pumps
+            )
+        ):
+            ev.reasons[pump.switch] = "held for the source minimum on time"
+            ev.holds.pop((pump.switch, HoldKind.WAITING_FOR_VALVES), None)
+            ev.hold(pump.switch, HoldKind.SOURCE_MIN_ON, ev.source_observed_changed + source.min_on)
+            return True
+        started = ev.state.overruns.get(pump.slug)
+        if self.label is not Mode.HEAT or pump.overrun <= 0 or ev.switch(pump.switch) is False:
+            return False
+        if started is None:
+            if ev.switch(pump.switch) is not True:
+                return False
+            started = now
+        self.overruns[pump.slug] = started
+        if ev.reached(started + pump.overrun):
+            return False
+        ev.reasons[pump.switch] = "overrun"
+        runs = pump.min_flow is MinFlow.GUARANTEED or any(
+            self.carries(pump, loop) for loop in ev.loops_of(pump)
+        )
+        if runs:
+            ev.holds.pop((pump.switch, HoldKind.WAITING_FOR_VALVES), None)
+            ev.hold(pump.switch, HoldKind.OVERRUN, started + pump.overrun)
+        return runs
+
+    # Stage 9: the source
+
+    def qualifies(self, loop: Loop) -> bool:
+        """A loop the source may run for: ready in the mode with its pump running."""
+        pump = self.ev._pumps[loop.pump]
+        if (
+            self.mode not in loop.modes
+            or self.guard_blocked[loop]
+            or self.blocked[pump.slug]
+            or not self.ev.ready(loop)
+        ):
+            return False
+        if pump.switch is None:
+            return self.carries(pump, loop)
+        return (
+            self.pumps_on[pump.slug]
+            and self.ev.surely_on(pump.switch)
+            and self.ev.pump_confirmed(pump)
+        )
+
+    def supply(self) -> NumericTarget | None:
+        """A bounded supply proposal; the source waits for its observed confirmation."""
+        ev, source = self.ev, self.plant.source
+        if source is None or source.supply is None or self.mode is Mode.OFF:
+            return None
+        config = source.supply
+        heating = ev.heating
+        assert heating is not None
+        if self.mode is Mode.HEAT and heating.strategy is HeatingSupply.SOURCE_CURVE:
+            ev.reasons["source_supply"] = "kept by the source's own weather curve"
+            return None
+        if (
+            source.mode is not None
+            and not satisfies(
+                ev.obs.outputs.get(source.mode.entity),
+                OptionTarget(source.mode.option(self.mode) or ""),
+            )
+        ) or not self.mode_switches_set():
+            # Its range and whether the source takes it may follow the mode, so
+            # the setpoint waits for the select and the mode switches.
+            ev.reasons["source_supply"] = "waiting for the source mode"
+            return None
+        if not self.weather_curve_off():
+            # A source on its own curve ignores the setpoint.
+            ev.reasons["source_supply"] = "waiting for the weather curve to turn off"
+            return None
+        if self.mode is Mode.HEAT and heating.strategy is HeatingSupply.FIXED:
+            if heating.fixed is None:
+                ev.reasons["source_supply"] = "supply temperature unavailable"
+                return None
+            ev.reasons["source_supply"] = f"fixed supply target {heating.fixed:.1f} °C"
+            return NumericTarget(heating.fixed, config.tolerance)
+        proposal = supply_target(
+            config,
+            self.mode,
+            ev.obs.sensors,
+            ev.now,
+            outdoor=ev.outdoor,
+            offset=ev.curve_offset(),
+            room_shift=ev.room_shift(),
+            frost_outdoor=FROST_CURVE_OUTDOOR if ev.frost else None,
+        )
+        if self.mode is Mode.HEAT and config.outdoor_sensor is not None:
+            reading = ev.obs.sensors.get(config.outdoor_sensor)
+            if reading is not None:
+                ev.reached(reading.updated + config.max_age)
+        value = proposal.target
+        if value is None:
+            ev.reasons["source_supply"] = proposal.reason or "supply temperature unavailable"
+            return None
+        if self.mode is Mode.COOL:
+            exposed = [
+                loop
+                for loop in self.plant.all_loops
+                if loop.cools
+                and (
+                    loop in self.paths[loop.pump]
+                    or ev.may_pass(loop)
+                    or loop.runs.kind is RunKind.WITH_SOURCE
+                )
+                and (
+                    self.pumps_on.get(loop.pump, False)
+                    or ev.pump_may_run(ev._pumps[loop.pump])
+                    or (
+                        self.source_wanted
+                        and (
+                            ev._pumps[loop.pump].driven_by_source
+                            or loop.runs.kind is RunKind.WITH_SOURCE
+                        )
+                    )
+                )
+            ]
+            zones = {
+                zone.slug: zone for loop in exposed for zone in self.plant.dew_point_zones(loop)
+            }
+            points = [
+                worst_dew_point(zone, ev.obs.areas, ev.obs.sensors, ev.reached)
+                for zone in zones.values()
+            ]
+            if any(point is None for point in points):
+                ev.reasons["source_supply"] = "no usable dew point for the supply target"
+                return None
+            # A confirmed value may be tolerance below the target; keep that
+            # whole band above the condensation threshold and release margin.
+            floor = max((point for point in points if point is not None), default=-273.15)
+            value = max(value, floor + CONDENSATION_MARGIN + GUARD_RELEASE + config.tolerance)
+        if config.step is not None:
+            steps = value / config.step
+            value = config.step * (ceil(steps - 1e-9) if self.mode is Mode.COOL else round(steps))
+            if self.mode is Mode.HEAT:
+                value = min(config.maximum, max(config.minimum, value))
+        if self.mode is Mode.COOL and value > config.maximum:
+            ev.reasons["source_supply"] = "safe cooling supply temperature exceeds its maximum"
+            return None
+        ev.reasons["source_supply"] = f"supply target {value:.1f} °C"
+        return NumericTarget(value, config.tolerance)
+
+    def weather_curve_off(self) -> bool:
+        """The source's weather curve switch shows off with no call on its way, or it has none."""
+        ev, source = self.ev, self.plant.source
+        if source is None or source.weather_curve is None:
+            return True
+        entity = source.weather_curve.switch
+        return satisfies(ev.obs.outputs.get(entity), OFF) and ev.pending(entity) is None
+
+    def supply_owned(self) -> bool:
+        """Whether the request waits for Hydronicus's supply setpoint in this mode.
+
+        In heating it does only once the weather curve shows off: a source runs
+        on its own curve meanwhile, so a curve switch on its way or refused never
+        holds the heating request back.
+        """
+        ev, source = self.ev, self.plant.source
+        if source is None or source.supply is None:
+            return False
+        if self.mode is Mode.COOL:
+            return True
+        return (
+            self.mode is Mode.HEAT
+            and ev.heating is not None
+            and ev.heating.strategy is not HeatingSupply.SOURCE_CURVE
+            and self.weather_curve_off()
+        )
+
+    def mode_switches_set(self) -> bool:
+        """Every switch that follows the mode shows the mode's state, with no call on its way."""
+        ev, source = self.ev, self.plant.source
+        if source is None:
+            return True
+        for switch in source.mode_switches:
+            on = switch.on(self.mode)
+            if on is not None and (
+                not satisfies(ev.obs.outputs.get(switch.entity), SwitchTarget(on))
+                or ev.pending(switch.entity) is not None
+            ):
+                return False
+        return True
+
+    def source_request(self) -> bool:
+        ev, source = self.ev, self.plant.source
+        if source is None:
+            return False
+        reasons = ev.reasons
+        if ev.handover:
+            reasons["source"] = "handed over: the source's own controller runs it"
+            return False
+        if not (self.active or self.winding_down) or not ev.usable(source.request):
+            reasons["source"] = "off"
+            return False
+        if (fault := ev.source_fault()) is not None:
+            reasons["source"] = fault
+            return False
+        if ev.inhibited is not None:
+            reasons["source"] = ev.inhibited
+            return False
+        if self.mode is Mode.HEAT and ev.warm and not ev.frost and not ev.state.source_request:
+            # A source already running is released below, after its minimum on time.
+            reasons["source"] = ev.warm_reason()
+            return False
+        if (until := ev.no_load_state[2]) is not None:
+            ev.hold("source", HoldKind.NO_LOAD, until)
+            reasons["source"] = f"held off: {ev.no_load_reason()}"
+            return False
+        driven = [pump for pump in self.plant.pumps if pump.driven_by_source]
+        proofs = [entity for pump in driven for entity in ev.pump_feedback(pump)]
+        if source.running_sensor is not None:
+            proofs.append(source.running_sensor)
+        missing = [entity for entity in proofs if ev.feedback(entity) is None]
+        if missing:
+            reasons["source"] = f"waiting for usable source or pump feedback: {', '.join(missing)}"
+            return False
+        if (
+            ev.surely_on(source.request)
+            and any(ev.feedback(entity) is not True for entity in proofs)
+            and not ev.held(
+                "source", HoldKind.FEEDBACK, ev.since(source.request) + source.feedback_timeout
+            )
+        ):
+            reasons["source"] = "source or pump did not confirm running or flow"
+            return False
+        if source.supply is not None and self.supply_owned():
+            entity = source.supply.entity
+            if self.supply_target is None:
+                reasons["source"] = reasons.get("source_supply", "no supply temperature proposal")
+                return False
+            observed = ev.obs.outputs.get(entity)
+            safe_observed = (
+                isinstance(observed, NumericState)
+                and observed.value is not None
+                and isfinite(observed.value)
+                and source.supply.minimum <= observed.value <= source.supply.maximum
+            )
+            confirmed = (
+                safe_observed and satisfies(observed, self.supply_target) and not ev.pending(entity)
+            )
+            # Routine weather-curve adjustments must not stop a running source.
+            # Heating may continue within its configured band; cooling must keep
+            # the entire currently required lower safety bound.
+            adjusting = (
+                ev.state.source_request
+                and self.surely_requested
+                and isinstance(observed, NumericState)
+                and observed.value is not None
+                and isfinite(observed.value)
+                and source.supply.minimum <= observed.value <= source.supply.maximum
+                and (
+                    self.mode is Mode.HEAT
+                    or observed.value >= self.supply_target.value - self.supply_target.tolerance
+                )
+            )
+            if not ev.usable(entity) or not (confirmed or adjusting):
+                reasons["source"] = "waiting for the source supply temperature"
+                return False
+        if source.mode is not None:
+            target = OptionTarget(source.mode.option(self.mode) or "")
+            select = source.mode.entity
+            if not satisfies(ev.obs.outputs.get(select), target) or ev.pending(select):
+                reasons["source"] = "waiting for the source mode"
+                return False
+        if not self.mode_switches_set():
+            reasons["source"] = "waiting for the source's mode switches"
+            return False
+        if self.mode is Mode.COOL and not self.weather_curve_off():
+            # The source's own cooling curve knows no dew point.
+            reasons["source"] = "waiting for the weather curve to turn off"
+            return False
+        if any(self.blocked[pump.slug] for pump in driven):
+            wrong_mode = any(
+                self.label not in loop.modes and (not loop.valves or ev.may_pass(loop))
+                for pump in driven
+                for loop in ev.loops_of(pump)
+            )
+            reasons["source"] = (
+                "a source-driven pump would run a loop in the wrong mode"
+                if wrong_mode
+                else "a condensation guard blocks a loop the source drives"
+            )
+            return False
+        if any(
+            self.guard_blocked[loop] and (not loop.valves or loop in self.paths[pump.slug])
+            for pump in driven
+            for loop in ev.loops_of(pump)
+        ):
+            reasons["source"] = "a condensation guard blocks a loop the source drives"
+            return False
+        if any(pump.min_flow is MinFlow.PATH and not self.path_ready(pump) for pump in driven):
+            reasons["source"] = "waiting for a path for every source-driven pump"
+            return False
+        qualifying = [loop for loop in self.plant.all_loops if self.qualifies(loop)]
+        demanded = any(loop in self.wanted and self.calls_source(loop) for loop in qualifying)
+        # Above the heating limit the zones still circulate, but the source does
+        # not heat for them; frost protection heats whatever the weather.
+        warm = self.mode is Mode.HEAT and ev.warm and not ev.frost
+        if warm:
+            demanded = False
+        state = ev.state
+        if state.source_request:
+            changed = ev.source_observed_changed if ev.source_observed is True else ev.now
+            if changed is None:
+                changed = ev.now
+            if qualifying and demanded:
+                reasons["source"] = "requested"
+                return True
+            if qualifying and ev.held("source", HoldKind.MIN_ON, changed + source.min_on):
+                reasons["source"] = "held for its minimum on time"
+                return True
+            if qualifying and source.hold_after_demand is not None and self.calling and not warm:
+                # A new call keeps a held request while its loops open.
+                reasons["source"] = "requested while the calling loops open"
+                return True
+            if (
+                qualifying
+                and not warm
+                and self.heat_sink
+                and source.hold_after_demand is not None
+                and self.demand_ended is not None
+                and ev.held(
+                    "source",
+                    HoldKind.HOLD_AFTER_DEMAND,
+                    self.demand_ended + source.hold_after_demand,
+                )
+            ):
+                reasons["source"] = "held after demand, into its heat sink"
+                return True
+            reasons["source"] = ev.warm_reason() if warm else "released"
+            return False
+        if (
+            not demanded
+            and qualifying
+            and ev.source_unknown
+            and ev.source_observed is True
+            and ev.source_observed_changed is not None
+            and ev.held("source", HoldKind.MIN_ON, ev.source_observed_changed + source.min_on)
+        ):
+            reasons["source"] = "found running, held for its minimum on time"
+            return True
+        if not demanded:
+            reasons["source"] = ev.warm_reason() if warm else "no ready loop calls"
+            return False
+        if source.start_threshold is not None:
+            weight = sum(loop.weight for loop in self.wanted if self.calls_source(loop))
+            if weight < source.start_threshold:
+                reasons["source"] = (
+                    f"demand {weight:g} below the start threshold {source.start_threshold:g}"
+                )
+                return False
+        if ev.source_observed is not False and state.source_observed is not None:
+            reasons["source"] = "waiting for the source request to stop"
+            return False
+        if (
+            ev.source_observed is False
+            and ev.source_observed_changed is not None
+            and ev.held("source", HoldKind.MIN_OFF, ev.source_observed_changed + source.min_off)
+        ):
+            reasons["source"] = "held off for its minimum off time"
+            return False
+        limit = source.max_starts_per_hour
+        starts = ev.source_starts
+        if (
+            limit is not None
+            and len(starts) >= limit
+            and ev.held("source", HoldKind.MAX_STARTS, starts[len(starts) - limit] + START_WINDOW)
+        ):
+            reasons["source"] = f"held off: {len(starts)} starts within the last hour"
+            return False
+        reasons["source"] = "requested"
+        return True
+
+    def hold_for_source(self) -> set[Loop]:
+        """Keep a running pump and its path while a released request may still be on."""
+        ev, source = self.ev, self.plant.source
+        if source is None or self.request:
+            return set()
+        actual_running = (
+            source.running_sensor is not None and ev.feedback(source.running_sensor) is not False
+        )
+        if not ev.may_be_on(source.request) and not actual_running:
+            return set()
+        label = self.label
+        if any(
+            pump.driven_by_source and not self.blocked[pump.slug] and self.path_ready(pump)
+            for pump in self.plant.pumps
+        ):
+            return set()
+        held: set[Loop] = set()
+        for pump in self.plant.pumps:
+            if pump.switch is None or self.blocked[pump.slug] or not ev.surely_on(pump.switch):
+                continue
+            loops = [
+                loop
+                for loop in ev.loops_of(pump)
+                if ev.ready(loop) and label in loop.modes and not self.guard_blocked[loop]
+            ]
+            if loops:
+                self.pumps_on[pump.slug] = True
+                ev.reasons[pump.switch] = (
+                    "held until the source request and running feedback are off"
+                    if source.running_sensor is not None
+                    else "held until the source request is off"
+                )
+                held.update(loops)
+        return held
+
+    # The exercise: an idle pump or valve runs now and then, so it does not seize
+
+    def exercise(self) -> None:
+        """Go on with the exercise in progress, finish it, or start the next one that is due.
+
+        One pump is exercised at a time, once its switch or a valve of its loops
+        has not been seen on for the exercise interval. Its loops that may carry
+        the exercise's mode open, and once one of them is ready its switched
+        pump runs for the exercise's run time. The exercise is over once the
+        pump has run and every loop is ready, or it gives up once twice its
+        valves' longest opening time, the run time, and ``EXERCISE_GRACE`` have
+        passed since it began, so that a valve that never opens does not hold it. The
+        pump then stops without overrun, and the valves close once it is seen
+        off, as at the end of demand. A source-driven pump is never commanded,
+        so its loops only open until they are ready. An exercise never asks the
+        source for heat, and it yields at once to any wanted loop.
+
+        The exercise runs in the mode that labels any flow, and in heat when no
+        mode ever ran. It sets no mode and starts no mode dwell, since it
+        carries only water that no source heats or cools.
+        """
+        ev, state = self.ev, self.ev.state
+        self.exercised = set()
+        self.exercise_runs = False
+        self.next_exercise: ExerciseState | None = None
+        self.exercise_label = Mode.HEAT if self.label is Mode.OFF else self.label
+        # An exercise proposed in Dry run never moved the equipment, so turning
+        # Control equipment on forgets when it ended.
+        going_live = ev.obs.control and not state.live
+        self.exercise_ended = {
+            slug: ended
+            for slug, ended in ({} if going_live else state.exercise_ended).items()
+            if slug in ev._pumps
+        }
+        settings = self.plant.exercise
+        idle = self.exercise_idle()
+        previous = state.exercise
+        pump = None if previous is None else ev._pumps.get(previous.pump)
+        if pump is not None and previous is not None:
+            if (
+                idle
+                and settings is not None
+                and not previous.done
+                and self.continue_exercise(pump, previous, settings)
+            ):
+                return
+            if self.finish_exercise(pump, previous):
+                return
+        if idle and settings is not None:
+            self.start_exercise(settings)
+
+    def continue_exercise(self, pump: Pump, previous: ExerciseState, settings: Exercise) -> bool:
+        """Go on with an exercise, or end it once it is over or gives up."""
+        ev = self.ev
+        loops, runs = self.exercise_loops(pump)
+        if not loops:
+            return False
+        started = previous.started
+        if runs and started is None and pump.switch is not None and ev.surely_on(pump.switch):
+            started = ev.now
+        ran = not runs or (
+            started is not None
+            and not ev.held(pump.switch or pump.slug, HoldKind.EXERCISE, started + settings.run)
+        )
+        # A valve entity may show that it opens for its opening time, which then
+        # counts from when it shows open.
+        opening = max((valve.opening_time for loop in loops for valve in loop.valves), default=0.0)
+        if (ran and all(ev.ready(loop) for loop in loops)) or ev.reached(
+            previous.began + 2 * opening + settings.run + EXERCISE_GRACE
+        ):
+            self.exercise_ended[pump.slug] = ev.now
+            return False
+        self.begin_exercise(pump, loops, runs, replace(previous, started=started))
+        return True
+
+    def finish_exercise(self, pump: Pump, previous: ExerciseState) -> bool:
+        """Stop the pump of an exercise that ended without overrun, while it may still run.
+
+        A pump that a wanted loop needs runs on for it, and a switch that is not
+        observed shows nothing to wait for.
+        """
+        ev = self.ev
+        if pump.switch is None or any(loop in self.wanted for loop in ev.loops_of(pump)):
+            return False
+        if ev.switch(pump.switch) is not True and ev.pending(pump.switch) != ON:
+            return False
+        self.next_exercise = replace(previous, done=True)
+        ev.reasons[pump.switch] = "exercise over"
+        return True
+
+    def start_exercise(self, settings: Exercise) -> None:
+        """Start the exercise of the first pump that is due.
+
+        A switched pump whose switch is not observed may be running, so it is not
+        exercised, and a pump whose last exercise ended within the interval, having
+        given up or only been proposed in Dry run, waits for the others.
+        """
+        ev = self.ev
+        for pump in self.plant.pumps:
+            if pump.switch is not None and ev.switch(pump.switch) is None:
+                continue
+            ended = self.exercise_ended.get(pump.slug)
+            if ended is not None and not ev.reached(ended + settings.interval):
+                continue
+            loops, runs = self.exercise_loops(pump)
+            if loops and (
+                (runs and pump.switch is not None and self.due(pump.switch, settings))
+                or any(self.due(valve.entity, settings) for loop in loops for valve in loop.valves)
+            ):
+                self.begin_exercise(pump, loops, runs, ExerciseState(pump.slug, ev.now))
+                return
+
+    def exercise_idle(self) -> bool:
+        """Nothing else runs: no loop is wanted, the source is at rest, and no other pump runs."""
+        ev = self.ev
+        if ev.forced_off or self.wanted or "mode" in ev.reasons:
+            return False
+        if ev.state.source_request or ev.source_may_run():
+            return False
+        exercised = ev.state.exercise.pump if ev.state.exercise is not None else None
+        return not any(
+            pump.switch is not None
+            and pump.slug != exercised
+            and (ev.switch(pump.switch) is True or ev.pending(pump.switch) == ON)
+            for pump in self.plant.pumps
+        )
+
+    def exercise_loops(self, pump: Pump) -> tuple[list[Loop], bool]:
+        """The loops of a pump to open in an exercise, and whether its switched pump runs.
+
+        A loop opens when it runs in the exercise's mode, its valves are armed
+        and available, and in cooling its checks against condensation release.
+        The pump runs only when it is armed and available and no other loop of
+        it may pass flow, and without it only loops with valves are exercised.
+        """
+        ev, label = self.ev, self.exercise_label
+
+        def carries(loop: Loop) -> bool:
+            return label in loop.modes and not ev.guard_blocks(loop, label, exercise=True)
+
+        loops = ev.loops_of(pump)
+        chosen = [
+            loop
+            for loop in loops
+            if carries(loop) and all(ev.usable(valve.entity) for valve in loop.valves)
+        ]
+        runs = (
+            pump.switch is not None
+            and ev.usable(pump.switch)
+            and not self.pump_blocked(pump, exercise=True)
+            and not any(
+                not carries(loop) and (not loop.valves or ev.may_pass(loop)) for loop in loops
+            )
+        )
+        if not runs:
+            chosen = [loop for loop in chosen if loop.valves]
+        return chosen, runs
+
+    def due(self, entity: str, settings: Exercise) -> bool:
+        """An output has not been seen on for the exercise interval."""
+        since = self.ev.idle_times.get(entity)
+        return since is not None and self.ev.reached(since + settings.interval)
+
+    def begin_exercise(
+        self, pump: Pump, loops: list[Loop], runs: bool, exercise: ExerciseState
+    ) -> None:
+        """Run an exercise now: its loops are wanted, and its pump runs only if ``runs``."""
+        ev = self.ev
+        self.exercised = set(loops)
+        self.exercise_runs = runs
+        self.wanted |= self.exercised
+        self.next_exercise = exercise
+        for loop in loops:
+            ev.reasons[str(loop.ref)] = "exercise"
+        if runs and pump.switch is not None:
+            ev.reasons[pump.switch] = "exercise"
+
+    @property
+    def exercising(self) -> str | None:
+        """The slug of the pump whose exercise runs now, not one that is stopping."""
+        exercise = self.next_exercise
+        return None if exercise is None or exercise.done else exercise.pump
+
+    def exercise_stops(self, pump: Pump) -> bool:
+        """The pump belongs to an exercise that must not run it, or that is over."""
+        exercise = self.next_exercise
+        return (
+            exercise is not None
+            and exercise.pump == pump.slug
+            and (exercise.done or not self.exercise_runs)
+        )

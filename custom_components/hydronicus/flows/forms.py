@@ -1,0 +1,943 @@
+"""The forms of the flows, and plant file problems shown on them.
+
+``check`` reads a document as a whole Plant with the plant file rules, and
+refuses an entity that Hydronicus provides or an output that another Plant binds.
+A problem is shown on the form field its path belongs to, and
+otherwise at the form's base with its path in words.
+
+Forms take the values to show from one mapping: the document's values when a
+form opens, and the submitted values when it opens again with an error, so a
+field the user cleared stays empty.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Final
+
+import voluptuous as vol
+from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfTime
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import section
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import selector
+
+from ..areas import (
+    area_names,
+    area_review_warnings,
+    covered_area_ids,
+    listed,
+    resolve_area_sensors,
+    zone_name_for_areas,
+)
+from ..bindings import output_bound_elsewhere, own_entity
+from ..const import DOMAIN
+from ..core.model import (
+    DEFAULT_EXERCISE,
+    DEFAULT_FROST_PROTECTION,
+    DEFAULT_MAX_HUMIDITY,
+    DEFAULT_RESPONSE_CHECK,
+    DEFAULT_SURFACE_MINIMUM,
+    MAX_EXERCISE_RUN,
+    MAX_FROST_PROTECTION,
+    MAX_SETBACK,
+    MIN_EXERCISE_INTERVAL,
+    MIN_EXERCISE_RUN,
+    MIN_MAX_HUMIDITY,
+    DigitalThermostat,
+    ExternalThermostat,
+    LearningMode,
+    OutputRole,
+    Plant,
+    Preset,
+    RunKind,
+    Schedule,
+    SupplyControl,
+    WeatherConfig,
+    WindowDetection,
+)
+from ..core.plant_file import PlantFileError, describe_path, parse_plant
+from .documents import NEW, Document, pumps, title, zones
+
+_SECONDS: Final = UnitOfTime.SECONDS
+_CELSIUS: Final = UnitOfTemperature.CELSIUS
+_VALVE_DOMAINS: Final = ["switch", "valve"]
+
+
+# Where each form shows a problem, by its path below the object the form edits.
+PLANT_FIELDS: Final = {
+    "name": "name",
+    "source.name": "source_name",
+    "source.request": "request",
+    "source.mode": "mode_select",
+    "source.running_sensor": "running_sensor",
+    "source.feedback_timeout": "timing",
+    "source.supply": "supply",
+    "source.max_starts_per_hour": "cycling",
+    "source.start_threshold": "cycling",
+    "source.heat_sink_loops": "cycling",
+    "source.hold_after_demand": "cycling",
+    "source.heat_sink_overshoot": "cycling",
+    "source.health_sensor": "cycling",
+    "source.handover_sensor": "cycling",
+    "weather": "weather",
+}
+MODE_FIELDS: Final = {"source.mode.heat": "heat", "source.mode.cool": "cool", "source.mode": "heat"}
+PUMP_FIELDS: Final = {
+    "name": "name",
+    "switch": "switch",
+    "driven_by": "switch",
+    "overrun": "overrun",
+    "min_flow": "min_flow",
+    "min_flow_loops": "min_flow_loops",
+    "supply_temperature": "supply_temperature",
+    "condensation_switch": "condensation_switch",
+    "running_sensor": "running_sensor",
+    "flow_sensor": "flow_sensor",
+}
+LOOP_FIELDS: Final = {
+    "name": "name",
+    "valves": "valves",
+    "pump": "pump",
+    "runs": "runs",
+    "runs.with_zones": "with_zones",
+    "modes": "modes",
+    "surface_temperature": "surface_temperature",
+    "surface_minimum": "surface_minimum",
+    "condensation_switch": "condensation_switch",
+    "weight": "weight",
+}
+# A zone's own problem, a missing temperature reading, shows on its sensors.
+ZONE_FIELDS: Final = {
+    "": "temperature",
+    "name": "name",
+    "areas": "areas",
+    "temperature": "temperature",
+    "humidity": "humidity",
+    "aggregation": "aggregation",
+    "thermostat": "thermostat",
+    "thermostat.digital.target": "comfort",
+    "thermostat.digital.cool_target": "comfort",
+    "thermostat.digital.presets": "presets",
+    "thermostat.digital.cool_presets": "cool_presets",
+    "thermostat.digital.schedule": "schedule",
+    "thermostat.digital.learning": "learning",
+    "thermostat.digital.weather_aware": "learning",
+    "windows": "windows",
+    "window_open_delay": "window_open_delay",
+    "window_close_delay": "window_close_delay",
+    "max_humidity": "max_humidity",
+}
+
+
+def loop_path(zone: str | None, slug: str) -> str:
+    return f"loops.{slug}" if zone is None else f"zones.{zone}.loops.{slug}"
+
+
+def shown(fields: Mapping[str, str], schema: vol.Schema) -> dict[str, str]:
+    """Keep the paths whose field the form shows."""
+    names = {str(key) for key in schema.schema}
+    return {path: name for path, name in fields.items() if name in names}
+
+
+def zone_name(hass: HomeAssistant, values: Mapping[str, Any]) -> str | None:
+    """Return the name a zone form gives, or the name of its one area or its floor."""
+    name = str(values.get("name") or "").strip()
+    return name or zone_name_for_areas(hass, list(values.get("areas") or []))
+
+
+@dataclass(frozen=True, slots=True)
+class Checked:
+    """A checked document: its Plant, or the errors and placeholders a form shows."""
+
+    plant: Plant | None
+    errors: dict[str, str] = field(default_factory=dict)
+    placeholders: dict[str, str] = field(default_factory=dict)
+
+
+def check(
+    hass: HomeAssistant,
+    document: Document,
+    *,
+    prefix: str = "",
+    fields: Mapping[str, str] | None = None,
+    entry_id: str | None = None,
+) -> Checked:
+    """Read ``document`` as a Plant, and map its first problem onto a form.
+
+    ``fields`` maps a path below ``prefix``, such as ``valves`` below a loop's
+    path, to the form field that shows a problem there.
+    """
+    try:
+        plant = parse_plant(document)
+    except PlantFileError as error:
+        return _problem(document, error.path, "invalid", {"problem": error.message}, prefix, fields)
+    if (own := own_entity(hass, plant)) is not None:
+        path, entity_id = own
+        return _problem(document, path, "own_entity", {"entity_id": entity_id}, prefix, fields)
+    if (shared := output_bound_elsewhere(hass, plant, entry_id)) is not None:
+        return _problem(
+            document,
+            shared.path,
+            "output_bound_elsewhere",
+            {"entity_id": shared.entity_id, "other_plant": shared.other_plant},
+            prefix,
+            fields,
+        )
+    return Checked(plant)
+
+
+def _problem(
+    document: Document,
+    path: str,
+    key: str,
+    placeholders: dict[str, str],
+    prefix: str,
+    fields: Mapping[str, str] | None,
+) -> Checked:
+    placeholders = {"where": describe_path(document, path), **placeholders}
+    target = problem_field(path, prefix, fields or {})
+    if key == "invalid":
+        key = "invalid_value" if target != "base" else "invalid_plant"
+    return Checked(None, {target: key}, placeholders)
+
+
+def problem_field(path: str, prefix: str, fields: Mapping[str, str]) -> str:
+    """Return the form field that shows a problem at ``path``, or ``base``."""
+    if prefix:
+        if path != prefix and not path.startswith(f"{prefix}."):
+            return "base"
+        path = path[len(prefix) + 1 :]
+    if not path:
+        # A problem of the object itself.
+        return fields.get("", "base")
+    keys = path.split(".")
+    # The longest known path wins, so source.mode.cool maps before source.mode.
+    for length in range(len(keys), 0, -1):
+        if (target := fields.get(".".join(keys[:length]))) is not None:
+            return target
+    return "base"
+
+
+# Selectors
+
+
+def _own_entities(hass: HomeAssistant) -> set[str]:
+    registry = er.async_get(hass)
+    return {entry.entity_id for entry in registry.entities.values() if entry.platform == DOMAIN}
+
+
+def entity(
+    hass: HomeAssistant,
+    domains: str | list[str],
+    *,
+    multiple: bool = False,
+    shown: Iterable[str] = (),
+) -> selector.EntitySelector:
+    """Pick entities of some domains, hiding Hydronicus's own unless already chosen."""
+    config = selector.EntitySelectorConfig(domain=domains, multiple=multiple)
+    if excluded := _own_entities(hass) - set(shown):
+        config["exclude_entities"] = sorted(excluded)
+    return selector.EntitySelector(config)
+
+
+def seconds(low: float = 0, high: float | None = None) -> selector.NumberSelector:
+    config = selector.NumberSelectorConfig(
+        min=low, step=1, unit_of_measurement=_SECONDS, mode=selector.NumberSelectorMode.BOX
+    )
+    if high is not None:
+        config["max"] = high
+    return selector.NumberSelector(config)
+
+
+def celsius() -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=5,
+            max=35,
+            step=0.5,
+            unit_of_measurement=_CELSIUS,
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
+def number(
+    *, low: float | None = None, high: float | None = None, unit: str | None = None
+) -> selector.NumberSelector:
+    config = selector.NumberSelectorConfig(step=0.1, mode=selector.NumberSelectorMode.BOX)
+    if low is not None:
+        config["min"] = low
+    if high is not None:
+        config["max"] = high
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return selector.NumberSelector(config)
+
+
+def supply_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    """Optional supply control, whose outdoor sensor enables the heating curve."""
+    defaults = SupplyControl("number.supply")
+    schema: dict[Any, Any] = {
+        optional("entity", values): entity(hass, "number", shown=_list([values.get("entity")])),
+        optional("outdoor_sensor", values): entity(
+            hass, "sensor", shown=_list([values.get("outdoor_sensor")])
+        ),
+    }
+    for key in (
+        "heat_temperature",
+        "cool_temperature",
+        "minimum",
+        "maximum",
+        "outdoor_cold",
+        "outdoor_warm",
+        "heat_cold",
+        "heat_warm",
+    ):
+        schema[_default(key, values, getattr(defaults, key))] = number(unit=_CELSIUS)
+    schema[_default("tolerance", values, defaults.tolerance)] = number(low=0.1, unit="K")
+    schema[_default("max_age", values, defaults.max_age)] = seconds(1)
+    return vol.Schema(schema)
+
+
+def schedule_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    defaults = Schedule("schedule.comfort")
+    schema: dict[Any, Any] = {
+        optional("entity", values): entity(hass, "schedule", shown=_list([values.get("entity")])),
+        _default("max_early_start", values, defaults.max_early_start): seconds(0, 21600),
+    }
+    for key in ("heat_setback", "cool_setback", "heating_rate", "cooling_rate"):
+        rate = key.endswith("rate")
+        schema[_default(key, values, getattr(defaults, key))] = number(
+            low=0.1 if rate else 0,
+            high=None if rate else MAX_SETBACK,
+            unit="K/h" if rate else "K",
+        )
+    return vol.Schema(schema)
+
+
+def weather_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    defaults = WeatherConfig("weather.home")
+    return vol.Schema(
+        {
+            optional("entity", values): entity(
+                hass, "weather", shown=_list([values.get("entity")])
+            ),
+            optional("outdoor_sensor", values): entity(
+                hass, "sensor", shown=_list([values.get("outdoor_sensor")])
+            ),
+            _default("max_age", values, defaults.max_age): seconds(1),
+        }
+    )
+
+
+def humidity_limit() -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=MIN_MAX_HUMIDITY,
+            max=100,
+            step=1,
+            unit_of_measurement=PERCENTAGE,
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
+def choice(
+    options: Sequence[str] | Mapping[str, str],
+    *,
+    key: str | None = None,
+    multiple: bool = False,
+    listed_: bool = False,
+    custom: bool = False,
+) -> selector.SelectSelector:
+    """Choose from options: translated by ``key``, or labelled by a mapping."""
+    config = selector.SelectSelectorConfig(
+        options=[
+            selector.SelectOptionDict(value=value, label=label) for value, label in options.items()
+        ]
+        if isinstance(options, Mapping)
+        else list(options),
+        multiple=multiple,
+        custom_value=custom,
+        mode=selector.SelectSelectorMode.LIST if listed_ else selector.SelectSelectorMode.DROPDOWN,
+    )
+    if key is not None:
+        config["translation_key"] = key
+    return selector.SelectSelector(config)
+
+
+def _text() -> selector.TextSelector:
+    return selector.TextSelector()
+
+
+def optional(name: str, values: Mapping[str, Any]) -> vol.Optional:
+    """An optional field that shows its value and can be cleared."""
+    value = values.get(name)
+    if value in (None, "", []):
+        return vol.Optional(name)
+    return vol.Optional(name, description={"suggested_value": value})
+
+
+def _default(name: str, values: Mapping[str, Any], fallback: Any) -> vol.Optional:
+    """An optional field that is never empty; it starts at its value or the fallback."""
+    value = values.get(name)
+    return vol.Optional(name, default=fallback if value in (None, "") else value)
+
+
+def _list(value: Any) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+# Forms
+
+
+def cycling_schema(
+    hass: HomeAssistant, values: Mapping[str, Any], loops: Mapping[str, str]
+) -> vol.Schema:
+    """The source's cycling protection; heat sink loops are offered once loops exist."""
+    schema: dict[Any, Any] = {
+        optional("health_sensor", values): entity(
+            hass, "binary_sensor", shown=_list([values.get("health_sensor")])
+        ),
+        optional("handover_sensor", values): entity(
+            hass, "binary_sensor", shown=_list([values.get("handover_sensor")])
+        ),
+        optional("max_starts_per_hour", values): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX
+            )
+        ),
+        optional("start_threshold", values): number(low=0.1),
+    }
+    if loops:
+        schema[optional("heat_sink_loops", values)] = choice(loops, multiple=True, listed_=True)
+        schema[optional("hold_after_demand", values)] = seconds()
+        schema[optional("heat_sink_overshoot", values)] = number(low=0, unit="K")
+    return vol.Schema(schema)
+
+
+def plant_schema(
+    hass: HomeAssistant, values: Mapping[str, Any], loops: Mapping[str, str] | None = None
+) -> vol.Schema:
+    """The Plant form; ``loops`` are the heat sink loops its cycling section offers."""
+    timing = values.get("timing") or {}
+    protection = values.get("protection") or {}
+    return vol.Schema(
+        {
+            optional("name", values): _text(),
+            optional("source_name", values): _text(),
+            optional("request", values): entity(
+                hass, "switch", shown=_list([values.get("request")])
+            ),
+            optional("mode_select", values): entity(
+                hass, "select", shown=_list([values.get("mode_select")])
+            ),
+            optional("running_sensor", values): entity(
+                hass, "binary_sensor", shown=_list([values.get("running_sensor")])
+            ),
+            vol.Optional("supply"): section(
+                supply_schema(hass, values.get("supply") or {}), {"collapsed": True}
+            ),
+            vol.Optional("weather"): section(
+                weather_schema(hass, values.get("weather") or {}), {"collapsed": True}
+            ),
+            vol.Optional("cycling"): section(
+                cycling_schema(hass, values.get("cycling") or {}, loops or {}),
+                {"collapsed": True},
+            ),
+            vol.Optional("timing"): section(
+                vol.Schema(
+                    {
+                        _default("mode_dwell", timing, 3600): seconds(),
+                        _default("post_run", timing, 180): seconds(),
+                        _default("min_on", timing, 600): seconds(),
+                        _default("min_off", timing, 600): seconds(),
+                        _default("feedback_timeout", timing, 300): seconds(1),
+                    }
+                ),
+                {"collapsed": True},
+            ),
+            vol.Optional("protection"): section(
+                vol.Schema(
+                    {
+                        _default("exercise", protection, True): selector.BooleanSelector(),
+                        _default("exercise_interval", protection, 604800): seconds(
+                            MIN_EXERCISE_INTERVAL
+                        ),
+                        _default("exercise_run", protection, 60): seconds(
+                            MIN_EXERCISE_RUN, MAX_EXERCISE_RUN
+                        ),
+                        _default("frost_protection", protection, True): selector.BooleanSelector(),
+                        _default("frost_temperature", protection, 5): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0,
+                                max=MAX_FROST_PROTECTION,
+                                step=0.5,
+                                unit_of_measurement=_CELSIUS,
+                                mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
+                    }
+                ),
+                {"collapsed": True},
+            ),
+        }
+    )
+
+
+def mode_options(hass: HomeAssistant, entity_id: str) -> list[str]:
+    """Return the options a select entity offers now, or none when it has no state."""
+    state = hass.states.get(entity_id)
+    options = state.attributes.get("options") if state is not None else None
+    return [str(option) for option in options] if isinstance(options, list) else []
+
+
+def mode_suggestions(hass: HomeAssistant, entity_id: str) -> dict[str, str]:
+    """Suggest the options of a mode select whose names say heating and cooling."""
+    suggestions: dict[str, str] = {}
+    for key in ("heat", "cool"):
+        named = [option for option in mode_options(hass, entity_id) if key in option.lower()]
+        if len(named) == 1:
+            suggestions[key] = named[0]
+    return suggestions
+
+
+def entity_label(hass: HomeAssistant, entity_id: str) -> str:
+    """An entity's friendly name with its ID, or the ID alone when it has no other name."""
+    state = hass.states.get(entity_id)
+    name = state.attributes.get("friendly_name") if state is not None else None
+    return f"{name} ({entity_id})" if isinstance(name, str) and name else entity_id
+
+
+def mode_schema(hass: HomeAssistant, entity_id: str, values: Mapping[str, Any]) -> vol.Schema:
+    options = mode_options(hass, entity_id)
+    return vol.Schema(
+        {
+            optional("heat", values): choice(options, custom=True),
+            optional("cool", values): choice(options, custom=True),
+        }
+    )
+
+
+def pump_schema(
+    hass: HomeAssistant,
+    values: Mapping[str, Any],
+    *,
+    loops: Mapping[str, str] | None = None,
+    add_another: bool = False,
+    removable: bool = False,
+) -> vol.Schema:
+    """The pump form; ``loops`` offers min-flow loops, which guided setup asks for later."""
+    schema: dict[Any, Any] = {
+        optional("name", values): _text(),
+        optional("switch", values): entity(hass, "switch", shown=_list([values.get("switch")])),
+        _default("overrun", values, 180): seconds(),
+        _default("min_flow", values, "path"): choice(["path", "guaranteed"], key="min_flow"),
+    }
+    if loops:
+        schema[optional("min_flow_loops", values)] = choice(loops, multiple=True, listed_=True)
+    schema[optional("supply_temperature", values)] = entity(
+        hass, "sensor", shown=_list([values.get("supply_temperature")])
+    )
+    schema[optional("condensation_switch", values)] = entity(
+        hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
+    )
+    for key in ("running_sensor", "flow_sensor"):
+        schema[optional(key, values)] = entity(
+            hass, "binary_sensor", shown=_list([values.get(key)])
+        )
+    if add_another:
+        schema[vol.Optional("add_another", default=False)] = selector.BooleanSelector()
+    if removable:
+        schema[vol.Optional("remove", default=False)] = selector.BooleanSelector()
+    return vol.Schema(schema)
+
+
+def area_selector(hass: HomeAssistant, shown: Iterable[str] = ()) -> selector.SelectSelector:
+    """The Home Assistant areas as a checkbox list, with chosen areas that no longer exist.
+
+    Home Assistant's area selector shows its label only below the chosen areas,
+    so a checkbox list reads better, and a missing area stays listed by the name
+    it last had so the user sees what to clear.
+    """
+    options = dict(area_names(hass))
+    resolution = resolve_area_sensors(hass, shown)
+    for area_id in resolution.missing_area_ids:
+        options[area_id] = f"{resolution.name(area_id)} (no longer exists)"
+    return choice(options, multiple=True, listed_=True)
+
+
+def zone_schema(
+    hass: HomeAssistant, values: Mapping[str, Any], *, areas: bool = True
+) -> vol.Schema:
+    presets = values.get("presets") or {}
+    schema: dict[Any, Any] = {optional("name", values): _text()}
+    if areas:
+        schema[optional("areas", values)] = area_selector(hass, _list(values.get("areas")))
+    schema.update(
+        {
+            optional("temperature", values): entity(
+                hass, "sensor", multiple=True, shown=_list(values.get("temperature"))
+            ),
+            optional("humidity", values): entity(
+                hass, "sensor", multiple=True, shown=_list(values.get("humidity"))
+            ),
+            _default("aggregation", values, "mean"): choice(
+                ["mean", "min", "max"], key="aggregation"
+            ),
+            optional("thermostat", values): entity(
+                hass, "climate", shown=_list([values.get("thermostat")])
+            ),
+            optional("windows", values): entity(
+                hass, "binary_sensor", multiple=True, shown=_list(values.get("windows"))
+            ),
+            optional("window_open_delay", values): seconds(),
+            optional("window_close_delay", values): seconds(),
+            optional("max_humidity", values): humidity_limit(),
+            vol.Optional("presets"): section(
+                vol.Schema(
+                    {
+                        optional(preset.value, presets): celsius()
+                        for preset in Preset
+                        if preset is not Preset.SCHEDULE
+                    }
+                ),
+                {"collapsed": True},
+            ),
+        }
+    )
+    defaults = DigitalThermostat()
+    comfort = values.get("comfort") or {}
+    schema[vol.Optional("comfort")] = section(
+        vol.Schema(
+            {
+                _default("target", comfort, defaults.target): celsius(),
+                _default("cool_target", comfort, defaults.cool_target): celsius(),
+            }
+        ),
+        {"collapsed": True},
+    )
+    cool_presets = values.get("cool_presets") or {}
+    schema[vol.Optional("cool_presets")] = section(
+        vol.Schema(
+            {
+                optional(preset.value, cool_presets): celsius()
+                for preset in Preset
+                if preset is not Preset.SCHEDULE
+            }
+        ),
+        {"collapsed": True},
+    )
+    schema[vol.Optional("schedule")] = section(
+        schedule_schema(hass, values.get("schedule") or {}), {"collapsed": True}
+    )
+    learning = values.get("learning") or {}
+    schema[vol.Optional("learning")] = section(
+        vol.Schema(
+            {
+                _default("mode", learning, LearningMode.OFF.value): choice(
+                    [mode.value for mode in LearningMode], key="learning_mode"
+                ),
+                _default("weather_aware", learning, False): selector.BooleanSelector(),
+            }
+        ),
+        {"collapsed": True},
+    )
+    return vol.Schema(schema)
+
+
+def loop_schema(
+    hass: HomeAssistant,
+    values: Mapping[str, Any],
+    pumps: Mapping[str, str],
+    *,
+    zones: Mapping[str, str] | None = None,
+    removable: bool = False,
+) -> vol.Schema:
+    """The loop form; ``zones`` makes it a plant loop, which runs with the source or zones."""
+    schema: dict[Any, Any] = {
+        optional("name", values): _text(),
+        optional("valves", values): entity(
+            hass, _VALVE_DOMAINS, multiple=True, shown=_list(values.get("valves"))
+        ),
+        optional("pump", values): choice(pumps),
+    }
+    if zones is not None:
+        schema[_default("runs", values, RunKind.WITH_SOURCE.value)] = choice(
+            [RunKind.WITH_SOURCE.value, RunKind.WITH_ZONES.value], key="runs"
+        )
+        schema[optional("with_zones", values)] = choice(zones, multiple=True, listed_=True)
+    schema.update(
+        {
+            _default("modes", values, ["heat"]): choice(
+                ["heat", "cool"], key="modes", multiple=True, listed_=True
+            ),
+            optional("surface_temperature", values): entity(
+                hass, "sensor", shown=_list([values.get("surface_temperature")])
+            ),
+            optional("surface_minimum", values): celsius(),
+            optional("condensation_switch", values): entity(
+                hass, "binary_sensor", shown=_list([values.get("condensation_switch")])
+            ),
+            _default("opening_time", values, 180): seconds(),
+            _default("weight", values, 1): number(low=0.1),
+        }
+    )
+    if removable:
+        schema[vol.Optional("remove", default=False)] = selector.BooleanSelector()
+    return vol.Schema(schema)
+
+
+def min_flow_schema(loops: Mapping[str, str], values: Mapping[str, Any]) -> vol.Schema:
+    schema: dict[Any, Any] = {}
+    if loops:
+        schema[optional("min_flow_loops", values)] = choice(loops, multiple=True, listed_=True)
+    schema[vol.Optional("guaranteed", default=False)] = selector.BooleanSelector()
+    return vol.Schema(schema)
+
+
+def areas_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
+    return vol.Schema({optional("areas", values): area_selector(hass)})
+
+
+# The label of each pick form's add option where the frontend does not translate it.
+_ADD_LABELS: Final = {
+    "pump_pick": "Add a pump",
+    "plant_loop_pick": "Add a plant loop",
+    "loop_pick": "Add a loop",
+}
+
+
+def pick_schema(key: str, name: str, items: Mapping[str, str]) -> vol.Schema:
+    """Choose an object by its name, or add one with the option that ``key`` translates.
+
+    The frontend translates only the add option; the other options are names.
+    """
+    return vol.Schema({vol.Required(name): choice({**items, NEW: _ADD_LABELS[key]}, key=key)})
+
+
+def plant_file_schema(text: str = "") -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required("plant_file", default=text): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            )
+        }
+    )
+
+
+def arm_schema(labels: Mapping[str, str], armed: Iterable[str] = ()) -> vol.Schema:
+    chosen = [entity_id for entity_id in labels if entity_id in set(armed)]
+    key = (
+        vol.Optional("outputs", description={"suggested_value": chosen})
+        if chosen
+        else vol.Optional("outputs")
+    )
+    return vol.Schema({key: choice(labels, multiple=True, listed_=True)})
+
+
+# Descriptions
+
+
+def pump_labels(document: Document) -> dict[str, str]:
+    """Each pump's slug with how the loop form names it."""
+    labels = {}
+    for slug, pump in pumps(document).items():
+        how = pump.get("switch", "driven by the source")
+        labels[slug] = f"{title(pump, slug)} ({how})"
+    return labels
+
+
+def output_labels(plant: Plant) -> dict[str, str]:
+    """Every output of a Plant with its role, in the order the Plant commands them."""
+    valves = {valve.entity: loop for loop in plant.all_loops for valve in loop.valves}
+    labels: dict[str, str] = {}
+    for entity_id, role in plant.outputs().items():
+        if role is OutputRole.SOURCE_REQUEST:
+            what = "Source request switch"
+        elif role is OutputRole.SOURCE_MODE:
+            what = "Source mode select"
+        elif role is OutputRole.SOURCE_MODE_SWITCH:
+            what = "Source switch that follows the mode"
+        elif role is OutputRole.SOURCE_WEATHER_CURVE:
+            what = "Source weather curve switch"
+        elif role is OutputRole.SOURCE_SETPOINT:
+            what = "Source supply temperature setpoint"
+        elif role is OutputRole.DHW_SWITCH:
+            what = "Source DHW switch"
+        elif role is OutputRole.DHW_SETPOINT:
+            what = "Source DHW setpoint"
+        elif role is OutputRole.PUMP:
+            pump = next(pump for pump in plant.pumps if pump.switch == entity_id)
+            what = f"Pump {pump.title}"
+        else:
+            loop = valves[entity_id]
+            owner = (
+                f"{plant.zone(loop.zone).title} / {loop.title}"
+                if loop.zone is not None
+                else f"{loop.title} (plant loop)"
+            )
+            what = f"Valve of {owner}"
+        labels[entity_id] = f"{what}: {entity_id}"
+    return labels
+
+
+def plant_summary(hass: HomeAssistant, plant: Plant) -> str:
+    """Describe a Plant for a review: its source, pumps, zones, and plant loops.
+
+    Entities are always named, while a setting with a default is named only
+    when it differs from its default.
+    """
+    lines = [f"Plant {plant.name}"]
+    if protection := _protection(plant):
+        lines.append(f"- Protection: {protection}")
+    if plant.weather is not None:
+        outdoor = (
+            f", measured outdoor temperature {plant.weather.outdoor_sensor}"
+            if plant.weather.outdoor_sensor is not None
+            else ""
+        )
+        lines.append(f"- Weather forecast: {plant.weather.entity}{outdoor}")
+    source = plant.source
+    if source is None:
+        lines.append("- No source: valves open and switched pumps run on demand.")
+    else:
+        mode = (
+            f", mode select {source.mode.entity} ({source.mode.heat}, {source.mode.cool})"
+            if source.mode is not None
+            else ""
+        )
+        lines.append(f"- Source {source.title}: request switch {source.request}{mode}")
+    for pump in plant.pumps:
+        how = f"switch {pump.switch}" if pump.switch else "driven by the source"
+        if pump.min_flow_loops:
+            flow = "holds open " + listed([_loop_label(plant, ref) for ref in pump.min_flow_loops])
+        elif pump.min_flow.value == "guaranteed":
+            flow = "a separator guarantees its flow"
+        else:
+            flow = "runs only with a ready loop"
+        switch = (
+            f", condensation switch {pump.condensation_switch}" if pump.condensation_switch else ""
+        )
+        lines.append(f"- Pump {pump.title}: {how}, {flow}{switch}")
+    resolution = resolve_area_sensors(hass, covered_area_ids(plant))
+    for zone in plant.zones:
+        areas = [resolution.name(area.area) for area in zone.areas]
+        covering = (
+            f", covering {'area' if len(areas) == 1 else 'areas'} {listed(areas)}" if areas else ""
+        )
+        thermostat = (
+            f"thermostat {zone.thermostat.entity}"
+            if isinstance(zone.thermostat, ExternalThermostat)
+            else "digital thermostat"
+        )
+        if (
+            isinstance(zone.thermostat, DigitalThermostat)
+            and zone.thermostat.learning is not LearningMode.OFF
+        ):
+            thermostat += f", recovery learning {zone.thermostat.learning.value}"
+            if zone.thermostat.weather_aware:
+                thermostat += ", weather-aware recovery"
+        windows = f", windows {listed(zone.windows)}" if zone.windows else ""
+        detection = zone.window_detection
+        if detection is None:
+            detected = ""
+        elif detection == WindowDetection():
+            detected = ", window detection"
+        else:
+            detected = (
+                f", window detection {detection.change:g} K within {detection.within:g} s, "
+                f"at most {detection.max_duration:g} s"
+            )
+        check = zone.response_check
+        if check == DEFAULT_RESPONSE_CHECK:
+            response = ""
+        elif check is None:
+            response = ", no response check"
+        else:
+            response = f", response check {check.progress:g} K in {check.duration / 3600:g} h"
+        if zone.max_humidity == DEFAULT_MAX_HUMIDITY:
+            humidity = ""
+        elif zone.max_humidity is None:
+            humidity = ", no humidity limit"
+        else:
+            humidity = f", humidity limit {zone.max_humidity:g} %"
+        loops = [_loop_line(plant, loop.ref) for loop in zone.loops]
+        lines.append(
+            f"- Zone {zone.title}{covering}, {thermostat}{windows}{detected}{response}{humidity}"
+            + (f"; loops: {'; '.join(loops)}" if loops else "; no loop of its own")
+        )
+    for loop in plant.loops:
+        runs = (
+            "with the source"
+            if loop.runs.kind is RunKind.WITH_SOURCE
+            else "with zones " + listed([plant.zone(slug).title for slug in loop.runs.zones])
+        )
+        lines.append(f"- Plant loop {_loop_line(plant, loop.ref)}, runs {runs}")
+    lines.append(f"- Outputs: {len(plant.outputs())}")
+    return "\n".join(lines)
+
+
+def _loop_label(plant: Plant, ref: Any) -> str:
+    loop = plant.loop(ref)
+    return loop.title if loop.zone is None else f"{plant.zone(loop.zone).title} / {loop.title}"
+
+
+def _loop_line(plant: Plant, ref: Any) -> str:
+    loop = plant.loop(ref)
+    modes = " and ".join(
+        mode.value for mode in sorted(loop.modes, key=lambda mode: mode.value != "heat")
+    )
+    valves = len(loop.valves)
+    words = [
+        modes,
+        f"pump {plant.pump(loop.pump).title}",
+        "no valve" if valves == 0 else f"{valves} valve" + ("s" if valves > 1 else ""),
+    ]
+    # A surface minimum reads the surface sensor, so without one it has no effect.
+    if loop.surface_temperature is not None and loop.surface_minimum != DEFAULT_SURFACE_MINIMUM:
+        words.append(
+            "no surface minimum"
+            if loop.surface_minimum is None
+            else f"surface minimum {loop.surface_minimum:g} °C"
+        )
+    if loop.condensation_switch is not None:
+        words.append(f"condensation switch {loop.condensation_switch}")
+    return f"{loop.title} ({', '.join(words)})"
+
+
+def _protection(plant: Plant) -> str:
+    """The exercise and frost protection of a Plant where they differ from their defaults."""
+    parts = []
+    exercise = plant.exercise
+    if exercise is None:
+        parts.append("no exercise")
+    elif exercise != DEFAULT_EXERCISE:
+        parts.append(f"exercise interval {exercise.interval:g} s, pump run {exercise.run:g} s")
+    frost = plant.frost_protection
+    if frost is None:
+        parts.append("no frost protection")
+    elif frost != DEFAULT_FROST_PROTECTION:
+        parts.append(f"frost protection at {frost:g} °C")
+    return "; ".join(parts)
+
+
+def review_warnings(hass: HomeAssistant, plant: Plant) -> str:
+    """List what may not work as intended; none of it stops the Plant from being saved."""
+    warnings = [warning.message for warning in area_review_warnings(hass, plant)]
+    for zone in plant.zones:
+        if not plant.zone_loops(zone.slug):
+            warnings.append(
+                f"Zone {zone.title} has no loop of its own and no plant loop runs with it, so "
+                "its demand moves no water."
+            )
+    for pump in plant.pumps:
+        if not plant.pump_loops(pump.slug):
+            warnings.append(f"Pump {pump.title} drives no loop.")
+    return "\n".join(f"- {warning}" for warning in warnings) or "- None"
+
+
+def zone_names(document: Document) -> dict[str, str]:
+    return {slug: title(zone, slug) for slug, zone in zones(document).items()}

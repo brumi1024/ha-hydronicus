@@ -1,0 +1,77 @@
+[project]
+name = "ha-hydronicus"
+version = "1.0.0"
+description = "A safe, topology-aware Home Assistant integration for hydronic heating and cooling plants."
+readme = "README.md"
+requires-python = ">=3.14.2"
+license = { text = "MIT" }
+authors = [{ name = "Hydronicus contributors" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+test = [
+  "hypothesis>=6.135,<7",
+  "mypy>=1.16,<2",
+  "pre-commit>=4.2,<5",
+  "pytest-cov>=7.1,<8",
+  "pytest-homeassistant-custom-component==0.13.366",
+  "ruff>=0.11,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.14"
+allow_redefinition_new = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_untyped_defs = true
+follow_imports = "skip"
+local_partial_types = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# PyYAML ships no type information; the core reads and writes plant files with it.
+module = ["yaml", "yaml.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["custom_components/hydronicus"]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
+# The whole package; `make test-core` overrides this to check invariant 10's
+# 90 percent floor on `core/` alone, which stays much higher in practice.
+fail_under = 95
+show_missing = true
+
+[[tool.mypy.overrides]]
+# The adapter is checked against Home Assistant's own type information.
+module = ["homeassistant", "homeassistant.*"]
+follow_imports = "silent"

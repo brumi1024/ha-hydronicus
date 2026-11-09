@@ -1,0 +1,222 @@
+"""Home Assistant states read as observations: units, plausibility, and the output memory."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+from homeassistant.core import State
+from hypothesis import given
+from hypothesis import strategies as st
+
+from custom_components.hydronicus.core.model import Mode
+from custom_components.hydronicus.observe import (
+    OutputMemory,
+    SensorKind,
+    celsius_from_unit,
+    external_thermostat,
+    option_value,
+    reading,
+    switch_memory_value,
+    switch_moving,
+    switch_value,
+)
+
+WHEN = datetime(2026, 9, 25, 12, tzinfo=UTC)
+
+
+def state(value: str, **attributes: object) -> State:
+    return State("sensor.x", value, attributes, last_changed=WHEN, last_reported=WHEN)
+
+
+@given(st.floats(min_value=-50.0, max_value=100.0, allow_nan=False))
+def test_a_fahrenheit_reading_is_the_same_temperature_in_celsius(celsius: float) -> None:
+    fahrenheit = celsius * 9 / 5 + 32
+    observed = reading(state(str(fahrenheit), unit_of_measurement="°F"), SensorKind.AIR, 0.0)
+    assert observed.value == pytest.approx(celsius, abs=1e-6)
+    assert observed.updated == WHEN.timestamp()
+
+
+@pytest.mark.parametrize(
+    ("value", "unit", "kind", "expected"),
+    [
+        ("21.5", "°C", SensorKind.AIR, 21.5),
+        ("21.5", None, SensorKind.AIR, 21.5),
+        ("294.15", "K", SensorKind.AIR, 21.0),
+        ("-127", "°C", SensorKind.AIR, None),
+        ("120", "°C", SensorKind.WATER, 120.0),
+        ("120", "°C", SensorKind.AIR, None),
+        ("55", "%", SensorKind.HUMIDITY, 55.0),
+        ("55", "g/m³", SensorKind.HUMIDITY, None),
+        ("21", "W", SensorKind.AIR, None),
+        ("21", ["°C"], SensorKind.AIR, None),
+        ("unavailable", "°C", SensorKind.AIR, None),
+        ("nan", "°C", SensorKind.AIR, None),
+    ],
+)
+def test_readings_outside_their_unit_or_plausible_range_carry_no_value(
+    value: str, unit: object, kind: SensorKind, expected: float | None
+) -> None:
+    attributes = {} if unit is None else {"unit_of_measurement": unit}
+    observed = reading(state(value, **attributes), kind, 0.0)
+    assert observed.value == (None if expected is None else pytest.approx(expected))
+
+
+def test_a_missing_sensor_reads_as_reported_now() -> None:
+    assert reading(None, SensorKind.AIR, 42.0).updated == 42.0
+    assert celsius_from_unit(10.0, "") == 10.0
+
+
+@pytest.mark.parametrize(
+    ("value", "expected", "moving"),
+    [
+        ("on", True, False),
+        ("open", True, False),
+        ("opening", True, True),
+        ("off", False, False),
+        ("closed", False, False),
+        ("closing", False, True),
+        ("unavailable", None, False),
+        ("unknown", None, False),
+    ],
+)
+def test_switches_and_valves_read_as_where_they_are_or_are_going(
+    value: str, expected: bool | None, moving: bool
+) -> None:
+    assert switch_value(state(value)) is expected
+    assert switch_moving(state(value)) is moving
+
+
+def test_the_output_memory_takes_arriving_as_a_change() -> None:
+    """A valve's opening time counts from when it shows open, not from when it began to move."""
+    assert switch_memory_value(state("opening")) == "opening"
+    assert switch_memory_value(state("open")) is True
+    assert switch_memory_value(None) is None
+    memory = OutputMemory()
+    assert memory.since("valve.x", switch_memory_value(state("opening")), 10.0) == 10.0
+    assert memory.since("valve.x", switch_memory_value(state("open")), 70.0) == 70.0
+    assert memory.since("valve.x", switch_memory_value(state("open")), 99.0) == 70.0
+
+
+def test_selects_and_external_thermostats() -> None:
+    assert option_value(state("Heat")) == "Heat"
+    assert option_value(state("unavailable")) is None
+    assert option_value(None) is None
+    assert external_thermostat(state("heat", hvac_action="heating")).action is Mode.HEAT
+    assert external_thermostat(state("cool", hvac_action="heating")).action is None
+    assert external_thermostat(state("heat", hvac_action="idle")).action is Mode.OFF
+    assert external_thermostat(state("unavailable")).action is None
+    assert external_thermostat(None).action is None
+
+
+def test_the_output_memory_keeps_when_a_value_began_across_restarts_and_outages() -> None:
+    memory = OutputMemory()
+    assert memory.since("switch.valve", True, 100.0) == 100.0
+    # A restart writes the same value again with a new last_changed.
+    assert memory.since("switch.valve", True, 900.0) == 100.0
+    # An outage says nothing about the valve, and the same value returning keeps its time.
+    assert memory.since("switch.valve", None, 950.0) == 950.0
+    assert memory.since("switch.valve", True, 960.0) == 100.0
+    assert memory.since("switch.valve", False, 1000.0) == 1000.0
+
+    restored = OutputMemory.from_dict(memory.to_dict())
+    assert restored.since("switch.valve", False, 2000.0) == 1000.0
+    restored.forget_except(set())
+    assert restored.to_dict() == {}
+    assert OutputMemory.from_dict({"switch.a": "junk", "switch.b": {"value": [1]}}).to_dict() == {}
+
+
+def test_numeric_output_feedback_and_memory_use_celsius() -> None:
+    from custom_components.hydronicus.observe import numeric_value
+
+    value = numeric_value(state("95", unit_of_measurement="°F"))
+    assert value == 35.0
+    assert numeric_value(state("308.15", unit_of_measurement="K")) == pytest.approx(35.0)
+    assert numeric_value(state("95", unit_of_measurement="W")) is None
+    assert numeric_value(None) is None
+    memory = OutputMemory()
+    assert memory.since("number.supply", value, 10.0) == 10.0
+    restored = OutputMemory.from_dict(memory.to_dict())
+    assert restored.since("number.supply", 35.0, 20.0) == 10.0
+    assert restored.since("number.supply", 36.0, 30.0) == 30.0
+
+
+@pytest.mark.parametrize("next_event", [WHEN, WHEN.isoformat(), "2026-09-25T14:00:00+02:00"])
+def test_schedule_transitions_are_absolute_instants(next_event: object) -> None:
+    from custom_components.hydronicus.observe import schedule_state
+
+    schedule = schedule_state(state("off", next_event=next_event))
+    assert schedule.active is False
+    assert schedule.next_event == WHEN.timestamp()
+
+
+@pytest.mark.parametrize("next_event", [None, "invalid", "2026-09-25T12:00:00", 42])
+def test_invalid_schedule_transitions_keep_the_current_schedule_state(next_event: object) -> None:
+    from custom_components.hydronicus.observe import schedule_state
+
+    schedule = schedule_state(state("on", next_event=next_event))
+    assert schedule.active is True
+    assert schedule.next_event is None
+    assert schedule_state(None).active is None
+    assert schedule_state(state("unavailable", next_event=WHEN)).active is None
+
+
+def test_the_next_block_and_its_level_come_from_the_week() -> None:
+    from datetime import time
+
+    from custom_components.hydronicus.core.comfort import BlockLevel
+    from custom_components.hydronicus.core.model import Preset
+    from custom_components.hydronicus.observe import schedule_state
+
+    # WHEN is Friday 12:00 in UTC, the default zone of these tests.
+    week = {
+        "friday": [
+            {"from": time(8), "to": time(12)},
+            {"from": "12:00:00", "to": "14:00:00", "data": {"preset": "eco", "note": "x"}},
+        ]
+    }
+    active = state("on", next_event=WHEN, preset="away")
+    schedule = schedule_state(active, week)
+    assert schedule.level == BlockLevel(preset=Preset.AWAY)
+    assert schedule.next_active is True
+    assert schedule.next_level == BlockLevel(preset=Preset.ECO)
+    ending = schedule_state(active, {"friday": [{"from": time(8), "to": time(12)}]})
+    assert ending.next_active is False and ending.next_level == BlockLevel()
+    # The active block's data is read only while the helper is on.
+    assert schedule_state(state("off", next_event=WHEN, preset="away"), week).level == BlockLevel()
+
+
+@pytest.mark.parametrize(
+    "week",
+    [
+        {"friday": "not a list"},
+        {"friday": ["not a block"]},
+        {"friday": [{"from": 1200, "to": "14:00"}]},
+        # An off period cannot be followed by another one.
+        {"friday": [{"from": "13:00", "to": "14:00"}]},
+    ],
+)
+def test_an_unreadable_week_leaves_the_next_period_unknown(week: dict[str, object]) -> None:
+    from custom_components.hydronicus.observe import schedule_state
+
+    schedule = schedule_state(state("off", next_event=WHEN), week)
+    assert schedule.next_event == WHEN.timestamp()
+    assert schedule.next_active is None
+
+
+def test_week_problems_name_each_unusable_block() -> None:
+    from custom_components.hydronicus.observe import week_problems
+
+    week = {
+        "monday": [
+            {"from": "08:00:00", "to": "10:00:00", "data": {"preset": "eco"}},
+            {"from": "10:00:00", "to": "12:00:00", "data": {"preset": "eco", "heat_target": 20}},
+            "not a block",
+        ],
+        "tuesday": "not a list",
+        "sunday": [{"from": "22:00:00", "to": "24:00:00", "data": {"cool_target": "cold"}}],
+    }
+    problems = week_problems(week)
+    assert len(problems) == 2
+    assert problems[0].startswith("Monday 10:00: a block names a preset or a target")
+    assert problems[1].startswith("Sunday 22:00: cool_target must be a number")

@@ -1,0 +1,48 @@
+hydronicus: 2
+name: Comfort example
+source:
+  request: switch.heat_pump_request
+  mode: {entity: select.heat_pump_mode, heat: Heating, cool: Cooling}
+  running_sensor: binary_sensor.heat_pump_running
+  supply:
+    entity: number.heat_pump_supply_temperature
+    outdoor_sensor: sensor.outdoor_temperature
+    heat_temperature: 35
+    cool_temperature: 18
+    minimum: 15
+    maximum: 50
+    tolerance: 0.5
+    outdoor_cold: -10
+    outdoor_warm: 20
+    heat_cold: 45
+    heat_warm: 25
+    max_age: 1800
+pumps:
+  manifold:
+    switch: switch.manifold_pump
+    running_sensor: binary_sensor.manifold_pump_running
+    flow_sensor: binary_sensor.manifold_flow_proved
+    supply_temperature: sensor.manifold_supply_temperature
+    condensation_switch: binary_sensor.manifold_condensation
+zones:
+  living_room:
+    temperature: [sensor.living_room_temperature]
+    humidity: [sensor.living_room_humidity]
+    thermostat:
+      digital:
+        target: 21
+        cool_target: 25
+        presets: {comfort: 21, eco: 19, away: 16}
+        cool_presets: {comfort: 25, eco: 27, away: 30}
+        schedule:
+          entity: schedule.living_room_comfort
+          heat_setback: 2
+          cool_setback: 2
+          max_early_start: 3600
+          heating_rate: 1
+          cooling_rate: 1.5
+    loops:
+      ceiling:
+        valves: [switch.living_room_ceiling_valve]
+        pump: manifold
+        modes: [heat, cool]
