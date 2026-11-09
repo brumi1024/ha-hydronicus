@@ -19,7 +19,6 @@ from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .core.model import MAX_WARM_UP_SHIFT
 from .core.plant_file import PlantFileError, dump_yaml, export_plant
 from .runtime import PlantRuntime
 from .storage import plant_from_entry
@@ -31,7 +30,6 @@ SERVICE_SET_AWAY: Final = "set_away"
 SERVICE_END_AWAY: Final = "end_away"
 SERVICE_WARM_UP: Final = "warm_up"
 SERVICE_END_WARM_UP: Final = "end_warm_up"
-ATTR_SHIFT: Final = "shift"
 ATTR_UNTIL: Final = "until"
 ATTR_TEMPERATURE: Final = "temperature"
 ATTR_DURATION: Final = "duration"
@@ -56,9 +54,7 @@ _WARM_UP_SCHEMA: Final = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Optional(ATTR_DURATION): cv.positive_time_period,
-        vol.Optional(ATTR_SHIFT): vol.All(
-            vol.Coerce(float), vol.Range(min=0.5, max=MAX_WARM_UP_SHIFT)
-        ),
+        vol.Optional(ATTR_TEMPERATURE): vol.Coerce(float),
     }
 )
 _END_WARM_UP_SCHEMA: Final = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
@@ -136,11 +132,11 @@ def _supply_runtime(call: ServiceCall) -> PlantRuntime:
 
 
 async def _async_warm_up(call: ServiceCall) -> None:
-    """Raise the heating supply for a bounded time."""
+    """Hold the heating supply at least at a warm-up temperature for a bounded time."""
     duration = call.data.get(ATTR_DURATION)
     _supply_runtime(call).start_warm_up(
         duration=None if duration is None else duration.total_seconds(),
-        shift=call.data.get(ATTR_SHIFT),
+        temperature=call.data.get(ATTR_TEMPERATURE),
     )
 
 

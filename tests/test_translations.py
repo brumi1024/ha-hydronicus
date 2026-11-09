@@ -47,6 +47,7 @@ ENTITY_KEYS = {
         "dhw_target",
         "heating_curve_offset",
         "heating_supply_temperature",
+        "warm_up_temperature",
         "weather_curve_number",
     },
     "binary_sensor": {
@@ -179,7 +180,6 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
         "away_until_past",
         "no_heating_supply",
         "warm_up_while_cooling",
-        "warm_up_no_curve_number",
         "warm_up_no_supply",
     }
     assert set(STRINGS["services"]) == {

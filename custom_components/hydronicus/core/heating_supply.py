@@ -11,11 +11,13 @@ changed while cooling is adopted.
 The source's curve number, when bound, is owned the same way: a change made
 elsewhere is adopted as Hydronicus's value and never written back.
 
-A warm-up raises the heating supply for a bounded time: it shifts a fixed
-temperature or Hydronicus's curve, or steps the source's own curve hotter. It
-ends after its duration, once every zone that called when it started is warm,
-as soon as the Plant cools, when the curve number is changed elsewhere, or when
-the heating supply strategy changes. One that would raise nothing is refused.
+A warm-up holds the heating supply at least at a warm-up temperature for a
+bounded time: a fixed temperature or Hydronicus's curve is raised to it, and
+the source's own curve is turned off for its time while the supply setpoint
+holds it, then turned on again. The strategy in force stays. It ends after its
+duration, once every zone that called when it started is warm, as soon as the
+Plant cools, when the heating supply strategy changes, or when the curve it
+turned off is turned on elsewhere. Without a supply setpoint it is refused.
 ``heating_supply_step`` is pure: ``step()`` calls it with the physical outputs,
 the owner's last command, and the zones' demand.
 """
@@ -28,7 +30,7 @@ from enum import StrEnum
 from math import isfinite
 from typing import Any
 
-from .model import MAX_WARM_UP_DURATION, MAX_WARM_UP_SHIFT, HeatingSupply, Mode, Source
+from .model import MAX_WARM_UP_DURATION, HeatingSupply, Mode, Source
 
 __all__ = [
     "HeatingSupplyResult",
@@ -49,11 +51,13 @@ class SupplyCommand:
     strategy: HeatingSupply | None = None
     fixed: float | None = None
     curve_number: float | None = None
-    # True starts a warm-up, for ``warm_for`` seconds by ``warm_shift`` K when
-    # given, else the source's configured ones; False ends it.
+    # True starts a warm-up, for ``warm_for`` seconds to ``warm_to`` °C when
+    # given, else the configured duration and the Warm-up temperature; False ends it.
     warm_up: bool | None = None
     warm_for: float | None = None
-    warm_shift: float | None = None
+    warm_to: float | None = None
+    # The owner's Warm-up temperature, which also applies to a running warm-up.
+    warm_temperature: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +82,13 @@ class HeatingSupplyState:
     curve_number: float | None = None
     seen_number: float | None = None
     last_number: float | None = None
-    # The warm-up in progress: until when, by how many K or curve steps, and the
-    # zones that called when it started, whose warmth ends it early.
+    # The owner's Warm-up temperature, or None for the configured one.
+    warm_temperature: float | None = None
+    # The warm-up in progress: until when, the temperature an action asked for
+    # it alone, or None for the Warm-up temperature, and the zones that called
+    # when it started, whose warmth ends it early.
     warm_until: float | None = None
-    warm_shift: float = 0.0
-    warm_steps: int = 0
+    warm_to: float | None = None
     warm_zones: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -96,9 +102,9 @@ class HeatingSupplyState:
             "curve_number": self.curve_number,
             "seen_number": self.seen_number,
             "last_number": self.last_number,
+            "warm_temperature": self.warm_temperature,
             "warm_until": self.warm_until,
-            "warm_shift": self.warm_shift,
-            "warm_steps": self.warm_steps,
+            "warm_to": self.warm_to,
             "warm_zones": list(self.warm_zones),
         }
 
@@ -120,9 +126,9 @@ class HeatingSupplyState:
             curve_number=number("curve_number"),
             seen_number=number("seen_number"),
             last_number=number("last_number"),
+            warm_temperature=number("warm_temperature"),
             warm_until=number("warm_until"),
-            warm_shift=float(data.get("warm_shift", 0.0)),
-            warm_steps=int(data.get("warm_steps", 0)),
+            warm_to=number("warm_to"),
             warm_zones=tuple(str(zone) for zone in data.get("warm_zones", ())),
         )
 
@@ -142,38 +148,37 @@ class HeatingSupplyResult:
     events: tuple[str, ...] = ()
     # The curve number to ask for now, None without one or before it is known.
     curve_number: float | None = None
-    # The K a warm-up adds to a fixed temperature or Hydronicus's curve now.
-    warm_shift: float = 0.0
+    # The Warm-up temperature in force, None without a supply number.
+    warm_temperature: float | None = None
+    # The temperature a running warm-up holds the heating supply at least at.
+    warm_up: float | None = None
+
+    @property
+    def source_curve(self) -> bool:
+        """Whether the source's own curve heats: chosen, and no warm-up turns it off."""
+        return self.strategy is HeatingSupply.SOURCE_CURVE and self.warm_up is None
 
 
 class WarmUpRefusal(StrEnum):
     """Why a warm-up is not started; each value is also a translation key."""
 
     COOLING = "warm_up_while_cooling"
-    NO_CURVE_NUMBER = "warm_up_no_curve_number"
     NO_SUPPLY = "warm_up_no_supply"
 
 
 _REFUSALS = {
     WarmUpRefusal.COOLING: "a warm-up only heats, so it was not started while cooling",
-    WarmUpRefusal.NO_CURVE_NUMBER: (
-        "a warm-up was not started: the source's own curve has no curve number to step"
-    ),
     WarmUpRefusal.NO_SUPPLY: (
-        "a warm-up was not started: the source's own fixed setpoint cannot be raised"
+        "a warm-up was not started: the source has no supply setpoint to hold"
     ),
 }
 
 
-def warm_up_refusal(
-    source: Source, strategy: HeatingSupply, *, cooling: bool
-) -> WarmUpRefusal | None:
-    """Why a warm-up under ``strategy`` would raise nothing, None when it raises the supply."""
+def warm_up_refusal(source: Source, *, cooling: bool) -> WarmUpRefusal | None:
+    """Why a warm-up cannot raise the heating supply, None when it can."""
     if cooling:
         return WarmUpRefusal.COOLING
-    if strategy is HeatingSupply.SOURCE_CURVE and source.curve_number is None:
-        return WarmUpRefusal.NO_CURVE_NUMBER
-    if strategy is HeatingSupply.FIXED and source.supply is None:
+    if source.supply is None:
         return WarmUpRefusal.NO_SUPPLY
     return None
 
@@ -238,13 +243,27 @@ def heating_supply_step(
     # Cooling is not a choice, so nothing changed while it runs is adopted.
     heating = mode is not Mode.COOL
 
+    warm_until, warm_to, warm_zones = state.warm_until, state.warm_to, state.warm_zones
+
+    def end_warm_up(why: str) -> None:
+        nonlocal warm_until, warm_to, warm_zones
+        if warm_until is not None:
+            events.append(f"the warm-up ended {why}")
+        warm_until, warm_to, warm_zones = None, None, ()
+
     weather, supply = source.weather_curve, source.supply
     if weather is not None and curve is not None and curve != seen_curve:
-        wanted = (strategy or default) is HeatingSupply.SOURCE_CURVE
+        # A warm-up on the source's own curve turns it off for its time.
+        on_curve = (strategy or default) is HeatingSupply.SOURCE_CURVE
+        wanted = on_curve and warm_until is None
         first = heating and strategy is None
-        if first or (
+        changed = (
             heating and seen_curve is not None and curve != wanted and not ours(weather.switch)
-        ):
+        )
+        if changed and curve and on_curve:
+            # The curve turned on again elsewhere: the warm-up ends, the curve stays.
+            end_warm_up("since the weather curve was turned on elsewhere")
+        elif first or changed:
             # The first sighting takes over what the source does now, and a later
             # change is the owner's new choice.
             strategy = HeatingSupply.SOURCE_CURVE if curve else HeatingSupply.FIXED
@@ -277,15 +296,6 @@ def heating_supply_step(
                 events.append(f"the fixed supply temperature was set elsewhere to {setpoint:g} °C")
         seen_setpoint = setpoint
 
-    warm_until, warm_shift = state.warm_until, state.warm_shift
-    warm_steps, warm_zones = state.warm_steps, state.warm_zones
-
-    def end_warm_up(why: str) -> None:
-        nonlocal warm_until, warm_shift, warm_steps, warm_zones
-        if warm_until is not None:
-            events.append(f"the warm-up ended {why}")
-        warm_until, warm_shift, warm_steps, warm_zones = None, 0.0, 0, ()
-
     config = source.curve_number
     owned, seen_number = state.curve_number, state.seen_number
     if config is not None and number is not None and number != seen_number:
@@ -295,10 +305,10 @@ def heating_supply_step(
         elif number != state.last_number and not ours(config.entity):
             owned = config.clamp(number)
             events.append(f"the curve number was set elsewhere to {number:g}; adopted")
-            end_warm_up("without restoring, since a curve number was chosen")
         seen_number = number
 
     command_at, chose = state.command_at, False
+    warm_temperature = state.warm_temperature
     fresh = command is not None and (command_at is None or command.at > command_at)
     if command is not None and fresh:
         command_at = command.at
@@ -309,6 +319,10 @@ def heating_supply_step(
             fixed = clamp_fixed(source, command.fixed)
         if command.curve_number is not None and isfinite(command.curve_number) and config:
             owned = config.clamp(command.curve_number)
+        chosen = clamp_fixed(source, command.warm_temperature)
+        if chosen is not None:
+            # The owner's latest choice applies at once, over an action's own.
+            warm_temperature, warm_to = chosen, None
 
     current = strategy or default
     if chose or (state.strategy is not None and state.strategy is not current and not events):
@@ -319,15 +333,18 @@ def heating_supply_step(
     if command is not None and fresh and command.warm_up is False:
         end_warm_up("early")
     elif command is not None and fresh and command.warm_up is True:
-        refusal = warm_up_refusal(source, current, cooling=cooling)
+        refusal = warm_up_refusal(source, cooling=cooling)
         if refusal is not None:
             events.append(_REFUSALS[refusal])
         else:
-            settings = source.warm_up
-            duration = min(_given(command.warm_for, settings.duration), MAX_WARM_UP_DURATION)
-            warm_shift = min(_given(command.warm_shift, settings.shift), MAX_WARM_UP_SHIFT)
-            warm_until, warm_steps, warm_zones = now + duration, settings.curve_steps, calling
-            events.append(f"a warm-up raises the heating supply for {duration / 60:g} min")
+            duration = min(_given(command.warm_for, source.warm_up.duration), MAX_WARM_UP_DURATION)
+            warm_until, warm_zones = now + duration, calling
+            warm_to = clamp_fixed(source, command.warm_to)
+            temperature = _warm_temperature(source, warm_temperature, warm_to)
+            events.append(
+                f"a warm-up raises the heating supply to at least {temperature:g} °C "
+                f"for {duration / 60:g} min"
+            )
 
     if warm_until is not None:
         if cooling:
@@ -336,17 +353,12 @@ def heating_supply_step(
             end_warm_up("after its time")
         elif warm_zones and warm(warm_zones):
             end_warm_up("since its zones reached their targets")
+        elif supply is None:
+            end_warm_up("since the source has no supply setpoint")
     effective = (
         None if supply is None else (fixed if fixed is not None else supply.heat_temperature)
     )
-    warming = warm_until is not None
-    asked = (
-        None
-        if config is None or owned is None
-        else config.step(owned, warm_steps)
-        if warming and current is HeatingSupply.SOURCE_CURVE
-        else owned
-    )
+    asked = None if config is None else owned
     next_state = replace(
         state,
         strategy=strategy,
@@ -357,9 +369,9 @@ def heating_supply_step(
         curve_number=owned,
         seen_number=seen_number,
         last_number=state.last_number if asked is None else asked,
+        warm_temperature=warm_temperature,
         warm_until=warm_until,
-        warm_shift=warm_shift,
-        warm_steps=warm_steps,
+        warm_to=warm_to,
         warm_zones=warm_zones,
     )
     return HeatingSupplyResult(
@@ -368,5 +380,15 @@ def heating_supply_step(
         clamp_fixed(source, effective),
         tuple(events),
         curve_number=asked,
-        warm_shift=warm_shift if warming else 0.0,
+        warm_temperature=_warm_temperature(source, warm_temperature, None),
+        warm_up=None
+        if warm_until is None
+        else _warm_temperature(source, warm_temperature, warm_to),
     )
+
+
+def _warm_temperature(source: Source, setting: float | None, asked: float | None) -> float | None:
+    """The temperature a warm-up holds: an action's own, else the owner's, else the configured."""
+    if asked is not None:
+        return clamp_fixed(source, asked)
+    return clamp_fixed(source, source.warm_up.temperature if setting is None else setting)

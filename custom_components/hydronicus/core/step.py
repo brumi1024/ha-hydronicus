@@ -619,11 +619,8 @@ _SUPPLY_REASONS: Final = {
 
 
 def warm_up_reason(result: HeatingSupplyResult) -> str:
-    """What a warm-up raises under the heating supply in force."""
-    if result.strategy is HeatingSupply.SOURCE_CURVE:
-        steps = result.state.warm_steps
-        return f"warming up by {steps} curve step{'s' if steps != 1 else ''}"
-    return f"warming up by {result.state.warm_shift:g} K"
+    """The temperature a warm-up holds the heating supply at least at."""
+    return f"warming up to {result.warm_up:g} °C"
 
 
 class _Evaluation:
@@ -1315,7 +1312,7 @@ class _Evaluation:
         )
         if result is not None:
             self.reasons["heating_supply"] = _SUPPLY_REASONS[result.strategy]
-            if result.state.warming:
+            if result.warm_up is not None:
                 self.reasons["warm_up"] = warm_up_reason(result)
         return result
 
@@ -1949,9 +1946,12 @@ class _Plan:
         held = self.hold_for_source()
 
         outputs: dict[str, OutputTarget] = {}
+        # A warm-up commands neither the curve nor the setpoint once Control
+        # equipment is off; the stop sequence leaves both as they are.
+        quiet = ev.forced_off and ev.heating is not None and ev.heating.warm_up is not None
         if source is not None and not ev.handover:
             outputs[source.request] = SwitchTarget(self.request)
-            if source.supply is not None and self.supply_target is not None:
+            if source.supply is not None and self.supply_target is not None and not quiet:
                 outputs[source.supply.entity] = self.supply_target
             option = None if source.mode is None else source.mode.option(self.mode)
             if option is not None and source.mode is not None:
@@ -1959,11 +1959,9 @@ class _Plan:
             for switch in source.mode_switches:
                 if (on := switch.on(self.mode)) is not None:
                     outputs[switch.entity] = SwitchTarget(on)
-            if source.weather_curve is not None and self.mode is not Mode.OFF:
+            if source.weather_curve is not None and self.mode is not Mode.OFF and not quiet:
                 outputs[source.weather_curve.switch] = SwitchTarget(
-                    self.mode is Mode.HEAT
-                    and ev.heating is not None
-                    and ev.heating.strategy is HeatingSupply.SOURCE_CURVE
+                    self.mode is Mode.HEAT and ev.heating is not None and ev.heating.source_curve
                 )
         for pump in plant.pumps:
             if pump.switch is not None:
@@ -2276,7 +2274,7 @@ class _Plan:
         config = source.supply
         heating = ev.heating
         assert heating is not None
-        if self.mode is Mode.HEAT and heating.strategy is HeatingSupply.SOURCE_CURVE:
+        if self.mode is Mode.HEAT and heating.source_curve:
             ev.reasons["source_supply"] = "kept by the source's own weather curve"
             return None
         if (
@@ -2294,13 +2292,20 @@ class _Plan:
             # A source on its own curve ignores the setpoint.
             ev.reasons["source_supply"] = "waiting for the weather curve to turn off"
             return None
-        if self.mode is Mode.HEAT and heating.strategy is HeatingSupply.FIXED:
-            if heating.fixed is None:
+        if self.mode is Mode.HEAT and heating.strategy is not HeatingSupply.CURVE:
+            # A fixed temperature, or a warm-up's in place of the source's own curve.
+            fixed = heating.fixed if heating.strategy is HeatingSupply.FIXED else None
+            wanted = [value for value in (fixed, heating.warm_up) if value is not None]
+            if not wanted:
                 ev.reasons["source_supply"] = "supply temperature unavailable"
                 return None
-            value = clamp_fixed(source, heating.fixed + heating.warm_shift)
+            value = clamp_fixed(source, max(wanted))
             assert value is not None
-            ev.reasons["source_supply"] = f"fixed supply target {value:.1f} °C"
+            ev.reasons["source_supply"] = (
+                f"fixed supply target {value:.1f} °C"
+                if fixed is not None
+                else f"warm-up supply target {value:.1f} °C"
+            )
             return NumericTarget(value, config.tolerance)
         proposal = supply_target(
             config,
@@ -2309,7 +2314,7 @@ class _Plan:
             ev.now,
             outdoor=ev.outdoor,
             offset=ev.curve_offset(),
-            room_shift=ev.room_shift() + heating.warm_shift,
+            room_shift=ev.room_shift(),
             frost_outdoor=FROST_CURVE_OUTDOOR if ev.frost else None,
         )
         if self.mode is Mode.HEAT and config.outdoor_sensor is not None:
@@ -2320,6 +2325,8 @@ class _Plan:
         if value is None:
             ev.reasons["source_supply"] = proposal.reason or "supply temperature unavailable"
             return None
+        if self.mode is Mode.HEAT and heating.warm_up is not None:
+            value = max(value, heating.warm_up)
         if self.mode is Mode.COOL:
             exposed = [
                 loop
@@ -2390,7 +2397,7 @@ class _Plan:
         return (
             self.mode is Mode.HEAT
             and ev.heating is not None
-            and ev.heating.strategy is not HeatingSupply.SOURCE_CURVE
+            and not ev.heating.source_curve
             and self.weather_curve_off()
         )
 

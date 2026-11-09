@@ -159,6 +159,9 @@
       "heating_supply_temperature": {
         "default": "mdi:thermometer-water"
       },
+      "warm_up_temperature": {
+        "default": "mdi:thermometer-chevron-up"
+      },
       "weather_curve_number": {
         "default": "mdi:chart-bell-curve"
       }
