@@ -68,7 +68,7 @@ ENTITY_KEYS = {
         "compressor_starts",
         "compressor_cycle",
     },
-    "switch": {"control", "away", "dhw"},
+    "switch": {"control", "away", "dhw", "warm_up"},
 }
 
 
@@ -177,6 +177,10 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
         "no_dhw_setpoint",
         "unsupported_hvac_mode",
         "away_until_past",
+        "no_heating_supply",
+        "warm_up_while_cooling",
+        "warm_up_no_curve_number",
+        "warm_up_no_supply",
     }
     assert set(STRINGS["services"]) == {
         "export_plant",
@@ -184,6 +188,8 @@ def test_every_flow_error_is_translated_in_each_flow_that_raises_it() -> None:
         "end_dhw_boost",
         "set_away",
         "end_away",
+        "warm_up",
+        "end_warm_up",
     }
 
 

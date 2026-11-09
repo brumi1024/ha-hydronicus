@@ -1,4 +1,4 @@
-"""The Control equipment switch, the Away switch, and the source's DHW switch.
+"""The Control equipment switch, the Away switch, and the source's DHW and Warm-up switches.
 
 Turning Control equipment on lets the Plant command its armed outputs. Turning
 it off runs the off-mode sequence and then only observes, which is Dry run.
@@ -81,6 +81,45 @@ class AwaySwitch(HydronicusEntity, SwitchEntity):
         self.runtime.end_away()
 
 
+class WarmUpSwitch(HydronicusEntity, SwitchEntity):
+    """Whether a warm-up raises the heating supply; on starts the configured one."""
+
+    _attr_translation_key = "warm_up"
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "warm_up"), source_device(runtime)
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.heating_supply is not None
+
+    @property
+    def is_on(self) -> bool:
+        result = self.runtime.heating_supply
+        return result is not None and result.state.warming
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        result = self.runtime.heating_supply
+        state = None if result is None else result.state
+        if state is None or state.warm_until is None:
+            return {"until": None, "shift": None, "curve_steps": None, "zones": None}
+        return {
+            "until": dt_util.utc_from_timestamp(state.warm_until).isoformat(),
+            "shift": state.warm_shift,
+            "curve_steps": state.warm_steps,
+            "zones": list(state.warm_zones),
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self.runtime.start_warm_up()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self.runtime.command_supply(warm_up=False)
+
+
 class DhwSwitch(HydronicusEntity, SwitchEntity):
     """Whether the source heats its DHW: the owned value, which a change elsewhere sets too."""
 
@@ -119,4 +158,6 @@ async def async_setup_entry(
     source = runtime.plant.source
     if source is not None and source.dhw is not None and source.dhw.switch is not None:
         entities.append((None, DhwSwitch(runtime)))
+    if source is not None and source.heating_supplies:
+        entities.append((None, WarmUpSwitch(runtime)))
     async_add_plant_entities(runtime, "switch", async_add_entities, entities)
