@@ -57,6 +57,7 @@ from .heating_supply import (
     HeatingSupplyResult,
     HeatingSupplyState,
     SupplyCommand,
+    clamp_fixed,
     heating_supply_step,
 )
 from .model import (
@@ -617,6 +618,14 @@ _SUPPLY_REASONS: Final = {
 }
 
 
+def warm_up_reason(result: HeatingSupplyResult) -> str:
+    """What a warm-up raises under the heating supply in force."""
+    if result.strategy is HeatingSupply.SOURCE_CURVE:
+        steps = result.state.warm_steps
+        return f"warming up by {steps} curve step{'s' if steps != 1 else ''}"
+    return f"warming up by {result.state.warm_shift:g} K"
+
+
 class _Evaluation:
     """The stages of one ``step()``, with the caches and deadlines they share."""
 
@@ -1042,6 +1051,15 @@ class _Evaluation:
         dhw = self.dhw()
         if dhw is not None:
             outputs.update(dhw.targets)
+        number = None if plant.source is None else plant.source.curve_number
+        if (
+            number is not None
+            and self.heating is not None
+            and self.heating.curve_number is not None
+            and not self.forced_off
+            and not self.handover
+        ):
+            outputs[number.entity] = NumericTarget(self.heating.curve_number, 0.5)
 
         live = obs.control or (state.live and not self.finished())
         ready = {
@@ -1178,6 +1196,14 @@ class _Evaluation:
         comfort = self.comfort.get(slug)
         return None if comfort is None else comfort.target
 
+    def zones_warm(self, zones: tuple[str, ...]) -> bool:
+        """Every zone reads at least its heating target; one without both is not warm."""
+        for slug in zones:
+            target, temperature = self.zone_target(slug), self.temperatures.get(slug)
+            if target is None or temperature is None or temperature < target:
+                return False
+        return True
+
     def warm_reason(self) -> str:
         source = self.plant.source
         assert source is not None and source.supply is not None and self.outdoor is not None
@@ -1260,24 +1286,37 @@ class _Evaluation:
             sent = self.obs.sent.get(entity)
             return sent is not None and satisfies(physical.get(entity), sent.target)
 
+        def value(entity: str | None) -> float | None:
+            observed = None if entity is None else physical.get(entity)
+            if (
+                isinstance(observed, NumericState)
+                and observed.value is not None
+                and isfinite(observed.value)
+            ):
+                return observed.value
+            return None
+
         weather = source.weather_curve
         switch = physical.get(weather.switch) if weather is not None else None
-        number = physical.get(source.supply.entity) if source.supply is not None else None
         result = heating_supply_step(
             source,
             mode,
             switch.on if isinstance(switch, SwitchState) and not switch.moving else None,
-            number.value
-            if isinstance(number, NumericState)
-            and number.value is not None
-            and isfinite(number.value)
-            else None,
+            value(None if source.supply is None else source.supply.entity),
             ours,
             self.state.heating_supply,
             self.obs.supply_command,
+            number=value(None if source.curve_number is None else source.curve_number.entity),
+            cools=self.obs.mode is Mode.COOL,
+            now=self.now,
+            reached=self.reached,
+            calling=self.heat_calls,
+            warm=self.zones_warm,
         )
         if result is not None:
             self.reasons["heating_supply"] = _SUPPLY_REASONS[result.strategy]
+            if result.state.warming:
+                self.reasons["warm_up"] = warm_up_reason(result)
         return result
 
     def tank_temperature(self, entity: str) -> float | None:
@@ -2259,8 +2298,10 @@ class _Plan:
             if heating.fixed is None:
                 ev.reasons["source_supply"] = "supply temperature unavailable"
                 return None
-            ev.reasons["source_supply"] = f"fixed supply target {heating.fixed:.1f} °C"
-            return NumericTarget(heating.fixed, config.tolerance)
+            value = clamp_fixed(source, heating.fixed + heating.warm_shift)
+            assert value is not None
+            ev.reasons["source_supply"] = f"fixed supply target {value:.1f} °C"
+            return NumericTarget(value, config.tolerance)
         proposal = supply_target(
             config,
             self.mode,
@@ -2268,7 +2309,7 @@ class _Plan:
             ev.now,
             outdoor=ev.outdoor,
             offset=ev.curve_offset(),
-            room_shift=ev.room_shift(),
+            room_shift=ev.room_shift() + heating.warm_shift,
             frost_outdoor=FROST_CURVE_OUTDOOR if ev.frost else None,
         )
         if self.mode is Mode.HEAT and config.outdoor_sensor is not None:

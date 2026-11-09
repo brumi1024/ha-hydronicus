@@ -282,6 +282,12 @@ class World:
             if role is OutputRole.SOURCE_MODE:
                 assert plant.source is not None and plant.source.mode is not None
                 self.selects.setdefault(entity, SelectBody(option=plant.source.mode.heat))
+            elif role is OutputRole.SOURCE_CURVE_NUMBER:
+                assert plant.source is not None and plant.source.curve_number is not None
+                self.numbers.setdefault(
+                    entity,
+                    NumberBody(float(plant.source.curve_number.minimum), changed=self.wall()),
+                )
             elif role in NUMERIC_ROLES:
                 self.numbers.setdefault(entity, NumberBody(changed=self.wall()))
             else:
@@ -648,6 +654,7 @@ class World:
         expected = {
             OutputRole.SOURCE_MODE: OptionTarget,
             OutputRole.SOURCE_SETPOINT: NumericTarget,
+            OutputRole.SOURCE_CURVE_NUMBER: NumericTarget,
             OutputRole.DHW_SETPOINT: NumericTarget,
         }.get(role, SwitchTarget)
         if not isinstance(action.target, expected):

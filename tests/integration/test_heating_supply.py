@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.hydronicus.const import DOMAIN
 from tests.integration.helpers import (
@@ -118,3 +120,125 @@ async def test_the_curve_turned_off_elsewhere_is_adopted_and_not_turned_on_again
     await async_advance(hass, freezer, 60)
     assert hass.states.get(select).state == "source_curve"
     assert not [call for call in actuators.calls if call.entity_id == CURVE]
+
+
+NUMBER = "number.heat_pump_curve_number"
+
+
+async def _with_curve_number(hass: HomeAssistant) -> tuple[str, str, str]:
+    """The flat with its curve number at 6: its entry ID, Warm-up switch, and curve number."""
+    Actuators(hass)
+    for entity in (REQUEST, "switch.pump", "switch.valve"):
+        hass.states.async_set(entity, "off")
+    hass.states.async_set(CURVE, "on")
+    hass.states.async_set(NUMBER, "6", {"min": 1, "max": 9, "step": 1})
+    hass.states.async_set(SUPPLY, "30", {**CELSIUS, "min": 20, "max": 60, "step": 1})
+    hass.states.async_set("sensor.flat", "19", CELSIUS)
+    hass.states.async_set("sensor.outdoor", "5", CELSIUS)
+    text = FLAT.replace(
+        f"weather_curve: {{switch: {CURVE}}}",
+        f"weather_curve: {{switch: {CURVE}, curve_number: {{entity: {NUMBER}, hotter: lower}}}}",
+    )
+    entry = await async_import(hass, text)
+    await async_set_options(hass, entry, armed=entry.runtime_data.plant.outputs(), control=True)
+    plant_id = entry.runtime_data.plant.id
+    mode = entity_id_of(hass, "select", f"{plant_id}_mode")
+    await async_call(hass, "select", "select_option", entity_id=mode, option="heat")
+    return (
+        entry.entry_id,
+        entity_id_of(hass, "switch", f"{plant_id}_warm_up"),
+        entity_id_of(hass, "number", f"{plant_id}_weather_curve_number"),
+    )
+
+
+async def test_the_curve_number_entity_sets_and_adopts_the_number(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    _, _, number = await _with_curve_number(hass)
+    assert hass.states.get(number).state == "6.0"
+
+    await async_call(hass, "number", "set_value", entity_id=number, value=4)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(NUMBER).state == "4.0"
+    assert hass.states.get(number).state == "4.0"
+
+    # Set on the controller: adopted as Hydronicus's value and never written back.
+    hass.states.async_set(NUMBER, "3", {"min": 1, "max": 9, "step": 1})
+    await async_advance(hass, freezer, 60)
+    assert hass.states.get(number).state == "3.0"
+    assert hass.states.get(NUMBER).state == "3"
+
+
+async def test_the_warm_up_switch_steps_the_curve_and_the_action_ends_it(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    entry_id, warm_up, number = await _with_curve_number(hass)
+    assert hass.states.get(warm_up).state == "off"
+
+    await async_call(hass, "switch", "turn_on", entity_id=warm_up)
+    await async_advance(hass, freezer, 5)
+    state = hass.states.get(warm_up)
+    assert state.state == "on"
+    assert state.attributes["curve_steps"] == 1
+    assert state.attributes["zones"] == [], "no zone calls, so it runs its time"
+    assert state.attributes["until"] is not None
+    assert hass.states.get(NUMBER).state == "5.0", "one curve hotter: lower"
+    assert hass.states.get(number).state == "6.0", "the owned number stays"
+
+    await async_call(hass, DOMAIN, "end_warm_up", config_entry_id=entry_id)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(warm_up).state == "off"
+    assert hass.states.get(warm_up).attributes["until"] is None
+    assert hass.states.get(NUMBER).state == "6.0"
+
+    await async_call(
+        hass, DOMAIN, "warm_up", config_entry_id=entry_id, duration={"minutes": 30}, shift=2
+    )
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(warm_up).attributes["shift"] == 2.0
+    await async_advance(hass, freezer, 1800, step=60)
+    assert hass.states.get(warm_up).state == "off"
+    assert hass.states.get(NUMBER).state == "6.0"
+
+
+async def test_a_warm_up_that_would_raise_nothing_is_refused(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    await _flat(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    warm_up = entity_id_of(hass, "switch", f"{entry.runtime_data.plant.id}_warm_up")
+    await async_advance(hass, freezer, 5)
+
+    # On the heat pump's own curve without a curve number there is nothing to step.
+    with pytest.raises(ServiceValidationError) as error:
+        await async_call(hass, DOMAIN, "warm_up", config_entry_id=entry.entry_id)
+    assert error.value.translation_key == "warm_up_no_curve_number"
+    with pytest.raises(ServiceValidationError):
+        await async_call(hass, "switch", "turn_on", entity_id=warm_up)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(warm_up).state == "off"
+
+
+async def test_the_warm_up_actions_need_a_heating_supply(hass: HomeAssistant) -> None:
+    for entity in ("switch.boiler", "switch.pump", "switch.valve"):
+        hass.states.async_set(entity, "off")
+    hass.states.async_set("sensor.flat", "21", CELSIUS)
+    entry = await async_import(
+        hass,
+        """
+hydronicus: 2
+name: Plain
+source: {request: switch.boiler}
+pumps:
+  pump: {switch: switch.pump}
+zones:
+  flat:
+    temperature: [sensor.flat]
+    loops:
+      radiator: {valves: [switch.valve], pump: pump}
+""",
+    )
+    for action in ("warm_up", "end_warm_up"):
+        with pytest.raises(ServiceValidationError) as error:
+            await async_call(hass, DOMAIN, action, config_entry_id=entry.entry_id)
+        assert error.value.translation_key == "no_heating_supply"

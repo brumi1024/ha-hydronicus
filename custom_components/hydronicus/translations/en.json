@@ -813,6 +813,23 @@
             "name": "Until"
           }
         }
+      },
+      "warm_up": {
+        "name": "Warm-up",
+        "state_attributes": {
+          "until": {
+            "name": "Until"
+          },
+          "shift": {
+            "name": "Shift"
+          },
+          "curve_steps": {
+            "name": "Curve steps"
+          },
+          "zones": {
+            "name": "Zones"
+          }
+        }
       }
     },
     "climate": {
@@ -908,6 +925,9 @@
       },
       "heating_supply_temperature": {
         "name": "Heating supply temperature"
+      },
+      "weather_curve_number": {
+        "name": "Weather curve number"
       }
     },
     "button": {
@@ -1066,6 +1086,18 @@
     },
     "away_until_past": {
       "message": "The return time of an away must lie in the future."
+    },
+    "no_heating_supply": {
+      "message": "Plant {plant} has no heating supply to warm up: its source needs a weather curve switch or a supply number."
+    },
+    "warm_up_while_cooling": {
+      "message": "Plant {plant} cools, and a warm-up only heats."
+    },
+    "warm_up_no_curve_number": {
+      "message": "Plant {plant} heats on the source's own curve without a curve number, so a warm-up has nothing to raise. Bind the curve number in the plant file, or choose another heating supply."
+    },
+    "warm_up_no_supply": {
+      "message": "Plant {plant} heats to the source's own fixed setpoint, which Hydronicus cannot raise. Bind the supply number in the plant file, or choose another heating supply."
     }
   },
   "services": {
@@ -1128,6 +1160,34 @@
         "config_entry_id": {
           "name": "Plant",
           "description": "The Hydronicus Plant that is home again."
+        }
+      }
+    },
+    "warm_up": {
+      "name": "Warm up",
+      "description": "Raises a Plant's heating supply for a bounded time, such as after a setback: by a shift on a fixed temperature or Hydronicus's curve, or by the configured curve steps on the source's own curve. It ends after its duration, or once every zone that called when it started reaches its heating target.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant to warm up."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "How long the warm-up lasts at most, up to 12 hours; the Plant's configured duration by default."
+        },
+        "shift": {
+          "name": "Shift",
+          "description": "How many kelvin a fixed temperature or Hydronicus's curve rises, up to 10; the Plant's configured shift by default."
+        }
+      }
+    },
+    "end_warm_up": {
+      "name": "End warm-up",
+      "description": "Ends a Plant's warm-up now.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "The Hydronicus Plant whose warm-up ends."
         }
       }
     }

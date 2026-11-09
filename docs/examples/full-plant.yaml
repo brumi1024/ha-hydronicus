@@ -37,7 +37,11 @@ source:
   request: switch.heat_pump_heat_request     # required; the switch that asks for heat or cooling
   mode: {entity: select.heat_pump_mode, heat: Heat, cool: Cool}   # select and its two options for heating and cooling
   mode_switches: {switch.heat_pump_backup_heater: [heat]}          # switches that are on only in the listed modes
-  weather_curve: {switch: switch.heat_pump_weather_curve}          # the source's own curve; offers Heat pump curve on the Heating supply select, always off in cooling
+  weather_curve:                             # the source's own curve; offers Heat pump curve on the Heating supply select, always off in cooling
+    switch: switch.heat_pump_weather_curve   # required; turns the source's own curve on
+    curve_number: {entity: number.heat_pump_curve_number, hotter: lower, minimum: 1, maximum: 9}   # picks which of the source's curves runs; owned by Hydronicus, a change on the source is adopted (whole numbers, default 1 to 9)
+                                             # hotter is required: lower or higher, the way the number makes the curve hotter
+  warm_up: {shift: 3, curve_steps: 1, duration: 7200}   # a timed raise from the Warm-up switch or action: shift K on a fixed or Hydronicus curve (up to 10), curve_steps hotter on the source's curve, for duration s (up to 43200)
   post_run: 180                              # source keeps its pumps running this long after the request (default 180)
   min_on: 600                                # shortest request on time (default 600)
   min_off: 600                               # shortest request off time, keep above write_interval (default 600)

@@ -175,6 +175,7 @@ HEAT_PUMP_HANDOVER: Final = "binary_sensor.midea_heat_pump_handover_to_controlle
 HEAT_PUMP_MODE: Final = "select.midea_heat_pump_mode"
 HEAT_PUMP_SETPOINT: Final = "number.midea_heat_pump_zone_1_water_setpoint"
 HEAT_PUMP_CURVE: Final = "switch.midea_heat_pump_weather_curve"
+HEAT_PUMP_CURVE_NUMBER: Final = "number.midea_heat_pump_weather_curve_number"
 HEAT_PUMP_WATER_OUTLET: Final = "sensor.midea_heat_pump_water_outlet"
 HEAT_PUMP_DHW: Final = "switch.midea_heat_pump_dhw"
 HEAT_PUMP_DHW_SETPOINT: Final = "number.midea_heat_pump_dhw_setpoint"
@@ -188,7 +189,9 @@ mode_dwell: 7200
 source:
   request: switch.midea_heat_pump_space_heating
   mode: {entity: select.midea_heat_pump_mode, heat: Heat, cool: Cool}
-  weather_curve: {switch: switch.midea_heat_pump_weather_curve}
+  weather_curve:
+    switch: switch.midea_heat_pump_weather_curve
+    curve_number: {entity: number.midea_heat_pump_weather_curve_number, hotter: lower}
   post_run: 0
   min_on: 1500
   min_off: 720

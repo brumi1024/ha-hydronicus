@@ -50,7 +50,7 @@ from homeassistant.core import (
 from homeassistant.core import (
     State as HassState,
 )
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -73,7 +73,7 @@ from .compressor import CompressorHistory
 from .const import DOMAIN, OPTION_CONTROL, STORE_SAVE_DELAY, STORE_VERSION
 from .core.comfort import Away, Setbacks, next_period_target
 from .core.dhw import DhwCommand, DhwState
-from .core.heating_supply import HeatingSupplyResult, SupplyCommand
+from .core.heating_supply import HeatingSupplyResult, SupplyCommand, warm_up_refusal
 from .core.model import (
     MAX_CURVE_OFFSET,
     NUMERIC_ROLES,
@@ -587,9 +587,16 @@ class PlantRuntime:
 
     @callback
     def command_supply(
-        self, *, strategy: HeatingSupply | None = None, fixed: float | None = None
+        self,
+        *,
+        strategy: HeatingSupply | None = None,
+        fixed: float | None = None,
+        curve_number: float | None = None,
+        warm_up: bool | None = None,
+        warm_for: float | None = None,
+        warm_shift: float | None = None,
     ) -> None:
-        """Take the owner's heating supply command from an entity, and evaluate."""
+        """Take the owner's heating supply command from an entity or an action, and evaluate."""
         last = max(
             (
                 at
@@ -607,8 +614,41 @@ class PlantRuntime:
             # A command no evaluation has applied yet keeps what this one leaves alone.
             strategy = pending.strategy if strategy is None else strategy
             fixed = pending.fixed if fixed is None else fixed
-        self.supply_command = SupplyCommand(at, strategy, fixed)
+            curve_number = pending.curve_number if curve_number is None else curve_number
+            if warm_up is None:
+                warm_up, warm_for = pending.warm_up, pending.warm_for
+                warm_shift = pending.warm_shift
+        self.supply_command = SupplyCommand(
+            at, strategy, fixed, curve_number, warm_up, warm_for, warm_shift
+        )
         self.request_evaluation()
+
+    @callback
+    def start_warm_up(self, *, duration: float | None = None, shift: float | None = None) -> None:
+        """Start a warm-up, or raise when it would raise nothing or the Plant cools."""
+        source = self.plant.source
+        result = self.heating_supply
+        strategy = None if source is None else source.default_heating_supply
+        if source is None or strategy is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="no_heating_supply",
+                translation_placeholders={"plant": self.entry.title},
+            )
+        view = self.view
+        cooling = self.requested_mode is Mode.COOL or (
+            view is not None and view.desired.mode is Mode.COOL
+        )
+        refusal = warm_up_refusal(
+            source, strategy if result is None else result.strategy, cooling=cooling
+        )
+        if refusal is not None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=refusal.value,
+                translation_placeholders={"plant": self.entry.title},
+            )
+        self.command_supply(warm_up=True, warm_for=duration, warm_shift=shift)
 
     @property
     def heating_supply(self) -> HeatingSupplyResult | None:
@@ -1134,7 +1174,7 @@ class PlantRuntime:
                 option = option_value(state)
                 outputs[entity] = OptionState(option, self.memory.since(entity, option, changed))
             elif role in NUMERIC_ROLES:
-                value = numeric_value(state)
+                value = numeric_value(state, temperature=role is not OutputRole.SOURCE_CURVE_NUMBER)
                 outputs[entity] = NumericState(value, self.memory.since(entity, value, changed))
             else:
                 since = self.memory.since(entity, switch_memory_value(state), changed)
@@ -1360,7 +1400,9 @@ class PlantRuntime:
             if role is OutputRole.SOURCE_MODE:
                 value = option_value(new_state)
             elif role in NUMERIC_ROLES:
-                value = numeric_value(new_state)
+                value = numeric_value(
+                    new_state, temperature=role is not OutputRole.SOURCE_CURVE_NUMBER
+                )
             else:
                 value = switch_memory_value(new_state)
             self.memory.since(entity, value, new_state.last_changed_timestamp)

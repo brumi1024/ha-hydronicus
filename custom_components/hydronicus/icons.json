@@ -129,6 +129,13 @@
           "on": "mdi:home-export-outline",
           "off": "mdi:home"
         }
+      },
+      "warm_up": {
+        "default": "mdi:radiator",
+        "state": {
+          "on": "mdi:radiator",
+          "off": "mdi:radiator-off"
+        }
       }
     },
     "button": {
@@ -151,6 +158,9 @@
       },
       "heating_supply_temperature": {
         "default": "mdi:thermometer-water"
+      },
+      "weather_curve_number": {
+        "default": "mdi:chart-bell-curve"
       }
     }
   },
@@ -169,6 +179,12 @@
     },
     "end_away": {
       "service": "mdi:home-import-outline"
+    },
+    "warm_up": {
+      "service": "mdi:radiator"
+    },
+    "end_warm_up": {
+      "service": "mdi:radiator-off"
     }
   }
 }
