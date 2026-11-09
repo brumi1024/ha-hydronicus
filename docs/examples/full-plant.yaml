@@ -75,8 +75,8 @@ source:
     outdoor_damping: 10800                   # filter time constant of the outdoor reading; needs outdoor_sensor (default 0, off)
     outdoor_fallback: 0                      # outdoor temperature used while the reading is lost, -50 to 50 (default none)
     heating_limit: 16                        # no heating at or above this damped outdoor temperature (default none)
-    room_influence:                          # a lead zone that shifts the heating curve
-      zone: living_room                      # required; zone slug with a digital thermostat and a heating loop
+    room_influence:                          # lead zones that shift the heating curve; the coldest calling one leads
+      zones: [living_room, kitchen]          # required; zone slugs with a digital thermostat and a heating loop
       factor: 1                              # shift per K the zone is below its target (default 1)
       limit: 3                               # largest shift either way in K (default 3)
 
