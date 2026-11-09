@@ -58,6 +58,8 @@ from .model import (
     MAX_SENSOR_FALLBACK_DUTY,
     MAX_SENSOR_FALLBACK_PERIOD,
     MAX_SETBACK,
+    MAX_WARM_UP_DURATION,
+    MAX_WARM_UP_SHIFT,
     MAX_WINDOW_DETECTION_CHANGE,
     MAX_WINDOW_DETECTION_MAX_DURATION,
     MAX_WINDOW_DETECTION_WITHIN,
@@ -85,6 +87,7 @@ from .model import (
     Disinfect,
     Exercise,
     ExternalThermostat,
+    Hotter,
     LearningMode,
     Loop,
     LoopRef,
@@ -107,6 +110,7 @@ from .model import (
     SupplyControl,
     Thermostat,
     Valve,
+    WarmUp,
     WeatherConfig,
     WeatherCurve,
     WindowDetection,
@@ -144,6 +148,7 @@ _SOURCE_KEYS: Final = (
     "running_sensor",
     "supply",
     "weather_curve",
+    "warm_up",
     "feedback_timeout",
     "max_starts_per_hour",
     "heat_sink_loops",
@@ -208,7 +213,8 @@ _SUPPLY_KEYS: Final = (
 )
 _ROOM_INFLUENCE_KEYS: Final = ("zone", "factor", "limit")
 _WEATHER_CURVE_KEYS: Final = ("switch", "curve_number")
-_CURVE_NUMBER_KEYS: Final = ("entity", "minimum", "maximum")
+_CURVE_NUMBER_KEYS: Final = ("entity", "hotter", "minimum", "maximum")
+_WARM_UP_KEYS: Final = ("shift", "curve_steps", "duration")
 # The supply keys that are not plain numbers with a default.
 _SUPPLY_SPECIAL_KEYS: Final = (
     "entity",
@@ -518,6 +524,9 @@ def _source(value: object, path: str) -> Source:
             if "weather_curve" in source
             else None
         ),
+        warm_up=_warm_up(source["warm_up"], _join(path, "warm_up"))
+        if "warm_up" in source
+        else WarmUp(),
         max_starts_per_hour=_max_starts(source, path),
         heat_sink_loops=(
             _loop_refs(source["heat_sink_loops"], _join(path, "heat_sink_loops"))
@@ -699,14 +708,34 @@ def _weather_curve(value: object, path: str) -> WeatherCurve:
 def _curve_number(value: object, path: str) -> CurveNumber:
     document = _mapping(value, path, _CURVE_NUMBER_KEYS)
     entity = _entity(_required(document, "entity", path), _join(path, "entity"), ("number",))
-    defaults = CurveNumber(entity)
+    hotter = _required(document, "hotter", path)
+    if hotter not in tuple(Hotter):
+        raise PlantFileError(
+            _join(path, "hotter"), "Expected lower or higher: the way the curve gets hotter."
+        )
+    defaults = CurveNumber(entity, Hotter(hotter))
     bounds = {
         key: _whole(document.get(key, getattr(defaults, key)), _join(path, key))
         for key in ("minimum", "maximum")
     }
     if bounds["minimum"] >= bounds["maximum"]:
         raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
-    return CurveNumber(entity, **bounds)
+    return CurveNumber(entity, Hotter(hotter), **bounds)
+
+
+def _warm_up(value: object, path: str) -> WarmUp:
+    document = _mapping(value, path, _WARM_UP_KEYS)
+    defaults = WarmUp()
+    shift = _number(document.get("shift", defaults.shift), _join(path, "shift"), positive=True)
+    _within(shift, _join(path, "shift"), high=MAX_WARM_UP_SHIFT)
+    steps = _whole(document.get("curve_steps", defaults.curve_steps), _join(path, "curve_steps"))
+    if steps < 1:
+        raise PlantFileError(_join(path, "curve_steps"), "Must be at least 1.")
+    duration = _number(
+        document.get("duration", defaults.duration), _join(path, "duration"), positive=True
+    )
+    _within(duration, _join(path, "duration"), high=MAX_WARM_UP_DURATION)
+    return WarmUp(shift, steps, duration)
 
 
 def _whole(value: object, path: str) -> int:
@@ -1791,6 +1820,7 @@ _KEY_WORDS: Final = {
     "mode_switches": "mode switches",
     "weather_curve": "weather curve",
     "curve_number": "curve number",
+    "warm_up": "warm-up",
     "no_load": "no-load guard",
     "return_temperature": "return temperature sensor",
     "compressor_sensor": "compressor sensor",
@@ -1938,12 +1968,18 @@ def _export_source(source: Source) -> dict[str, Any]:
     if source.weather_curve is not None:
         document["weather_curve"] = {"switch": source.weather_curve.switch}
         if (number := source.weather_curve.curve_number) is not None:
-            curve: dict[str, Any] = {"entity": number.entity}
-            curve_defaults = CurveNumber(number.entity)
+            curve: dict[str, Any] = {"entity": number.entity, "hotter": number.hotter.value}
+            curve_defaults = CurveNumber(number.entity, number.hotter)
             for key in ("minimum", "maximum"):
                 if getattr(number, key) != getattr(curve_defaults, key):
                     curve[key] = getattr(number, key)
             document["weather_curve"]["curve_number"] = curve
+    if source.warm_up != WarmUp():
+        document["warm_up"] = {
+            key: _export_number(getattr(source.warm_up, key))
+            for key in _WARM_UP_KEYS
+            if getattr(source.warm_up, key) != getattr(WarmUp(), key)
+        }
     document["post_run"] = _export_number(source.post_run)
     document["min_on"] = _export_number(source.min_on)
     document["min_off"] = _export_number(source.min_off)

@@ -13,6 +13,7 @@ from custom_components.hydronicus.core.model import HeatingSupply, Mode
 from tests.sim.harness import Sim
 from tests.sim.plants import (
     HEAT_PUMP_CURVE,
+    HEAT_PUMP_CURVE_NUMBER,
     HEAT_PUMP_REQUEST,
     HEAT_PUMP_SETPOINT,
     HOME_HEAT_PUMP,
@@ -31,6 +32,7 @@ def _heating() -> Sim:
     sim = Sim(plant(HOME_HEAT_PUMP), mode=Mode.HEAT)
     sim.seed_on(HEAT_PUMP_CURVE)
     sim.world.seed_number(HEAT_PUMP_SETPOINT, 30.0)
+    sim.world.seed_number(HEAT_PUMP_CURVE_NUMBER, 6.0)
     for zone in ("basement", "living_area"):
         sim.set_zone_temperature(zone, WARM)
     sim.set_zone_temperature("bedroom_area", COLD)
@@ -94,3 +96,26 @@ def test_a_fixed_supply_chosen_in_home_assistant_turns_the_curve_off_then_sets_i
         "back on the heat pump's own curve",
     )
     assert sim.is_on(HEAT_PUMP_REQUEST)
+
+
+def test_a_warm_up_steps_the_curve_hotter_until_the_bedrooms_are_warm() -> None:
+    sim = _heating()
+    assert not sim.calls_to(HEAT_PUMP_CURVE_NUMBER), "the curve number is taken as found"
+
+    sim.command_supply(warm_up=True)
+    sim.run_until_true(
+        lambda: sim.world.number(HEAT_PUMP_CURVE_NUMBER) == 5.0,
+        WRITE_INTERVAL + 3 * REACTION,
+        "a warm-up asks for a hotter curve, which is a lower number on this heat pump",
+    )
+    assert sim.is_on(HEAT_PUMP_CURVE) and sim.is_on(HEAT_PUMP_REQUEST)
+
+    sim.set_zone_temperature("bedroom_area", WARM)
+    sim.run_until_true(
+        lambda: sim.world.number(HEAT_PUMP_CURVE_NUMBER) == 6.0,
+        WRITE_INTERVAL + 3 * REACTION,
+        "once the bedrooms are warm the warm-up ends and the owned curve comes back",
+    )
+    supply = sim.desired.heating_supply
+    assert supply is not None and not supply.state.warming
+    assert len(sim.calls_to(HEAT_PUMP_CURVE_NUMBER)) == 2, "two writes per warm-up"

@@ -57,6 +57,7 @@ from .heating_supply import (
     HeatingSupplyResult,
     HeatingSupplyState,
     SupplyCommand,
+    clamp_fixed,
     heating_supply_step,
 )
 from .model import (
@@ -617,6 +618,14 @@ _SUPPLY_REASONS: Final = {
 }
 
 
+def warm_up_reason(result: HeatingSupplyResult) -> str:
+    """What a warm-up raises under the heating supply in force."""
+    if result.strategy is HeatingSupply.SOURCE_CURVE:
+        steps = result.state.warm_steps
+        return f"warming up by {steps} curve step{'s' if steps != 1 else ''}"
+    return f"warming up by {result.state.warm_shift:g} K"
+
+
 class _Evaluation:
     """The stages of one ``step()``, with the caches and deadlines they share."""
 
@@ -683,6 +692,8 @@ class _Evaluation:
         self.plant, self.obs, self.state, self.now = plant, obs, state, now
         # The heating supply strategy, chosen once the outputs' mode is known.
         self.heating: HeatingSupplyResult | None = None
+        # The zones that call for heat this evaluation, by slug.
+        self.heat_calls: tuple[str, ...] = ()
         self.commissioning = state.commissioning
         self.physical_flow_seen = physical_flow_seen
         self.source_observed = None if plant.source is None else self.switch(plant.source.request)
@@ -998,6 +1009,9 @@ class _Evaluation:
     def run(self) -> tuple[State, Desired, float | None]:
         plant, obs, state, now = self.plant, self.obs, self.state, self.now
         demands, demand_states = self.demands()
+        self.heat_calls = tuple(
+            slug for slug, demand in demands.items() if demand.on and demand.mode is Mode.HEAT
+        )
         guards = self.guards()
         self.guard_states = guards
         self.idle_times = self.idle_since()
@@ -1166,6 +1180,19 @@ class _Evaluation:
             self.temperatures.get(slug),
         )
 
+    def zone_target(self, slug: str) -> float | None:
+        """A digital thermostat's heating target this evaluation, None without one."""
+        comfort = self.comfort.get(slug)
+        return None if comfort is None else comfort.target
+
+    def zones_warm(self, zones: tuple[str, ...]) -> bool:
+        """Every zone reads at least its heating target; one without both is not warm."""
+        for slug in zones:
+            target, temperature = self.zone_target(slug), self.temperatures.get(slug)
+            if target is None or temperature is None or temperature < target:
+                return False
+        return True
+
     def warm_reason(self) -> str:
         source = self.plant.source
         assert source is not None and source.supply is not None and self.outdoor is not None
@@ -1269,9 +1296,16 @@ class _Evaluation:
             self.state.heating_supply,
             self.obs.supply_command,
             number=value(None if source.curve_number is None else source.curve_number.entity),
+            cools=self.obs.mode is Mode.COOL,
+            now=self.now,
+            reached=self.reached,
+            calling=self.heat_calls,
+            warm=self.zones_warm,
         )
         if result is not None:
             self.reasons["heating_supply"] = _SUPPLY_REASONS[result.strategy]
+            if result.state.warming:
+                self.reasons["warm_up"] = warm_up_reason(result)
         return result
 
     def tank_temperature(self, entity: str) -> float | None:
@@ -2253,8 +2287,10 @@ class _Plan:
             if heating.fixed is None:
                 ev.reasons["source_supply"] = "supply temperature unavailable"
                 return None
-            ev.reasons["source_supply"] = f"fixed supply target {heating.fixed:.1f} °C"
-            return NumericTarget(heating.fixed, config.tolerance)
+            value = clamp_fixed(source, heating.fixed + heating.warm_shift)
+            assert value is not None
+            ev.reasons["source_supply"] = f"fixed supply target {value:.1f} °C"
+            return NumericTarget(value, config.tolerance)
         proposal = supply_target(
             config,
             self.mode,
@@ -2262,7 +2298,7 @@ class _Plan:
             ev.now,
             outdoor=ev.outdoor,
             offset=ev.curve_offset(),
-            room_shift=ev.room_shift(),
+            room_shift=ev.room_shift() + heating.warm_shift,
             frost_outdoor=FROST_CURVE_OUTDOOR if ev.frost else None,
         )
         if self.mode is Mode.HEAT and config.outdoor_sensor is not None:

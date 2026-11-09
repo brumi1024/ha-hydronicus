@@ -191,7 +191,7 @@ source:
   mode: {entity: select.midea_heat_pump_mode, heat: Heat, cool: Cool}
   weather_curve:
     switch: switch.midea_heat_pump_weather_curve
-    curve_number: {entity: number.midea_heat_pump_weather_curve_number}
+    curve_number: {entity: number.midea_heat_pump_weather_curve_number, hotter: lower}
   post_run: 0
   min_on: 1500
   min_off: 720
