@@ -205,7 +205,7 @@ _SUPPLY_KEYS: Final = (
     "heating_limit",
     "room_influence",
 )
-_ROOM_INFLUENCE_KEYS: Final = ("zone", "factor", "limit")
+_ROOM_INFLUENCE_KEYS: Final = ("zones", "factor", "limit")
 _WEATHER_CURVE_KEYS: Final = ("switch",)
 # The supply keys that are not plain numbers with a default.
 _SUPPLY_SPECIAL_KEYS: Final = (
@@ -778,15 +778,20 @@ def _supply(value: object, path: str) -> SupplyControl:
 
 def _room_influence(value: object, path: str) -> RoomInfluence:
     document = _mapping(value, path, _ROOM_INFLUENCE_KEYS)
-    zone = _required(document, "zone", path)
-    if not isinstance(zone, str):
-        raise PlantFileError(_join(path, "zone"), "Expected a zone slug.")
-    defaults = RoomInfluence(zone)
+    zones = _required(document, "zones", path)
+    zones_path = _join(path, "zones")
+    if not isinstance(zones, list) or not zones:
+        raise PlantFileError(zones_path, "Expected a list of at least one zone slug.")
+    for index, zone in enumerate(zones):
+        if not isinstance(zone, str):
+            raise PlantFileError(_join(zones_path, index), "Expected a zone slug.")
+    _check_listed_once(zones_path, zones, "Zone")
+    defaults = RoomInfluence(tuple(zones))
     factor = _number(document.get("factor", defaults.factor), _join(path, "factor"), positive=True)
     _within(factor, _join(path, "factor"), high=10)
     limit = _number(document.get("limit", defaults.limit), _join(path, "limit"), positive=True)
     _within(limit, _join(path, "limit"), high=MAX_CURVE_OFFSET * 2)
-    return RoomInfluence(zone, factor, limit)
+    return RoomInfluence(tuple(zones), factor, limit)
 
 
 def _schedule(value: object, path: str) -> Schedule:
@@ -1444,15 +1449,15 @@ def _check_heat_sink(plant: Plant, source: Source) -> None:
 def _check_room_influence(plant: Plant, source: Source) -> None:
     if source.supply is None or source.supply.room_influence is None:
         return
-    path = "source.supply.room_influence.zone"
-    slug = source.supply.room_influence.zone
-    zone = next((zone for zone in plant.zones if zone.slug == slug), None)
-    if zone is None:
-        raise PlantFileError(path, f"There is no zone {slug}.")
-    if not isinstance(zone.thermostat, DigitalThermostat):
-        raise PlantFileError(path, f"Zone {slug} needs a digital thermostat to lead the curve.")
-    if Mode.HEAT not in plant.zone_modes(slug):
-        raise PlantFileError(path, f"No loop heats zone {slug}, so it cannot lead the curve.")
+    for index, slug in enumerate(source.supply.room_influence.zones):
+        path = f"source.supply.room_influence.zones.{index}"
+        zone = next((zone for zone in plant.zones if zone.slug == slug), None)
+        if zone is None:
+            raise PlantFileError(path, f"There is no zone {slug}.")
+        if not isinstance(zone.thermostat, DigitalThermostat):
+            raise PlantFileError(path, f"Zone {slug} needs a digital thermostat to lead the curve.")
+        if Mode.HEAT not in plant.zone_modes(slug):
+            raise PlantFileError(path, f"No loop heats zone {slug}, so it cannot lead the curve.")
 
 
 def _check_loop(plant: Plant, loop: Loop) -> None:
@@ -1973,8 +1978,8 @@ def _export_source(source: Source) -> dict[str, Any]:
             [key for key in _SUPPLY_KEYS if key != "room_influence"],
         )
         if (influence := source.supply.room_influence) is not None:
-            room: dict[str, Any] = {"zone": influence.zone}
-            defaults = RoomInfluence(influence.zone)
+            room: dict[str, Any] = {"zones": list(influence.zones)}
+            defaults = RoomInfluence(influence.zones)
             if influence.factor != defaults.factor:
                 room["factor"] = _export_number(influence.factor)
             if influence.limit != defaults.limit:

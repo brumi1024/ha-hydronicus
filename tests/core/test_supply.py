@@ -197,7 +197,7 @@ def test_a_fallback_or_a_missing_reading_never_keeps_the_heating_limit() -> None
 
 
 def test_room_influence_shifts_by_its_factor_within_its_limit() -> None:
-    config = replace(CURVE, room_influence=RoomInfluence("living", factor=2.0, limit=3.0))
+    config = replace(CURVE, room_influence=RoomInfluence(("living",), factor=2.0, limit=3.0))
     assert room_shift(config, 21.0, 20.5) == 1.0
     assert room_shift(config, 21.0, 19.0) == 3.0
     assert room_shift(config, 21.0, 23.0) == -3.0
