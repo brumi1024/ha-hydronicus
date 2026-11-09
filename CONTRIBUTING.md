@@ -65,4 +65,12 @@ Leave out file lists, test counts, coverage numbers, command output, and the his
 
 ## Releases
 
+Versions follow semantic versioning, and the public interface is the plant file, the entities' unique IDs, and the actions.
+
+- A patch release (`1.0.x`) fixes a bug and changes nothing a user relies on.
+- A minor release (`1.x.0`) adds features, keys, entities, or actions, or fixes a larger bug, and every existing plant file still imports and means the same.
+- A major release (`x.0.0`) breaks something a user relies on: a removed or renamed plant file key, a value that changes meaning, a plant file that no longer imports, a changed unique ID, or a removed action.
+
+There are still no migrations or aliases, so a breaking change is a major release, and its release note says exactly what to change in a plant file before importing it again.
+
 Bump the version in `manifest.json` and `pyproject.toml`, add `docs/releases/v<version>.md`, and run the Release workflow.
