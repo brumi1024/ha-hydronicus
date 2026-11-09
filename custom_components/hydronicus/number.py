@@ -137,6 +137,42 @@ class HeatingSupplyTemperature(HydronicusEntity, NumberEntity):
         self.runtime.command_supply(fixed=value)
 
 
+class WarmUpTemperature(HydronicusEntity, NumberEntity):
+    """The temperature a warm-up holds the heating supply at least at, which any user may set.
+
+    It starts from the plant file's ``warm_up.temperature``, and a change applies
+    to a running warm-up at once.
+    """
+
+    _attr_translation_key = "warm_up_temperature"
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, runtime: PlantRuntime, supply: SupplyControl) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "warm_up_temperature"),
+            source_device(runtime),
+        )
+        self._attr_native_min_value = supply.minimum
+        self._attr_native_max_value = supply.maximum
+        self._attr_native_step = supply.step or 0.5
+
+    @property
+    def available(self) -> bool:
+        result = self.runtime.heating_supply
+        return result is not None and result.warm_temperature is not None
+
+    @property
+    def native_value(self) -> float | None:
+        result = self.runtime.heating_supply
+        return None if result is None else result.warm_temperature
+
+    async def async_set_native_value(self, value: float) -> None:
+        self.runtime.command_supply(warm_temperature=value)
+
+
 class WeatherCurveNumber(HydronicusEntity, NumberEntity):
     """The source's own weather curve number that Hydronicus owns.
 
@@ -232,6 +268,7 @@ async def async_setup_entry(
         entities.append((None, HeatingCurveOffset(runtime)))
     if source is not None and source.supply is not None:
         entities.append((None, HeatingSupplyTemperature(runtime, source.supply)))
+        entities.append((None, WarmUpTemperature(runtime, source.supply)))
     if source is not None and source.curve_number is not None:
         entities.append((None, WeatherCurveNumber(runtime, source.curve_number)))
     if source is not None and source.dhw is not None and source.dhw.setpoint is not None:

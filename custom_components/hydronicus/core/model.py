@@ -335,33 +335,21 @@ class HeatingSupply(StrEnum):
     CURVE = "curve"
 
 
-class Hotter(StrEnum):
-    """Which way a source's curve number makes its curve hotter."""
-
-    LOWER = "lower"
-    HIGHER = "higher"
-
-
 @dataclass(frozen=True, slots=True)
 class CurveNumber:
     """The number that picks one of a source's own weather curves, which Hydronicus owns.
 
     A change made elsewhere, such as on the source's own controller, is adopted
-    as Hydronicus's value and never written back. A warm-up steps it hotter.
+    as Hydronicus's value and never written back.
     """
 
     entity: str
-    hotter: Hotter
     minimum: int = 1
     maximum: int = 9
 
     def clamp(self, number: float) -> float:
         """The whole curve number nearest ``number``, within its range."""
         return float(min(self.maximum, max(self.minimum, round(number))))
-
-    def step(self, number: float, steps: int) -> float:
-        """The curve number ``steps`` hotter than ``number``, within its range."""
-        return self.clamp(number - steps if self.hotter is Hotter.LOWER else number + steps)
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,8 +364,7 @@ class WeatherCurve:
     curve_number: CurveNumber | None = None
 
 
-# The largest warm-up shift, in K, and its longest duration, in seconds.
-MAX_WARM_UP_SHIFT: Final = 10.0
+# A warm-up's longest duration, in seconds.
 MAX_WARM_UP_DURATION: Final = 12 * 3600.0
 
 
@@ -385,15 +372,15 @@ MAX_WARM_UP_DURATION: Final = 12 * 3600.0
 class WarmUp:
     """A timed raise of the heating supply, such as after a setback or a cold spell.
 
-    It adds ``shift`` K to a fixed supply temperature or Hydronicus's curve, or
-    steps the source's own curve ``curve_steps`` hotter. It ends after its
-    duration, once every zone that called when it started reaches its heating
-    target, as soon as the Plant cools, when the curve number is changed
-    elsewhere, or when the owner changes the heating supply strategy.
+    It holds the heating supply at least at ``temperature`` °C under every
+    strategy; on the source's own curve it turns the curve off for its time and
+    sets the supply setpoint. ``temperature`` is the starting value of the
+    owner's Warm-up temperature. It ends after its duration, once every zone
+    that called when it started reaches its heating target, as soon as the
+    Plant cools, or when the heating supply strategy changes.
     """
 
-    shift: float = 3.0
-    curve_steps: int = 1
+    temperature: float = 40.0
     duration: float = 7200.0
 
 

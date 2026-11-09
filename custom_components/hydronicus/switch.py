@@ -82,7 +82,7 @@ class AwaySwitch(HydronicusEntity, SwitchEntity):
 
 
 class WarmUpSwitch(HydronicusEntity, SwitchEntity):
-    """Whether a warm-up raises the heating supply; on starts the configured one."""
+    """Whether a warm-up holds the heating supply; on starts one to the Warm-up temperature."""
 
     _attr_translation_key = "warm_up"
 
@@ -103,14 +103,13 @@ class WarmUpSwitch(HydronicusEntity, SwitchEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         result = self.runtime.heating_supply
-        state = None if result is None else result.state
-        if state is None or state.warm_until is None:
-            return {"until": None, "shift": None, "curve_steps": None, "zones": None}
+        until = None if result is None else result.state.warm_until
+        if result is None or until is None:
+            return {"until": None, "temperature": None, "zones": None}
         return {
-            "until": dt_util.utc_from_timestamp(state.warm_until).isoformat(),
-            "shift": state.warm_shift,
-            "curve_steps": state.warm_steps,
-            "zones": list(state.warm_zones),
+            "until": dt_util.utc_from_timestamp(until).isoformat(),
+            "temperature": result.warm_up,
+            "zones": list(result.state.warm_zones),
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:

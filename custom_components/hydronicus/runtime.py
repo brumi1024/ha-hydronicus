@@ -594,7 +594,8 @@ class PlantRuntime:
         curve_number: float | None = None,
         warm_up: bool | None = None,
         warm_for: float | None = None,
-        warm_shift: float | None = None,
+        warm_to: float | None = None,
+        warm_temperature: float | None = None,
     ) -> None:
         """Take the owner's heating supply command from an entity or an action, and evaluate."""
         last = max(
@@ -616,18 +617,20 @@ class PlantRuntime:
             fixed = pending.fixed if fixed is None else fixed
             curve_number = pending.curve_number if curve_number is None else curve_number
             if warm_up is None:
-                warm_up, warm_for = pending.warm_up, pending.warm_for
-                warm_shift = pending.warm_shift
+                warm_up, warm_for, warm_to = pending.warm_up, pending.warm_for, pending.warm_to
+            if warm_temperature is None:
+                warm_temperature = pending.warm_temperature
         self.supply_command = SupplyCommand(
-            at, strategy, fixed, curve_number, warm_up, warm_for, warm_shift
+            at, strategy, fixed, curve_number, warm_up, warm_for, warm_to, warm_temperature
         )
         self.request_evaluation()
 
     @callback
-    def start_warm_up(self, *, duration: float | None = None, shift: float | None = None) -> None:
-        """Start a warm-up, or raise when it would raise nothing or the Plant cools."""
+    def start_warm_up(
+        self, *, duration: float | None = None, temperature: float | None = None
+    ) -> None:
+        """Start a warm-up, or raise without a supply setpoint or while the Plant cools."""
         source = self.plant.source
-        result = self.heating_supply
         strategy = None if source is None else source.default_heating_supply
         if source is None or strategy is None:
             raise ServiceValidationError(
@@ -639,16 +642,14 @@ class PlantRuntime:
         cooling = self.requested_mode is Mode.COOL or (
             view is not None and view.desired.mode is Mode.COOL
         )
-        refusal = warm_up_refusal(
-            source, strategy if result is None else result.strategy, cooling=cooling
-        )
+        refusal = warm_up_refusal(source, cooling=cooling)
         if refusal is not None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key=refusal.value,
                 translation_placeholders={"plant": self.entry.title},
             )
-        self.command_supply(warm_up=True, warm_for=duration, warm_shift=shift)
+        self.command_supply(warm_up=True, warm_for=duration, warm_to=temperature)
 
     @property
     def heating_supply(self) -> HeatingSupplyResult | None:

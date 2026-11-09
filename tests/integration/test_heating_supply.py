@@ -15,6 +15,7 @@ from tests.integration.helpers import (
     async_import,
     async_set_options,
     entity_id_of,
+    plant_entities,
 )
 
 CURVE = "switch.heat_pump_weather_curve"
@@ -137,7 +138,7 @@ async def _with_curve_number(hass: HomeAssistant) -> tuple[str, str, str]:
     hass.states.async_set("sensor.outdoor", "5", CELSIUS)
     text = FLAT.replace(
         f"weather_curve: {{switch: {CURVE}}}",
-        f"weather_curve: {{switch: {CURVE}, curve_number: {{entity: {NUMBER}, hotter: lower}}}}",
+        f"weather_curve: {{switch: {CURVE}, curve_number: {{entity: {NUMBER}}}}}",
     )
     entry = await async_import(hass, text)
     await async_set_options(hass, entry, armed=entry.runtime_data.plant.outputs(), control=True)
@@ -169,50 +170,115 @@ async def test_the_curve_number_entity_sets_and_adopts_the_number(
     assert hass.states.get(NUMBER).state == "3"
 
 
-async def test_the_warm_up_switch_steps_the_curve_and_the_action_ends_it(
+async def test_the_warm_up_switch_holds_its_temperature_and_the_action_ends_it(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
     entry_id, warm_up, number = await _with_curve_number(hass)
+    plant_id = hass.config_entries.async_get_entry(entry_id).runtime_data.plant.id
+    select = entity_id_of(hass, "select", f"{plant_id}_heating_supply")
+    temperature = entity_id_of(hass, "number", f"{plant_id}_warm_up_temperature")
     assert hass.states.get(warm_up).state == "off"
+    assert hass.states.get(warm_up).attributes["temperature"] is None
+    assert temperature == "number.heat_pump_warm_up_temperature"
+    assert hass.states.get(temperature).state == "40.0"
 
     await async_call(hass, "switch", "turn_on", entity_id=warm_up)
     await async_advance(hass, freezer, 5)
+    await async_advance(hass, freezer, 5)
     state = hass.states.get(warm_up)
     assert state.state == "on"
-    assert state.attributes["curve_steps"] == 1
+    assert state.attributes["temperature"] == 40.0
     assert state.attributes["zones"] == [], "no zone calls, so it runs its time"
     assert state.attributes["until"] is not None
-    assert hass.states.get(NUMBER).state == "5.0", "one curve hotter: lower"
-    assert hass.states.get(number).state == "6.0", "the owned number stays"
+    assert hass.states.get(CURVE).state == "off", "the curve is off for the warm-up"
+    assert hass.states.get(SUPPLY).state == "40.0"
+    assert hass.states.get(select).state == "source_curve"
+    assert hass.states.get(number).state == "6.0", "the curve number is not touched"
+    assert hass.states.get(NUMBER).state == "6"
+
+    # The owner's Warm-up temperature applies to the running warm-up at once.
+    await async_call(hass, "number", "set_value", entity_id=temperature, value=42)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(SUPPLY).state == "42.0"
+    assert hass.states.get(warm_up).attributes["temperature"] == 42.0
 
     await async_call(hass, DOMAIN, "end_warm_up", config_entry_id=entry_id)
     await async_advance(hass, freezer, 5)
     assert hass.states.get(warm_up).state == "off"
     assert hass.states.get(warm_up).attributes["until"] is None
-    assert hass.states.get(NUMBER).state == "6.0"
-
-    await async_call(
-        hass, DOMAIN, "warm_up", config_entry_id=entry_id, duration={"minutes": 30}, shift=2
-    )
-    await async_advance(hass, freezer, 5)
-    assert hass.states.get(warm_up).attributes["shift"] == 2.0
-    await async_advance(hass, freezer, 1800, step=60)
-    assert hass.states.get(warm_up).state == "off"
-    assert hass.states.get(NUMBER).state == "6.0"
+    assert hass.states.get(CURVE).state == "on", "the curve is back on"
+    assert hass.states.get(select).state == "source_curve"
 
 
-async def test_a_warm_up_that_would_raise_nothing_is_refused(
+async def test_the_warm_up_action_s_temperature_is_for_that_warm_up_only(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
-    await _flat(hass)
-    entry = hass.config_entries.async_entries(DOMAIN)[0]
-    warm_up = entity_id_of(hass, "switch", f"{entry.runtime_data.plant.id}_warm_up")
+    entry_id, warm_up, _ = await _with_curve_number(hass)
+    plant_id = hass.config_entries.async_get_entry(entry_id).runtime_data.plant.id
+    temperature = entity_id_of(hass, "number", f"{plant_id}_warm_up_temperature")
+
+    await async_call(
+        hass,
+        DOMAIN,
+        "warm_up",
+        config_entry_id=entry_id,
+        duration={"minutes": 30},
+        temperature=45,
+    )
+    await async_advance(hass, freezer, 5)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(warm_up).attributes["temperature"] == 45.0
+    assert hass.states.get(SUPPLY).state == "45.0"
+    assert hass.states.get(temperature).state == "40.0", "the setting stays"
+
+    await async_advance(hass, freezer, 1800, step=60)
+    assert hass.states.get(warm_up).state == "off"
+    assert hass.states.get(CURVE).state == "on"
+
+    await async_call(hass, "switch", "turn_on", entity_id=warm_up)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(warm_up).attributes["temperature"] == 40.0
+
+
+async def test_the_warm_up_temperature_survives_a_reload(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    entry_id, _, _ = await _with_curve_number(hass)
+    plant_id = hass.config_entries.async_get_entry(entry_id).runtime_data.plant.id
+    temperature = entity_id_of(hass, "number", f"{plant_id}_warm_up_temperature")
+    state = hass.states.get(temperature)
+    assert (state.attributes["min"], state.attributes["max"], state.attributes["step"]) == (
+        20,
+        50,
+        1,
+    )
+    await async_call(hass, "number", "set_value", entity_id=temperature, value=43.4)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(temperature).state == "43.0", "rounded to the setpoint's step"
+
+    assert await hass.config_entries.async_reload(entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(temperature).state == "43.0"
+
+
+async def test_a_warm_up_without_a_supply_setpoint_is_refused(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    Actuators(hass)
+    for entity in (REQUEST, "switch.pump", "switch.valve"):
+        hass.states.async_set(entity, "off")
+    hass.states.async_set(CURVE, "on")
+    hass.states.async_set("sensor.flat", "19", CELSIUS)
+    supply = FLAT[FLAT.index("  supply:") : FLAT.index("pumps:")]
+    entry = await async_import(hass, FLAT.replace(supply, ""))
+    plant_id = entry.runtime_data.plant.id
+    warm_up = entity_id_of(hass, "switch", f"{plant_id}_warm_up")
+    assert f"{plant_id}_warm_up_temperature" not in plant_entities(hass, entry)
     await async_advance(hass, freezer, 5)
 
-    # On the heat pump's own curve without a curve number there is nothing to step.
     with pytest.raises(ServiceValidationError) as error:
         await async_call(hass, DOMAIN, "warm_up", config_entry_id=entry.entry_id)
-    assert error.value.translation_key == "warm_up_no_curve_number"
+    assert error.value.translation_key == "warm_up_no_supply"
     with pytest.raises(ServiceValidationError):
         await async_call(hass, "switch", "turn_on", entity_id=warm_up)
     await async_advance(hass, freezer, 5)

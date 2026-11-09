@@ -100,7 +100,7 @@ The source is reached only through generic entities, so Hydronicus does not know
   The **Heating supply** select chooses who owns the heating supply temperature: the heat pump's own curve, a fixed setpoint, or Hydronicus's outdoor curve with offset, damping, room influence, a heating limit, and an outdoor fallback.
   A change made on the heat pump is adopted as the new choice, never undone.
   An optional **curve number** picks which of the heat pump's own curves runs; Hydronicus owns it like the DHW target and adopts a change made on the heat pump.
-  A **Warm-up** raises the heating supply for a bounded time, by a shift on a fixed setpoint or Hydronicus's curve or by curve steps on the heat pump's own, and ends early once the zones that called are warm, the Plant cools, or the curve number or strategy is changed.
+  A **Warm-up** holds the heating supply at least at the owner's **Warm-up temperature** for a bounded time: it raises a fixed setpoint or Hydronicus's curve to it, or turns the heat pump's own curve off and holds the setpoint at it, then turns the curve on again; it ends early once the zones that called are warm, the Plant cools, the strategy is changed, or the curve is turned on elsewhere.
   Cooling always uses Hydronicus's target, raised to stay above the dew point, with the heat pump's curve off;
 - optional **DHW** switch and target, owned by Hydronicus, with boosts, a schedule, and a disinfection cycle proven by the tank sensor;
 - optional feedback: running, health, handover, inhibit, and compressor sensors, a no-load guard, and a minimum interval between writes.

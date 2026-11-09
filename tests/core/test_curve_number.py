@@ -10,7 +10,6 @@ from custom_components.hydronicus.core.heating_supply import HeatingSupplyState,
 from custom_components.hydronicus.core.model import (
     CurveNumber,
     HeatingSupply,
-    Hotter,
     Mode,
     NumericTarget,
     OutputRole,
@@ -36,7 +35,7 @@ def plant() -> Plant:
     """The heat pump Plant with a weather curve, its curve number, and a supply number."""
     lines = [
         f"  weather_curve: {{switch: {CURVE}, curve_number: "
-        f"{{entity: {NUMBER}, hotter: lower, minimum: 1, maximum: 8}}}}",
+        f"{{entity: {NUMBER}, minimum: 1, maximum: 8}}}}",
         f"  supply: {{entity: {SUPPLY}, heat_temperature: 33, minimum: 16, maximum: 50, step: 1}}",
     ]
     return _plant(
@@ -154,7 +153,7 @@ def test_the_curve_number_survives_a_restart() -> None:
 
 
 def test_a_curve_number_clamps_to_a_whole_number_within_its_range() -> None:
-    number = CurveNumber(NUMBER, Hotter.LOWER, 1, 8)
+    number = CurveNumber(NUMBER, 1, 8)
     assert number.clamp(5.6) == 6.0
     assert number.clamp(-3.0) == 1.0
     assert number.clamp(9.0) == 8.0
@@ -168,20 +167,17 @@ def _document(**source: object) -> dict[str, object]:
 
 def test_the_curve_number_roundtrips() -> None:
     value = plant()
-    assert source(value).curve_number == CurveNumber(NUMBER, Hotter.LOWER, 1, 8)
+    assert source(value).curve_number == CurveNumber(NUMBER, 1, 8)
     exported = export_plant(value)["source"]
     assert exported["weather_curve"]["curve_number"] == {
         "entity": NUMBER,
-        "hotter": "lower",
         "maximum": 8,
     }
     assert read_plant_file(write_plant_file(value)) == value
     defaults = parse_plant(
-        _document(
-            weather_curve={"switch": CURVE, "curve_number": {"entity": NUMBER, "hotter": "higher"}}
-        )
+        _document(weather_curve={"switch": CURVE, "curve_number": {"entity": NUMBER}})
     )
-    assert source(defaults).curve_number == CurveNumber(NUMBER, Hotter.HIGHER, 1, 9)
+    assert source(defaults).curve_number == CurveNumber(NUMBER, 1, 9)
 
 
 @pytest.mark.parametrize(
@@ -189,19 +185,14 @@ def test_the_curve_number_roundtrips() -> None:
     [
         ({}, "source.weather_curve.curve_number.entity", "required"),
         ({"entity": "switch.x"}, "source.weather_curve.curve_number.entity", "number"),
-        ({"entity": NUMBER}, "source.weather_curve.curve_number.hotter", "required"),
+        ({"entity": NUMBER, "hotter": "lower"}, "source.weather_curve.curve_number.hotter", ""),
         (
-            {"entity": NUMBER, "hotter": "colder"},
-            "source.weather_curve.curve_number.hotter",
-            "lower or higher",
-        ),
-        (
-            {"entity": NUMBER, "hotter": "lower", "maximum": 1},
+            {"entity": NUMBER, "maximum": 1},
             "source.weather_curve.curve_number.maximum",
             "greater",
         ),
         (
-            {"entity": NUMBER, "hotter": "lower", "minimum": 1.5},
+            {"entity": NUMBER, "minimum": 1.5},
             "source.weather_curve.curve_number.minimum",
             "whole",
         ),

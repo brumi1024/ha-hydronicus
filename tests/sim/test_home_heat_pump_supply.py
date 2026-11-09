@@ -98,24 +98,30 @@ def test_a_fixed_supply_chosen_in_home_assistant_turns_the_curve_off_then_sets_i
     assert sim.is_on(HEAT_PUMP_REQUEST)
 
 
-def test_a_warm_up_steps_the_curve_hotter_until_the_bedrooms_are_warm() -> None:
+def test_a_warm_up_on_the_curve_holds_a_fixed_temperature_until_the_bedrooms_are_warm() -> None:
     sim = _heating()
-    assert not sim.calls_to(HEAT_PUMP_CURVE_NUMBER), "the curve number is taken as found"
-
     sim.command_supply(warm_up=True)
     sim.run_until_true(
-        lambda: sim.world.number(HEAT_PUMP_CURVE_NUMBER) == 5.0,
-        WRITE_INTERVAL + 3 * REACTION,
-        "a warm-up asks for a hotter curve, which is a lower number on this heat pump",
+        lambda: sim.world.number(HEAT_PUMP_SETPOINT) == 40.0,
+        2 * WRITE_INTERVAL + 3 * REACTION,
+        "a warm-up turns the curve off, then holds the setpoint at its temperature",
     )
-    assert sim.is_on(HEAT_PUMP_CURVE) and sim.is_on(HEAT_PUMP_REQUEST)
+    assert not sim.is_on(HEAT_PUMP_CURVE) and sim.is_on(HEAT_PUMP_REQUEST)
+    (off,) = sim.calls_to(HEAT_PUMP_CURVE)
+    assert off.t < sim.calls_to(HEAT_PUMP_SETPOINT)[0].t, "the curve goes off first"
+    assert _strategy(sim) is HeatingSupply.SOURCE_CURVE, "the select keeps the curve"
 
     sim.set_zone_temperature("bedroom_area", WARM)
     sim.run_until_true(
-        lambda: sim.world.number(HEAT_PUMP_CURVE_NUMBER) == 6.0,
+        lambda: sim.is_on(HEAT_PUMP_CURVE),
         WRITE_INTERVAL + 3 * REACTION,
-        "once the bedrooms are warm the warm-up ends and the owned curve comes back",
+        "once the bedrooms are warm the warm-up ends and the curve comes back",
     )
     supply = sim.desired.heating_supply
     assert supply is not None and not supply.state.warming
-    assert len(sim.calls_to(HEAT_PUMP_CURVE_NUMBER)) == 2, "two writes per warm-up"
+    assert _strategy(sim) is HeatingSupply.SOURCE_CURVE, "its own writes are never adopted"
+    assert len(sim.calls_to(HEAT_PUMP_CURVE)) == 2, "off and on again, once each"
+    assert len(sim.calls_to(HEAT_PUMP_SETPOINT)) == 1, "the setpoint is left as it was"
+    assert not sim.calls_to(HEAT_PUMP_CURVE_NUMBER), "the curve number is not touched"
+    assert sim.is_on(HEAT_PUMP_REQUEST)
+    assert all(on for _, on in sim.switched(HEAT_PUMP_REQUEST)), "heating never stopped"
