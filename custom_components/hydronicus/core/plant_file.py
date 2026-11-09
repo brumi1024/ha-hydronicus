@@ -79,6 +79,7 @@ from .model import (
     Aggregation,
     AwayConfig,
     Changeover,
+    CurveNumber,
     Dhw,
     DigitalThermostat,
     Disinfect,
@@ -206,7 +207,8 @@ _SUPPLY_KEYS: Final = (
     "room_influence",
 )
 _ROOM_INFLUENCE_KEYS: Final = ("zone", "factor", "limit")
-_WEATHER_CURVE_KEYS: Final = ("switch",)
+_WEATHER_CURVE_KEYS: Final = ("switch", "curve_number")
+_CURVE_NUMBER_KEYS: Final = ("entity", "minimum", "maximum")
 # The supply keys that are not plain numbers with a default.
 _SUPPLY_SPECIAL_KEYS: Final = (
     "entity",
@@ -686,7 +688,32 @@ def _mode_switches(value: object, path: str) -> tuple[ModeSwitch, ...]:
 def _weather_curve(value: object, path: str) -> WeatherCurve:
     document = _mapping(value, path, _WEATHER_CURVE_KEYS)
     switch = _entity(_required(document, "switch", path), _join(path, "switch"), _SWITCH_DOMAINS)
-    return WeatherCurve(switch)
+    number = (
+        _curve_number(document["curve_number"], _join(path, "curve_number"))
+        if "curve_number" in document
+        else None
+    )
+    return WeatherCurve(switch, number)
+
+
+def _curve_number(value: object, path: str) -> CurveNumber:
+    document = _mapping(value, path, _CURVE_NUMBER_KEYS)
+    entity = _entity(_required(document, "entity", path), _join(path, "entity"), ("number",))
+    defaults = CurveNumber(entity)
+    bounds = {
+        key: _whole(document.get(key, getattr(defaults, key)), _join(path, key))
+        for key in ("minimum", "maximum")
+    }
+    if bounds["minimum"] >= bounds["maximum"]:
+        raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
+    return CurveNumber(entity, **bounds)
+
+
+def _whole(value: object, path: str) -> int:
+    number = _number(value, path, signed=True)
+    if not number.is_integer():
+        raise PlantFileError(path, "Expected a whole number.")
+    return int(number)
 
 
 def _max_starts(source: Mapping[str, Any], path: str) -> int | None:
@@ -1601,6 +1628,8 @@ def _output_paths(plant: Plant) -> Iterator[tuple[str, str]]:
             yield switch.entity, f"source.mode_switches.{switch.entity}"
         if plant.source.weather_curve is not None:
             yield plant.source.weather_curve.switch, "source.weather_curve.switch"
+        if plant.source.curve_number is not None:
+            yield plant.source.curve_number.entity, "source.weather_curve.curve_number.entity"
         if plant.source.supply is not None:
             yield plant.source.supply.entity, "source.supply.entity"
     for pump in plant.pumps:
@@ -1646,6 +1675,8 @@ def entity_paths(plant: Plant) -> dict[str, str]:
             bind(switch.entity, f"source.mode_switches.{switch.entity}")
         if plant.source.weather_curve is not None:
             bind(plant.source.weather_curve.switch, "source.weather_curve.switch")
+        if plant.source.curve_number is not None:
+            bind(plant.source.curve_number.entity, "source.weather_curve.curve_number.entity")
         bind(plant.source.inhibit_sensor, "source.inhibit_sensor")
         bind(plant.source.compressor_sensor, "source.compressor_sensor")
         if (guard := plant.source.no_load) is not None:
@@ -1759,6 +1790,7 @@ _KEY_WORDS: Final = {
     "inhibit_sensor": "inhibit sensor",
     "mode_switches": "mode switches",
     "weather_curve": "weather curve",
+    "curve_number": "curve number",
     "no_load": "no-load guard",
     "return_temperature": "return temperature sensor",
     "compressor_sensor": "compressor sensor",
@@ -1905,6 +1937,13 @@ def _export_source(source: Source) -> dict[str, Any]:
         }
     if source.weather_curve is not None:
         document["weather_curve"] = {"switch": source.weather_curve.switch}
+        if (number := source.weather_curve.curve_number) is not None:
+            curve: dict[str, Any] = {"entity": number.entity}
+            curve_defaults = CurveNumber(number.entity)
+            for key in ("minimum", "maximum"):
+                if getattr(number, key) != getattr(curve_defaults, key):
+                    curve[key] = getattr(number, key)
+            document["weather_curve"]["curve_number"] = curve
     document["post_run"] = _export_number(source.post_run)
     document["min_on"] = _export_number(source.min_on)
     document["min_off"] = _export_number(source.min_off)

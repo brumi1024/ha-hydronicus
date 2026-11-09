@@ -89,6 +89,7 @@ _ROLE_NAMES = {
     OutputRole.SOURCE_MODE: "source mode select",
     OutputRole.SOURCE_MODE_SWITCH: "source mode switch",
     OutputRole.SOURCE_WEATHER_CURVE: "source weather curve switch",
+    OutputRole.SOURCE_CURVE_NUMBER: "source weather curve number",
     OutputRole.SOURCE_SETPOINT: "source supply temperature",
     OutputRole.DHW_SWITCH: "DHW switch",
     OutputRole.DHW_SETPOINT: "DHW setpoint",

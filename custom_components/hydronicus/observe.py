@@ -153,9 +153,12 @@ def reading(state: State | None, kind: SensorKind, now: float) -> Reading:
     return Reading(normalized, updated)
 
 
-def numeric_value(state: State | None) -> float | None:
-    """Read a temperature number output as Celsius with the same sensor validation."""
-    return reading(state, SensorKind.WATER, 0.0).value
+def numeric_value(state: State | None, *, temperature: bool = True) -> float | None:
+    """Read a temperature number output as Celsius with the same sensor validation.
+
+    A number that is not a temperature, such as a curve number, is read as it is.
+    """
+    return reading(state, SensorKind.WATER if temperature else SensorKind.LEVEL, 0.0).value
 
 
 # The weekday keys of a schedule's week, in ``datetime.weekday()`` order.

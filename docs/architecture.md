@@ -99,6 +99,7 @@ The source is reached only through generic entities, so Hydronicus does not know
 - an optional **supply** number and **weather curve** switch.
   The **Heating supply** select chooses who owns the heating supply temperature: the heat pump's own curve, a fixed setpoint, or Hydronicus's outdoor curve with offset, damping, room influence, a heating limit, and an outdoor fallback.
   A change made on the heat pump is adopted as the new choice, never undone.
+  An optional **curve number** picks which of the heat pump's own curves runs; Hydronicus owns it like the DHW target and adopts a change made on the heat pump.
   Cooling always uses Hydronicus's target, raised to stay above the dew point, with the heat pump's curve off;
 - optional **DHW** switch and target, owned by Hydronicus, with boosts, a schedule, and a disinfection cycle proven by the tank sensor;
 - optional feedback: running, health, handover, inhibit, and compressor sensors, a no-load guard, and a minimum interval between writes.

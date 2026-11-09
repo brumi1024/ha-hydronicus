@@ -118,3 +118,41 @@ async def test_the_curve_turned_off_elsewhere_is_adopted_and_not_turned_on_again
     await async_advance(hass, freezer, 60)
     assert hass.states.get(select).state == "source_curve"
     assert not [call for call in actuators.calls if call.entity_id == CURVE]
+
+
+NUMBER = "number.heat_pump_curve_number"
+
+
+async def test_the_curve_number_entity_sets_and_adopts_the_number(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    Actuators(hass)
+    for entity in (REQUEST, "switch.pump", "switch.valve"):
+        hass.states.async_set(entity, "off")
+    hass.states.async_set(CURVE, "on")
+    hass.states.async_set(NUMBER, "6", {"min": 1, "max": 9, "step": 1})
+    hass.states.async_set(SUPPLY, "30", {**CELSIUS, "min": 20, "max": 60, "step": 1})
+    hass.states.async_set("sensor.flat", "19", CELSIUS)
+    hass.states.async_set("sensor.outdoor", "5", CELSIUS)
+    text = FLAT.replace(
+        f"weather_curve: {{switch: {CURVE}}}",
+        f"weather_curve: {{switch: {CURVE}, curve_number: {{entity: {NUMBER}}}}}",
+    )
+    entry = await async_import(hass, text)
+    await async_set_options(hass, entry, armed=entry.runtime_data.plant.outputs(), control=True)
+    plant_id = entry.runtime_data.plant.id
+    mode = entity_id_of(hass, "select", f"{plant_id}_mode")
+    await async_call(hass, "select", "select_option", entity_id=mode, option="heat")
+    number = entity_id_of(hass, "number", f"{plant_id}_weather_curve_number")
+    assert hass.states.get(number).state == "6.0"
+
+    await async_call(hass, "number", "set_value", entity_id=number, value=4)
+    await async_advance(hass, freezer, 5)
+    assert hass.states.get(NUMBER).state == "4.0"
+    assert hass.states.get(number).state == "4.0"
+
+    # Set on the controller: adopted as Hydronicus's value and never written back.
+    hass.states.async_set(NUMBER, "3", {"min": 1, "max": 9, "step": 1})
+    await async_advance(hass, freezer, 60)
+    assert hass.states.get(number).state == "3.0"
+    assert hass.states.get(NUMBER).state == "3"

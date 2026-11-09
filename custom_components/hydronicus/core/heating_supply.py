@@ -6,8 +6,12 @@ Hydronicus's curve. The owner picks one through Hydronicus's entities, and a
 change made elsewhere, such as the curve switched off on the source's own
 controller, is adopted as the owner's choice and never reverted. Cooling is
 not a choice: the curve is off and the setpoint is Hydronicus's, so nothing
-changed while cooling is adopted. ``heating_supply_step`` is pure: ``step()``
-calls it with the physical outputs and the owner's last command.
+changed while cooling is adopted.
+
+The source's curve number, when bound, is owned the same way: a change made
+elsewhere is adopted as Hydronicus's value and never written back.
+``heating_supply_step`` is pure: ``step()`` calls it with the physical outputs
+and the owner's last command.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ class SupplyCommand:
     at: float
     strategy: HeatingSupply | None = None
     fixed: float | None = None
+    curve_number: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +59,11 @@ class HeatingSupplyState:
     last_target: float | None = None
     # When the last applied command was asked, so that each applies once.
     command_at: float | None = None
+    # The owned curve number, the last usable one seen, and the one Hydronicus
+    # last asked for, so that its own value landing is not adopted.
+    curve_number: float | None = None
+    seen_number: float | None = None
+    last_number: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +73,9 @@ class HeatingSupplyState:
             "seen_setpoint": self.seen_setpoint,
             "last_target": self.last_target,
             "command_at": self.command_at,
+            "curve_number": self.curve_number,
+            "seen_number": self.seen_number,
+            "last_number": self.last_number,
         }
 
     @classmethod
@@ -80,6 +93,9 @@ class HeatingSupplyState:
             seen_setpoint=number("seen_setpoint"),
             last_target=number("last_target"),
             command_at=number("command_at"),
+            curve_number=number("curve_number"),
+            seen_number=number("seen_number"),
+            last_number=number("last_number"),
         )
 
 
@@ -92,6 +108,8 @@ class HeatingSupplyResult:
     fixed: float | None
     # What changed that the owner should hear about: adoptions and choices.
     events: tuple[str, ...] = ()
+    # The curve number to ask for now, None without one or before it is known.
+    curve_number: float | None = None
 
 
 _NAMES = {
@@ -119,13 +137,16 @@ def heating_supply_step(
     ours: Callable[[str], bool],
     state: HeatingSupplyState,
     command: SupplyCommand | None,
+    *,
+    number: float | None = None,
 ) -> HeatingSupplyResult | None:
     """Adopt a change made elsewhere, apply the owner's command, and choose the strategy.
 
-    ``mode`` is the mode the outputs run in. ``curve`` and ``setpoint`` are the
-    weather curve switch's and the supply number's usable physical values, None
-    while unknown. ``ours(entity)`` says whether a value an output shows is one
-    of Hydronicus's calls landing. None when the source offers no strategy.
+    ``mode`` is the mode the outputs run in. ``curve``, ``setpoint``, and
+    ``number`` are the weather curve switch's, the supply number's, and the
+    curve number's usable physical values, None while unknown. ``ours(entity)``
+    says whether a value an output shows is one of Hydronicus's calls landing.
+    None when the source offers no strategy.
     """
     offered = source.heating_supplies
     default = source.default_heating_supply
@@ -177,6 +198,17 @@ def heating_supply_step(
                 events.append(f"the fixed supply temperature was set elsewhere to {setpoint:g} °C")
         seen_setpoint = setpoint
 
+    config = source.curve_number
+    owned, seen_number = state.curve_number, state.seen_number
+    if config is not None and number is not None and number != seen_number:
+        if owned is None:
+            # The first sighting takes over the curve the source runs now.
+            owned = config.clamp(number)
+        elif number != state.last_number and not ours(config.entity):
+            owned = config.clamp(number)
+            events.append(f"the curve number was set elsewhere to {number:g}; adopted")
+        seen_number = number
+
     command_at, chose = state.command_at, False
     if command is not None and (command_at is None or command.at > command_at):
         command_at = command.at
@@ -185,6 +217,8 @@ def heating_supply_step(
             strategy = command.strategy
         if command.fixed is not None and supply is not None:
             fixed = clamp_fixed(source, command.fixed)
+        if command.curve_number is not None and isfinite(command.curve_number) and config:
+            owned = config.clamp(command.curve_number)
 
     current = strategy or default
     if chose or (state.strategy is not None and state.strategy is not current and not events):
@@ -199,5 +233,14 @@ def heating_supply_step(
         seen_curve=seen_curve,
         seen_setpoint=seen_setpoint,
         command_at=command_at,
+        curve_number=owned,
+        seen_number=seen_number,
+        last_number=state.last_number if owned is None else owned,
     )
-    return HeatingSupplyResult(next_state, current, clamp_fixed(source, effective), tuple(events))
+    return HeatingSupplyResult(
+        next_state,
+        current,
+        clamp_fixed(source, effective),
+        tuple(events),
+        curve_number=owned if config is not None else None,
+    )

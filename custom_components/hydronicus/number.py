@@ -15,6 +15,7 @@ from . import HydronicusConfigEntry
 from .core.model import (
     MAX_CURVE_OFFSET,
     MAX_SETBACK,
+    CurveNumber,
     Dhw,
     HeatingSupply,
     Mode,
@@ -136,6 +137,39 @@ class HeatingSupplyTemperature(HydronicusEntity, NumberEntity):
         self.runtime.command_supply(fixed=value)
 
 
+class WeatherCurveNumber(HydronicusEntity, NumberEntity):
+    """The source's own weather curve number that Hydronicus owns.
+
+    A change made on the source's own controller is adopted and shows here.
+    """
+
+    _attr_translation_key = "weather_curve_number"
+    _attr_mode = NumberMode.BOX
+    _attr_native_step = 1.0
+
+    def __init__(self, runtime: PlantRuntime, number: CurveNumber) -> None:
+        super().__init__(
+            runtime,
+            plant_unique_id(runtime.plant.id, "weather_curve_number"),
+            source_device(runtime),
+        )
+        self._attr_native_min_value = number.minimum
+        self._attr_native_max_value = number.maximum
+
+    @property
+    def available(self) -> bool:
+        result = self.runtime.heating_supply
+        return result is not None and result.state.curve_number is not None
+
+    @property
+    def native_value(self) -> float | None:
+        result = self.runtime.heating_supply
+        return None if result is None else result.state.curve_number
+
+    async def async_set_native_value(self, value: float) -> None:
+        self.runtime.command_supply(curve_number=value)
+
+
 class DhwTarget(HydronicusEntity, NumberEntity):
     """The owned DHW target within its hard limits; a boost shows in its attributes."""
 
@@ -198,6 +232,8 @@ async def async_setup_entry(
         entities.append((None, HeatingCurveOffset(runtime)))
     if source is not None and source.supply is not None:
         entities.append((None, HeatingSupplyTemperature(runtime, source.supply)))
+    if source is not None and source.curve_number is not None:
+        entities.append((None, WeatherCurveNumber(runtime, source.curve_number)))
     if source is not None and source.dhw is not None and source.dhw.setpoint is not None:
         entities.append((None, DhwTarget(runtime, source.dhw)))
     async_add_plant_entities(runtime, "number", async_add_entities, entities)

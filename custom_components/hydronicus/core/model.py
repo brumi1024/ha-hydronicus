@@ -80,6 +80,7 @@ class OutputRole(StrEnum):
     SOURCE_MODE = "source_mode"
     SOURCE_MODE_SWITCH = "source_mode_switch"
     SOURCE_WEATHER_CURVE = "source_weather_curve"
+    SOURCE_CURVE_NUMBER = "source_curve_number"
     SOURCE_SETPOINT = "source_setpoint"
     DHW_SWITCH = "dhw_switch"
     DHW_SETPOINT = "dhw_setpoint"
@@ -89,7 +90,9 @@ class OutputRole(StrEnum):
 
 # The roles of numeric outputs, which take a ``NumericTarget``; every other role
 # but the source mode is a switch.
-NUMERIC_ROLES: Final = frozenset({OutputRole.SOURCE_SETPOINT, OutputRole.DHW_SETPOINT})
+NUMERIC_ROLES: Final = frozenset(
+    {OutputRole.SOURCE_SETPOINT, OutputRole.SOURCE_CURVE_NUMBER, OutputRole.DHW_SETPOINT}
+)
 # The roles that set the source up rather than run the hydronics, which the off
 # sequence leaves as they are.
 SETTING_ROLES: Final = frozenset(
@@ -97,6 +100,7 @@ SETTING_ROLES: Final = frozenset(
         OutputRole.SOURCE_MODE,
         OutputRole.SOURCE_MODE_SWITCH,
         OutputRole.SOURCE_WEATHER_CURVE,
+        OutputRole.SOURCE_CURVE_NUMBER,
         OutputRole.SOURCE_SETPOINT,
         OutputRole.DHW_SWITCH,
         OutputRole.DHW_SETPOINT,
@@ -332,6 +336,23 @@ class HeatingSupply(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class CurveNumber:
+    """The number that picks one of a source's own weather curves, which Hydronicus owns.
+
+    A change made elsewhere, such as on the source's own controller, is adopted
+    as Hydronicus's value and never written back.
+    """
+
+    entity: str
+    minimum: int = 1
+    maximum: int = 9
+
+    def clamp(self, number: float) -> float:
+        """The whole curve number nearest ``number``, within its range."""
+        return float(min(self.maximum, max(self.minimum, round(number))))
+
+
+@dataclass(frozen=True, slots=True)
 class WeatherCurve:
     """The source's own weather curve, which a switch turns on.
 
@@ -340,6 +361,7 @@ class WeatherCurve:
     """
 
     switch: str
+    curve_number: CurveNumber | None = None
 
 
 # How far the owner may shift the heating curve, in K either way.
@@ -528,6 +550,10 @@ class Source:
         return self.name or DEFAULT_SOURCE_TITLE
 
     @property
+    def curve_number(self) -> CurveNumber | None:
+        return None if self.weather_curve is None else self.weather_curve.curve_number
+
+    @property
     def heating_supplies(self) -> tuple[HeatingSupply, ...]:
         """The heating supply strategies this source supports, in the select's order."""
         supplies: list[HeatingSupply] = []
@@ -561,6 +587,7 @@ class Source:
                 None if self.mode is None else self.mode.entity,
                 *(switch.entity for switch in self.mode_switches),
                 None if self.weather_curve is None else self.weather_curve.switch,
+                None if self.curve_number is None else self.curve_number.entity,
                 None if self.supply is None else self.supply.entity,
                 None if self.dhw is None else self.dhw.switch,
                 None if self.dhw is None else self.dhw.setpoint,
@@ -850,6 +877,8 @@ class Plant:
                 outputs.setdefault(
                     self.source.weather_curve.switch, OutputRole.SOURCE_WEATHER_CURVE
                 )
+            if (number := self.source.curve_number) is not None:
+                outputs.setdefault(number.entity, OutputRole.SOURCE_CURVE_NUMBER)
             if self.source.supply is not None:
                 outputs.setdefault(self.source.supply.entity, OutputRole.SOURCE_SETPOINT)
             if (dhw := self.source.dhw) is not None:

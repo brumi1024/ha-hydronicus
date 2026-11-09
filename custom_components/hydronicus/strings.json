@@ -908,6 +908,9 @@
       },
       "heating_supply_temperature": {
         "name": "Heating supply temperature"
+      },
+      "weather_curve_number": {
+        "name": "Weather curve number"
       }
     },
     "button": {

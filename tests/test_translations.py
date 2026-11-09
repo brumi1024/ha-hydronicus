@@ -47,6 +47,7 @@ ENTITY_KEYS = {
         "dhw_target",
         "heating_curve_offset",
         "heating_supply_temperature",
+        "weather_curve_number",
     },
     "binary_sensor": {
         "heating_demand",

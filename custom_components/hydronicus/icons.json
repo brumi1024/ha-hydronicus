@@ -151,6 +151,9 @@
       },
       "heating_supply_temperature": {
         "default": "mdi:thermometer-water"
+      },
+      "weather_curve_number": {
+        "default": "mdi:chart-bell-curve"
       }
     }
   },
