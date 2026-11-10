@@ -368,8 +368,8 @@ def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Pla
         id=_plant_id(top["id"] if "id" in top else new_id(), "id"),
         name=_text(_required(top, "name", ""), "name"),
         mode_dwell=_number(top.get("mode_dwell", DEFAULT_MODE_DWELL), "mode_dwell"),
-        source=_source(top["source"], "source") if "source" in top else None,
-        weather=_weather(top["weather"], "weather") if "weather" in top else None,
+        source=_optional(top, "source", "", _source),
+        weather=_optional(top, "weather", "", _weather),
         pumps=tuple(
             _pump(slug, value, path) for slug, value, path in _slugs(top.get("pumps", {}), "pumps")
         ),
@@ -385,7 +385,7 @@ def parse_plant(document: object, *, new_id: Callable[[], str] = _new_id) -> Pla
             top.get("frost_protection", DEFAULT_FROST_PROTECTION), "frost_protection"
         ),
         away=_away(top["away"], "away") if "away" in top else AwayConfig(),
-        changeover=_changeover(top["changeover"], "changeover") if "changeover" in top else None,
+        changeover=_optional(top, "changeover", "", _changeover),
     )
     validate_plant(plant)
     return plant
@@ -483,11 +483,7 @@ def _weather(value: object, path: str) -> WeatherConfig:
     entity = _entity(_required(weather, "entity", path), _join(path, "entity"), ("weather",))
     return WeatherConfig(
         entity=entity,
-        outdoor_sensor=(
-            _entity(weather["outdoor_sensor"], _join(path, "outdoor_sensor"), _SENSOR_DOMAINS)
-            if "outdoor_sensor" in weather
-            else None
-        ),
+        outdoor_sensor=_optional(weather, "outdoor_sensor", path, _entity, _SENSOR_DOMAINS),
         max_age=_number(
             weather.get("max_age", WeatherConfig(entity).max_age),
             _join(path, "max_age"),
@@ -498,17 +494,13 @@ def _weather(value: object, path: str) -> WeatherConfig:
 
 def _source(value: object, path: str) -> Source:
     source = _mapping(value, path, _SOURCE_KEYS)
-    supply = _supply(source["supply"], _join(path, "supply")) if "supply" in source else None
+    supply = _optional(source, "supply", path, _supply)
     return Source(
         request=_entity(
             _required(source, "request", path), _join(path, "request"), _SWITCH_DOMAINS
         ),
-        mode=_source_mode(source["mode"], _join(path, "mode")) if "mode" in source else None,
-        mode_switches=(
-            _mode_switches(source["mode_switches"], _join(path, "mode_switches"))
-            if "mode_switches" in source
-            else ()
-        ),
+        mode=_optional(source, "mode", path, _source_mode),
+        mode_switches=_optional(source, "mode_switches", path, _mode_switches) or (),
         post_run=_number(source.get("post_run", DEFAULT_POST_RUN), _join(path, "post_run")),
         min_on=_number(source.get("min_on", DEFAULT_MIN_ON), _join(path, "min_on")),
         min_off=_number(source.get("min_off", DEFAULT_MIN_OFF), _join(path, "min_off")),
@@ -518,53 +510,23 @@ def _source(value: object, path: str) -> Source:
         name=_name(source, path),
         running_sensor=_contact(source, "running_sensor", path),
         supply=supply,
-        weather_curve=(
-            _weather_curve(source["weather_curve"], _join(path, "weather_curve"))
-            if "weather_curve" in source
-            else None
-        ),
+        weather_curve=_optional(source, "weather_curve", path, _weather_curve),
         warm_up=_warm_up(source, path, supply),
         max_starts_per_hour=_max_starts(source, path),
-        heat_sink_loops=(
-            _loop_refs(source["heat_sink_loops"], _join(path, "heat_sink_loops"))
-            if "heat_sink_loops" in source
-            else ()
-        ),
-        hold_after_demand=(
-            _number(source["hold_after_demand"], _join(path, "hold_after_demand"))
-            if "hold_after_demand" in source
-            else None
-        ),
+        heat_sink_loops=_optional(source, "heat_sink_loops", path, _loop_refs) or (),
+        hold_after_demand=_optional(source, "hold_after_demand", path, _number),
         heat_sink_overshoot=_number(
             source.get("heat_sink_overshoot", DEFAULT_HEAT_SINK_OVERSHOOT),
             _join(path, "heat_sink_overshoot"),
         ),
-        start_threshold=(
-            _number(source["start_threshold"], _join(path, "start_threshold"), positive=True)
-            if "start_threshold" in source
-            else None
-        ),
+        start_threshold=_optional(source, "start_threshold", path, _number, positive=True),
         health_sensor=_contact(source, "health_sensor", path),
         handover_sensor=_contact(source, "handover_sensor", path),
-        write_interval=(
-            _number(source["write_interval"], _join(path, "write_interval"), positive=True)
-            if "write_interval" in source
-            else None
-        ),
-        dhw=_dhw(source["dhw"], _join(path, "dhw")) if "dhw" in source else None,
-        inhibit_sensor=(
-            _entity(source["inhibit_sensor"], _join(path, "inhibit_sensor"), _INHIBIT_DOMAINS)
-            if "inhibit_sensor" in source
-            else None
-        ),
-        no_load=(
-            _no_load(source["no_load"], _join(path, "no_load")) if "no_load" in source else None
-        ),
-        compressor_sensor=(
-            _entity(source["compressor_sensor"], _join(path, "compressor_sensor"), _SENSOR_DOMAINS)
-            if "compressor_sensor" in source
-            else None
-        ),
+        write_interval=_optional(source, "write_interval", path, _number, positive=True),
+        dhw=_optional(source, "dhw", path, _dhw),
+        inhibit_sensor=_optional(source, "inhibit_sensor", path, _entity, _INHIBIT_DOMAINS),
+        no_load=_optional(source, "no_load", path, _no_load),
+        compressor_sensor=_optional(source, "compressor_sensor", path, _entity, _SENSOR_DOMAINS),
     )
 
 
@@ -590,16 +552,8 @@ def _no_load(value: object, path: str) -> NoLoadGuard:
 
 def _dhw(value: object, path: str) -> Dhw:
     document = _mapping(value, path, _DHW_KEYS)
-    switch = (
-        _entity(document["switch"], _join(path, "switch"), _SWITCH_DOMAINS)
-        if "switch" in document
-        else None
-    )
-    setpoint = (
-        _entity(document["setpoint"], _join(path, "setpoint"), ("number",))
-        if "setpoint" in document
-        else None
-    )
+    switch = _optional(document, "switch", path, _entity, _SWITCH_DOMAINS)
+    setpoint = _optional(document, "setpoint", path, _entity, ("number",))
     if switch is None and setpoint is None:
         raise PlantFileError(path, "Bind a DHW switch, a setpoint, or both.")
     defaults = Dhw()
@@ -619,19 +573,11 @@ def _dhw(value: object, path: str) -> Dhw:
         tolerance=_number(
             document.get("tolerance", defaults.tolerance), _join(path, "tolerance"), positive=True
         ),
-        step=(
-            _number(document["step"], _join(path, "step"), positive=True)
-            if "step" in document
-            else None
-        ),
+        step=_optional(document, "step", path, _number, positive=True),
         max_boost=_number(
             document.get("max_boost", defaults.max_boost), _join(path, "max_boost"), positive=True
         ),
-        schedule=(
-            _entity(document["schedule"], _join(path, "schedule"), ("schedule",))
-            if "schedule" in document
-            else None
-        ),
+        schedule=_optional(document, "schedule", path, _entity, ("schedule",)),
         disinfect=_disinfect(document, path, setpoint),
     )
 
@@ -651,13 +597,7 @@ def _disinfect(document: Mapping[str, Any], path: str, setpoint: str | None) -> 
     default = Disinfect(tank)
 
     def read(key: str, low: float, high: float) -> float:
-        key_path = _join(path, key)
-        return _within(
-            _number(value.get(key, getattr(default, key)), key_path, positive=True),
-            key_path,
-            low=low,
-            high=high,
-        )
+        return _bounded(value, key, getattr(default, key), path, low, high, positive=True)
 
     hold = read("hold", 60, 7200)
     timeout = read("timeout", 1800, 43200)
@@ -671,11 +611,7 @@ def _disinfect(document: Mapping[str, Any], path: str, setpoint: str | None) -> 
         interval=read("interval", MIN_DISINFECT_INTERVAL, MAX_DISINFECT_INTERVAL),
         hold=hold,
         timeout=timeout,
-        window=(
-            _entity(value["window"], _join(path, "window"), ("schedule",))
-            if "window" in value
-            else None
-        ),
+        window=_optional(value, "window", path, _entity, ("schedule",)),
     )
 
 
@@ -694,12 +630,7 @@ def _mode_switches(value: object, path: str) -> tuple[ModeSwitch, ...]:
 def _weather_curve(value: object, path: str) -> WeatherCurve:
     document = _mapping(value, path, _WEATHER_CURVE_KEYS)
     switch = _entity(_required(document, "switch", path), _join(path, "switch"), _SWITCH_DOMAINS)
-    number = (
-        _curve_number(document["curve_number"], _join(path, "curve_number"))
-        if "curve_number" in document
-        else None
-    )
-    return WeatherCurve(switch, number)
+    return WeatherCurve(switch, _optional(document, "curve_number", path, _curve_number))
 
 
 def _curve_number(value: object, path: str) -> CurveNumber:
@@ -729,10 +660,9 @@ def _warm_up(source: Mapping[str, Any], path: str, supply: SupplyControl | None)
         if supply is None:
             raise PlantFileError(key_path, "This needs a supply: the setpoint a warm-up holds.")
         _within(temperature, key_path, low=supply.minimum, high=supply.maximum)
-    duration = _number(
-        document.get("duration", defaults.duration), _join(path, "duration"), positive=True
+    duration = _bounded(
+        document, "duration", defaults.duration, path, None, MAX_WARM_UP_DURATION, positive=True
     )
-    _within(duration, _join(path, "duration"), high=MAX_WARM_UP_DURATION)
     return WarmUp(temperature, duration)
 
 
@@ -775,11 +705,7 @@ def _supply(value: object, path: str) -> SupplyControl:
         for key in ("outdoor_fallback", "heating_limit")
         if key in document
     }
-    step = (
-        _number(document["step"], _join(path, "step"), positive=True)
-        if "step" in document
-        else None
-    )
+    step = _optional(document, "step", path, _number, positive=True)
     if settings["minimum"] >= settings["maximum"]:
         raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
     if settings["outdoor_cold"] >= settings["outdoor_warm"]:
@@ -802,11 +728,7 @@ def _supply(value: object, path: str) -> SupplyControl:
         _join(path, "tolerance"),
         high=settings["maximum"] - settings["minimum"],
     )
-    outdoor = (
-        _entity(document["outdoor_sensor"], _join(path, "outdoor_sensor"), _SENSOR_DOMAINS)
-        if "outdoor_sensor" in document
-        else None
-    )
+    outdoor = _optional(document, "outdoor_sensor", path, _entity, _SENSOR_DOMAINS)
     if outdoor is None:
         for key in _SUPPLY_OUTDOOR_KEYS:
             if document.get(key) not in (None, 0):
@@ -841,10 +763,10 @@ def _room_influence(value: object, path: str) -> RoomInfluence:
             raise PlantFileError(_join(zones_path, index), "Expected a zone slug.")
     _check_listed_once(zones_path, zones, "Zone")
     defaults = RoomInfluence(tuple(zones))
-    factor = _number(document.get("factor", defaults.factor), _join(path, "factor"), positive=True)
-    _within(factor, _join(path, "factor"), high=10)
-    limit = _number(document.get("limit", defaults.limit), _join(path, "limit"), positive=True)
-    _within(limit, _join(path, "limit"), high=MAX_CURVE_OFFSET * 2)
+    factor = _bounded(document, "factor", defaults.factor, path, None, 10, positive=True)
+    limit = _bounded(
+        document, "limit", defaults.limit, path, None, MAX_CURVE_OFFSET * 2, positive=True
+    )
     return RoomInfluence(tuple(zones), factor, limit)
 
 
@@ -882,42 +804,27 @@ def _pump(slug: str, value: object, path: str) -> Pump:
     if ("switch" in pump) == ("driven_by" in pump):
         raise PlantFileError(path, "A pump has either a switch or driven_by: source.")
     min_flow = _choice(pump.get("min_flow", MinFlow.PATH), _join(path, "min_flow"), tuple(MinFlow))
-    min_flow_loops = (
-        _loop_refs(pump["min_flow_loops"], _join(path, "min_flow_loops"))
-        if "min_flow_loops" in pump
-        else ()
-    )
-    supply_temperature = (
-        _entity(pump["supply_temperature"], _join(path, "supply_temperature"), _SENSOR_DOMAINS)
-        if "supply_temperature" in pump
-        else None
-    )
+    min_flow_loops = _optional(pump, "min_flow_loops", path, _loop_refs) or ()
+    supply_temperature = _optional(pump, "supply_temperature", path, _entity, _SENSOR_DOMAINS)
     condensation_switch = _contact(pump, "condensation_switch", path)
-    if "switch" in pump:
-        return Pump(
-            slug=slug,
-            switch=_entity(pump["switch"], _join(path, "switch"), _SWITCH_DOMAINS),
-            overrun=_number(pump.get("overrun", DEFAULT_OVERRUN), _join(path, "overrun")),
-            min_flow=min_flow,
-            min_flow_loops=min_flow_loops,
-            supply_temperature=supply_temperature,
-            name=_name(pump, path),
-            condensation_switch=condensation_switch,
-            running_sensor=_contact(pump, "running_sensor", path),
-            flow_sensor=_contact(pump, "flow_sensor", path),
-        )
-    if pump["driven_by"] != "source":
+    switch = _optional(pump, "switch", path, _entity, _SWITCH_DOMAINS)
+    if switch is not None:
+        overrun = _number(pump.get("overrun", DEFAULT_OVERRUN), _join(path, "overrun"))
+    elif pump["driven_by"] != "source":
         raise PlantFileError(
             _join(path, "driven_by"), "driven_by must be source, for a pump the source runs."
         )
-    if "overrun" in pump:
+    elif "overrun" in pump:
         raise PlantFileError(
             _join(path, "overrun"),
             "A source-driven pump has no overrun; the source's post_run covers it.",
         )
+    else:
+        overrun = DEFAULT_OVERRUN
     return Pump(
         slug=slug,
-        switch=None,
+        switch=switch,
+        overrun=overrun,
         min_flow=min_flow,
         min_flow_loops=min_flow_loops,
         supply_temperature=supply_temperature,
@@ -947,17 +854,11 @@ def _loop(ref: LoopRef, value: object, path: str) -> Loop:
             _valve(item, item_path) for item, item_path in _items_of(loop, "valves", path)
         ),
         pump=_text(_required(loop, "pump", path), _join(path, "pump")),
-        modes=_modes(loop["modes"], _join(path, "modes")) if "modes" in loop else _DEFAULT_MODES,
+        modes=_optional(loop, "modes", path, _modes) or _DEFAULT_MODES,
         runs=_runs(_required(loop, "runs", path), _join(path, "runs"))
         if plant_loop
         else RUNS_WITH_ZONE,
-        surface_temperature=(
-            _entity(
-                loop["surface_temperature"], _join(path, "surface_temperature"), _SENSOR_DOMAINS
-            )
-            if "surface_temperature" in loop
-            else None
-        ),
+        surface_temperature=_optional(loop, "surface_temperature", path, _entity, _SENSOR_DOMAINS),
         name=_name(loop, path),
         condensation_switch=_contact(loop, "condensation_switch", path),
         surface_minimum=_setting(loop, "surface_minimum", DEFAULT_SURFACE_MINIMUM, path),
@@ -1002,11 +903,7 @@ def _valve(value: object, path: str) -> Valve:
         opening_time=_number(
             valve.get("opening_time", DEFAULT_OPENING_TIME), _join(path, "opening_time")
         ),
-        readiness=(
-            _entity(valve["readiness"], _join(path, "readiness"), _BINARY_SENSOR_DOMAINS)
-            if "readiness" in valve
-            else None
-        ),
+        readiness=_contact(valve, "readiness", path),
     )
 
 
@@ -1075,22 +972,28 @@ def _window_detection(value: object, path: str) -> WindowDetection | None:
     detection = _mapping(value, path, _WINDOW_DETECTION_KEYS)
     default = WindowDetection()
 
-    def read(key: str, fallback: float, low: float, high: float) -> float:
-        key_path = _join(path, key)
-        return _within(
-            _number(detection.get(key, fallback), key_path), key_path, low=low, high=high
-        )
-
     return WindowDetection(
-        change=read(
-            "change", default.change, MIN_WINDOW_DETECTION_CHANGE, MAX_WINDOW_DETECTION_CHANGE
+        change=_bounded(
+            detection,
+            "change",
+            default.change,
+            path,
+            MIN_WINDOW_DETECTION_CHANGE,
+            MAX_WINDOW_DETECTION_CHANGE,
         ),
-        within=read(
-            "within", default.within, MIN_WINDOW_DETECTION_WITHIN, MAX_WINDOW_DETECTION_WITHIN
+        within=_bounded(
+            detection,
+            "within",
+            default.within,
+            path,
+            MIN_WINDOW_DETECTION_WITHIN,
+            MAX_WINDOW_DETECTION_WITHIN,
         ),
-        max_duration=read(
+        max_duration=_bounded(
+            detection,
             "max_duration",
             default.max_duration,
+            path,
             MIN_WINDOW_DETECTION_MAX_DURATION,
             MAX_WINDOW_DETECTION_MAX_DURATION,
         ),
@@ -1109,13 +1012,7 @@ def _sensor_fallback(value: object, path: str) -> SensorFallback | None:
     default = SensorFallback()
 
     def read(key: str, fallback: float, low: float, high: float) -> float:
-        key_path = _join(path, key)
-        return _within(
-            _number(document.get(key, fallback), key_path, positive=True),
-            key_path,
-            low=low,
-            high=high,
-        )
+        return _bounded(document, key, fallback, path, low, high, positive=True)
 
     fallback = SensorFallback(
         after=read("after", default.after, MIN_SENSOR_FALLBACK_AFTER, MAX_SENSOR_FALLBACK_AFTER),
@@ -1226,9 +1123,7 @@ def _thermostat(value: object, path: str) -> Thermostat:
         presets=presets("presets"),
         cool_target=setting("cool_target", signed=True),
         cool_presets=presets("cool_presets"),
-        schedule=_schedule(digital["schedule"], _join(path, "schedule"))
-        if "schedule" in digital
-        else None,
+        schedule=_optional(digital, "schedule", path, _schedule),
         learning=_choice(
             digital.get("learning", LearningMode.OFF), _join(path, "learning"), tuple(LearningMode)
         ),
@@ -1299,11 +1194,41 @@ def _required(mapping: Mapping[str, Any], key: str, path: str) -> Any:
     return mapping[key]
 
 
+def _optional[T](
+    mapping: Mapping[str, Any],
+    key: str,
+    path: str,
+    read: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> T | None:
+    """Read a key with ``read(value, path, ...)``, or return None when it is left out."""
+    return read(mapping[key], _join(path, key), *args, **kwargs) if key in mapping else None
+
+
 def _contact(mapping: Mapping[str, Any], key: str, path: str) -> str | None:
     """Read an optional binary sensor, such as a condensation switch."""
-    if key not in mapping:
-        return None
-    return _entity(mapping[key], _join(path, key), _BINARY_SENSOR_DOMAINS)
+    return _optional(mapping, key, path, _entity, _BINARY_SENSOR_DOMAINS)
+
+
+def _bounded(
+    mapping: Mapping[str, Any],
+    key: str,
+    default: float,
+    path: str,
+    low: float | None,
+    high: float | None,
+    *,
+    positive: bool = False,
+) -> float:
+    """Read a number, or its default when the key is left out, that lies within its bounds."""
+    key_path = _join(path, key)
+    return _within(
+        _number(mapping.get(key, default), key_path, positive=positive),
+        key_path,
+        low=low,
+        high=high,
+    )
 
 
 def _setting(mapping: Mapping[str, Any], key: str, default: float, path: str) -> float | None:
@@ -1325,7 +1250,7 @@ def _within(
 
 
 def _name(mapping: Mapping[str, Any], path: str) -> str | None:
-    return _text(mapping["name"], _join(path, "name")) if "name" in mapping else None
+    return _optional(mapping, "name", path, _text)
 
 
 def _text(value: object, path: str) -> str:
@@ -1773,6 +1698,7 @@ _TOP_WORDS: Final = {
     "loops": "Plant loops",
     "zones": "Zones",
 }
+# Keys whose words are not the key with spaces for its underscores.
 _KEY_WORDS: Final = {
     "request": "request switch",
     "mode": "mode select",
@@ -1781,55 +1707,26 @@ _KEY_WORDS: Final = {
     "post_run": "post-run",
     "min_on": "minimum on time",
     "min_off": "minimum off time",
-    "driven_by": "driven by",
     "min_flow": "minimum flow",
     "min_flow_loops": "min-flow loops",
     "supply_temperature": "supply temperature sensor",
     "surface_temperature": "surface temperature sensor",
-    "opening_time": "opening time",
     "readiness": "readiness sensor",
     "runs": "runs with",
     "with_zones": "zones",
     "temperature": "temperature sensors",
     "humidity": "humidity sensors",
     "max_age": "maximum age",
-    "condensation_switch": "condensation switch",
-    "surface_minimum": "surface minimum",
-    "window_open_delay": "window open delay",
-    "window_close_delay": "window close delay",
-    "window_detection": "window detection",
     "change": "temperature change",
-    "within": "within",
     "max_duration": "maximum duration",
-    "response_check": "response check",
-    "sensor_fallback": "sensor fallback",
-    "after": "after",
-    "duty": "duty",
-    "period": "period",
-    "progress": "progress",
     "max_humidity": "maximum humidity",
     "max_starts_per_hour": "maximum starts per hour",
-    "heat_sink_loops": "heat sink loops",
-    "hold_after_demand": "hold after demand",
-    "heat_sink_overshoot": "heat sink overshoot",
-    "start_threshold": "start threshold",
-    "health_sensor": "health sensor",
-    "handover_sensor": "handover sensor",
-    "write_interval": "write interval",
     "dhw": "DHW",
-    "setpoint": "setpoint",
     "max_boost": "maximum boost",
-    "inhibit_sensor": "inhibit sensor",
-    "mode_switches": "mode switches",
-    "weather_curve": "weather curve",
-    "curve_number": "curve number",
     "warm_up": "warm-up",
     "no_load": "no-load guard",
     "return_temperature": "return temperature sensor",
-    "compressor_sensor": "compressor sensor",
     "delta": "temperature difference",
-    "duration": "duration",
-    "hold_off": "hold off",
 }
 # A list key and the word for one of its items, which the path numbers from 1.
 _ITEM_WORDS: Final = {
@@ -1922,18 +1819,14 @@ def export_plant(plant: Plant) -> dict[str, Any]:
             False if plant.frost_protection is None else _export_number(plant.frost_protection)
         )
     if plant.away != AwayConfig():
-        document["away"] = {
-            key: _export_number(getattr(plant.away, key))
-            for key in ("heat_target", "cool_target")
-            if getattr(plant.away, key) != getattr(AwayConfig(), key)
-        }
-    if plant.changeover is not None:
-        defaults = Changeover(plant.changeover.outdoor_sensor)
-        document["changeover"] = {"outdoor_sensor": plant.changeover.outdoor_sensor} | {
-            key: _export_number(getattr(plant.changeover, key))
-            for key in _CHANGEOVER_KEYS
-            if key != "outdoor_sensor" and getattr(plant.changeover, key) != getattr(defaults, key)
-        }
+        document["away"] = _export_changed(plant.away, AwayConfig(), ("heat_target", "cool_target"))
+    if (changeover := plant.changeover) is not None:
+        sensor = changeover.outdoor_sensor
+        document["changeover"] = {"outdoor_sensor": sensor} | _export_changed(
+            changeover,
+            Changeover(sensor),
+            [key for key in _CHANGEOVER_KEYS if key != "outdoor_sensor"],
+        )
     if plant.source is not None:
         document["source"] = _export_source(plant.source)
     if plant.weather is not None:
@@ -1971,68 +1864,41 @@ def _export_source(source: Source) -> dict[str, Any]:
     if source.weather_curve is not None:
         document["weather_curve"] = {"switch": source.weather_curve.switch}
         if (number := source.weather_curve.curve_number) is not None:
-            curve: dict[str, Any] = {"entity": number.entity}
-            curve_defaults = CurveNumber(number.entity)
-            for key in ("minimum", "maximum"):
-                if getattr(number, key) != getattr(curve_defaults, key):
-                    curve[key] = getattr(number, key)
-            document["weather_curve"]["curve_number"] = curve
+            document["weather_curve"]["curve_number"] = {"entity": number.entity} | _export_changed(
+                number, CurveNumber(number.entity), ("minimum", "maximum")
+            )
     if source.warm_up != WarmUp():
-        document["warm_up"] = {
-            key: _export_number(getattr(source.warm_up, key))
-            for key in _WARM_UP_KEYS
-            if getattr(source.warm_up, key) != getattr(WarmUp(), key)
-        }
+        document["warm_up"] = _export_changed(source.warm_up, WarmUp(), _WARM_UP_KEYS)
     document["post_run"] = _export_number(source.post_run)
     document["min_on"] = _export_number(source.min_on)
     document["min_off"] = _export_number(source.min_off)
     if source.feedback_timeout != 300.0:
         document["feedback_timeout"] = _export_number(source.feedback_timeout)
-    if source.running_sensor is not None:
-        document["running_sensor"] = source.running_sensor
-    if source.health_sensor is not None:
-        document["health_sensor"] = source.health_sensor
-    if source.handover_sensor is not None:
-        document["handover_sensor"] = source.handover_sensor
+    document |= _export_set(source, ("running_sensor", "health_sensor", "handover_sensor"))
     if source.write_interval is not None:
         document["write_interval"] = _export_number(source.write_interval)
-    if source.inhibit_sensor is not None:
-        document["inhibit_sensor"] = source.inhibit_sensor
-    if source.compressor_sensor is not None:
-        document["compressor_sensor"] = source.compressor_sensor
+    document |= _export_set(source, ("inhibit_sensor", "compressor_sensor"))
     if (guard := source.no_load) is not None:
-        guard_defaults = NoLoadGuard("", "", "")
         document["no_load"] = {
             "supply_temperature": guard.supply_temperature,
             "return_temperature": guard.return_temperature,
             "compressor_sensor": guard.compressor_sensor,
-            **{
-                key: _export_number(getattr(guard, key))
-                for key in ("delta", "duration", "hold_off")
-                if getattr(guard, key) != getattr(guard_defaults, key)
-            },
-        }
+        } | _export_changed(guard, NoLoadGuard("", "", ""), ("delta", "duration", "hold_off"))
     if (dhw := source.dhw) is not None:
-        defaults = Dhw()
-        exported: dict[str, Any] = {}
-        if dhw.switch is not None:
-            exported["switch"] = dhw.switch
-        if dhw.setpoint is not None:
-            exported["setpoint"] = dhw.setpoint
-        for key in ("minimum", "maximum", "tolerance", "step", "max_boost"):
-            if (setting := getattr(dhw, key)) != getattr(defaults, key):
-                exported[key] = _export_number(setting)
-        if dhw.schedule is not None:
-            exported["schedule"] = dhw.schedule
+        exported = _export_set(dhw, ("switch", "setpoint"))
+        exported |= _export_changed(
+            dhw, Dhw(), ("minimum", "maximum", "tolerance", "step", "max_boost")
+        )
+        exported |= _export_set(dhw, ("schedule",))
         if (disinfect := dhw.disinfect) is not None:
-            cycle: dict[str, Any] = {"tank_temperature": disinfect.tank_temperature}
-            cycle_defaults = Disinfect(disinfect.tank_temperature)
-            for key in ("temperature", "interval", "hold", "timeout"):
-                if (setting := getattr(disinfect, key)) != getattr(cycle_defaults, key):
-                    cycle[key] = _export_number(setting)
-            if disinfect.window is not None:
-                cycle["window"] = disinfect.window
-            exported["disinfect"] = cycle
+            tank = disinfect.tank_temperature
+            exported["disinfect"] = (
+                {"tank_temperature": tank}
+                | _export_changed(
+                    disinfect, Disinfect(tank), ("temperature", "interval", "hold", "timeout")
+                )
+                | _export_set(disinfect, ("window",))
+            )
         document["dhw"] = exported
     if source.max_starts_per_hour is not None:
         document["max_starts_per_hour"] = source.max_starts_per_hour
@@ -2051,13 +1917,9 @@ def _export_source(source: Source) -> dict[str, Any]:
             [key for key in _SUPPLY_KEYS if key != "room_influence"],
         )
         if (influence := source.supply.room_influence) is not None:
-            room: dict[str, Any] = {"zones": list(influence.zones)}
-            defaults = RoomInfluence(influence.zones)
-            if influence.factor != defaults.factor:
-                room["factor"] = _export_number(influence.factor)
-            if influence.limit != defaults.limit:
-                room["limit"] = _export_number(influence.limit)
-            document["supply"]["room_influence"] = room
+            document["supply"]["room_influence"] = {
+                "zones": list(influence.zones)
+            } | _export_changed(influence, RoomInfluence(influence.zones), ("factor", "limit"))
     return document
 
 
@@ -2073,15 +1935,9 @@ def _export_pump(pump: Pump) -> dict[str, Any]:
         document["min_flow"] = str(pump.min_flow)
     if pump.min_flow_loops:
         document["min_flow_loops"] = [str(ref) for ref in pump.min_flow_loops]
-    if pump.supply_temperature is not None:
-        document["supply_temperature"] = pump.supply_temperature
-    if pump.condensation_switch is not None:
-        document["condensation_switch"] = pump.condensation_switch
-    if pump.running_sensor is not None:
-        document["running_sensor"] = pump.running_sensor
-    if pump.flow_sensor is not None:
-        document["flow_sensor"] = pump.flow_sensor
-    return document
+    return document | _export_set(
+        pump, ("supply_temperature", "condensation_switch", "running_sensor", "flow_sensor")
+    )
 
 
 def _export_loop(loop: Loop) -> dict[str, Any]:
@@ -2200,17 +2056,18 @@ def _export_thermostat(thermostat: Thermostat) -> dict[str, Any]:
     return {"digital": settings}
 
 
-def _export_changed(
-    value: WindowDetection | ResponseCheck | SensorFallback,
-    defaults: WindowDetection | ResponseCheck | SensorFallback,
-    keys: Sequence[str],
-) -> dict[str, Any]:
+def _export_changed(value: object, defaults: object, keys: Sequence[str]) -> dict[str, Any]:
     """Write the numeric settings that differ from their defaults."""
     return {
         key: _export_number(getattr(value, key))
         for key in keys
         if getattr(value, key) != getattr(defaults, key)
     }
+
+
+def _export_set(value: object, keys: Sequence[str]) -> dict[str, Any]:
+    """Write the optional settings that are set, as they are."""
+    return {key: setting for key in keys if (setting := getattr(value, key)) is not None}
 
 
 def _export_configuration(
