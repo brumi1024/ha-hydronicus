@@ -10,11 +10,6 @@ on:
         description: "Optional v-prefixed release tag or semantic version; defaults to manifest.json"
         required: false
         type: string
-      dry_run:
-        description: "Build and inspect the package without changing a GitHub Release"
-        required: true
-        default: true
-        type: boolean
 
 permissions: {}
 
@@ -50,7 +45,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Dry-run package validation
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        if: github.event_name == 'workflow_dispatch'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: python scripts/package_release.py --version "$RELEASE_VERSION" --dry-run

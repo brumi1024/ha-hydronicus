@@ -73,4 +73,7 @@ Versions follow semantic versioning, and the public interface is the plant file,
 
 There are still no migrations or aliases, so a breaking change is a major release, and its release note says exactly what to change in a plant file before importing it again.
 
-Bump the version in `manifest.json` and `pyproject.toml`, add `docs/releases/v<version>.md`, and run the Release workflow.
+To release, bump the version in `manifest.json` and `pyproject.toml`, add `docs/releases/v<version>.md`, and merge that to `main`.
+Then publish a GitHub release tagged `v<version>` on `main`, for example with `gh release create v<version> --target main --title "Hydronicus <version>" --notes "See docs/releases/v<version>.md."`.
+Publishing it runs the Release workflow, which builds `hydronicus.zip`, attaches it, and replaces the release notes with the release note file.
+Running the workflow by hand only builds and inspects the package, as a check before a release; it never publishes one.
