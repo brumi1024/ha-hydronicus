@@ -535,11 +535,13 @@ function discovery(component, object, config) {
 }
 
 // The water temperatures are Hydronicus's condensation reference, and with the
-// compressor frequency they feed its no-load guard; it ages a reading by its
-// last report. Home Assistant reports an MQTT sensor only when its value
-// changes unless force_update is set, so without it a steady reading would
-// look stale: cooling would block and the guard would go blind.
-var FRESH = ['tw_in', 'tw_out', 'compressor_hz'];
+// compressor frequency they feed its no-load guard; the outdoor reading feeds
+// its heating curve and heating limit. It ages a reading by its last report.
+// Home Assistant reports an MQTT sensor only when its value changes unless
+// force_update is set, so without it a steady reading would look stale:
+// cooling would block, the guard would go blind, and the heating curve would
+// fall back or withhold its target on a calm night.
+var FRESH = ['tw_in', 'tw_out', 't4', 'compressor_hz'];
 
 function sensor(object, name, unit, deviceClass) {
   var config = { name: name, state_topic: CONFIG.base + '/state', value_template: '{{ value_json.' + object + ' }}' };

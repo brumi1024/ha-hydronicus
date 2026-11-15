@@ -57,6 +57,15 @@ The community map for newer Midea units and Shelly's own Midea guide already dis
 It polls the heat pump every 10 seconds, publishes its values to Home Assistant over MQTT with discovery, at least once a minute even when nothing changed so that a steady temperature stays fresh, and executes write requests from Home Assistant.
 It ships with `writesEnabled: false`, so it only reads until you change that.
 
+### Fresh readings
+
+Home Assistant updates an MQTT sensor's state, and so its last report, only when the value changes, unless the discovery config sets `force_update`.
+Hydronicus ages a reading by its last report, so the bridge sets `force_update` on the sensors whose age it checks: the water inlet and outlet, which are the condensation reference and feed the no-load guard with the compressor frequency, and the outdoor temperature, which feeds the heating curve and the heating limit.
+The outdoor reading is whole degrees, so on a calm night it can stay the same for hours; without `force_update` it would go stale past the supply's `max_age` of an hour, and the curve would fall back or withhold its target.
+The cost is that Home Assistant writes a state for each of these four sensors every minute, which the MQTT sensor documentation discourages for that reason.
+Four sensors at one row a minute is a small load on the recorder, and it is what lets every check that ages these readings use its default `max_age`.
+The other sensors are only shown, so they report on change.
+
 ### What it writes
 
 Only these settings, each changing only its own bits:
@@ -112,6 +121,13 @@ automation:
 3. Start it with writes off and check the **Midea heat pump** device in Home Assistant: its temperatures, mode, and switches should match the wired controller.
 4. Add the heartbeat automation.
 5. Only then set `writesEnabled: true`, restart the script, and try one change, such as the DHW setpoint, while you watch the wired controller.
+
+### Update
+
+Stop the script, replace its code, and start it again.
+The bridge announces every entity again whenever it connects to MQTT and whenever Home Assistant comes online, as retained discovery configs, and Home Assistant applies a changed config to the existing entity, keeping its entity ID and history.
+So restarting the script is the whole upgrade; to announce again without a restart, restart Home Assistant or publish `online` to `homeassistant/status`.
+After the update that added the outdoor temperature to the fresh readings, that sensor's `last_reported`, as a template such as `{{ states.sensor.<outdoor sensor>.last_reported }}` shows it, moves at least every minute.
 
 To load a new version through the Shelly's RPC instead of pasting it, stop the script, send the code with `Script.PutCode` in chunks of raw UTF-8, read it back with `Script.GetCode`, and only then start it.
 The firmware does not decode `\u` escapes, so a JSON encoder that escapes non-ASCII text turns the `°C` units into garbage.

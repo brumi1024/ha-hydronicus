@@ -232,3 +232,59 @@ def test_the_bridge_holds_a_quick_change_and_writes_the_latest_once_its_window_e
     assert json.loads(results["heldAfterRelease"]) == []
     assert results["heatingOff"]["wrote"], "turning heating off never waits"
     assert json.loads(results["heldAfterHandover"]) == []
+
+
+# Announces every entity and records each discovery config the bridge publishes.
+DISCOVERY_HARNESS = r"""
+const fs = require('fs');
+const vm = require('vm');
+const configs = {};
+const context = {
+  print: () => {},
+  JSON, Math, Number, Object,
+  Shelly: {
+    getComponentStatus: () => ({ uptime: 1 }),
+    getComponentConfig: () => ({ topic_prefix: 'shelly' }),
+    getDeviceInfo: () => ({ id: 'shelly', model: 'Pro 3EM' }),
+    call: () => {},
+  },
+  Script: { storage: { getItem: () => null, setItem: () => {} } },
+  MQTT: {
+    setConnectHandler: () => {}, subscribe: () => {},
+    publish: (topic, message, qos, retain) => {
+      if (!topic.startsWith('homeassistant/')) return;
+      configs[topic] = { config: JSON.parse(message), retain };
+    },
+    isConnected: () => true,
+  },
+  Timer: { set: () => 1, clear: () => {} },
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), context);
+for (const key of Object.keys(configs)) delete configs[key];
+vm.runInContext("onHomeAssistantStatus('homeassistant/status', 'online')", context);
+console.log(JSON.stringify(configs));
+"""
+
+
+def test_the_bridge_forces_an_update_of_every_reading_hydronicus_ages(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("the bridge's behavior runs in Node")
+    harness = tmp_path / "discovery.js"
+    harness.write_text(DISCOVERY_HARNESS, encoding="utf-8")
+
+    output = subprocess.run(
+        [node, str(harness), str(BRIDGE)], capture_output=True, text=True, check=True
+    ).stdout
+    configs = json.loads(output)
+
+    outdoor = configs["homeassistant/sensor/shelly_midea/t4/config"]
+    assert outdoor["retain"], "a retained config reaches Home Assistant after its restart"
+    assert outdoor["config"]["force_update"] is True
+    assert outdoor["config"]["value_template"] == "{{ value_json.t4 }}"
+    assert outdoor["config"]["device_class"] == "temperature"
+    forced = {
+        topic.split("/")[3] for topic, sent in configs.items() if sent["config"].get("force_update")
+    }
+    assert forced == {"tw_in", "tw_out", "t4", "compressor_hz"}
