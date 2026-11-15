@@ -195,6 +195,7 @@ _SUPPLY_KEYS: Final = (
     "heat_temperature",
     "cool_temperature",
     "minimum",
+    "heat_minimum",
     "maximum",
     "tolerance",
     "outdoor_cold",
@@ -217,6 +218,7 @@ _WARM_UP_KEYS: Final = ("temperature", "duration")
 _SUPPLY_SPECIAL_KEYS: Final = (
     "entity",
     "outdoor_sensor",
+    "heat_minimum",
     "step",
     "outdoor_fallback",
     "heating_limit",
@@ -659,7 +661,7 @@ def _warm_up(source: Mapping[str, Any], path: str, supply: SupplyControl | None)
         temperature = _number(document["temperature"], key_path, signed=True)
         if supply is None:
             raise PlantFileError(key_path, "This needs a supply: the setpoint a warm-up holds.")
-        _within(temperature, key_path, low=supply.minimum, high=supply.maximum)
+        _within(temperature, key_path, low=supply.lowest(Mode.HEAT), high=supply.maximum)
     duration = _bounded(
         document, "duration", defaults.duration, path, None, MAX_WARM_UP_DURATION, positive=True
     )
@@ -708,6 +710,15 @@ def _supply(value: object, path: str) -> SupplyControl:
     step = _optional(document, "step", path, _number, positive=True)
     if settings["minimum"] >= settings["maximum"]:
         raise PlantFileError(_join(path, "maximum"), "Maximum must be greater than minimum.")
+    heat_minimum = _optional(document, "heat_minimum", path, _number, signed=True)
+    if heat_minimum is not None:
+        key_path = _join(path, "heat_minimum")
+        _within(heat_minimum, key_path, low=settings["minimum"])
+        if heat_minimum >= settings["maximum"]:
+            raise PlantFileError(key_path, "Must be less than the maximum.")
+        if heat_minimum == settings["minimum"]:
+            heat_minimum = None
+    lowest = settings["minimum"] if heat_minimum is None else heat_minimum
     if settings["outdoor_cold"] >= settings["outdoor_warm"]:
         raise PlantFileError(
             _join(path, "outdoor_warm"),
@@ -722,7 +733,7 @@ def _supply(value: object, path: str) -> SupplyControl:
     # target is checked with the loops, since only a cooling Plant uses it.
     checked = ("heat_temperature", "heat_cold", "heat_warm")
     for key in checked if "outdoor_sensor" in document else checked[:1]:
-        _within(settings[key], _join(path, key), low=settings["minimum"], high=settings["maximum"])
+        _within(settings[key], _join(path, key), low=lowest, high=settings["maximum"])
     _within(
         settings["tolerance"],
         _join(path, "tolerance"),
@@ -748,6 +759,7 @@ def _supply(value: object, path: str) -> SupplyControl:
         outdoor_fallback=fallback,
         heating_limit=optional.get("heating_limit"),
         room_influence=influence,
+        heat_minimum=heat_minimum,
         **settings,
     )
 

@@ -210,16 +210,45 @@ def test_room_influence_shifts_by_its_factor_within_its_limit() -> None:
     outdoor=st.floats(-40, 40),
     offset=st.floats(-MAX_CURVE_OFFSET, MAX_CURVE_OFFSET),
     shift=st.floats(-6, 6),
+    heat_minimum=st.none() | st.floats(5, 59),
 )
 def test_every_heating_target_stays_in_bounds_and_falls_as_it_warms(
-    outdoor: float, offset: float, shift: float
+    outdoor: float, offset: float, shift: float, heat_minimum: float | None
 ) -> None:
+    config = replace(CURVE, heat_minimum=heat_minimum)
+
     def target(value: float) -> float:
         result = supply_target(
-            CURVE, Mode.HEAT, outdoor_at(value), NOW, offset=offset, room_shift=shift
+            config, Mode.HEAT, outdoor_at(value), NOW, offset=offset, room_shift=shift
         ).target
         assert result is not None
         return result
 
-    assert CURVE.minimum <= target(outdoor) <= CURVE.maximum
+    assert config.lowest(Mode.HEAT) <= target(outdoor) <= config.maximum
     assert target(outdoor + 1) <= target(outdoor)
+
+
+# A heating minimum above the supply's minimum
+
+HOME = replace(CURVE, minimum=16, heat_minimum=25, maximum=50, cool_temperature=16)
+
+
+def test_the_heating_minimum_bounds_heating_and_leaves_cooling_at_the_minimum() -> None:
+    mild = outdoor_at(20)
+    assert supply_target(HOME, Mode.HEAT, mild, NOW, offset=-5, room_shift=-3).target == 25
+    assert (
+        supply_target(replace(HOME, heat_minimum=None), Mode.HEAT, mild, NOW, offset=-5).target
+        == 20
+    )
+    fixed = replace(HOME, outdoor_sensor=None, heat_temperature=20)
+    assert supply_target(fixed, Mode.HEAT, {}, NOW).target == 25
+    assert supply_target(HOME, Mode.COOL, {}, NOW).target == 16
+    assert supply_target(replace(HOME, cool_temperature=5), Mode.COOL, {}, NOW).target == 16
+
+
+@pytest.mark.parametrize("heat_minimum", [15.0, 50.0, 60.0, nan, inf])
+def test_a_heating_minimum_outside_the_bounds_gives_no_heating_target(heat_minimum: float) -> None:
+    config = replace(HOME, heat_minimum=heat_minimum)
+    result = supply_target(config, Mode.HEAT, outdoor_at(5), NOW)
+    assert result == SupplyTarget(None, "invalid supply temperature bounds")
+    assert supply_target(config, Mode.COOL, {}, NOW).target == 16

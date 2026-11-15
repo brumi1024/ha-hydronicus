@@ -296,6 +296,7 @@ def supply_schema(hass: HomeAssistant, values: Mapping[str, Any]) -> vol.Schema:
         "heat_warm",
     ):
         schema[_default(key, values, getattr(defaults, key))] = number(unit=_CELSIUS)
+    schema[optional("heat_minimum", values)] = number(unit=_CELSIUS)
     schema[_default("tolerance", values, defaults.tolerance)] = number(low=0.1, unit="K")
     schema[_default("max_age", values, defaults.max_age)] = seconds(1)
     return vol.Schema(schema)

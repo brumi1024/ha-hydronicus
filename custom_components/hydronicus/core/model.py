@@ -438,6 +438,15 @@ class SupplyControl:
     # The damped outdoor temperature at or above which the source does not heat.
     heating_limit: float | None = None
     room_influence: RoomInfluence | None = None
+    # The lowest heating target, for a source that takes a narrower setpoint
+    # range in heating than in cooling; None is ``minimum``.
+    heat_minimum: float | None = None
+
+    def lowest(self, mode: Mode) -> float:
+        """The lowest supply target in a mode: ``heat_minimum`` in heating, else ``minimum``."""
+        if mode is Mode.HEAT and self.heat_minimum is not None:
+            return self.heat_minimum
+        return self.minimum
 
 
 DEFAULT_DHW_MINIMUM: Final = 40.0

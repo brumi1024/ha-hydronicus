@@ -82,7 +82,11 @@
               "outdoor_warm": "Warm outdoor temperature",
               "heat_cold": "Heating temperature in cold weather",
               "heat_warm": "Heating temperature in warm weather",
+              "heat_minimum": "Minimum heating supply temperature",
               "max_age": "Maximum outdoor reading age"
+            },
+            "data_description": {
+              "heat_minimum": "Optional. The lowest heating target, for a heat pump that takes a narrower setpoint range in heating than in cooling. Leave it empty to use the minimum supply temperature in both modes."
             }
           },
           "weather": {

@@ -138,6 +138,9 @@ def supply_target(
         or config.minimum >= config.maximum
     ):
         return SupplyTarget(None, "invalid supply temperature bounds")
+    lowest = config.lowest(mode)
+    if not isfinite(lowest) or not config.minimum <= lowest < config.maximum:
+        return SupplyTarget(None, "invalid supply temperature bounds")
 
     target = config.cool_temperature if mode is Mode.COOL else config.heat_temperature
     if mode is Mode.HEAT and config.outdoor_sensor is not None:
@@ -166,7 +169,7 @@ def supply_target(
         target += shift
     if not isfinite(target):
         return SupplyTarget(None, "supply temperature invalid")
-    return SupplyTarget(min(config.maximum, max(config.minimum, target)))
+    return SupplyTarget(min(config.maximum, max(lowest, target)))
 
 
 def room_shift(config: SupplyControl, target: float | None, temperature: float | None) -> float:
