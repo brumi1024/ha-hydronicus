@@ -180,8 +180,10 @@ def _source(runtime: PlantRuntime, view: PlantView) -> dict[str, Any] | None:
             "outdoor": _round(curve.outdoor),
             "fallback": curve.fallback,
             "warm_weather": curve.warm_weather,
+            "curve": _round(curve.curve),
             "offset": curve.offset,
-            "room_shift": _round(curve.room_shift),
+            "room_trim": _round(curve.room_shift),
+            "learned": None if curve.trim is None else _round(curve.trim.learned),
         },
         "dhw": None
         if desired.dhw is None

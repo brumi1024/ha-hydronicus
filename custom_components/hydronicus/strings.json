@@ -801,6 +801,26 @@
             "name": "Next due"
           }
         }
+      },
+      "room_trim": {
+        "name": "Room trim",
+        "state_attributes": {
+          "proportional": {
+            "name": "Proportional part"
+          },
+          "learned": {
+            "name": "Learned part"
+          },
+          "lead_zone": {
+            "name": "Lead zone"
+          },
+          "filtered_error": {
+            "name": "Filtered error"
+          },
+          "learning_held": {
+            "name": "Learning held"
+          }
+        }
       }
     },
     "switch": {
@@ -937,6 +957,9 @@
     "button": {
       "reset_learning": {
         "name": "Reset recovery learning"
+      },
+      "reset_room_trim": {
+        "name": "Reset room trim"
       }
     }
   },

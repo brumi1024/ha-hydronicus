@@ -24,7 +24,7 @@ Hydronicus puts one controller in charge of the whole plant:
 - **Condensation guard.** Cooled floors and ceilings stay above the worst-case dew point of their rooms.
 - **Verified commands.** A command counts only once Home Assistant shows its result; otherwise it is retried and reported as a Repair.
 - **Comfort.** Digital thermostats with presets, schedules, away, window handling, bounded early start, and optional learned recovery times.
-- **Supply control.** Heat on the heat pump's own curve, a fixed setpoint, or an outdoor heating curve with offset, damping, room influence, and a heating limit; a change made on the heat pump is adopted, not undone.
+- **Supply control.** Heat on the heat pump's own curve, a fixed setpoint, or an outdoor heating curve with offset, damping, a slow self-correcting room trim, and a heating limit; a change made on the heat pump is adopted, not undone.
 - **Hot water.** Ownership of the source's DHW switch and target, with a schedule and a disinfection cycle.
 - **Care.** Frost protection, and a weekly exercise of idle pumps and valves so they do not seize.
 - **Any hardware.** It drives ordinary Home Assistant switches, valves, selects, numbers, and sensors, from whichever integration provides them.

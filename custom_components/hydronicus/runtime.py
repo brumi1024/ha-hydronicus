@@ -92,6 +92,7 @@ from .core.model import (
 from .core.plant_file import entity_paths, export_plant
 from .core.reconcile import Action, Reconciled, ReconcileState, reconcile, step_view
 from .core.response import ZoneResponse, check_response
+from .core.room_trim import RoomTrim
 from .core.step import (
     TICK,
     DigitalThermostatState,
@@ -596,6 +597,7 @@ class PlantRuntime:
         warm_for: float | None = None,
         warm_to: float | None = None,
         warm_temperature: float | None = None,
+        reset_trim: bool = False,
     ) -> None:
         """Take the owner's heating supply command from an entity or an action, and evaluate."""
         last = max(
@@ -620,8 +622,17 @@ class PlantRuntime:
                 warm_up, warm_for, warm_to = pending.warm_up, pending.warm_for, pending.warm_to
             if warm_temperature is None:
                 warm_temperature = pending.warm_temperature
+            reset_trim = reset_trim or pending.reset_trim
         self.supply_command = SupplyCommand(
-            at, strategy, fixed, curve_number, warm_up, warm_for, warm_to, warm_temperature
+            at,
+            strategy,
+            fixed,
+            curve_number,
+            warm_up,
+            warm_for,
+            warm_to,
+            warm_temperature,
+            reset_trim,
         )
         self.request_evaluation()
 
@@ -656,6 +667,18 @@ class PlantRuntime:
         """The heating supply strategy in force, None before the first evaluation or without one."""
         view = self.view
         return None if view is None else view.desired.heating_supply
+
+    @property
+    def room_trim(self) -> RoomTrim | None:
+        """The room trim the last evaluation chose, None before it or without room influence."""
+        view = self.view
+        curve = None if view is None else view.desired.heating_curve
+        return None if curve is None else curve.trim
+
+    @callback
+    def reset_room_trim(self) -> None:
+        """Forget what the room trim learned, at the next evaluation."""
+        self.command_supply(reset_trim=True)
 
     @property
     def dhw(self) -> DhwState | None:

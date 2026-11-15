@@ -99,7 +99,9 @@ The source is reached only through generic entities, so Hydronicus does not know
 - a **request** switch, and optionally **mode switches** that must be on in a mode;
 - an optional **mode** select with the option names for heat and cool;
 - an optional **supply** number and **weather curve** switch.
-  The **Heating supply** select chooses who owns the heating supply temperature: the heat pump's own curve, a fixed setpoint, or Hydronicus's outdoor curve with offset, damping, room influence, a heating limit, and an outdoor fallback.
+  The **Heating supply** select chooses who owns the heating supply temperature: the heat pump's own curve, a fixed setpoint, or Hydronicus's outdoor curve with offset, damping, a room trim, a heating limit, and an outdoor fallback.
+  The **Room trim** is small, slow, and self-correcting: the lead zone's error is filtered and ignored within a deadband, and then gives a proportional part and, integrated, a learned part, the two capped together.
+  The learned part rises only after a long call, falls while the zones are satisfied, and holds its value whenever the curve cannot act on it, so slow floors and ceilings do not make it swing; a stepped setpoint moves only once the target has left it by 0.6 of a step.
   A change made on the heat pump is adopted as the new choice, never undone.
   An optional **curve number** picks which of the heat pump's own curves runs; Hydronicus owns it like the DHW target and adopts a change made on the heat pump.
   A **Warm-up** holds the heating supply at least at the owner's **Warm-up temperature** for a bounded time: it raises a fixed setpoint or Hydronicus's curve to it, or turns the heat pump's own curve off and holds the setpoint at it, then turns the curve on again; it ends early once the zones that called are warm, the Plant cools, the strategy is changed, or the curve is turned on elsewhere.
@@ -162,7 +164,7 @@ The integration lives in `custom_components/hydronicus/`, split into a pure core
 | `plant_file.py` | Reading, validating, and writing plant files, and the storage split into entry and subentries. |
 | `step.py` | Observations, State, and `step()`. |
 | `demand.py`, `comfort.py`, `thermal.py`, `forecast.py` | Zone demand, thermostats, schedules, early start, and learned recovery. |
-| `supply.py`, `changeover.py`, `dhw.py`, `response.py` | Supply targets, automatic changeover, hot water, and the zone response check. |
+| `supply.py`, `room_trim.py`, `changeover.py`, `dhw.py`, `response.py` | Supply targets, the room trim, automatic changeover, hot water, and the zone response check. |
 | `reconcile.py` | Desired state to service calls, retries, and Repairs. |
 
 The Home Assistant side:

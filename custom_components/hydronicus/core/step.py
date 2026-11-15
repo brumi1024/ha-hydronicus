@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from math import ceil, isfinite
+from math import ceil, inf, isfinite
 from typing import Any, Final
 
 from .changeover import ChangeoverState, changeover
@@ -80,13 +80,21 @@ from .model import (
     OutputTarget,
     Plant,
     Pump,
+    RoomInfluence,
     RunKind,
     Source,
     SwitchTarget,
     Valve,
     Zone,
 )
-from .supply import DampedOutdoor, outdoor_temperature, room_shift, supply_target, warm_weather
+from .room_trim import RoomTrim, RoomTrimState, room_trim
+from .supply import (
+    DampedOutdoor,
+    curve_temperature,
+    outdoor_temperature,
+    supply_target,
+    warm_weather,
+)
 from .thermal import RecoveryEstimate
 
 __all__ = [
@@ -135,6 +143,9 @@ GUARD_REFERENCE_MAX_AGE: Final = 1800.0
 CALL_TIMEOUT: Final = 10.0
 # Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
 TICK: Final = 0.001
+# How far, in steps of the setpoint's resolution, a heating target must move
+# from the last one Hydronicus proposed before the proposal changes.
+SETPOINT_HYSTERESIS: Final = 0.6
 # The window ``Source.max_starts_per_hour`` counts observed request starts in, in seconds.
 START_WINDOW: Final = 3600.0
 # The window in which the no-load guard's trips are counted for its Repair, in seconds.
@@ -379,6 +390,8 @@ class State:
     # heating limit keeps the source from heating.
     outdoor_damped: DampedOutdoor | None = None
     warm_weather: bool = False
+    # The room trim's filtered error and learned part.
+    room_trim: RoomTrimState = RoomTrimState()
     # Since when each zone has had no usable temperature, by zone slug.
     sensorless: Mapping[str, float] = field(default_factory=dict)
     # The automatic changeover's average and the mode it chose.
@@ -450,6 +463,7 @@ class State:
             if self.outdoor_damped is None
             else {"value": self.outdoor_damped.value, "at": self.outdoor_damped.at},
             "warm_weather": self.warm_weather,
+            "room_trim": self.room_trim.to_dict(),
             "sensorless": dict(self.sensorless),
             "changeover": self.changeover.to_dict(),
         }
@@ -517,6 +531,7 @@ class State:
             no_load_trips=tuple(float(value) for value in data.get("no_load_trips", ())),
             outdoor_damped=_damped_outdoor(data.get("outdoor_damped")),
             warm_weather=bool(data.get("warm_weather", False)),
+            room_trim=RoomTrimState.from_dict(data.get("room_trim", {})),
             sensorless={slug: float(at) for slug, at in data.get("sensorless", {}).items()},
             changeover=ChangeoverState.from_dict(data.get("changeover", {})),
         )
@@ -691,6 +706,8 @@ class _Evaluation:
         self.heating: HeatingSupplyResult | None = None
         # The zones that call for heat this evaluation, by slug.
         self.heat_calls: tuple[str, ...] = ()
+        # The room trim, stepped once the heating supply strategy is known.
+        self.trim: RoomTrim | None = None
         self.commissioning = state.commissioning
         self.physical_flow_seen = physical_flow_seen
         self.source_observed = None if plant.source is None else self.switch(plant.source.request)
@@ -1026,6 +1043,7 @@ class _Evaluation:
         flow_ended = now if state.flowing and not flowing else state.flow_ended
         mode, leaving = self.mode(flowing, exercise_flowing, flow_ended)
         self.heating = self.heating_supply(mode)
+        self.trim = self.room_trim(mode, demand_states)
         label = mode if mode is not Mode.OFF else state.last_mode
         active = mode is not Mode.OFF and not leaving
         # A mode the select changed keeps the source for its minimum on time, as the
@@ -1125,6 +1143,7 @@ class _Evaluation:
             no_load_trips=self.no_load_state[3],
             outdoor_damped=state.outdoor_damped if self.outdoor is None else self.outdoor.damped,
             warm_weather=self.warm,
+            room_trim=state.room_trim if self.trim is None else self.trim.state,
             sensorless=self.sensorless,
         )
         desired = Desired(
@@ -1164,29 +1183,113 @@ class _Evaluation:
         offset = self.obs.curve_offset
         return source.supply.offset if offset is None else offset
 
-    def room_shift(self) -> float:
-        """The lead zones' shift of the heating curve, from this evaluation's demand.
+    def lead_zone(self, influence: RoomInfluence) -> tuple[str, float] | None:
+        """The lead zone and its error, its heating target minus its temperature.
 
         The coldest lead zone below its target leads among those calling for
         heat, or among all of them while none calls; a zone without a target or
         a reading leads nothing.
         """
-        source = self.plant.source
-        if source is None or source.supply is None or source.supply.room_influence is None:
-            return 0.0
-        readings = {
-            slug: (target, temperature)
-            for slug in source.supply.room_influence.zones
+        errors = {
+            slug: target - temperature
+            for slug in influence.zones
             if (target := self.zone_target(slug)) is not None
             and (temperature := self.temperatures.get(slug)) is not None
         }
-        if not readings:
-            return 0.0
-        calling = {slug: pair for slug, pair in readings.items() if slug in self.heat_calls}
-        target, temperature = max(
-            (calling or readings).values(), key=lambda pair: pair[0] - pair[1]
+        if not errors:
+            return None
+        calling = {slug: error for slug, error in errors.items() if slug in self.heat_calls}
+        return max((calling or errors).items(), key=lambda item: item[1])
+
+    def room_trim(self, mode: Mode, demands: Mapping[str, DemandState]) -> RoomTrim | None:
+        """Step the room trim from the lead zone, holding what it learned when it cannot act."""
+        source = self.plant.source
+        supply = None if source is None else source.supply
+        influence = None if supply is None else supply.room_influence
+        if supply is None or influence is None:
+            return None
+        lead = self.lead_zone(influence)
+        slug, error = (None, None) if lead is None else lead
+        calling_since: float | None = None
+        if slug is not None and slug in self.heat_calls:
+            demand = demands.get(slug)
+            calling_since = self.now if demand is None or demand.since is None else demand.since
+        command, applied = self.obs.supply_command, self.state.heating_supply.command_at
+        reset = (
+            command is not None and command.reset_trim and (applied is None or command.at > applied)
         )
-        return room_shift(source.supply, target, temperature)
+        curve = self.curve_base(mode)
+        held = self.trim_held(mode) or (
+            "the heating curve has no outdoor temperature" if curve is None else None
+        )
+        lowest, highest = supply.lowest(Mode.HEAT), supply.maximum
+        return room_trim(
+            influence,
+            self.state.room_trim,
+            self.now,
+            slug,
+            error,
+            gap=supply.max_age,
+            calling_since=calling_since,
+            held=held,
+            headroom=(-inf, inf) if curve is None else (lowest - curve, highest - curve),
+            reset=reset,
+        )
+
+    def curve_value(self) -> float | None:
+        """Hydronicus's heating curve before any shift, None without an outdoor temperature."""
+        source = self.plant.source
+        if source is None or source.supply is None or self.outdoor is None:
+            return None
+        value = self.outdoor.value
+        if value is None and self.frost:
+            value = FROST_CURVE_OUTDOOR
+        return None if value is None else curve_temperature(source.supply, value)
+
+    def curve_base(self, mode: Mode) -> float | None:
+        """The heating curve with the owner's offset, before the room trim, in heating."""
+        curve = self.curve_value()
+        return None if mode is not Mode.HEAT or curve is None else curve + self.curve_offset()
+
+    def curve_terms(self) -> str:
+        """The heating curve's sum for a reason: its value, the offset, and the room trim."""
+        curve = self.curve_value()
+        if curve is None:
+            return ""
+        terms = f": curve {curve:.1f} °C, offset {self.curve_offset():+.1f} K"
+        trim = self.trim
+        if trim is not None:
+            terms += f", room trim {trim.total:+.1f} K (learned {trim.learned:+.1f} K)"
+        return terms
+
+    def trim_held(self, mode: Mode) -> str | None:
+        """Why the heating curve cannot act on the room trim now, None while it can."""
+        source, heating = self.plant.source, self.heating
+        if (
+            mode is not Mode.HEAT
+            or heating is None
+            or heating.strategy is not HeatingSupply.CURVE
+            or source is None
+            or source.supply is None
+        ):
+            return "the Plant does not heat on Hydronicus's heating curve"
+        if not self.obs.control or source.supply.entity not in self.obs.armed:
+            return "the heating supply setpoint is only proposed"
+        if heating.warm_up is not None:
+            return "a warm-up holds the heating supply"
+        dhw = self.state.dhw
+        if dhw.disinfect_started is not None or (
+            dhw.boost_until is not None and dhw.boost_until > self.now
+        ):
+            return "hot water has the source"
+        if (
+            self.handover
+            or self.inhibited is not None
+            or self.no_load_state[2] is not None
+            or self.warm
+        ):
+            return "the heating request is held off"
+        return None
 
     def zone_target(self, slug: str) -> float | None:
         """A digital thermostat's heating target this evaluation, None without one."""
@@ -1218,7 +1321,9 @@ class _Evaluation:
             fallback=self.outdoor.fallback,
             warm_weather=self.warm,
             offset=self.curve_offset(),
-            room_shift=self.room_shift(),
+            room_shift=0.0 if self.trim is None else self.trim.total,
+            curve=self.curve_value(),
+            trim=self.trim,
         )
 
     def no_load_reason(self) -> str | None:
@@ -2314,7 +2419,7 @@ class _Plan:
             ev.now,
             outdoor=ev.outdoor,
             offset=ev.curve_offset(),
-            room_shift=ev.room_shift(),
+            room_shift=0.0 if ev.trim is None else ev.trim.total,
             frost_outdoor=FROST_CURVE_OUTDOOR if ev.frost else None,
         )
         if self.mode is Mode.HEAT and config.outdoor_sensor is not None:
@@ -2364,14 +2469,30 @@ class _Plan:
             floor = max((point for point in points if point is not None), default=-273.15)
             value = max(value, floor + CONDENSATION_MARGIN + GUARD_RELEASE + config.tolerance)
         if config.step is not None:
-            steps = value / config.step
-            value = config.step * (ceil(steps - 1e-9) if self.mode is Mode.COOL else round(steps))
+            last = ev.state.heating_supply.last_target
+            if (
+                self.mode is Mode.HEAT
+                and last is not None
+                and abs(value - last) < SETPOINT_HYSTERESIS * config.step
+                and last == config.step * round(last / config.step)
+            ):
+                # A heating target moves only once it has left the last one by
+                # 0.6 of a step, so one near the midpoint between two steps does
+                # not flip between them with every evaluation.
+                value = last
+            else:
+                steps = value / config.step
+                value = config.step * (
+                    ceil(steps - 1e-9) if self.mode is Mode.COOL else round(steps)
+                )
             if self.mode is Mode.HEAT:
                 value = min(config.maximum, max(config.lowest(Mode.HEAT), value))
         if self.mode is Mode.COOL and value > config.maximum:
             ev.reasons["source_supply"] = "safe cooling supply temperature exceeds its maximum"
             return None
-        ev.reasons["source_supply"] = f"supply target {value:.1f} °C"
+        ev.reasons["source_supply"] = f"supply target {value:.1f} °C" + (
+            ev.curve_terms() if self.mode is Mode.HEAT else ""
+        )
         return NumericTarget(value, config.tolerance)
 
     def weather_curve_off(self) -> bool:

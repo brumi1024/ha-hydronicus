@@ -21,7 +21,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN
-from .core.model import Loop, LoopRef, Plant, Zone
+from .core.model import HeatingSupply, Loop, LoopRef, Plant, Zone
 from .storage import zone_subentry_ids
 from .view import ZoneReadings
 
@@ -29,6 +29,19 @@ if TYPE_CHECKING:
     from .runtime import PlantRuntime
 
 _MANUFACTURER = "Hydronicus"
+
+
+def room_trim_offered(runtime: PlantRuntime, *, learning: bool = False) -> bool:
+    """Whether Hydronicus's heating curve has a room trim, and with ``learning`` a learned part."""
+    source = runtime.plant.source
+    supply = None if source is None else source.supply
+    influence = None if supply is None else supply.room_influence
+    return (
+        source is not None
+        and influence is not None
+        and HeatingSupply.CURVE in source.heating_supplies
+        and (not learning or influence.learn_rate > 0)
+    )
 
 
 def plant_unique_id(plant_id: str, suffix: str) -> str:

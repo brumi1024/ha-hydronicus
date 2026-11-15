@@ -79,10 +79,15 @@ source:
     outdoor_damping: 10800                   # filter time constant of the outdoor reading; needs outdoor_sensor (default 0, off)
     outdoor_fallback: 0                      # outdoor temperature used while the reading is lost, -50 to 50 (default none)
     heating_limit: 16                        # no heating at or above this damped outdoor temperature (default none)
-    room_influence:                          # lead zones that shift the heating curve; the coldest calling one leads
+    room_influence:                          # lead zones that trim the heating curve; the coldest calling one leads
       zones: [living_room, kitchen]          # required; zone slugs with a digital thermostat and a heating loop
-      factor: 1                              # shift per K the zone is below its target (default 1)
-      limit: 3                               # largest shift either way in K (default 3)
+      factor: 1                              # proportional trim per K the filtered error is beyond the deadband (default 1)
+      limit: 2                               # largest room trim either way in K, both parts together (default 2)
+      smoothing: 3600                        # time constant of the error's filter in seconds; 0 is none (default 3600)
+      deadband: 0.2                          # error in K that counts as none (default 0.2)
+      learn_rate: 0.3                        # learned trim in K per hour per K of error; 0 turns it off (default 0.3)
+      learn_limit: 2                         # largest learned trim either way in K (default 2)
+      learn_after: 28800                     # seconds the lead zone calls without a pause before the learned trim rises (default 28800)
 
   # Domestic hot water: needs switch, setpoint, or both.
   dhw:

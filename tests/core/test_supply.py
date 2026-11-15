@@ -11,7 +11,6 @@ from custom_components.hydronicus.core.demand import Reading
 from custom_components.hydronicus.core.model import (
     MAX_CURVE_OFFSET,
     Mode,
-    RoomInfluence,
     SupplyControl,
 )
 from custom_components.hydronicus.core.supply import (
@@ -19,7 +18,6 @@ from custom_components.hydronicus.core.supply import (
     Outdoor,
     SupplyTarget,
     outdoor_temperature,
-    room_shift,
     supply_target,
     warm_weather,
 )
@@ -194,16 +192,6 @@ def test_a_fallback_or_a_missing_reading_never_keeps_the_heating_limit() -> None
     assert warm_weather(config, Outdoor(20.0, fallback=True), True) is False
     assert warm_weather(config, Outdoor(None), True) is False
     assert warm_weather(CURVE, Outdoor(30.0), True) is False
-
-
-def test_room_influence_shifts_by_its_factor_within_its_limit() -> None:
-    config = replace(CURVE, room_influence=RoomInfluence(("living",), factor=2.0, limit=3.0))
-    assert room_shift(config, 21.0, 20.5) == 1.0
-    assert room_shift(config, 21.0, 19.0) == 3.0
-    assert room_shift(config, 21.0, 23.0) == -3.0
-    assert room_shift(config, None, 20.0) == 0.0
-    assert room_shift(config, 21.0, None) == 0.0
-    assert room_shift(CURVE, 21.0, 18.0) == 0.0
 
 
 @given(

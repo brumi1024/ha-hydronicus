@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .comfort import ComfortTarget
     from .dhw import DhwState
     from .heating_supply import HeatingSupplyResult
+    from .room_trim import RoomTrim
 
 
 class Mode(StrEnum):
@@ -396,17 +397,28 @@ FROST_CURVE_OUTDOOR: Final = 0.0
 
 @dataclass(frozen=True, slots=True)
 class RoomInfluence:
-    """Lead zones whose distance from their heating target shifts the heating curve.
+    """Lead zones whose distance from their heating target trims the heating curve.
 
     The coldest of them among those calling for heat leads, or the coldest of all
-    while none calls.
+    while none calls. Its error is filtered and trimmed by ``core.room_trim``.
     """
 
     zones: tuple[str, ...]
-    # The shift per kelvin the zone is below its target.
+    # The proportional part's shift per kelvin the zone is below its target.
     factor: float = 1.0
-    # The largest shift either way, in K.
-    limit: float = 3.0
+    # The largest room trim either way, both parts together, in K.
+    limit: float = 2.0
+    # The time constant of the error's first-order filter in seconds; 0 is none.
+    smoothing: float = 3600.0
+    # An error within this many kelvin of the target counts as none.
+    deadband: float = 0.2
+    # The learned part's rate in K per hour per kelvin of error; 0 turns it off.
+    learn_rate: float = 0.3
+    # The largest learned part either way, in K.
+    learn_limit: float = 2.0
+    # How long the lead zone must have called without a pause, in seconds,
+    # before the learned part may rise: the time its emitters take to warm again.
+    learn_after: float = 28800.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1023,9 +1035,13 @@ class HeatingCurve:
     fallback: bool
     # The heating limit keeps the source from heating.
     warm_weather: bool
-    # The owner's offset and the lead zone's shift, in K.
+    # The owner's offset and the room trim, in K.
     offset: float
     room_shift: float
+    # The curve's own temperature before either shift, None without an outdoor
+    # temperature, and the room trim with its parts, None without room influence.
+    curve: float | None = None
+    trim: RoomTrim | None = None
 
 
 @dataclass(frozen=True, slots=True)

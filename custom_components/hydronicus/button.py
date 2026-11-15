@@ -1,4 +1,4 @@
-"""Per-zone recovery learning reset, independent of comfort and hydraulic state."""
+"""Resets of what Hydronicus learned: a zone's recovery times and the room trim."""
 
 from __future__ import annotations
 
@@ -9,7 +9,14 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HydronicusConfigEntry
 from .core.model import DigitalThermostat, LearningMode, Zone
-from .entity import ZoneEntity, async_add_plant_entities
+from .entity import (
+    HydronicusEntity,
+    ZoneEntity,
+    async_add_plant_entities,
+    plant_unique_id,
+    room_trim_offered,
+    source_device,
+)
 from .runtime import PlantRuntime
 
 PARALLEL_UPDATES = 0
@@ -28,20 +35,33 @@ class ResetLearningButton(ZoneEntity, ButtonEntity):
         self.runtime.reset_learning(self._zone)
 
 
+class ResetRoomTrimButton(HydronicusEntity, ButtonEntity):
+    """Forget the room trim's learned part, so it starts again from the curve."""
+
+    _attr_translation_key = "reset_room_trim"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "reset_room_trim"), source_device(runtime)
+        )
+
+    async def async_press(self) -> None:
+        self.runtime.reset_room_trim()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: HydronicusConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     runtime = entry.runtime_data
-    async_add_plant_entities(
-        runtime,
-        "button",
-        async_add_entities,
-        (
-            (zone.slug, ResetLearningButton(runtime, zone))
-            for zone in runtime.plant.zones
-            if isinstance(zone.thermostat, DigitalThermostat)
-            and zone.thermostat.learning is not LearningMode.OFF
-        ),
-    )
+    entities: list[tuple[str | None, ButtonEntity]] = [
+        (zone.slug, ResetLearningButton(runtime, zone))
+        for zone in runtime.plant.zones
+        if isinstance(zone.thermostat, DigitalThermostat)
+        and zone.thermostat.learning is not LearningMode.OFF
+    ]
+    if room_trim_offered(runtime, learning=True):
+        entities.append((None, ResetRoomTrimButton(runtime)))
+    async_add_plant_entities(runtime, "button", async_add_entities, entities)
