@@ -1927,3 +1927,88 @@ def test_mode_switches_reject_invalid_values(value: object, path: str, message: 
         parse_plant(document)
     assert error.value.path == path
     assert message in str(error.value)
+
+
+def home_supply_document(**supply: object) -> dict[str, Any]:
+    """A supply covering heating 25 to 50 °C and cooling 16 to 22 °C, like a Midea's."""
+    document = reference_document()
+    document["source"]["supply"] = {
+        "entity": "number.zone_1_setpoint",
+        "outdoor_sensor": "sensor.outdoor",
+        "heat_temperature": 33,
+        "cool_temperature": 19,
+        "minimum": 16,
+        "heat_minimum": 25,
+        "maximum": 50,
+        **supply,
+    }
+    return document
+
+
+def test_a_heating_minimum_roundtrips_and_bounds_only_heating() -> None:
+    document = home_supply_document()
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.supply is not None
+    supply = plant.source.supply
+    assert supply.heat_minimum == 25
+    assert supply.lowest(Mode.HEAT) == 25
+    assert supply.lowest(Mode.COOL) == 16
+    assert export_plant(plant)["source"]["supply"] == document["source"]["supply"]
+    assert read_plant_file(write_plant_file(plant)) == plant
+    entry, zones = to_storage(plant)
+    assert from_storage(json.loads(json.dumps(entry, sort_keys=True)), zones) == plant
+
+
+def test_a_heating_minimum_equal_to_the_minimum_is_the_default() -> None:
+    plant = parse_plant(home_supply_document(heat_minimum=16, heat_warm=25))
+
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.supply.heat_minimum is None
+    assert "heat_minimum" not in export_plant(plant)["source"]["supply"]
+
+
+def test_a_supply_without_a_heating_minimum_roundtrips_unchanged() -> None:
+    document = home_supply_document()
+    del document["source"]["supply"]["heat_minimum"]
+    plant = parse_plant(document)
+
+    assert plant.source is not None and plant.source.supply is not None
+    assert plant.source.supply.heat_minimum is None
+    assert plant.source.supply.lowest(Mode.HEAT) == 16
+    assert export_plant(plant)["source"]["supply"] == document["source"]["supply"]
+    assert parse_plant(export_plant(plant)) == plant
+
+
+@pytest.mark.parametrize(
+    ("supply", "path", "fragment"),
+    [
+        ({"heat_minimum": 15}, "heat_minimum", "at least 16"),
+        ({"heat_minimum": 50}, "heat_minimum", "less than the maximum"),
+        ({"heat_minimum": 60}, "heat_minimum", "less than the maximum"),
+        ({"heat_minimum": float("nan")}, "heat_minimum", "number"),
+        ({"heat_minimum": None}, "heat_minimum", "number"),
+        ({"heat_minimum": 30}, "heat_warm", "at least 30"),
+        ({"heat_temperature": 20}, "heat_temperature", "at least 25"),
+        ({"heat_cold": 24, "heat_warm": 24}, "heat_cold", "at least 25"),
+    ],
+)
+def test_a_heating_minimum_outside_the_supply_s_bounds_is_rejected(
+    supply: dict[str, object], path: str, fragment: str
+) -> None:
+    with pytest.raises(PlantFileError) as caught:
+        parse_plant(home_supply_document(**supply))
+
+    assert caught.value.path == f"source.supply.{path}"
+    assert fragment in caught.value.message
+
+
+def test_a_warm_up_temperature_below_the_heating_minimum_is_rejected() -> None:
+    document = home_supply_document()
+    document["source"]["warm_up"] = {"temperature": 20}
+
+    with pytest.raises(PlantFileError) as caught:
+        parse_plant(document)
+
+    assert caught.value.path == "source.warm_up.temperature"
+    assert "at least 25" in caught.value.message

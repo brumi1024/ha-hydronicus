@@ -218,6 +218,7 @@ SUPPLY_FORM_KEYS: Final = (
     "outdoor_warm",
     "heat_cold",
     "heat_warm",
+    "heat_minimum",
     "tolerance",
     "max_age",
 )

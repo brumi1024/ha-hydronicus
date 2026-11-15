@@ -255,3 +255,20 @@ def test_the_plant_form_keeps_the_supply_keys_it_does_not_show() -> None:
     cleared = with_plant(document, {**values, "supply": {"entity": "number.supply"}})
     assert "outdoor_sensor" not in cleared["source"]["supply"]
     assert cleared["source"]["supply"]["heating_limit"] == 16
+
+
+def test_the_plant_form_sets_and_clears_the_heating_minimum() -> None:
+    from custom_components.hydronicus.flows.documents import plant_values, with_plant
+
+    supply = {"entity": "number.supply", "minimum": 16, "maximum": 50}
+    document = {
+        "hydronicus": 2,
+        "name": "Home",
+        "source": {"request": "switch.hp", "supply": supply},
+    }
+    values = plant_values(document)
+    floored = with_plant(document, {**values, "supply": {**supply, "heat_minimum": 25}})
+    assert floored["source"]["supply"] == {**supply, "heat_minimum": 25}
+    assert plant_values(floored)["supply"]["heat_minimum"] == 25
+    cleared = with_plant(floored, {**values, "supply": supply})
+    assert cleared["source"]["supply"] == supply

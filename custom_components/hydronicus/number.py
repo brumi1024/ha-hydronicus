@@ -119,7 +119,7 @@ class HeatingSupplyTemperature(HydronicusEntity, NumberEntity):
             plant_unique_id(runtime.plant.id, "heating_supply_temperature"),
             source_device(runtime),
         )
-        self._attr_native_min_value = supply.minimum
+        self._attr_native_min_value = supply.lowest(Mode.HEAT)
         self._attr_native_max_value = supply.maximum
         self._attr_native_step = supply.step or 0.5
 
@@ -155,7 +155,7 @@ class WarmUpTemperature(HydronicusEntity, NumberEntity):
             plant_unique_id(runtime.plant.id, "warm_up_temperature"),
             source_device(runtime),
         )
-        self._attr_native_min_value = supply.minimum
+        self._attr_native_min_value = supply.lowest(Mode.HEAT)
         self._attr_native_max_value = supply.maximum
         self._attr_native_step = supply.step or 0.5
 

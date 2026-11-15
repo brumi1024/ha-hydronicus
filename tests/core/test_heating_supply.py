@@ -415,3 +415,56 @@ def test_a_fixed_temperature_keeps_the_supply_s_limits_and_step(
 ) -> None:
     assert clamp_fixed(source(plant()), value) == expected
     assert clamp_fixed(source(plant(supply=None)), value) is None
+
+
+# A heating minimum above the supply's minimum
+
+
+FLOOR = "heat_minimum: 25"
+
+
+def test_hydronicus_s_curve_stays_at_the_heating_minimum() -> None:
+    state = chosen(HeatingSupply.CURVE, seen_curve=False)
+    # 25 °C at 20 °C outdoors, less the owner's offset of 5 K.
+    for supply, expected in (("offset: -5", 20.0), (f"offset: -5, {FLOOR}", 25.0)):
+        value = plant(outdoor=True, supply=supply)
+        _, desired, _ = run(value, heating(value, curve=False, outdoor=20.0), state)
+        assert desired.outputs[SUPPLY] == NumericTarget(expected, 0.5), supply
+
+
+def test_a_fixed_temperature_and_a_warm_up_stay_at_the_heating_minimum() -> None:
+    value = plant(supply=FLOOR)
+    assert clamp_fixed(source(value), 20.0) == 25.0
+    assert clamp_fixed(source(value), 30.0) == 30.0
+    result = heating_supply_step(
+        source(value),
+        Mode.HEAT,
+        False,
+        30.0,
+        lambda _: False,
+        HeatingSupplyState(HeatingSupply.FIXED, seen_curve=False),
+        SupplyCommand(NOW, fixed=18.0, warm_temperature=20.0),
+        now=NOW,
+    )
+    assert result is not None
+    assert result.fixed == 25.0
+    assert result.warm_temperature == 25.0
+
+
+def test_a_cooling_target_below_the_heating_minimum_is_not_raised_to_it() -> None:
+    value = plant(supply=FLOOR)
+    state = State(
+        live=True,
+        mode=Mode.COOL,
+        last_mode=Mode.COOL,
+        heating_supply=HeatingSupplyState(HeatingSupply.FIXED, seen_curve=False),
+    )
+    observations = heating(value, curve=False, mode=Mode.COOL)
+    observations = replace(
+        observations,
+        outputs={**observations.outputs, "select.hp": OptionState("Cool", NOW)},
+        sensors={**observations.sensors, "sensor.a_rh": Reading(55, NOW)},
+    )
+    _, desired, _ = run(value, observations, state)
+    # 55 % at 26 °C is a dew point of 16.4 °C; 16.4 + 2 + 1 + 0.5 rounds up to 20.
+    assert desired.outputs[SUPPLY] == NumericTarget(20.0, 0.5)

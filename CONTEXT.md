@@ -79,6 +79,7 @@ While the Plant is away, every digital thermostat holds its away level without c
 ## Supply control
 
 Supply control proposes a bounded Source water temperature, fixed by Mode or calculated from an outdoor heating curve.
+Its bounds are one minimum and maximum for both Modes, and an optional higher heating minimum for a Source that takes a narrower setpoint range in heating.
 The Heating supply is the owner's choice of who owns that temperature in heating: the Source's own weather curve, a fixed setpoint, or Hydronicus's curve.
 A change made elsewhere, such as the weather curve switched on the Source's own controller, is adopted as that choice, never reverted; in cooling the weather curve is off and the setpoint is always Hydronicus's.
 It never commands equipment directly: arming, observation, condensation guards, and hydraulic sequencing remain authoritative.

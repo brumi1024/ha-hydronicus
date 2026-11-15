@@ -191,13 +191,13 @@ _NAMES = {
 
 
 def clamp_fixed(source: Source, value: float | None) -> float | None:
-    """A fixed supply temperature within the supply's limits, at its resolution."""
+    """A fixed heating supply temperature within the supply's heating limits, at its resolution."""
     supply = source.supply
     if supply is None or value is None or not isfinite(value):
         return None
     if supply.step is not None:
         value = supply.step * round(value / supply.step)
-    return min(supply.maximum, max(supply.minimum, value))
+    return min(supply.maximum, max(supply.lowest(Mode.HEAT), value))
 
 
 def _given(value: float | None, default: float) -> float:

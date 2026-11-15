@@ -2367,7 +2367,7 @@ class _Plan:
             steps = value / config.step
             value = config.step * (ceil(steps - 1e-9) if self.mode is Mode.COOL else round(steps))
             if self.mode is Mode.HEAT:
-                value = min(config.maximum, max(config.minimum, value))
+                value = min(config.maximum, max(config.lowest(Mode.HEAT), value))
         if self.mode is Mode.COOL and value > config.maximum:
             ev.reasons["source_supply"] = "safe cooling supply temperature exceeds its maximum"
             return None

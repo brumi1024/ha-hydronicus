@@ -308,3 +308,15 @@ zones:
         with pytest.raises(ServiceValidationError) as error:
             await async_call(hass, DOMAIN, action, config_entry_id=entry.entry_id)
         assert error.value.translation_key == "no_heating_supply"
+
+
+async def test_the_supply_numbers_start_at_the_heating_minimum(hass: HomeAssistant) -> None:
+    hass.states.async_set(SUPPLY, "30", {**CELSIUS, "min": 16, "max": 60, "step": 1})
+    hass.states.async_set("sensor.outdoor", "5", CELSIUS)
+    floored = FLAT.replace("minimum: 20\n", "minimum: 16\n    heat_minimum: 25\n")
+    assert "heat_minimum: 25" in floored
+    entry = await async_import(hass, floored)
+    plant_id = entry.runtime_data.plant.id
+    for key in ("heating_supply_temperature", "warm_up_temperature"):
+        state = hass.states.get(entity_id_of(hass, "number", f"{plant_id}_{key}"))
+        assert (state.attributes["min"], state.attributes["max"]) == (25, 50), key
