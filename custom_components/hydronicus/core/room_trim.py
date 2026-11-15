@@ -37,9 +37,12 @@ shortfall rather than wherever its last rise left it.
 
 It also holds its value whenever the heating curve cannot act on it: hot water
 or a warm-up has the source, the request is held off, or the Plant does not
-heat on Hydronicus's curve; and while the trim, or the supply target it shifts,
-is at its bound in the direction it would move, so it never winds up beyond
-what it can deliver.
+heat on Hydronicus's curve; while the rooms are not at the comfort the curve is
+set for, because the Plant is away or the lead zone holds its away level; and
+while the trim, or the supply target it shifts, is at its bound in the direction
+it would move, so it never winds up beyond what it can deliver. The caller
+decides these holds and passes them as ``held``; the filter, the proportional
+part, and the settling go on through them.
 
 The filter starts again from the reading after a gap longer than ``gap`` or a
 clock that stepped backwards, as the damped outdoor temperature does, and that

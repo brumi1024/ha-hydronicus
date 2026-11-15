@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Final
 
+from custom_components.hydronicus.core.comfort import Away
 from custom_components.hydronicus.core.dhw import DhwCommand
 from custom_components.hydronicus.core.heating_supply import SupplyCommand
 from custom_components.hydronicus.core.model import Desired, LoopRef, Mode, Plant
@@ -263,6 +264,17 @@ class Sim:
         self.world.supply_command = SupplyCommand(self.world.wall(), **command)  # type: ignore[arg-type]
         self.world.changed()
 
+    def set_away(self, until: float | None = None) -> None:
+        """Be away until the wall time ``until``, or until ``end_away``, as the switch does."""
+        self.world.away = Away(until)
+        self.world.changed()
+        if until is not None:
+            self.schedule(self.t + until - self.world.wall(), lambda: None)
+
+    def end_away(self) -> None:
+        self.world.away = None
+        self.world.changed()
+
     def switch_elsewhere(self, entity: str, on: bool) -> None:
         """Change a switch output physically, as its device's own controls do."""
         self.world.switch_elsewhere(entity, on)
@@ -446,6 +458,10 @@ class Sim:
         world, runtime = self.world, self.runtime
         assert runtime is not None
         now = world.wall()
+        away = world.away
+        if away is not None and away.until is not None and now >= away.until:
+            # The runtime ends an away whose return time has come.
+            world.away = None
         observations = world.observe()
         view = step_view(observations, runtime.reconcile_state)
         state, desired, due = step(runtime.plant, view, runtime.state, now)
