@@ -210,7 +210,18 @@ _SUPPLY_KEYS: Final = (
     "heating_limit",
     "room_influence",
 )
-_ROOM_INFLUENCE_KEYS: Final = ("zones", "factor", "limit")
+_ROOM_INFLUENCE_KEYS: Final = (
+    "zones",
+    "factor",
+    "limit",
+    "smoothing",
+    "deadband",
+    "learn_rate",
+    "learn_limit",
+    "learn_after",
+)
+# The room influence's numeric settings, which an export writes when they differ.
+_ROOM_INFLUENCE_SETTINGS: Final = _ROOM_INFLUENCE_KEYS[1:]
 _WEATHER_CURVE_KEYS: Final = ("switch", "curve_number")
 _CURVE_NUMBER_KEYS: Final = ("entity", "minimum", "maximum")
 _WARM_UP_KEYS: Final = ("temperature", "duration")
@@ -779,7 +790,24 @@ def _room_influence(value: object, path: str) -> RoomInfluence:
     limit = _bounded(
         document, "limit", defaults.limit, path, None, MAX_CURVE_OFFSET * 2, positive=True
     )
-    return RoomInfluence(tuple(zones), factor, limit)
+    return RoomInfluence(
+        tuple(zones),
+        factor,
+        limit,
+        smoothing=_bounded(document, "smoothing", defaults.smoothing, path, 0, 86400),
+        deadband=_bounded(document, "deadband", defaults.deadband, path, 0, 2),
+        learn_rate=_bounded(document, "learn_rate", defaults.learn_rate, path, 0, 5),
+        learn_limit=_bounded(
+            document,
+            "learn_limit",
+            defaults.learn_limit,
+            path,
+            None,
+            MAX_CURVE_OFFSET * 2,
+            positive=True,
+        ),
+        learn_after=_bounded(document, "learn_after", defaults.learn_after, path, 0, 172800),
+    )
 
 
 def _schedule(value: object, path: str) -> Schedule:
@@ -1931,7 +1959,7 @@ def _export_source(source: Source) -> dict[str, Any]:
         if (influence := source.supply.room_influence) is not None:
             document["supply"]["room_influence"] = {
                 "zones": list(influence.zones)
-            } | _export_changed(influence, RoomInfluence(influence.zones), ("factor", "limit"))
+            } | _export_changed(influence, RoomInfluence(influence.zones), _ROOM_INFLUENCE_SETTINGS)
     return document
 
 

@@ -106,6 +106,9 @@
       },
       "last_disinfection": {
         "default": "mdi:bacteria-outline"
+      },
+      "room_trim": {
+        "default": "mdi:tune-vertical"
       }
     },
     "switch": {
@@ -141,6 +144,9 @@
     "button": {
       "reset_learning": {
         "default": "mdi:restart"
+      },
+      "reset_room_trim": {
+        "default": "mdi:restore"
       }
     },
     "number": {

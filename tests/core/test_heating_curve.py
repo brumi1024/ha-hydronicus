@@ -174,14 +174,18 @@ def test_the_damped_outdoor_temperature_is_kept_in_the_state() -> None:
 def test_a_cold_lead_zone_raises_the_curve() -> None:
     text = curve_plant(room_influence="{zones: [room], factor: 1.5}")
     _, desired, _ = run(_plant(text), calling(text, 5.0, 38.0))
-    # 21 °C target, 19 °C reading: 3 K, at the default limit of 3 K.
-    assert desired.outputs["number.supply"] == NumericTarget(38, 0.5)
-    assert desired.heating_curve is not None and desired.heating_curve.room_shift == 3.0
+    # 21 °C target, 19 °C reading: 1.5 times the 1.8 K beyond the deadband,
+    # at the default limit of 2 K.
+    assert desired.outputs["number.supply"] == NumericTarget(37, 0.5)
+    assert desired.heating_curve is not None and desired.heating_curve.room_shift == 2.0
+    assert desired.reasons["source_supply"] == (
+        "supply target 37.0 °C: curve 35.0 °C, offset +0.0 K, room trim +2.0 K (learned +0.0 K)"
+    )
 
 
 def two_lead_zones() -> str:
     """The room and a study lead the curve; the room calls only 2 K below its target."""
-    text = curve_plant(room_influence="{zones: [study, room]}").replace(
+    text = curve_plant(room_influence="{zones: [study, room], deadband: 0, limit: 3}").replace(
         "thermostat: {digital: {min_on: 0, min_off: 0}}",
         "thermostat: {digital: {min_on: 0, min_off: 0, heat_start_delta: 2}}",
     )

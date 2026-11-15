@@ -28,6 +28,7 @@ from .entity import (
     loop_unique_id,
     plant_device,
     plant_unique_id,
+    room_trim_offered,
     source_device,
 )
 from .flow_history import HOUR
@@ -141,8 +142,10 @@ class PlantStatusSensor(HydronicusEntity, SensorEntity):
                 "outdoor": None if curve.outdoor is None else round(curve.outdoor, 2),
                 "fallback": curve.fallback,
                 "warm_weather": curve.warm_weather,
+                "curve": None if curve.curve is None else round(curve.curve, 2),
                 "offset": curve.offset,
-                "room_shift": round(curve.room_shift, 2),
+                "room_trim": round(curve.room_shift, 2),
+                "learned": None if curve.trim is None else round(curve.trim.learned, 2),
             },
             "zones_not_responding": {
                 zone: dt_util.utc_from_timestamp(at).isoformat()
@@ -351,6 +354,39 @@ class LastDisinfectionSensor(HydronicusEntity, SensorEntity):
         return {"running": dhw.disinfect_started is not None, "next_due": due}
 
 
+class RoomTrimSensor(HydronicusEntity, SensorEntity):
+    """The room trim of the heating curve, with its proportional and learned parts."""
+
+    _attr_translation_key = "room_trim"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE_DELTA
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.KELVIN
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, runtime: PlantRuntime) -> None:
+        super().__init__(
+            runtime, plant_unique_id(runtime.plant.id, "room_trim"), source_device(runtime)
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        trim = self.runtime.room_trim
+        return None if trim is None else round(trim.total, 2)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        trim = self.runtime.room_trim
+        if trim is None:
+            return {"learned": round(self.runtime.state.room_trim.learned, 2)}
+        return {
+            "proportional": round(trim.proportional, 2),
+            "learned": round(trim.learned, 2),
+            "lead_zone": trim.lead,
+            "filtered_error": None if trim.error is None else round(trim.error, 2),
+            "learning_held": trim.held,
+        }
+
+
 class CompressorStartsSensor(HydronicusEntity, SensorEntity):
     """How often the source's compressor started within the last hour."""
 
@@ -416,6 +452,8 @@ async def async_setup_entry(
     source = runtime.plant.source
     if source is not None and source.dhw is not None and source.dhw.disinfect is not None:
         entities.append((None, LastDisinfectionSensor(runtime)))
+    if room_trim_offered(runtime):
+        entities.append((None, RoomTrimSensor(runtime)))
     if source is not None and source.compressor_sensor is not None:
         entities.extend(
             [(None, CompressorStartsSensor(runtime)), (None, CompressorCycleSensor(runtime))]

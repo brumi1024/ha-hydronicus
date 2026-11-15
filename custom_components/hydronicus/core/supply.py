@@ -127,7 +127,7 @@ def supply_target(
     Cooling never depends on an outdoor reading. Without a usable reading or a
     fallback, heating gets no target, unless ``frost_outdoor`` gives the
     temperature to assume while frost protection heats. ``offset``, the owner's
-    shift, replaces the configured one, and ``room_shift`` adds the lead zone's.
+    shift, replaces the configured one, and ``room_shift`` adds the room trim.
     Both apply in heating only and stay inside the bounds.
     """
     if mode is Mode.OFF:
@@ -170,14 +170,3 @@ def supply_target(
     if not isfinite(target):
         return SupplyTarget(None, "supply temperature invalid")
     return SupplyTarget(min(config.maximum, max(lowest, target)))
-
-
-def room_shift(config: SupplyControl, target: float | None, temperature: float | None) -> float:
-    """The lead zone's shift of the heating curve, zero without its target or reading."""
-    influence = config.room_influence
-    if influence is None or target is None or temperature is None:
-        return 0.0
-    shift = influence.factor * (target - temperature)
-    if not isfinite(shift):
-        return 0.0
-    return min(influence.limit, max(-influence.limit, shift))

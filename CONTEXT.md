@@ -84,7 +84,13 @@ The Heating supply is the owner's choice of who owns that temperature in heating
 A change made elsewhere, such as the weather curve switched on the Source's own controller, is adopted as that choice, never reverted; in cooling the weather curve is off and the setpoint is always Hydronicus's.
 It never commands equipment directly: arming, observation, condensation guards, and hydraulic sequencing remain authoritative.
 A missing or stale outdoor reading blocks an outdoor-compensated heating request, unless the curve names an outdoor fallback; frost protection heats regardless, assuming 0 °C outdoors.
-The owner's offset shifts the heating target, a lead zone may shift it within a limit, and above the heating limit the source does not heat while the zones still circulate.
+The owner's offset shifts the heating target, the Room trim shifts it within a limit, and above the heating limit the source does not heat while the zones still circulate.
+
+## Room trim
+
+The Room trim is a small, slow shift of Hydronicus's heating curve from the lead zones: the coldest of them calling for heat, or the coldest of all while none calls.
+It has a proportional part, from the lead zone's filtered distance from its target, and a learned part, which corrects a curve that is set too low or too high over days and survives a restart.
+The learned part never rewrites the curve's line, holds its value whenever the curve cannot act on it, and the owner can reset it.
 
 ## Mode
 

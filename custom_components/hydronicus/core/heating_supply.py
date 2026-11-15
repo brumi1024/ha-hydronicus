@@ -58,6 +58,8 @@ class SupplyCommand:
     warm_to: float | None = None
     # The owner's Warm-up temperature, which also applies to a running warm-up.
     warm_temperature: float | None = None
+    # True forgets what the room trim learned.
+    reset_trim: bool = False
 
 
 @dataclass(frozen=True, slots=True)
