@@ -70,6 +70,8 @@ A pump with `path` never runs without one, and a source-driven pump with `path` 
 
 A zone combines its usable temperatures by mean, minimum, or maximum.
 A required sensor that is missing, stale, or implausible stops the zone from calling; an optional one is left out.
+A reading's age is the time since Home Assistant last reported it, here and for every other input with a `max_age`.
+A sensor that reports only when its value changes, such as a whole-degree outdoor sensor on a calm night, needs a `max_age` longer than its longest quiet spell, or an integration that reports it at a steady pace, as the [Midea bridge](../adapters/midea-shelly-modbus/README.md#fresh-readings) does.
 
 A zone's demand comes from exactly one thermostat:
 

@@ -74,7 +74,7 @@ source:
     outdoor_warm: 20                         # warm end of the curve, above outdoor_cold (default 20)
     heat_cold: 45                            # supply target at or below outdoor_cold (default 45)
     heat_warm: 25                            # supply target at or above outdoor_warm, not above heat_cold (default 25)
-    max_age: 3600                            # outdoor reading stale after this (default 3600)
+    max_age: 3600                            # outdoor reading stale this long after its last report (default 3600)
     outdoor_damping: 10800                   # filter time constant of the outdoor reading; needs outdoor_sensor (default 0, off)
     outdoor_fallback: 0                      # outdoor temperature used while the reading is lost, -50 to 50 (default none)
     heating_limit: 16                        # no heating at or above this damped outdoor temperature (default none)
