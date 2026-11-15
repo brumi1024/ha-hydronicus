@@ -76,6 +76,8 @@ class SlowRoom:
     sim: Sim
     room: float = 20.0
     screed: float = 20.0
+    # Heat the sun adds to the room from 11:00 to 15:00, in kW.
+    gain: float = 0.0
     log: list[tuple[float, float, float]] = field(default_factory=list)
 
     def advance(self) -> None:
@@ -83,21 +85,38 @@ class SlowRoom:
         heating = world.requested and self.sim.flowing("floor.screed")
         water = WATER * (world.number(SUPPLY) - self.screed) if heating else 0.0
         released = SCREED * (self.screed - self.room)
+        sun = self.gain if 11 <= (self.sim.t % DAY) / 3600 < 15 else 0.0
         self.screed += STEP * (water - released) / SCREED_CAPACITY
-        self.room += STEP * (released - LOSS * (self.room - OUTDOOR)) / ROOM_CAPACITY
+        self.room += STEP * (released + sun - LOSS * (self.room - OUTDOOR)) / ROOM_CAPACITY
         self.sim.set_sensor(ROOM, round(self.room, 2))
         self.log.append((self.sim.t, self.room, world.number(SUPPLY)))
         self.sim.schedule(self.sim.t + STEP, self.advance)
 
 
-def heat(low: float, days: float, learn_rate: float = 0.3) -> tuple[Sim, SlowRoom]:
+def heat(
+    low: float,
+    days: float,
+    learn_rate: float = 0.3,
+    *,
+    start: tuple[float, float] = (20.0, 20.0),
+    gain: float = 0.0,
+    setback: float = 0.0,
+) -> tuple[Sim, SlowRoom]:
+    """Heat the slow room for ``days`` from ``start``, the room's and the screed's temperature.
+
+    ``gain`` is the sun's daily heat, and ``setback`` lowers the target from 22:00 to 06:00.
+    """
     sim = Sim(plant(slow_plant(low, learn_rate)), mode=Mode.HEAT)
     sim.world.seed_number(SUPPLY, 30.0)
     sim.set_sensor("sensor.slow_outdoor", OUTDOOR)
-    room = SlowRoom(sim)
+    room = SlowRoom(sim, *start, gain=gain)
     sim.set_sensor(ROOM, room.room)
     sim.start()
     sim.schedule(STEP, room.advance)
+    if setback:
+        for day in range(int(days) + 1):
+            sim.schedule(day * DAY + 22 * 3600, lambda: sim.set_target("floor", TARGET - setback))
+            sim.schedule((day + 1) * DAY + 6 * 3600, lambda: sim.set_target("floor", TARGET))
     sim.run_for(days * DAY)
     return sim, room
 
@@ -140,3 +159,25 @@ def test_a_curve_set_too_high_is_lowered_until_the_floor_stops_cycling() -> None
     assert max(temperature for _, temperature, _ in room.log) < TARGET + 0.3
     settled = [temperature for _, temperature, _ in last_days(room, 1)]
     assert max(settled) - min(settled) < 0.1
+
+
+# Near its steady state: the room just below its target, the screed warm.
+NEAR: Final = (20.8, 24.0)
+# The sun's daily gain, in kW.
+SUN: Final = 0.3
+
+
+@pytest.mark.parametrize("low", [0.0, 1.5, -1.0])
+@pytest.mark.parametrize("gain", [0.0, SUN])
+def test_the_learned_part_settles_at_the_curve_s_shortfall(low: float, gain: float) -> None:
+    """What the weekly brief would fold into the line is what the line misses."""
+    sim, _ = heat(low, 14, start=NEAR, gain=gain)
+    assert sim.state.room_trim.learned == pytest.approx(low, abs=0.2)
+
+
+@pytest.mark.parametrize("setback", [0.5, 1.0])
+def test_a_night_setback_teaches_a_correct_curve_nothing(setback: float) -> None:
+    sim, room = heat(0.0, 14, start=NEAR, setback=setback)
+    assert sim.state.room_trim.learned == pytest.approx(0.0, abs=0.2)
+    # The proportional part may add a degree while the room recovers, no more.
+    assert max(setpoint for _, _, setpoint in last_days(room, 3)) <= 38.0
