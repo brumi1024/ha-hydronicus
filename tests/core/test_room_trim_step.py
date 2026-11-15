@@ -15,12 +15,19 @@ from custom_components.hydronicus.core.plant_file import (
     read_plant_file,
 )
 from custom_components.hydronicus.core.room_trim import RoomTrimState
-from custom_components.hydronicus.core.step import Observations, Reading, State, SwitchState
+from custom_components.hydronicus.core.step import (
+    ROOM_TRIM_INTERVAL,
+    Observations,
+    Reading,
+    State,
+    SwitchState,
+)
 
 from .test_heating_curve import _dump, calling, curve_plant
 from .test_step import NOW, _plant, run
 
 HALF_HOUR = 1800.0
+DAY = 86400.0
 # The room leads at once, and the curve reads 35 °C at 5 °C outdoors.
 TRIM = curve_plant(step=1, room_influence="{zones: [room], learn_after: 0}")
 
@@ -35,28 +42,38 @@ def trimmed(text: str = TRIM, temperature: float = 20.5, **kwargs: object) -> Ob
 
 
 def settled(learned: float = 0.0) -> State:
-    """A State whose filter has held the room's 0.5 K for half an hour."""
+    """A State whose room has long been still 0.5 K below its target, last seen half an hour ago."""
     return State(
         live=True,
         mode=Mode.HEAT,
-        room_trim=RoomTrimState(0.5, NOW - HALF_HOUR, learned),
+        room_trim=RoomTrimState(
+            0.5,
+            NOW - HALF_HOUR,
+            learned,
+            target=21.0,
+            arrived=NOW - DAY,
+            moved=0.5,
+            moved_at=NOW - DAY,
+        ),
     )
 
 
 def test_the_room_trim_learns_and_survives_a_restart() -> None:
     plant = _plant(TRIM)
     first, desired, _ = run(plant, trimmed())
-    assert first.room_trim == RoomTrimState(0.5, NOW, 0.0)
+    # The first reading is a new target, so the room settles before it teaches.
+    assert first.room_trim.error == 0.5 and first.room_trim.settling
+    assert first.room_trim.target == 21.0
     curve = desired.heating_curve
     assert curve is not None and curve.trim is not None and curve.curve == 35.0
     assert curve.trim.lead == "room" and curve.room_shift == pytest.approx(0.3)
 
-    restored = State.from_dict(first.to_dict())
-    assert restored.room_trim == first.room_trim
-    later, desired, _ = run(plant, trimmed(), restored, NOW + HALF_HOUR)
+    assert State.from_dict(first.to_dict()).room_trim == first.room_trim
+    restored = State.from_dict(settled().to_dict())
+    later, desired, _ = run(plant, trimmed(), restored, NOW)
     # 0.3 K beyond the deadband for half an hour at 0.3 K per hour per K.
     assert later.room_trim.learned == pytest.approx(0.045)
-    assert later.room_trim.at == NOW + HALF_HOUR
+    assert later.room_trim.at == NOW
 
 
 def test_the_learned_part_moves_the_written_setpoint() -> None:
@@ -119,7 +136,8 @@ def test_a_curve_without_an_outdoor_reading_holds_the_learned_part() -> None:
 
 
 def test_a_satisfied_lead_zone_lowers_the_learned_part() -> None:
-    state, _, _ = run(_plant(TRIM), trimmed(temperature=21.0), settled(0.5))
+    satisfied = replace(settled(0.5), room_trim=replace(settled(0.5).room_trim, error=0.0))
+    state, _, _ = run(_plant(TRIM), trimmed(temperature=21.0), satisfied)
     assert state.room_trim.learned < 0.5
 
 
@@ -228,3 +246,8 @@ def test_room_trim_settings_are_checked(setting: str) -> None:
         read_plant_file(curve_plant(room_influence=f"{{zones: [room], {setting}}}"))
     key = setting.split(":")[0]
     assert error.value.path == f"source.supply.room_influence.{key}"
+
+
+def test_a_learning_room_trim_asks_for_its_own_evaluations() -> None:
+    _, _, due = run(_plant(TRIM), trimmed(), settled(0.5))
+    assert due is not None and due <= ROOM_TRIM_INTERVAL + 1

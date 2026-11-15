@@ -105,6 +105,7 @@ __all__ = [
     "GUARD_REFERENCE_MAX_AGE",
     "GUARD_RELEASE",
     "HUMIDITY_RELEASE",
+    "ROOM_TRIM_INTERVAL",
     "START_WINDOW",
     "TICK",
     "AreaSensors",
@@ -146,6 +147,9 @@ TICK: Final = 0.001
 # How far, in steps of the setpoint's resolution, a heating target must move
 # from the last one Hydronicus proposed before the proposal changes.
 SETPOINT_HYSTERESIS: Final = 0.6
+# How often the room trim is stepped while it learns, in seconds, when nothing
+# else asks for an evaluation sooner.
+ROOM_TRIM_INTERVAL: Final = 600.0
 # The window ``Source.max_starts_per_hour`` counts observed request starts in, in seconds.
 START_WINDOW: Final = 3600.0
 # The window in which the no-load guard's trips are counted for its Repair, in seconds.
@@ -1223,6 +1227,11 @@ class _Evaluation:
             "the heating curve has no outdoor temperature" if curve is None else None
         )
         lowest, highest = supply.lowest(Mode.HEAT), supply.maximum
+        written = self.state.heating_supply.last_target
+        if held is None and influence.learn_rate > 0:
+            # A still room reports nothing new, yet that is when it teaches the
+            # learned part most, so the trim asks for its own evaluations.
+            self.deadlines.append(self.now + ROOM_TRIM_INTERVAL)
         return room_trim(
             influence,
             self.state.room_trim,
@@ -1231,6 +1240,8 @@ class _Evaluation:
             error,
             gap=supply.max_age,
             calling_since=calling_since,
+            target=None if slug is None else self.zone_target(slug),
+            delivered=None if written is None or curve is None else written - curve,
             held=held,
             headroom=(-inf, inf) if curve is None else (lowest - curve, highest - curve),
             reset=reset,
