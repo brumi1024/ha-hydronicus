@@ -79,6 +79,7 @@ from .model import (
     OptionTarget,
     OutputTarget,
     Plant,
+    Preset,
     Pump,
     RoomInfluence,
     RunKind,
@@ -1223,8 +1224,10 @@ class _Evaluation:
             command is not None and command.reset_trim and (applied is None or command.at > applied)
         )
         curve = self.curve_base(mode)
-        held = self.trim_held(mode) or (
-            "the heating curve has no outdoor temperature" if curve is None else None
+        held = (
+            self.trim_held(mode)
+            or ("the heating curve has no outdoor temperature" if curve is None else None)
+            or (None if slug is None or not self.zone_away(slug) else "the lead zone is away")
         )
         lowest, highest = supply.lowest(Mode.HEAT), supply.maximum
         written = self.state.heating_supply.last_target
@@ -1300,7 +1303,26 @@ class _Evaluation:
             or self.warm
         ):
             return "the heating request is held off"
+        away = self.obs.away
+        if away is not None and (away.until is None or not self.reached(away.until)):
+            # The curve is set for the rooms' comfort targets, so rooms held at
+            # their away level, or on an early return, say nothing about it.
+            return "the Plant is away"
         return None
+
+    def zone_away(self, slug: str) -> bool:
+        """Whether a zone holds its away level, by its preset or its schedule."""
+        comfort = self.comfort.get(slug)
+        if comfort is not None and comfort.schedule_level == "away":
+            return True
+        thermostat = self.obs.thermostats.get(slug)
+        config = self.plant.zone(slug).thermostat
+        return (
+            isinstance(thermostat, DigitalThermostatState)
+            and thermostat.preset is Preset.AWAY
+            and isinstance(config, DigitalThermostat)
+            and Preset.AWAY in config.presets_for(thermostat.hvac_mode)
+        )
 
     def zone_target(self, slug: str) -> float | None:
         """A digital thermostat's heating target this evaluation, None without one."""

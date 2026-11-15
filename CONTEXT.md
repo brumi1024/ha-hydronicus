@@ -91,6 +91,7 @@ The owner's offset shifts the heating target, the Room trim shifts it within a l
 The Room trim is a small, slow shift of Hydronicus's heating curve from the lead zones: the coldest of them calling for heat, or the coldest of all while none calls.
 It has a proportional part, from the lead zone's filtered distance from its target, and a learned part, which corrects a curve that is set too low or too high over days and survives a restart.
 The learned part never rewrites the curve's line, learns nothing from a change of the lead zone's target such as a setback, holds its value whenever the curve cannot act on it, and the owner can reset it.
+It also holds its value while the Plant is away, early return included, and while the lead zone holds its away level, because the curve is set for comfort, not for rooms left to cool.
 
 ## Mode
 

@@ -38,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
+from custom_components.hydronicus.core.comfort import Away
 from custom_components.hydronicus.core.dhw import DhwCommand
 from custom_components.hydronicus.core.heating_supply import SupplyCommand
 from custom_components.hydronicus.core.model import (
@@ -267,6 +268,8 @@ class World:
         self.dhw_command: DhwCommand | None = None
         # The owner's last heating supply command through Hydronicus's entities.
         self.supply_command: SupplyCommand | None = None
+        # The Plant is away, or None while it is not.
+        self.away: Away | None = None
         self._queue: list[_Happening] = []
         self._seq = itertools.count()
         self._last_landing: dict[str, float] = {}
@@ -731,6 +734,7 @@ class World:
             thermostats=dict(self.thermostats),
             dhw_command=self.dhw_command,
             supply_command=self.supply_command,
+            away=self.away,
             auto=self.auto,
         )
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
+from custom_components.hydronicus.core.comfort import Away, BlockLevel, ScheduleState
 from custom_components.hydronicus.core.dhw import DhwState
 from custom_components.hydronicus.core.heating_supply import HeatingSupplyState, SupplyCommand
-from custom_components.hydronicus.core.model import HeatingSupply, Mode, NumericTarget
+from custom_components.hydronicus.core.model import HeatingSupply, Mode, NumericTarget, Preset
 from custom_components.hydronicus.core.plant_file import (
     PlantFileError,
     export_plant,
@@ -17,6 +19,7 @@ from custom_components.hydronicus.core.plant_file import (
 from custom_components.hydronicus.core.room_trim import RoomTrimState
 from custom_components.hydronicus.core.step import (
     ROOM_TRIM_INTERVAL,
+    DigitalThermostatState,
     Observations,
     Reading,
     State,
@@ -133,6 +136,67 @@ def test_a_curve_without_an_outdoor_reading_holds_the_learned_part() -> None:
     sensors = {key: value for key, value in observations.sensors.items() if key != "sensor.outdoor"}
     reason = held(replace(observations, sensors=sensors))
     assert reason == "the heating curve has no outdoor temperature"
+
+
+# An away preset of 17 °C, and a schedule whose early return may begin up to two hours early.
+AWAY_TRIM = TRIM.replace(
+    "thermostat: {digital: {min_on: 0, min_off: 0}}",
+    "thermostat: {digital: {min_on: 0, min_off: 0, presets: {away: 17}, "
+    "schedule: {entity: schedule.room, max_early_start: 7200}}}",
+)
+
+
+def away_observations(
+    temperature: float = 20.5, preset: Preset | None = None, **kwargs: Any
+) -> Observations:
+    """``trimmed`` on ``AWAY_TRIM`` with the room's preset, and the observations in ``kwargs``."""
+    observations = trimmed(AWAY_TRIM, temperature)
+    room = observations.thermostats["room"]
+    assert isinstance(room, DigitalThermostatState)
+    return replace(observations, thermostats={"room": replace(room, preset=preset)}, **kwargs)
+
+
+def test_the_plant_away_holds_the_learned_part() -> None:
+    away = away_observations(away=Away())
+    assert held(away, text=AWAY_TRIM) == "the Plant is away"
+    # A warm-up started while away holds it as well, and the away goes on after it.
+    warming = replace(away, supply_command=SupplyCommand(NOW, warm_up=True))
+    assert held(warming, text=AWAY_TRIM) == "a warm-up holds the heating supply"
+    # Until its return time, too: 0.5 K below 21 °C, the early return began 30 minutes before.
+    returning = away_observations(
+        preset=Preset.SCHEDULE,
+        away=Away(NOW + 1200),
+        schedules={"schedule.room": ScheduleState(True, NOW + DAY)},
+    )
+    state, desired, _ = run(_plant(AWAY_TRIM), returning, settled(0.5))
+    assert desired.comfort["room"].schedule_status == "away_return"
+    assert state.room_trim.learned == 0.5
+    assert desired.heating_curve is not None and desired.heating_curve.trim is not None
+    assert desired.heating_curve.trim.held == "the Plant is away"
+
+
+def test_an_away_that_ended_holds_the_learned_part_no_longer() -> None:
+    plant = _plant(AWAY_TRIM)
+    ended = away_observations(away=Away(NOW))
+    state, desired, _ = run(plant, ended, settled(0.5))
+    assert desired.comfort["room"].target == 21.0
+    assert desired.heating_curve is not None and desired.heating_curve.trim is not None
+    assert desired.heating_curve.trim.held is None
+    assert state.room_trim.learned > 0.5
+
+
+def test_a_lead_zone_at_its_away_preset_holds_the_learned_part() -> None:
+    assert held(away_observations(preset=Preset.AWAY), text=AWAY_TRIM) == "the lead zone is away"
+    # A zone without an away preset of its own stays at its target, so it learns.
+    state, desired, _ = run(_plant(TRIM), away_observations(preset=Preset.AWAY), settled(0.5))
+    assert desired.comfort["room"].target == 21.0
+    assert state.room_trim.learned > 0.5
+
+
+def test_a_lead_zone_at_an_away_block_holds_the_learned_part() -> None:
+    block = ScheduleState(True, NOW + DAY, BlockLevel(preset=Preset.AWAY))
+    observations = away_observations(preset=Preset.SCHEDULE, schedules={"schedule.room": block})
+    assert held(observations, text=AWAY_TRIM) == "the lead zone is away"
 
 
 def test_a_satisfied_lead_zone_lowers_the_learned_part() -> None:

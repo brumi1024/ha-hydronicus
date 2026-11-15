@@ -181,3 +181,77 @@ def test_a_night_setback_teaches_a_correct_curve_nothing(setback: float) -> None
     assert sim.state.room_trim.learned == pytest.approx(0.0, abs=0.2)
     # The proportional part may add a degree while the room recovers, no more.
     assert max(setpoint for _, _, setpoint in last_days(room, 3)) <= 38.0
+
+
+# The away level, 4 K below the target: a line set for 21 °C rooms is too hot for it.
+AWAY: Final = 17.0
+
+
+def away_week(
+    low: float,
+    before: float,
+    after: float,
+    *,
+    until: bool = True,
+    restart: bool = False,
+) -> tuple[float, float, float, Sim, SlowRoom]:
+    """Heat from near steady state for ``before`` days, be away a week, and come back for ``after``.
+
+    The away ends by its return time, else by hand; ``restart`` restarts the
+    runtime with an hour's downtime in the middle of it. Return the learned part
+    before the away, at its end, and ``after`` days later.
+    """
+    text = slow_plant(low).replace("name: Slow", f"name: Slow\naway: {{heat_target: {AWAY}}}")
+    sim = Sim(plant(text), mode=Mode.HEAT)
+    sim.world.seed_number(SUPPLY, 30.0)
+    sim.set_sensor("sensor.slow_outdoor", OUTDOOR)
+    room = SlowRoom(sim, *NEAR)
+    sim.set_sensor(ROOM, room.room)
+    sim.start()
+    sim.schedule(STEP, room.advance)
+    sim.run_for(before * DAY)
+    learned = sim.state.room_trim.learned
+    sim.set_away(sim.world.wall() + 7 * DAY if until else None)
+    if restart:
+        sim.run_for(3.5 * DAY)
+        sim.restart(downtime=3600.0)
+        sim.run_for(3.5 * DAY - 1)
+    else:
+        sim.run_for(7 * DAY - 1)
+    trim = sim.desired.heating_curve
+    assert trim is not None and trim.trim is not None
+    assert trim.trim.held == "the Plant is away"
+    # The rooms went down to their away level.
+    assert min(temperature for _, temperature, _ in last_days(room, 3)) < AWAY
+    returned = sim.state.room_trim.learned
+    if not until:
+        sim.end_away()
+    sim.run_for(after * DAY + 1)
+    return learned, returned, sim.state.room_trim.learned, sim, room
+
+
+@pytest.mark.parametrize("low", [0.0, 1.5, -1.0])
+def test_a_week_away_teaches_the_learned_part_nothing(low: float) -> None:
+    learned, returned, after, _, room = away_week(low, 14, 4)
+    # Settled at the curve's shortfall before, held while away, and kept
+    # through the recovery after it.
+    assert learned == pytest.approx(low, abs=0.2)
+    assert returned == learned
+    assert after == pytest.approx(learned, abs=0.2)
+    # The room is back at its target.
+    settled = [temperature for _, temperature, _ in last_days(room, 1)]
+    assert sum(settled) / len(settled) == pytest.approx(TARGET, abs=0.1)
+
+
+def test_a_curve_too_low_is_still_learned_after_an_away() -> None:
+    learned, returned, after, _, _ = away_week(1.5, 1, 12, until=False)
+    # One day taught it part of the shortfall; the rest comes after the away.
+    assert learned < 1.0
+    assert returned == learned
+    assert after == pytest.approx(1.5, abs=0.2)
+
+
+def test_a_restart_in_the_middle_of_an_away_keeps_the_hold() -> None:
+    learned, returned, after, _, _ = away_week(1.5, 14, 4, restart=True)
+    assert returned == learned
+    assert after == pytest.approx(learned, abs=0.2)
