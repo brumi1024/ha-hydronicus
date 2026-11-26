@@ -25,7 +25,7 @@ from custom_components.hydronicus.core.model import (
 )
 from custom_components.hydronicus.core.plant_file import validate_plant
 from custom_components.hydronicus.core.reconcile import BACKOFF_MAX
-from custom_components.hydronicus.core.step import DigitalThermostatState
+from custom_components.hydronicus.core.step import RIDE_THROUGH, DigitalThermostatState
 from tests.sim.harness import Sim
 from tests.sim.plants import (
     BOILER,
@@ -136,7 +136,23 @@ def test_defect_3_a_failed_valve_open_does_not_drop_the_pump_stop() -> None:
     )
 
 
+def test_defect_4_the_source_request_drops_when_its_pump_is_seen_off() -> None:
+    sim = Sim(plant(BOILER), mode=Mode.HEAT)
+    sim.set_zone_temperature("flat", 19.0)
+    sim.seed_running("flat.radiators")
+    sim.seed_on("switch.boiler_request")
+    sim.start()
+    sim.always_for(lambda: sim.world.requested, 60.0, "the boiler runs while the flat calls")
+    sim.spontaneous_off("switch.circulator_pump")
+    sim.run_until_true(
+        lambda: not sim.world.requested,
+        REACTION,
+        "the boiler request drops once the circulator is seen off",
+    )
+
+
 def test_defect_4_the_source_request_drops_when_its_pump_is_lost() -> None:
+    """A pump that stops and goes unavailable is trusted only for ``RIDE_THROUGH``."""
     sim = Sim(plant(BOILER), mode=Mode.HEAT)
     sim.set_zone_temperature("flat", 19.0)
     sim.seed_running("flat.radiators")
@@ -147,8 +163,8 @@ def test_defect_4_the_source_request_drops_when_its_pump_is_lost() -> None:
     sim.unavailable("switch.circulator_pump")
     sim.run_until_true(
         lambda: not sim.world.requested,
-        REACTION,
-        "the boiler request drops once the circulator is lost",
+        RIDE_THROUGH + REACTION,
+        "the boiler request drops once the circulator is lost past the grace",
     )
     sim.always_for(lambda: not sim.world.requested, 600.0, "and stays off without the pump")
 

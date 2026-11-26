@@ -27,6 +27,10 @@ Exemptions and bounds, all in physical seconds:
   has failed since it was last on. Keeping a pump running for the source then
   would carry water through a loop the controller is stopping, such as a
   cooling loop whose condensation guard blocks, against invariant 6.
+- Invariant 3 is exempt while a valve, a pump switch, or the source request has
+  been unavailable for no longer than ``RIDE_THROUGH`` and one reaction,
+  ``SPONTANEOUS_GRACE``, after that, because ``step()`` keeps such an output's
+  last known state for ``RIDE_THROUGH`` and only then sees it as lost.
 - Invariant 3 is exempt while the source's handover sensor reads on and the
   source's own controller switched the request on, for one reaction and the
   longest opening time of a heat sink loop's valves after that began, since
@@ -75,6 +79,7 @@ from custom_components.hydronicus.core.reconcile import CALL_TIMEOUT, REPAIR_AFT
 from custom_components.hydronicus.core.step import (
     CONDENSATION_MARGIN,
     GUARD_REFERENCE_MAX_AGE,
+    RIDE_THROUGH,
     DigitalThermostatState,
     ExternalThermostatState,
     State,
@@ -157,6 +162,8 @@ class Checker:
         self.impaired_at: dict[str, float] = {}
         # When each output was last unarmed, unavailable, or in Dry run.
         self.uncommandable_at: dict[str, float] = {}
+        # Since when each unavailable output has been unavailable.
+        self.lost_at: dict[str, float] = {}
         self.unmet: dict[str, Unmet] = {}
         self.started = False
         # The controller desires the source request off, and an off call to it has failed.
@@ -309,6 +316,10 @@ class Checker:
                 self.impaired_at[entity] = t
             if self.dry or entity not in world.armed or (body is not None and not body.available):
                 self.uncommandable_at[entity] = t
+            if body is not None and not body.available:
+                self.lost_at.setdefault(entity, t)
+            else:
+                self.lost_at.pop(entity, None)
 
     def _check_flows(self, t: float) -> None:
         """Invariant 5: heating and cooling flows never overlap and keep the dwell apart."""
@@ -448,6 +459,8 @@ class Checker:
         else:
             self.handover_since = None
         if self._release_impossible(t):
+            return
+        if any(t - when <= RIDE_THROUGH + SPONTANEOUS_GRACE for when in self.lost_at.values()):
             return
         label = self.label
         for loop in self.plant.all_loops:
