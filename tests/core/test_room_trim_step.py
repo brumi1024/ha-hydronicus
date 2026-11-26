@@ -17,7 +17,7 @@ from custom_components.hydronicus.core.plant_file import (
     export_plant,
     read_plant_file,
 )
-from custom_components.hydronicus.core.room_trim import RoomTrimState
+from custom_components.hydronicus.core.room_trim import RoomTrimState, ZoneTrace
 from custom_components.hydronicus.core.step import (
     ROOM_TRIM_INTERVAL,
     DigitalThermostatState,
@@ -56,8 +56,7 @@ def settled(learned: float = 0.0) -> State:
             learned,
             targets={"room": 21.0},
             arrived=NOW - DAY,
-            moved=0.5,
-            moved_at=NOW - DAY,
+            traces={"room": ZoneTrace(0.5, NOW - HALF_HOUR, 0.5, NOW - DAY)},
         ),
     )
 
@@ -353,5 +352,7 @@ def test_the_lead_zones_calls_count_together_whichever_leads() -> None:
     curve = desired.heating_curve
     assert curve is not None and curve.trim is not None and curve.trim.lead == "room"
     assert after.room_trim.calling_since == NOW - 10 * 3600
+    # Each lead zone follows its own error, the hall's too while the room leads.
+    assert set(after.room_trim.traces) == {"room", "hall"}
     # Called long enough, so the learned part rises with the room's shortfall.
     assert after.room_trim.learned > 0

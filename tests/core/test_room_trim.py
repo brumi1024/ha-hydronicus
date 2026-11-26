@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from math import exp, inf, nan, pi, sin
+from typing import Final
 
 import pytest
 
@@ -14,6 +15,7 @@ from custom_components.hydronicus.core.room_trim import (
     SETTLE_TIME,
     RoomTrim,
     RoomTrimState,
+    ZoneTrace,
     room_trim,
 )
 
@@ -46,9 +48,13 @@ def still(error: float, learned: float = 0.0, at: float = NOW - HOUR) -> RoomTri
         learned,
         targets={"room": TARGET},
         arrived=LONG_AGO,
-        moved=error,
-        moved_at=LONG_AGO,
+        traces={"room": ZoneTrace(error, at, error, LONG_AGO)},
     )
+
+
+def moved(state: RoomTrimState, at: float, slug: str = "room") -> RoomTrimState:
+    """``state`` with the zone's own filtered error last moved at ``at``."""
+    return replace(state, traces={**state.traces, slug: replace(state.traces[slug], moved_at=at)})
 
 
 def settled(error: float, learned: float = 0.0) -> RoomTrimState:
@@ -68,8 +74,7 @@ def test_the_first_reading_starts_the_filter_and_learns_nothing() -> None:
         0.0,
         targets={"room": TARGET},
         settling=True,
-        moved=1.0,
-        moved_at=NOW,
+        traces={"room": ZoneTrace(1.0, NOW, 1.0, NOW)},
         calling_since=LONG_AGO,
     )
 
@@ -245,7 +250,15 @@ def test_without_a_lead_reading_only_the_learned_part_trims(error: float | None)
 
 
 def test_the_state_survives_a_round_trip() -> None:
-    state = RoomTrimState(0.42, NOW, 1.25, {"room": 21.0}, True, NOW - 60, 0.4, NOW - 600)
+    state = RoomTrimState(
+        0.42,
+        NOW,
+        1.25,
+        {"room": 21.0},
+        True,
+        NOW - 60,
+        {"room": ZoneTrace(0.4, NOW, 0.4, NOW - 600)},
+    )
     assert RoomTrimState.from_dict(state.to_dict()) == state
     assert RoomTrimState.from_dict({}) == RoomTrimState()
     assert RoomTrimState.from_dict({"error": 0.4, "learned": 0.5}) == RoomTrimState(None, None, 0.5)
@@ -254,6 +267,8 @@ def test_the_state_survives_a_round_trip() -> None:
         RoomTrimState(targets={"room": 21.0})
     )
     assert RoomTrimState.from_dict({"targets": 21.0}) == RoomTrimState()
+    broken = {"room": {"error": 0.4, "at": NOW, "moved": nan, "moved_at": NOW}, "hall": 1.0}
+    assert RoomTrimState.from_dict({"traces": broken}) == RoomTrimState()
 
 
 # Target changes, a still room, and what the setpoint delivers
@@ -271,44 +286,87 @@ def test_a_target_change_holds_the_learned_part_while_the_room_settles(
     assert calling.learned == 0.5 and calling.state.settling
 
 
-def test_a_change_of_lead_zone_with_another_target_does_not_settle() -> None:
-    previous = replace(still(0.4, 0.5), targets={"room": TARGET, "hall": TARGET - 0.5})
-    hall = room_trim(
-        INFLUENCE, previous, NOW, "hall", 0.4, gap=HOUR, calling=LONG_AGO, target=TARGET - 0.5
+def both(error: float = 0.4, learned: float = 0.5) -> RoomTrimState:
+    """As ``still``, with a hall 0.5 K cooler in its target that has held ``error`` too."""
+    state = still(error, learned)
+    return replace(
+        state,
+        targets={"room": TARGET, "hall": TARGET - 0.5},
+        traces={**state.traces, "hall": ZoneTrace(error, NOW - HOUR, error, LONG_AGO)},
     )
+
+
+def hall(previous: RoomTrimState, error: float = 0.4, **kwargs: object) -> RoomTrim:
+    """The hall leads with ``error``, the room 0.1 K warmer."""
+    options: dict[str, object] = {
+        "gap": HOUR,
+        "calling": LONG_AGO,
+        "target": TARGET - 0.5,
+        "errors": {"hall": error, "room": error - 0.1},
+    }
+    options |= kwargs
+    return room_trim(INFLUENCE, previous, NOW, "hall", error, **options)  # type: ignore[arg-type]
+
+
+def test_a_change_of_lead_zone_with_another_target_does_not_settle() -> None:
+    switched = hall(both())
     # The hall led at its target before, so the switch says nothing of a new one.
-    assert not hall.state.settling and hall.state.arrived == LONG_AGO
-    assert hall.learned == pytest.approx(0.5 + 0.3 * 0.2)
-    back = trim(0.4, hall.state, NOW + 600)
-    assert not back.state.settling and back.state.targets == {"room": TARGET, "hall": TARGET - 0.5}
+    assert not switched.state.settling and switched.state.arrived == LONG_AGO
+    assert switched.learned == pytest.approx(0.5 + 0.3 * 0.2)
+    back = trim(0.4, switched.state, NOW + 600)
+    assert not back.state.settling
+    assert back.state.targets == {"room": TARGET, "hall": TARGET - 0.5}
     # A target that changed while another zone led settles once it leads, here
     # at once since the room holds still, and that arrival starts again.
-    raised = room_trim(
-        INFLUENCE, previous, NOW, "hall", 0.4, gap=HOUR, calling=LONG_AGO, target=TARGET
-    )
+    raised = hall(both(), target=TARGET)
     assert raised.state.arrived == NOW
-    moving = replace(previous, moved_at=NOW - 60)
-    raised = room_trim(INFLUENCE, moving, NOW, "hall", 0.4, gap=HOUR, calling=None, target=TARGET)
+    raised = hall(moved(both(), NOW - 60, "hall"), target=TARGET, calling=None)
     assert raised.state.settling
     assert raised.held == "the lead zone settles after a change of its target"
     # So does a zone that never led before.
-    new = room_trim(INFLUENCE, moving, NOW, "attic", 0.4, gap=HOUR, calling=None, target=20.0)
+    new = room_trim(
+        INFLUENCE, moved(both(), NOW - 60), NOW, "attic", 0.4, gap=HOUR, calling=None, target=20.0
+    )
     assert new.state.settling
+
+
+def test_a_change_of_lead_zone_is_no_warm_up() -> None:
+    # The room held 0.7 K below its target while it led; the hall takes over
+    # at 0.4 K, so the trim's filter falls toward it though neither room moves.
+    previous = replace(both(0.4), error=0.7)
+    previous = replace(
+        previous, traces={**previous.traces, "room": ZoneTrace(0.7, NOW - HOUR, 0.7, LONG_AGO)}
+    )
+    switched = hall(previous, errors={"hall": 0.4, "room": 0.7}, calling=LONG_AGO)
+    assert switched.error is not None and switched.error < 0.7 - 0.05
+    assert switched.held is None and switched.learned > 0.5
+    # A hall whose own error still shrinks is warming up.
+    warming = hall(moved(previous, NOW - 60, "hall"), errors={"hall": 0.4, "room": 0.7})
+    assert warming.held == "the lead zone still gets closer to its target"
+    # Each zone follows its own error while another leads, and one without a
+    # reading for longer than the gap is forgotten.
+    stale = ZoneTrace(0.4, NOW - 2 * HOUR, 0.4, LONG_AGO)
+    gone = trim(0.5, replace(both(), traces={**both().traces, "hall": stale}), errors={"room": 0.5})
+    assert set(gone.state.traces) == {"room"}
+    kept = trim(0.5, both(), errors={"room": 0.5})
+    assert kept.state.traces["hall"] == both().traces["hall"]
+    follows = trim(0.5, both(), errors={"room": 0.5, "hall": 0.4})
+    assert follows.state.traces["hall"].at == NOW
 
 
 def test_the_settling_ends_once_reading_and_filter_are_within_the_deadband() -> None:
     settling = replace(still(0.15, 0.5), settling=True)
-    lagging = trim(0.1, replace(settling, error=0.4))
+    lagging = trim(0.1, moved(replace(settling, error=0.4), NOW - 60))
     assert lagging.state.settling
     arrived = trim(0.1, settling)
     assert not arrived.state.settling and arrived.state.arrived == NOW
 
 
 def test_the_settling_ends_once_the_room_is_still_short_of_its_target() -> None:
-    settling = replace(still(0.6, 0.5), settling=True, moved_at=NOW - SETTLE_TIME)
+    settling = moved(replace(still(0.6, 0.5), settling=True), NOW - SETTLE_TIME)
     result = trim(0.6, settling)
     assert not result.state.settling
-    moving = trim(0.6, replace(settling, moved_at=NOW - SETTLE_TIME + 60))
+    moving = trim(0.6, moved(settling, NOW - SETTLE_TIME + 60))
     assert moving.state.settling
 
 
@@ -316,7 +374,8 @@ def test_a_room_that_still_gets_closer_to_its_target_teaches_nothing() -> None:
     result = trim(0.6, still(0.7, 0.5))
     assert result.learned == 0.5
     assert result.held == "the lead zone still gets closer to its target"
-    assert result.state.moved == pytest.approx(result.error) and result.state.moved_at == NOW
+    trace = result.state.traces["room"]
+    assert trace.moved == pytest.approx(result.error) and trace.moved_at == NOW
 
 
 def test_a_satisfied_zone_soon_after_arriving_lowers_nothing() -> None:
@@ -331,7 +390,7 @@ def test_a_still_room_within_the_deadband_moves_toward_what_the_setpoint_deliver
     assert result.learned == pytest.approx(1.8 - 0.3 * 0.3)
     up = trim(0.1, still(0.1, 0.0), delivered=1.0)
     assert up.learned == pytest.approx(0.3)
-    moving = trim(0.1, replace(still(0.1, 1.8), moved_at=NOW - 60), delivered=1.5)
+    moving = trim(0.1, moved(still(0.1, 1.8), NOW - 60), delivered=1.5)
     assert moving.learned == 1.8
     satisfied = trim(0.1, still(0.1, 1.8), delivered=1.5, calling=None)
     assert satisfied.learned == pytest.approx(1.8 - 0.3 * 0.2)
@@ -387,20 +446,31 @@ def replay(
             gap=HOUR,
             calling=min(since, default=None),
             target=target,
+            errors={zone: room[1] for zone, room in rooms.items()},
         )
         state = result.state
     return state, switches
 
 
-def test_a_curve_learned_low_in_mild_weather_climbs_back_when_it_turns_cold() -> None:
+# The two cold spells: both zones short alike, so the colder changes as their
+# errors cross, or the living room the further short, so the bedroom leads only
+# while it pauses and the trim's filter swings at every turn.
+ALIKE: Final = {"living": 0.45, "bedroom": 0.45}
+APART: Final = {"living": 0.55, "bedroom": 0.35}
+
+
+@pytest.mark.parametrize("short", [ALIKE, APART], ids=["alike", "apart"])
+def test_a_curve_learned_low_in_mild_weather_climbs_back_when_it_turns_cold(
+    short: dict[str, float],
+) -> None:
     """The mild week, then the cold spell, that ``home`` saw at the end of November 2026.
 
     A mild week satisfies both lead zones, ``living`` at 22 °C and ``bedroom`` at
     21.5 °C, all but two hours each morning, so the learned part falls to its
-    limit. Then the cold leaves both 0.3 to 0.6 K below their targets: each
-    still pauses for twenty minutes every five hours, the two out of step, and
-    the colder of the two changes every hour and a half, so no one zone's call
-    lasts ``learn_after`` and the lead keeps moving between them.
+    limit. Then the cold leaves both 0.3 to 0.6 K below their targets, drifting
+    slowly as slab rooms do: each still pauses for twenty minutes every five
+    hours, the two out of step, so no one zone's call lasts ``learn_after`` and
+    the lead moves between them about once an hour or two.
     """
     start = NOW - 30 * DAY
 
@@ -420,7 +490,7 @@ def test_a_curve_learned_low_in_mild_weather_climbs_back_when_it_turns_cold() ->
     def frosty(now: float) -> dict[str, tuple[float, float, float | None]]:
         rooms: dict[str, tuple[float, float, float | None]] = {}
         for slug, target, shift, phase in (("living", 22.0, 0.0, 0.0), ("bedroom", 21.5, pi, 2.5)):
-            error = 0.45 + 0.15 * sin(2 * pi * (now - cold) / (3 * HOUR) + shift)
+            error = short[slug] + 0.03 * sin(2 * pi * (now - cold) / (12 * HOUR) + shift)
             # Each pauses twenty minutes every five hours, out of step with the other.
             into = (now - cold - phase * HOUR) % (5 * HOUR)
             since = None if into < 1200 else now - into + 1200
@@ -428,7 +498,7 @@ def test_a_curve_learned_low_in_mild_weather_climbs_back_when_it_turns_cold() ->
         return rooms
 
     after_a_day, switches = replay(state, cold, 24, frosty)
-    assert switches >= 12
+    assert switches >= 8
     # It climbs back from its limit within a day, and most of the way in two.
     assert after_a_day.learned > -1.5
     after_two, _ = replay(after_a_day, cold + DAY, 24, frosty)

@@ -1188,6 +1188,15 @@ class _Evaluation:
         offset = self.obs.curve_offset
         return source.supply.offset if offset is None else offset
 
+    def lead_errors(self, influence: RoomInfluence) -> dict[str, float]:
+        """Each lead zone's heating target minus its temperature, where it has both."""
+        return {
+            slug: target - temperature
+            for slug in influence.zones
+            if (target := self.zone_target(slug)) is not None
+            and (temperature := self.temperatures.get(slug)) is not None
+        }
+
     def lead_zone(self, influence: RoomInfluence) -> tuple[str, float] | None:
         """The lead zone and its error, its heating target minus its temperature.
 
@@ -1195,12 +1204,7 @@ class _Evaluation:
         heat, or among all of them while none calls; a zone without a target or
         a reading leads nothing.
         """
-        errors = {
-            slug: target - temperature
-            for slug in influence.zones
-            if (target := self.zone_target(slug)) is not None
-            and (temperature := self.temperatures.get(slug)) is not None
-        }
+        errors = self.lead_errors(influence)
         if not errors:
             return None
         calling = {slug: error for slug, error in errors.items() if slug in self.heat_calls}
@@ -1252,6 +1256,7 @@ class _Evaluation:
             gap=supply.max_age,
             calling=calling,
             target=None if slug is None else self.zone_target(slug),
+            errors=self.lead_errors(influence),
             delivered=None if written is None or curve is None else written - curve,
             held=held,
             headroom=(-inf, inf) if curve is None else (lowest - curve, highest - curve),
