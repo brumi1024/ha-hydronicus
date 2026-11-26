@@ -57,7 +57,11 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
     # No name: the thermostat is the zone device's main feature and takes its name.
     _attr_name = None
     _attr_translation_key = "zone"
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    # Home Assistant 2026.11 reads the native_* names, and an entity that provides
+    # only the older ones gets a warning that they stop working in 2027.11. The
+    # older ones stay as aliases while the test pin predates 2026.11.
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_temperature_unit = _attr_native_temperature_unit
     _attr_min_temp = MIN_TARGET
     _attr_max_temp = MAX_TARGET
     _attr_target_temperature_step = 0.5
@@ -131,16 +135,24 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
         )
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         return self._readings.temperature
+
+    @property
+    def current_temperature(self) -> float | None:
+        return self.native_current_temperature
 
     @property
     def current_humidity(self) -> float | None:
         return self._readings.humidity if self._has_humidity else None
 
     @property
-    def target_temperature(self) -> float:
+    def native_target_temperature(self) -> float:
         return self._comfort.target
+
+    @property
+    def target_temperature(self) -> float:
+        return self.native_target_temperature
 
     @property
     def _comfort(self) -> ComfortTarget:
@@ -173,7 +185,7 @@ class ZoneClimate(ZoneEntity, ClimateEntity, RestoreEntity):
             mode,
             self._thermostat.target,
             self._thermostat.preset,
-            self.current_temperature,
+            self.native_current_temperature,
             observed,
             now,
             lambda deadline: deadline <= now,

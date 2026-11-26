@@ -136,6 +136,8 @@ class WeatherForecast:
 
     @callback
     def _on_stop(self, _event: Event) -> None:
+        # A one-time listener removes itself as it fires; removing it again logs an error.
+        self._stop_listener = None
         self.stop()
 
     @callback
