@@ -1215,10 +1215,18 @@ class _Evaluation:
             return None
         lead = self.lead_zone(influence)
         slug, error = (None, None) if lead is None else lead
-        calling_since: float | None = None
-        if slug is not None and slug in self.heat_calls:
-            demand = demands.get(slug)
-            calling_since = self.now if demand is None or demand.since is None else demand.since
+        # The lead zones are one witness of the curve: the longest of their
+        # current calls counts, whichever of them leads now.
+        calling = min(
+            (
+                self.now
+                if (demand := demands.get(zone)) is None or demand.since is None
+                else demand.since
+                for zone in influence.zones
+                if zone in self.heat_calls
+            ),
+            default=None,
+        )
         command, applied = self.obs.supply_command, self.state.heating_supply.command_at
         reset = (
             command is not None and command.reset_trim and (applied is None or command.at > applied)
@@ -1242,7 +1250,7 @@ class _Evaluation:
             slug,
             error,
             gap=supply.max_age,
-            calling_since=calling_since,
+            calling=calling,
             target=None if slug is None else self.zone_target(slug),
             delivered=None if written is None or curve is None else written - curve,
             held=held,

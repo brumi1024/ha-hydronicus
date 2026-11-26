@@ -13,13 +13,26 @@ Both together, clamped to ``limit``, are what the heating curve receives.
 A zone with an on and off thermostat is a poor witness of its curve: after
 every pause its slow emitters need hours to warm again, and the room dips below
 its target whatever the curve. So the learned part rises only once the lead
-zone has called for ``learn_after`` without a pause and its filtered error has
-stayed within ``SETTLE_STEP`` for ``SETTLE_TIME``: a room that still gets closer
-to its target is warming up, and one that stopped short of it has a curve that
-is too low. While no lead zone calls, the learned part falls as if the room
-were the deadband above its target, because a satisfied zone got enough.
+zones have called for ``learn_after`` without a moment when none of them called,
+and the lead zone's filtered error has stayed within ``SETTLE_STEP`` for
+``SETTLE_TIME``: a room that still gets closer to its target is warming up, and
+one that stopped short of it has a curve that is too low. While no lead zone
+calls, the learned part falls as if the room were the deadband above its
+target, because a satisfied zone got enough.
 
-A change of the lead zone's target, a setback or its end, and the first
+The lead zones are one witness, not one each: the curve heats them all, so
+their calls together, not the current lead's own, measure how long the house
+has been short. The lead moves between them whenever another calls colder, and
+each pauses on its own thermostat while another keeps calling; counting from
+the lead's own call would restart the wait at every such switch, which in a
+house of two slow zones leaves the learned part almost never free to rise,
+while it falls in every hour that none calls. Counted over the zones together,
+the rising side waits for exactly what the falling side acts on, a moment when
+no lead zone calls, so what mild weather taught it is unlearned once the cold
+leaves the rooms short, without a reset. A zone that just resumed and still
+warms is held by its error, which still shrinks.
+
+A change of the lead zone's own target, a setback or its end, and its first
 reading, start a settling: the room is on its way to a new target, which says
 nothing about the curve, so the learned part keeps its value until both the
 reading and the filtered error are within the deadband of the target, or the
@@ -48,14 +61,20 @@ The filter starts again from the reading after a gap longer than ``gap`` or a
 clock that stepped backwards, as the damped outdoor temperature does, and that
 evaluation learns nothing. A change of lead zone keeps both the filter and the
 learned part: the filter smooths the step between the two zones' errors, and
-what was learned belongs to the curve, not to a zone. A lead zone with another
-target settles as a target change does.
+what was learned belongs to the curve, not to a zone. Nor does it start a
+settling: each lead zone's target is remembered from when it last led, and only
+a zone that leads with another target than then settles. Zones with targets of
+their own, such as 22 °C in the living room and 21.5 °C in a bedroom, take turns
+to lead every few hours, and a settling at every turn would hold the learned
+part for most of a cold day. A zone whose target changed while another led
+settles once it leads; one whose setback came and went meanwhile is back where
+it was, and is held only while it is far from its target or still gets closer.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from math import exp, inf, isfinite
 from typing import Any, Final
 
@@ -83,14 +102,17 @@ class RoomTrimState:
     at: float | None = None
     # The learned part in K.
     learned: float = 0.0
-    # The lead zone's target, None before the first reading, whether the room
-    # still settles after it changed, and when it last arrived.
-    target: float | None = None
+    # Each lead zone's target when it last led, whether the lead zone still
+    # settles after its target changed, and when it last arrived.
+    targets: Mapping[str, float] = field(default_factory=dict)
     settling: bool = False
     arrived: float | None = None
     # The filtered error when it last moved by ``SETTLE_STEP``, and when.
     moved: float | None = None
     moved_at: float | None = None
+    # Since when one lead zone or another has called without a moment when none
+    # did, None while none calls.
+    calling_since: float | None = None
 
     def steady(self, now: float) -> bool:
         """Whether the filtered error has not moved for ``SETTLE_TIME``."""
@@ -101,11 +123,12 @@ class RoomTrimState:
             "error": self.error,
             "at": self.at,
             "learned": self.learned,
-            "target": self.target,
+            "targets": dict(self.targets),
             "settling": self.settling,
             "arrived": self.arrived,
             "moved": self.moved,
             "moved_at": self.moved_at,
+            "calling_since": self.calling_since,
         }
 
     @classmethod
@@ -120,15 +143,22 @@ class RoomTrimState:
         moved, moved_at = number("moved"), number("moved_at")
         if moved is None or moved_at is None:
             moved, moved_at = None, None
+        stored = data.get("targets")
+        targets = {
+            str(slug): float(value)
+            for slug, value in (stored.items() if isinstance(stored, Mapping) else ())
+            if value is not None and isfinite(float(value))
+        }
         return cls(
             error,
             at,
             0.0 if learned is None else learned,
-            number("target"),
+            targets,
             bool(data.get("settling", False)),
             number("arrived"),
             moved,
             moved_at,
+            number("calling_since"),
         )
 
 
@@ -163,6 +193,7 @@ def _clamp(value: float, limit: float) -> float:
 
 def _settle(
     previous: RoomTrimState,
+    lead: str | None,
     target: float | None,
     error: float,
     filtered: float,
@@ -173,11 +204,14 @@ def _settle(
     moved, moved_at = previous.moved, previous.moved_at
     if moved is None or moved_at is None or now < moved_at or abs(filtered - moved) > SETTLE_STEP:
         moved, moved_at = filtered, now
-    settling = previous.settling
-    if target is not None and (previous.target is None or abs(target - previous.target) > 1e-6):
-        settling = True
+    settling, targets = previous.settling, previous.targets
+    if lead is not None and target is not None:
+        before = targets.get(lead)
+        if before is None or abs(target - before) > 1e-6:
+            settling = True
+        targets = {**targets, lead: target}
     state = RoomTrimState(
-        target=previous.target if target is None else target,
+        targets=targets,
         settling=settling,
         arrived=previous.arrived,
         moved=moved,
@@ -190,6 +224,23 @@ def _settle(
     return state
 
 
+def _calling_since(
+    previous: RoomTrimState, now: float, calling: float | None, gap: float
+) -> float | None:
+    """Since when the lead zones have called without a moment when none did.
+
+    The run the State recorded goes on while some lead zone still calls, unless
+    the last evaluation is older than ``gap`` or ahead of ``now``: a pause may
+    have passed unseen, so only the current calls count.
+    """
+    if calling is None:
+        return None
+    since, at = previous.calling_since, previous.at
+    if since is None or at is None or now < at or now > at + gap:
+        return calling
+    return min(since, calling)
+
+
 def room_trim(
     influence: RoomInfluence,
     previous: RoomTrimState,
@@ -198,7 +249,7 @@ def room_trim(
     error: float | None,
     *,
     gap: float,
-    calling_since: float | None,
+    calling: float | None,
     target: float | None = None,
     delivered: float | None = None,
     held: str | None = None,
@@ -208,8 +259,11 @@ def room_trim(
     """Step the room trim to ``now`` from the lead zone's ``error``.
 
     ``error`` is the lead zone's target minus its temperature, None while no
-    lead zone reads, ``target`` is that target, and ``calling_since`` is since
-    when it has called for heat without a pause, None while it does not call.
+    lead zone reads, and ``target`` is that target. ``calling`` is when the
+    longest of the lead zones' current calls for heat began, None while none
+    calls; the State joins it to the calls before, so the wait before the
+    learned part rises goes on across a change of lead zone and across one
+    zone's pause while another calls.
     ``delivered`` is the shift beyond the curve and the offset that the setpoint
     written last gives, None without one. ``held`` says why the learned part may
     not change now, and ``headroom`` is how far down and up a shift still moves
@@ -218,11 +272,12 @@ def room_trim(
     """
     learning = influence.learn_rate > 0
     learned = _clamp(0.0 if reset or not learning else previous.learned, influence.learn_limit)
+    calling_since = _calling_since(previous, now, calling, gap)
     if error is None or not isfinite(error):
         # Nothing to filter: the filter waits for the next reading, which the
         # gap rule restarts it from when it comes too late.
         why = (held or "no lead zone reads its temperature") if learning else None
-        state = replace(previous, learned=learned)
+        state = replace(previous, learned=learned, calling_since=calling_since)
         return RoomTrim(_clamp(learned, influence.limit), 0.0, learned, None, None, why, state)
 
     if (
@@ -239,7 +294,7 @@ def room_trim(
 
     deadband = influence.deadband
     proportional = _clamp(influence.factor * _outside(filtered, deadband), influence.limit)
-    followed = _settle(previous, target, error, filtered, now, deadband)
+    followed = _settle(previous, lead, target, error, filtered, now, deadband)
     if learning and held is None:
         mean = (_outside(before, deadband) + _outside(filtered, deadband)) / 2
         arrived = followed.arrived
@@ -269,7 +324,7 @@ def room_trim(
         elif abs(filtered) > LEARN_BAND:
             held = "the lead zone is far from its target"
         elif rising and (calling_since is None or now - calling_since < influence.learn_after):
-            held = "the lead zone has not called long enough"
+            held = "the lead zones have not called long enough"
         elif rising and not followed.steady(now):
             held = "the lead zone still gets closer to its target"
         elif (mean > 0 and shift >= min(influence.limit, high)) or (
@@ -287,5 +342,5 @@ def room_trim(
         lead,
         filtered,
         held if learning else None,
-        replace(followed, error=filtered, at=now, learned=learned),
+        replace(followed, error=filtered, at=now, learned=learned, calling_since=calling_since),
     )
