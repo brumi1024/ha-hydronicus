@@ -24,21 +24,27 @@ A decision never counts on a call having acted: a call sent less than
 or the source it may start counts as possibly running, and one it may stop
 counts as possibly stopped.
 
-A valve or the source request that goes unavailable for a moment keeps its last
-known state for ``RIDE_THROUGH``, counted from when it went unavailable: demand, paths, valve
-readiness, and the source request plan on it as if nothing happened, and the
-evaluation is due again when the grace ends. A device whose connection drops
-for a second, as a Shelly's does now and then, would otherwise read as a valve
-that may have closed, so every loop it serves loses its path and the source is
-released, and a heat pump pays for that second with a compressor stop, its
-minimum off time, and a pump restart from standstill. The reconciler sends an
-unavailable output nothing whatever the plan, and the runtime's output memory
-keeps the ``since`` of an output that returns showing what it showed before, so
-a valve that comes back open is still ready. Past the grace the output is what
-it shows, unavailable, and every rule that fails closed on it applies; a value
-it never showed, a valve still moving, and a missing entity get no grace. A pump
-gets none either: it is what carries the heat away from a source that may be
-firing, so a lost pump releases the source at once.
+A valve, a switched pump, or the source request that goes unavailable for a
+moment keeps its last known state for ``RIDE_THROUGH``, counted from when it
+went unavailable: demand, paths, valve readiness, and the source request plan on
+it as if nothing happened, and the evaluation is due again when the grace ends.
+A device whose connection drops for a second, as a Shelly's does now and then,
+would otherwise read as a valve that may have closed or a pump that may have
+stopped, so every loop it serves loses its path and the source is released, and
+a heat pump pays for that second with a compressor stop, its minimum off time,
+and a pump restart from standstill. The reconciler sends an unavailable output
+nothing whatever the plan, and the runtime's output memory keeps the ``since``
+of an output that returns showing what it showed before, so a valve that comes
+back open is still ready. Past the grace the output is what it shows,
+unavailable, and every rule that fails closed on it applies; a value it never
+showed, a valve still moving, and a missing entity get no grace.
+
+The grace trusts a pump that really stopped for up to a minute against a source
+that may still run. That is shorter than the default post-run, through which a
+source runs on its pumps after any release anyway, and a source keeps its own
+protection against a lost flow: a heat pump's internal pump and flow switch, a
+boiler's high limit. Where the source reports its supply and return, the
+no-load guard stops a request that moves no heat.
 """
 
 from __future__ import annotations
@@ -163,8 +169,8 @@ GUARD_REFERENCE_MAX_AGE: Final = 1800.0
 CALL_TIMEOUT: Final = 10.0
 # Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
 TICK: Final = 0.001
-# How long a valve or the source request that went unavailable keeps its last
-# known state, in seconds.
+# How long a valve, a switched pump, or the source request that went unavailable
+# keeps its last known state, in seconds.
 # Long enough for a device's connection to drop and return, which takes a second
 # or two for a Shelly and up to a minute for a Wi-Fi roam or an integration's
 # reconnect, and short against every timer it could mislead: a valve's opening
@@ -499,8 +505,8 @@ class State:
     sensorless: Mapping[str, float] = field(default_factory=dict)
     # The automatic changeover's average and the mode it chose.
     changeover: ChangeoverState = ChangeoverState()
-    # Each valve's and the source request's last known value, which it keeps
-    # for ``RIDE_THROUGH`` once it goes unavailable, by entity.
+    # Each valve's, switched pump's, and the source request's last known value,
+    # which it keeps for ``RIDE_THROUGH`` once it goes unavailable, by entity.
     known_outputs: Mapping[str, KnownOutput] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -757,6 +763,7 @@ class _Evaluation:
 
     def __init__(self, plant: Plant, obs: Observations, state: State, now: float) -> None:
         kept = {valve.entity for loop in plant.all_loops for valve in loop.valves}
+        kept.update(pump.switch for pump in plant.pumps if pump.switch is not None)
         if plant.source is not None:
             kept.add(plant.source.request)
         outputs, self.known_outputs, riding = _ride_through(

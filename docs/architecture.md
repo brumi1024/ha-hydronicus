@@ -138,8 +138,7 @@ An adapter should report state at least once a minute, refuse writes it cannot v
 A service call that returns is not a confirmation; only the output's state in Home Assistant is.
 Until an output shows the result, Hydronicus assumes the worst: a pump asked to stop may still run, so its last open loop stays open.
 An unconfirmed call is modeled as possibly acting until its 10-second timeout, and is retried with backoff up to every 5 minutes; after three attempts a Repair names the output and the Plant's status reads `degraded`.
-A valve or the source request that goes unavailable keeps its last known state for 60 seconds, counted from when it went, so a device whose connection drops for a second neither closes a loop's path nor releases the source; past that it is unavailable, and every rule that fails closed on it applies.
-A pump gets no such grace, since a source may be firing on it.
+A valve, a switched pump, or the source request that goes unavailable keeps its last known state for 60 seconds, counted from when it went, so a device whose connection drops for a second neither closes a loop's path nor releases the source; past that it is unavailable, and every rule that fails closed on it applies.
 
 Hydronicus commands an output only while it is **armed** and **Control equipment** is on.
 A new Plant has nothing armed and control off, and runs in **Dry run**: it sends nothing, records each command it would send as proposed, and treats the proposal as followed, so the sequence advances just as it would for real.
