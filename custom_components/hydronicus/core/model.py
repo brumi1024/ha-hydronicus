@@ -416,8 +416,9 @@ class RoomInfluence:
     learn_rate: float = 0.3
     # The largest learned part either way, in K.
     learn_limit: float = 2.0
-    # How long the lead zone must have called without a pause, in seconds,
-    # before the learned part may rise: the time its emitters take to warm again.
+    # How long the lead zones must have called without a moment when none did,
+    # in seconds, before the learned part may rise: the time their emitters
+    # take to warm again.
     learn_after: float = 28800.0
 
 

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from custom_components.hydronicus.core.comfort import Away, BlockLevel, ScheduleState
+from custom_components.hydronicus.core.demand import DemandState
 from custom_components.hydronicus.core.dhw import DhwState
 from custom_components.hydronicus.core.heating_supply import HeatingSupplyState, SupplyCommand
 from custom_components.hydronicus.core.model import HeatingSupply, Mode, NumericTarget, Preset
@@ -315,3 +316,42 @@ def test_room_trim_settings_are_checked(setting: str) -> None:
 def test_a_learning_room_trim_asks_for_its_own_evaluations() -> None:
     _, _, due = run(_plant(TRIM), trimmed(), settled(0.5))
     assert due is not None and due <= ROOM_TRIM_INTERVAL + 1
+
+
+# The room and a hall, both lead zones, each on its own radiator.
+TWO_LEADS = curve_plant(step=1, room_influence="{zones: [room, hall]}").replace(
+    "      radiator: {valves: [switch.valve], pump: pump}\n",
+    "      radiator: {valves: [switch.valve], pump: pump}\n"
+    "  hall:\n"
+    "    temperature: [sensor.hall]\n"
+    "    thermostat: {digital: {min_on: 0, min_off: 0}}\n"
+    "    loops:\n"
+    "      radiator: {valves: [switch.hall_valve], pump: pump}\n",
+)
+
+
+def test_the_lead_zones_calls_count_together_whichever_leads() -> None:
+    plant = _plant(TWO_LEADS)
+    observations = calling(TWO_LEADS, 5.0, 35.0)
+    observations = replace(
+        observations,
+        sensors={
+            **observations.sensors,
+            "sensor.room": Reading(20.4, NOW),
+            "sensor.hall": Reading(20.6, NOW),
+        },
+    )
+    state = replace(
+        settled(),
+        demands={
+            # The room began calling a minute ago; the hall has called all night.
+            "room": DemandState(Mode.HEAT, True, NOW - 60),
+            "hall": DemandState(Mode.HEAT, True, NOW - 10 * 3600),
+        },
+    )
+    after, desired, _ = run(plant, observations, state, NOW)
+    curve = desired.heating_curve
+    assert curve is not None and curve.trim is not None and curve.trim.lead == "room"
+    assert after.room_trim.calling_since == NOW - 10 * 3600
+    # Called long enough, so the learned part rises with the room's shortfall.
+    assert after.room_trim.learned > 0

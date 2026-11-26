@@ -87,7 +87,7 @@ source:
       deadband: 0.2                          # error in K that counts as none (default 0.2)
       learn_rate: 0.3                        # learned trim in K per hour per K of error; 0 turns it off (default 0.3)
       learn_limit: 2                         # largest learned trim either way in K (default 2)
-      learn_after: 28800                     # seconds the lead zone calls without a pause before the learned trim rises (default 28800)
+      learn_after: 28800                     # seconds the lead zones call without a pause before the learned trim rises (default 28800)
 
   # Domestic hot water: needs switch, setpoint, or both.
   dhw:
