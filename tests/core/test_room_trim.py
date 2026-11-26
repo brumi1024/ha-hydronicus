@@ -44,7 +44,7 @@ def still(error: float, learned: float = 0.0, at: float = NOW - HOUR) -> RoomTri
         error,
         at,
         learned,
-        target=TARGET,
+        targets={"room": TARGET},
         arrived=LONG_AGO,
         moved=error,
         moved_at=LONG_AGO,
@@ -66,7 +66,7 @@ def test_the_first_reading_starts_the_filter_and_learns_nothing() -> None:
         1.0,
         NOW,
         0.0,
-        target=TARGET,
+        targets={"room": TARGET},
         settling=True,
         moved=1.0,
         moved_at=NOW,
@@ -245,11 +245,15 @@ def test_without_a_lead_reading_only_the_learned_part_trims(error: float | None)
 
 
 def test_the_state_survives_a_round_trip() -> None:
-    state = RoomTrimState(0.42, NOW, 1.25, 21.0, True, NOW - 60, 0.4, NOW - 600)
+    state = RoomTrimState(0.42, NOW, 1.25, {"room": 21.0}, True, NOW - 60, 0.4, NOW - 600)
     assert RoomTrimState.from_dict(state.to_dict()) == state
     assert RoomTrimState.from_dict({}) == RoomTrimState()
     assert RoomTrimState.from_dict({"error": 0.4, "learned": 0.5}) == RoomTrimState(None, None, 0.5)
     assert RoomTrimState.from_dict({"learned": nan}) == RoomTrimState()
+    assert RoomTrimState.from_dict({"targets": {"room": 21.0, "hall": nan, "attic": None}}) == (
+        RoomTrimState(targets={"room": 21.0})
+    )
+    assert RoomTrimState.from_dict({"targets": 21.0}) == RoomTrimState()
 
 
 # Target changes, a still room, and what the setpoint delivers
@@ -265,6 +269,31 @@ def test_a_target_change_holds_the_learned_part_while_the_room_settles(
     assert result.state.settling
     calling = trim(error, result.state, NOW + 600, target=target)
     assert calling.learned == 0.5 and calling.state.settling
+
+
+def test_a_change_of_lead_zone_with_another_target_does_not_settle() -> None:
+    previous = replace(still(0.4, 0.5), targets={"room": TARGET, "hall": TARGET - 0.5})
+    hall = room_trim(
+        INFLUENCE, previous, NOW, "hall", 0.4, gap=HOUR, calling=LONG_AGO, target=TARGET - 0.5
+    )
+    # The hall led at its target before, so the switch says nothing of a new one.
+    assert not hall.state.settling and hall.state.arrived == LONG_AGO
+    assert hall.learned == pytest.approx(0.5 + 0.3 * 0.2)
+    back = trim(0.4, hall.state, NOW + 600)
+    assert not back.state.settling and back.state.targets == {"room": TARGET, "hall": TARGET - 0.5}
+    # A target that changed while another zone led settles once it leads, here
+    # at once since the room holds still, and that arrival starts again.
+    raised = room_trim(
+        INFLUENCE, previous, NOW, "hall", 0.4, gap=HOUR, calling=LONG_AGO, target=TARGET
+    )
+    assert raised.state.arrived == NOW
+    moving = replace(previous, moved_at=NOW - 60)
+    raised = room_trim(INFLUENCE, moving, NOW, "hall", 0.4, gap=HOUR, calling=None, target=TARGET)
+    assert raised.state.settling
+    assert raised.held == "the lead zone settles after a change of its target"
+    # So does a zone that never led before.
+    new = room_trim(INFLUENCE, moving, NOW, "attic", 0.4, gap=HOUR, calling=None, target=20.0)
+    assert new.state.settling
 
 
 def test_the_settling_ends_once_reading_and_filter_are_within_the_deadband() -> None:

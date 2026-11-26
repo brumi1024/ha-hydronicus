@@ -54,7 +54,7 @@ def settled(learned: float = 0.0) -> State:
             0.5,
             NOW - HALF_HOUR,
             learned,
-            target=21.0,
+            targets={"room": 21.0},
             arrived=NOW - DAY,
             moved=0.5,
             moved_at=NOW - DAY,
@@ -67,7 +67,7 @@ def test_the_room_trim_learns_and_survives_a_restart() -> None:
     first, desired, _ = run(plant, trimmed())
     # The first reading is a new target, so the room settles before it teaches.
     assert first.room_trim.error == 0.5 and first.room_trim.settling
-    assert first.room_trim.target == 21.0
+    assert first.room_trim.targets == {"room": 21.0}
     curve = desired.heating_curve
     assert curve is not None and curve.trim is not None and curve.curve == 35.0
     assert curve.trim.lead == "room" and curve.room_shift == pytest.approx(0.3)

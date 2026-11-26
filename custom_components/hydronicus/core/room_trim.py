@@ -32,7 +32,7 @@ no lead zone calls, so what mild weather taught it is unlearned once the cold
 leaves the rooms short, without a reset. A zone that just resumed and still
 warms is held by its error, which still shrinks.
 
-A change of the lead zone's target, a setback or its end, and the first
+A change of the lead zone's own target, a setback or its end, and its first
 reading, start a settling: the room is on its way to a new target, which says
 nothing about the curve, so the learned part keeps its value until both the
 reading and the filtered error are within the deadband of the target, or the
@@ -61,14 +61,20 @@ The filter starts again from the reading after a gap longer than ``gap`` or a
 clock that stepped backwards, as the damped outdoor temperature does, and that
 evaluation learns nothing. A change of lead zone keeps both the filter and the
 learned part: the filter smooths the step between the two zones' errors, and
-what was learned belongs to the curve, not to a zone. A lead zone with another
-target settles as a target change does.
+what was learned belongs to the curve, not to a zone. Nor does it start a
+settling: each lead zone's target is remembered from when it last led, and only
+a zone that leads with another target than then settles. Zones with targets of
+their own, such as 22 °C in the living room and 21.5 °C in a bedroom, take turns
+to lead every few hours, and a settling at every turn would hold the learned
+part for most of a cold day. A zone whose target changed while another led
+settles once it leads; one whose setback came and went meanwhile is back where
+it was, and is held only while it is far from its target or still gets closer.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from math import exp, inf, isfinite
 from typing import Any, Final
 
@@ -96,9 +102,9 @@ class RoomTrimState:
     at: float | None = None
     # The learned part in K.
     learned: float = 0.0
-    # The lead zone's target, None before the first reading, whether the room
-    # still settles after it changed, and when it last arrived.
-    target: float | None = None
+    # Each lead zone's target when it last led, whether the lead zone still
+    # settles after its target changed, and when it last arrived.
+    targets: Mapping[str, float] = field(default_factory=dict)
     settling: bool = False
     arrived: float | None = None
     # The filtered error when it last moved by ``SETTLE_STEP``, and when.
@@ -117,7 +123,7 @@ class RoomTrimState:
             "error": self.error,
             "at": self.at,
             "learned": self.learned,
-            "target": self.target,
+            "targets": dict(self.targets),
             "settling": self.settling,
             "arrived": self.arrived,
             "moved": self.moved,
@@ -137,11 +143,17 @@ class RoomTrimState:
         moved, moved_at = number("moved"), number("moved_at")
         if moved is None or moved_at is None:
             moved, moved_at = None, None
+        stored = data.get("targets")
+        targets = {
+            str(slug): float(value)
+            for slug, value in (stored.items() if isinstance(stored, Mapping) else ())
+            if value is not None and isfinite(float(value))
+        }
         return cls(
             error,
             at,
             0.0 if learned is None else learned,
-            number("target"),
+            targets,
             bool(data.get("settling", False)),
             number("arrived"),
             moved,
@@ -181,6 +193,7 @@ def _clamp(value: float, limit: float) -> float:
 
 def _settle(
     previous: RoomTrimState,
+    lead: str | None,
     target: float | None,
     error: float,
     filtered: float,
@@ -191,11 +204,14 @@ def _settle(
     moved, moved_at = previous.moved, previous.moved_at
     if moved is None or moved_at is None or now < moved_at or abs(filtered - moved) > SETTLE_STEP:
         moved, moved_at = filtered, now
-    settling = previous.settling
-    if target is not None and (previous.target is None or abs(target - previous.target) > 1e-6):
-        settling = True
+    settling, targets = previous.settling, previous.targets
+    if lead is not None and target is not None:
+        before = targets.get(lead)
+        if before is None or abs(target - before) > 1e-6:
+            settling = True
+        targets = {**targets, lead: target}
     state = RoomTrimState(
-        target=previous.target if target is None else target,
+        targets=targets,
         settling=settling,
         arrived=previous.arrived,
         moved=moved,
@@ -278,7 +294,7 @@ def room_trim(
 
     deadband = influence.deadband
     proportional = _clamp(influence.factor * _outside(filtered, deadband), influence.limit)
-    followed = _settle(previous, target, error, filtered, now, deadband)
+    followed = _settle(previous, lead, target, error, filtered, now, deadband)
     if learning and held is None:
         mean = (_outside(before, deadband) + _outside(filtered, deadband)) / 2
         arrived = followed.arrived
