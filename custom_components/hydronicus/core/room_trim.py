@@ -14,7 +14,7 @@ A zone with an on and off thermostat is a poor witness of its curve: after
 every pause its slow emitters need hours to warm again, and the room dips below
 its target whatever the curve. So the learned part rises only once the lead
 zones have called for ``learn_after`` without a moment when none of them called,
-and the lead zone's filtered error has stayed within ``SETTLE_STEP`` for
+and the lead zone's own filtered error has stayed within ``SETTLE_STEP`` for
 ``SETTLE_TIME``: a room that still gets closer to its target is warming up, and
 one that stopped short of it has a curve that is too low. While no lead zone
 calls, the learned part falls as if the room were the deadband above its
@@ -69,6 +69,14 @@ to lead every few hours, and a settling at every turn would hold the learned
 part for most of a cold day. A zone whose target changed while another led
 settles once it leads; one whose setback came and went meanwhile is back where
 it was, and is held only while it is far from its target or still gets closer.
+
+Whether a room still gets closer is judged on each lead zone's own error, which
+every lead zone with a reading filters for itself on every evaluation, leading
+or not. The trim's filter blends the zones' errors across a change of lead, so
+it moves for an hour after every turn though neither room does, and judged on
+it every turn would look like a warm-up and hold the learned part for
+``SETTLE_TIME``. A zone's own trace starts again after ``gap`` without a
+reading, and is forgotten then.
 """
 
 from __future__ import annotations
@@ -80,7 +88,15 @@ from typing import Any, Final
 
 from .model import RoomInfluence
 
-__all__ = ["LEARN_BAND", "SETTLE_STEP", "SETTLE_TIME", "RoomTrim", "RoomTrimState", "room_trim"]
+__all__ = [
+    "LEARN_BAND",
+    "SETTLE_STEP",
+    "SETTLE_TIME",
+    "RoomTrim",
+    "RoomTrimState",
+    "ZoneTrace",
+    "room_trim",
+]
 
 # The learned part's rate is configured per hour.
 _HOUR: Final = 3600.0
@@ -91,6 +107,35 @@ LEARN_BAND: Final = 1.0
 # shrinks by this many kelvin within this many seconds.
 SETTLE_STEP: Final = 0.05
 SETTLE_TIME: Final = 7200.0
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneTrace:
+    """One lead zone's own filtered error, and when it last moved by ``SETTLE_STEP``."""
+
+    error: float
+    at: float
+    # The filtered error when it last moved by ``SETTLE_STEP``, and when.
+    moved: float
+    moved_at: float
+
+    def steady(self, now: float) -> bool:
+        """Whether the filtered error has not moved for ``SETTLE_TIME``."""
+        return self.moved_at <= now - SETTLE_TIME
+
+    def to_dict(self) -> dict[str, float]:
+        return {"error": self.error, "at": self.at, "moved": self.moved, "moved_at": self.moved_at}
+
+    @classmethod
+    def from_dict(cls, data: object) -> ZoneTrace | None:
+        """The stored trace, None unless every value is a finite number."""
+        if not isinstance(data, Mapping):
+            return None
+        values = [data.get(key) for key in ("error", "at", "moved", "moved_at")]
+        if not all(isinstance(value, int | float) and isfinite(value) for value in values):
+            return None
+        error, at, moved, moved_at = (float(value) for value in values)  # type: ignore[arg-type]
+        return cls(error, at, moved, moved_at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,16 +152,16 @@ class RoomTrimState:
     targets: Mapping[str, float] = field(default_factory=dict)
     settling: bool = False
     arrived: float | None = None
-    # The filtered error when it last moved by ``SETTLE_STEP``, and when.
-    moved: float | None = None
-    moved_at: float | None = None
+    # Each lead zone's own filtered error and when it last moved.
+    traces: Mapping[str, ZoneTrace] = field(default_factory=dict)
     # Since when one lead zone or another has called without a moment when none
     # did, None while none calls.
     calling_since: float | None = None
 
-    def steady(self, now: float) -> bool:
-        """Whether the filtered error has not moved for ``SETTLE_TIME``."""
-        return self.moved_at is not None and self.moved_at <= now - SETTLE_TIME
+    def steady(self, lead: str | None, now: float) -> bool:
+        """Whether the lead zone's own filtered error has not moved for ``SETTLE_TIME``."""
+        trace = None if lead is None else self.traces.get(lead)
+        return trace is not None and trace.steady(now)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,8 +171,7 @@ class RoomTrimState:
             "targets": dict(self.targets),
             "settling": self.settling,
             "arrived": self.arrived,
-            "moved": self.moved,
-            "moved_at": self.moved_at,
+            "traces": {slug: trace.to_dict() for slug, trace in self.traces.items()},
             "calling_since": self.calling_since,
         }
 
@@ -140,9 +184,12 @@ class RoomTrimState:
         error, at, learned = number("error"), number("at"), number("learned")
         if error is None or at is None:
             error, at = None, None
-        moved, moved_at = number("moved"), number("moved_at")
-        if moved is None or moved_at is None:
-            moved, moved_at = None, None
+        stored = data.get("traces")
+        traces = {
+            str(slug): trace
+            for slug, value in (stored.items() if isinstance(stored, Mapping) else ())
+            if (trace := ZoneTrace.from_dict(value)) is not None
+        }
         stored = data.get("targets")
         targets = {
             str(slug): float(value)
@@ -156,8 +203,7 @@ class RoomTrimState:
             targets,
             bool(data.get("settling", False)),
             number("arrived"),
-            moved,
-            moved_at,
+            traces,
             number("calling_since"),
         )
 
@@ -191,8 +237,39 @@ def _clamp(value: float, limit: float) -> float:
     return min(limit, max(-limit, value))
 
 
+def _filter(before: float, after: float, elapsed: float, smoothing: float) -> float:
+    """The first-order filter's value ``elapsed`` seconds on from ``before`` toward ``after``."""
+    weight = 1.0 if smoothing <= 0 else 1.0 - exp(-elapsed / smoothing)
+    return before + weight * (after - before)
+
+
+def _traces(
+    previous: Mapping[str, ZoneTrace],
+    errors: Mapping[str, float],
+    now: float,
+    smoothing: float,
+    gap: float,
+) -> dict[str, ZoneTrace]:
+    """Filter each lead zone's own error, and forget a trace older than ``gap``."""
+    traces = {slug: trace for slug, trace in previous.items() if trace.at <= now <= trace.at + gap}
+    for slug, error in errors.items():
+        if not isfinite(error):
+            continue
+        trace = traces.get(slug)
+        if trace is None:
+            traces[slug] = ZoneTrace(error, now, error, now)
+            continue
+        filtered = _filter(trace.error, error, now - trace.at, smoothing)
+        if now < trace.moved_at or abs(filtered - trace.moved) > SETTLE_STEP:
+            traces[slug] = ZoneTrace(filtered, now, filtered, now)
+        else:
+            traces[slug] = replace(trace, error=filtered, at=now)
+    return traces
+
+
 def _settle(
     previous: RoomTrimState,
+    traces: Mapping[str, ZoneTrace],
     lead: str | None,
     target: float | None,
     error: float,
@@ -200,10 +277,7 @@ def _settle(
     now: float,
     deadband: float,
 ) -> RoomTrimState:
-    """Follow the target and how the filtered error moves: everything but the error and learned."""
-    moved, moved_at = previous.moved, previous.moved_at
-    if moved is None or moved_at is None or now < moved_at or abs(filtered - moved) > SETTLE_STEP:
-        moved, moved_at = filtered, now
+    """Follow the targets and the traces: everything but the error and learned."""
     settling, targets = previous.settling, previous.targets
     if lead is not None and target is not None:
         before = targets.get(lead)
@@ -214,10 +288,11 @@ def _settle(
         targets=targets,
         settling=settling,
         arrived=previous.arrived,
-        moved=moved,
-        moved_at=moved_at,
+        traces=traces,
     )
-    if settling and ((abs(error) <= deadband and abs(filtered) <= deadband) or state.steady(now)):
+    if settling and (
+        (abs(error) <= deadband and abs(filtered) <= deadband) or state.steady(lead, now)
+    ):
         # Within the deadband, both the reading and the filtered error, which
         # lags behind a new target, or still: the room has arrived where it goes.
         state = replace(state, settling=False, arrived=now)
@@ -251,6 +326,7 @@ def room_trim(
     gap: float,
     calling: float | None,
     target: float | None = None,
+    errors: Mapping[str, float] | None = None,
     delivered: float | None = None,
     held: str | None = None,
     headroom: tuple[float, float] = (-inf, inf),
@@ -263,7 +339,9 @@ def room_trim(
     longest of the lead zones' current calls for heat began, None while none
     calls; the State joins it to the calls before, so the wait before the
     learned part rises goes on across a change of lead zone and across one
-    zone's pause while another calls.
+    zone's pause while another calls. ``errors`` holds every lead zone's error
+    that reads, so each zone's own trace follows it while another leads; it is
+    the lead zone's alone when None.
     ``delivered`` is the shift beyond the curve and the offset that the setpoint
     written last gives, None without one. ``held`` says why the learned part may
     not change now, and ``headroom`` is how far down and up a shift still moves
@@ -273,11 +351,14 @@ def room_trim(
     learning = influence.learn_rate > 0
     learned = _clamp(0.0 if reset or not learning else previous.learned, influence.learn_limit)
     calling_since = _calling_since(previous, now, calling, gap)
+    if errors is None:
+        errors = {} if lead is None or error is None else {lead: error}
+    traces = _traces(previous.traces, errors, now, influence.smoothing, gap)
     if error is None or not isfinite(error):
         # Nothing to filter: the filter waits for the next reading, which the
         # gap rule restarts it from when it comes too late.
         why = (held or "no lead zone reads its temperature") if learning else None
-        state = replace(previous, learned=learned, calling_since=calling_since)
+        state = replace(previous, learned=learned, traces=traces, calling_since=calling_since)
         return RoomTrim(_clamp(learned, influence.limit), 0.0, learned, None, None, why, state)
 
     if (
@@ -289,12 +370,11 @@ def room_trim(
         filtered, before, elapsed = error, error, 0.0
     else:
         before, elapsed = previous.error, now - previous.at
-        weight = 1.0 if influence.smoothing <= 0 else 1.0 - exp(-elapsed / influence.smoothing)
-        filtered = before + weight * (error - before)
+        filtered = _filter(before, error, elapsed, influence.smoothing)
 
     deadband = influence.deadband
     proportional = _clamp(influence.factor * _outside(filtered, deadband), influence.limit)
-    followed = _settle(previous, lead, target, error, filtered, now, deadband)
+    followed = _settle(previous, traces, lead, target, error, filtered, now, deadband)
     if learning and held is None:
         mean = (_outside(before, deadband) + _outside(filtered, deadband)) / 2
         arrived = followed.arrived
@@ -303,7 +383,7 @@ def room_trim(
             calling_since is not None
             and mean == 0
             and delivered is not None
-            and followed.steady(now)
+            and followed.steady(lead, now)
         )
         if calling_since is None and not recent:
             # A satisfied zone got enough heat, so it counts as at least the
@@ -325,7 +405,7 @@ def room_trim(
             held = "the lead zone is far from its target"
         elif rising and (calling_since is None or now - calling_since < influence.learn_after):
             held = "the lead zones have not called long enough"
-        elif rising and not followed.steady(now):
+        elif rising and not followed.steady(lead, now):
             held = "the lead zone still gets closer to its target"
         elif (mean > 0 and shift >= min(influence.limit, high)) or (
             mean < 0 and shift <= max(-influence.limit, low)
