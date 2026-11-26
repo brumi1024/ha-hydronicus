@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -399,6 +400,21 @@ async def test_stop_cancels_work_and_disallows_late_publish(
     assert len(provider.calls) == 1
     assert cache.snapshot is None
     updated.assert_not_called()
+
+
+async def test_home_assistant_stop_never_removes_the_listener_that_fired(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    Provider(hass)
+    cache = WeatherForecast(hass, WeatherConfig(ENTITY), Mock())
+    cache.async_start()
+    await settled(hass)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    # The Plant's unload after the stop event stops the cache once more.
+    await cache.async_stop()
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert errors == []
 
 
 async def test_weather_report_is_not_confused_with_a_measured_outdoor_sensor(
