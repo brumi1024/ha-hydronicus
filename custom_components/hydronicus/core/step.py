@@ -23,6 +23,22 @@ A decision never counts on a call having acted: a call sent less than
 ``CALL_TIMEOUT`` ago that no observation has confirmed may still act, so a pump
 or the source it may start counts as possibly running, and one it may stop
 counts as possibly stopped.
+
+A valve or the source request that goes unavailable for a moment keeps its last
+known state for ``RIDE_THROUGH``, counted from when it went unavailable: demand, paths, valve
+readiness, and the source request plan on it as if nothing happened, and the
+evaluation is due again when the grace ends. A device whose connection drops
+for a second, as a Shelly's does now and then, would otherwise read as a valve
+that may have closed, so every loop it serves loses its path and the source is
+released, and a heat pump pays for that second with a compressor stop, its
+minimum off time, and a pump restart from standstill. The reconciler sends an
+unavailable output nothing whatever the plan, and the runtime's output memory
+keeps the ``since`` of an output that returns showing what it showed before, so
+a valve that comes back open is still ready. Past the grace the output is what
+it shows, unavailable, and every rule that fails closed on it applies; a value
+it never showed, a valve still moving, and a missing entity get no grace. A pump
+gets none either: it is what carries the heat away from a source that may be
+firing, so a lost pump releases the source at once.
 """
 
 from __future__ import annotations
@@ -117,8 +133,10 @@ __all__ = [
     "GuardState",
     "NumericState",
     "Observations",
+    "KnownOutput",
     "OptionState",
     "OutputState",
+    "RIDE_THROUGH",
     "Reading",
     "Sent",
     "State",
@@ -145,6 +163,15 @@ GUARD_REFERENCE_MAX_AGE: Final = 1800.0
 CALL_TIMEOUT: Final = 10.0
 # Seconds after a deadline at which the next evaluation runs, so that it finds it passed.
 TICK: Final = 0.001
+# How long a valve or the source request that went unavailable keeps its last
+# known state, in seconds.
+# Long enough for a device's connection to drop and return, which takes a second
+# or two for a Shelly and up to a minute for a Wi-Fi roam or an integration's
+# reconnect, and short against every timer it could mislead: a valve's opening
+# time and a pump's overrun run for minutes, so a valve that really closed in it
+# leaves its pump against a shut loop no longer than an overrun does, and the
+# source's minimum on and off times run for ten.
+RIDE_THROUGH: Final = 60.0
 # How far, in steps of the setpoint's resolution, a heating target must move
 # from the last one Hydronicus proposed before the proposal changes.
 SETPOINT_HYSTERESIS: Final = 0.6
@@ -287,7 +314,78 @@ def value_of(state: OutputState) -> bool | str | float | None:
             return value if value is not None and isfinite(value) else None
 
 
+def _shown(observed: OutputState, value: bool | str | float, since: float) -> OutputState | None:
+    """``observed`` showing ``value`` since ``since``, None when the kinds do not match."""
+    match observed:
+        case SwitchState() if isinstance(value, bool):
+            return replace(observed, on=value, since=since)
+        case OptionState() if isinstance(value, str):
+            return replace(observed, option=value, since=since)
+        case NumericState() if isinstance(value, int | float) and not isinstance(value, bool):
+            return replace(observed, value=float(value), since=since)
+        case _:
+            return None
+
+
 # State
+
+
+@dataclass(frozen=True, slots=True)
+class KnownOutput:
+    """An output's last known value, since when it showed it, and when it was lost."""
+
+    value: bool | str | float
+    since: float
+    # When the output was first seen unavailable after showing ``value``, None
+    # while it shows it.
+    lost: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"value": self.value, "since": self.since, "lost": self.lost}
+
+    @classmethod
+    def from_dict(cls, data: object) -> KnownOutput | None:
+        """The stored output, None unless it has a value and a since."""
+        if not isinstance(data, Mapping):
+            return None
+        value, since = data.get("value"), data.get("since")
+        if not isinstance(value, bool | str | int | float) or not isinstance(since, int | float):
+            return None
+        return cls(value, float(since), _optional_float(data.get("lost")))
+
+
+def _ride_through(
+    outputs: Mapping[str, OutputState],
+    known: Mapping[str, KnownOutput],
+    now: float,
+    entities: frozenset[str],
+) -> tuple[dict[str, OutputState], dict[str, KnownOutput], dict[str, float]]:
+    """The outputs with each of ``entities`` unavailable for less than ``RIDE_THROUGH`` as
+    last known.
+
+    Return them, what is known of each output now, and when each grace ends.
+    """
+    shown, kept, ends = dict(outputs), {}, {}
+    for entity, observed in outputs.items():
+        if entity not in entities:
+            continue
+        moving = isinstance(observed, SwitchState) and observed.moving
+        value = value_of(observed)
+        if value is not None and not moving:
+            kept[entity] = KnownOutput(value, observed.since)
+        if value is not None or moving or (previous := known.get(entity)) is None:
+            continue
+        # Counted from the first evaluation that saw it gone, never from a later
+        # ``since``, so an entity that keeps reporting a fresh time is not kept forever.
+        lost = min(observed.since, now) if previous.lost is None else previous.lost
+        if not previous.since <= lost <= now < lost + RIDE_THROUGH:
+            continue
+        if (last := _shown(observed, previous.value, previous.since)) is None:
+            continue
+        shown[entity] = last
+        kept[entity] = replace(previous, lost=lost)
+        ends[entity] = lost + RIDE_THROUGH
+    return shown, kept, ends
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +499,9 @@ class State:
     sensorless: Mapping[str, float] = field(default_factory=dict)
     # The automatic changeover's average and the mode it chose.
     changeover: ChangeoverState = ChangeoverState()
+    # Each valve's and the source request's last known value, which it keeps
+    # for ``RIDE_THROUGH`` once it goes unavailable, by entity.
+    known_outputs: Mapping[str, KnownOutput] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-friendly data that ``from_dict`` reads back."""
@@ -471,6 +572,9 @@ class State:
             "room_trim": self.room_trim.to_dict(),
             "sensorless": dict(self.sensorless),
             "changeover": self.changeover.to_dict(),
+            "known_outputs": {
+                entity: known.to_dict() for entity, known in sorted(self.known_outputs.items())
+            },
         }
 
     @classmethod
@@ -539,6 +643,11 @@ class State:
             room_trim=RoomTrimState.from_dict(data.get("room_trim", {})),
             sensorless={slug: float(at) for slug, at in data.get("sensorless", {}).items()},
             changeover=ChangeoverState.from_dict(data.get("changeover", {})),
+            known_outputs={
+                str(entity): known
+                for entity, value in data.get("known_outputs", {}).items()
+                if (known := KnownOutput.from_dict(value)) is not None
+            },
         )
 
 
@@ -647,6 +756,13 @@ class _Evaluation:
     """The stages of one ``step()``, with the caches and deadlines they share."""
 
     def __init__(self, plant: Plant, obs: Observations, state: State, now: float) -> None:
+        kept = {valve.entity for loop in plant.all_loops for valve in loop.valves}
+        if plant.source is not None:
+            kept.add(plant.source.request)
+        outputs, self.known_outputs, riding = _ride_through(
+            obs.outputs, state.known_outputs, now, frozenset(kept)
+        )
+        obs = replace(obs, outputs=outputs)
         physical_flow_seen = state.physical_flow_seen or _physical_flow_possible(plant, obs)
         # A State that has never observed the source, such as one that a lost
         # store replaced, finds a running source as it is: its minimum on time
@@ -762,8 +878,13 @@ class _Evaluation:
         ):
             starts.append(self.source_observed_changed)
         self.source_starts = tuple(sorted(starts))
-        self.deadlines: list[float] = []
+        self.deadlines: list[float] = sorted(riding.values())
         self.reasons: dict[str, str] = {}
+        if riding:
+            self.reasons["ride_through"] = (
+                f"{', '.join(sorted(riding))} unavailable, kept as last seen "
+                f"for up to {RIDE_THROUGH:g} s"
+            )
         # The timers holding objects as they are, by target and kind.
         self.holds: dict[tuple[str, HoldKind], Hold] = {}
         self.comfort: dict[str, ComfortTarget] = {}
@@ -1150,6 +1271,7 @@ class _Evaluation:
             warm_weather=self.warm,
             room_trim=state.room_trim if self.trim is None else self.trim.state,
             sensorless=self.sensorless,
+            known_outputs=self.known_outputs,
         )
         desired = Desired(
             outputs=outputs,
